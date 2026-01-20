@@ -49,6 +49,8 @@
 
 Das Dashboard öffnet sich automatisch im Browser unter `http://localhost:8501`
 
+> **💡 Für Cloud-Deployment**: Die Testdaten werden automatisch beim ersten Start generiert. Siehe [DEPLOYMENT.md](DEPLOYMENT.md) für Details.
+
 ### Testdaten generieren
 
 Das Projekt enthält einen Generator für synthetische HR-Daten:
@@ -216,8 +218,9 @@ Dieses Projekt ist unter der MIT-Lizenz lizenziert - siehe [LICENSE](LICENSE) f�
 ## 📚 Dokumentation
 
 Weitere technische Details finden Sie in:
-- `CLAUDE.md` - Technische Spezifikation & Architektur
-- `QUICKSTART.md` - Erweiterte Setup-Anleitung
+- **[DEPLOYMENT.md](DEPLOYMENT.md)** - Cloud-Deployment (Streamlit Cloud, Heroku, Docker)
+- **[CLAUDE.md](CLAUDE.md)** - Technische Spezifikation & Architektur
+- **[QUICKSTART.md](QUICKSTART.md)** - Erweiterte Setup-Anleitung
 - Inline-Dokumentation in allen Modulen
 
 ## 🎯 Roadmap
