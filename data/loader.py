@@ -43,14 +43,18 @@ def load_hr_data(filepath: str = None, auto_generate: bool = True) -> Dict[str, 
         if auto_generate:
             st.warning("⚠️ Testdaten nicht gefunden. Generiere automatisch synthetische Daten...")
             try:
-                # Importiere und führe Testdaten-Generator aus
-                from data.synthetic import generate_synthetic_data
+                # Importiere Generator-Funktionen
+                from data.synthetic import generate_synthetic_data, save_to_excel
 
                 # Erstelle Verzeichnis falls nicht vorhanden
                 os.makedirs(os.path.dirname(filepath), exist_ok=True)
 
                 # Generiere Daten
-                generate_synthetic_data()
+                data_dict = generate_synthetic_data()
+
+                # Speichere in Excel
+                save_to_excel(data_dict, filepath)
+
                 st.success("✅ Testdaten erfolgreich generiert!")
             except Exception as e:
                 st.error(f"❌ Fehler beim Generieren der Testdaten: {str(e)}")
