@@ -1,0 +1,207 @@
+/**
+ * HR Pulse Dashboard - Custom Styles
+ *
+ * Light Theme mit Firmenfarben
+ */
+
+/* Global Overrides */
+:root {
+    --primary-color: #0088DE;      /* Blue Cola */
+    --primary-light: #00B9FC;      /* Blue Bolt */
+    --accent-red: #E94D3A;         /* Persian Red */
+    --background-color: #FFFFFF;   /* Weiß */
+    --secondary-bg: #F5F5F5;       /* Sehr helles Grau */
+    --text-primary: #757575;       /* Sonic Silver */
+    --text-secondary: #A9A9A9;     /* X11 Dark Gray */
+    --border-color: #BEBEBE;       /* X11 Gray */
+}
+
+/* Streamlit Container Anpassungen */
+.main .block-container {
+    padding-top: 2rem;
+    padding-bottom: 2rem;
+    max-width: 1400px;
+}
+
+/* Header Styling */
+h1, h2, h3 {
+    color: var(--text-primary) !important;
+    font-weight: 600;
+}
+
+h1 {
+    font-size: 2.5rem !important;
+}
+
+/* Sidebar Styling */
+[data-testid="stSidebar"] {
+    background-color: var(--secondary-bg);
+    border-right: 1px solid var(--border-color);
+}
+
+[data-testid="stSidebar"] .element-container {
+    margin-bottom: 0.5rem;
+}
+
+/* Button Styling */
+.stButton > button {
+    background-color: var(--primary-color);
+    color: #FFFFFF;
+    border: none;
+    border-radius: 6px;
+    padding: 0.5rem 1.5rem;
+    font-weight: 600;
+    transition: all 0.2s ease;
+}
+
+.stButton > button:hover {
+    background-color: #006bb3;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 8px rgba(0, 136, 222, 0.4);
+}
+
+/* Metric Cards Streamlit Native */
+[data-testid="stMetricValue"] {
+    font-size: 2rem !important;
+    font-weight: 700 !important;
+    color: var(--text-primary) !important;
+}
+
+[data-testid="stMetricLabel"] {
+    color: var(--text-secondary) !important;
+    font-size: 0.9rem !important;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* Multiselect Styling */
+.stMultiSelect [data-baseweb="tag"] {
+    background-color: var(--primary-color);
+    color: #FFFFFF;
+}
+
+/* Expander Styling */
+.streamlit-expanderHeader {
+    background-color: var(--secondary-bg);
+    border-radius: 6px;
+    border: 1px solid var(--border-color);
+}
+
+/* Divider */
+hr {
+    border-color: var(--border-color) !important;
+    margin: 1.5rem 0 !important;
+}
+
+/* Info/Warning/Error Boxes */
+.stAlert {
+    border-radius: 6px;
+    border-left: 4px solid;
+}
+
+/* Tabs Styling */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 8px;
+    background-color: transparent;
+}
+
+.stTabs [data-baseweb="tab"] {
+    background-color: var(--secondary-bg);
+    border-radius: 6px 6px 0 0;
+    color: var(--text-secondary);
+    padding: 0.75rem 1.5rem;
+    font-weight: 500;
+}
+
+.stTabs [aria-selected="true"] {
+    background-color: var(--primary-color);
+    color: #FFFFFF;
+}
+
+/* Dataframe Styling */
+[data-testid="stDataFrame"] {
+    background-color: var(--secondary-bg);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+/* Radio Buttons (für Toggle) */
+.stRadio > div {
+    background-color: var(--secondary-bg);
+    padding: 0.5rem;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+}
+
+.stRadio > div > label > div[data-testid="stMarkdownContainer"] {
+    color: var(--text-primary);
+}
+
+/* Plotly Chart Container */
+.js-plotly-plot {
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+/* Scrollbar Styling */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--secondary-bg);
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--primary-color);
+}
+
+/* Filter Summary Badge */
+.filter-summary {
+    background-color: var(--secondary-bg);
+    border: 1px solid var(--primary-color);
+    border-radius: 6px;
+    padding: 0.5rem 1rem;
+    color: var(--primary-color);
+    font-size: 0.9rem;
+    font-weight: 500;
+    display: inline-block;
+    margin-bottom: 1rem;
+}
+
+/* Animation für Hover-Effekte */
+@keyframes pulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.8;
+    }
+}
+
+.pulse-on-hover:hover {
+    animation: pulse 1.5s ease-in-out infinite;
+}
+
+/* Utility Classes */
+.text-center {
+    text-align: center;
+}
+
+.text-muted {
+    color: var(--text-secondary) !important;
+}
+
+.mb-1 {
+    margin-bottom: 1rem !important;
+}
+
+.mt-1 {
+    margin-top: 1rem !important;
+}

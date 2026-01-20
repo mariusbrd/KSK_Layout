@@ -1,0 +1,178 @@
+{
+  "Kundenberatung Privatkunden": {
+    "patterns": [
+      "*Privatkundenberater*",
+      "*Kundenberater Privat*",
+      "*Privatkundenbetreuung*",
+      "*Berater Privatk*"
+    ],
+    "min_qualification": "Sparkassen/Bankfachwirt",
+    "description": "Beratung und Betreuung von Privatkunden in allen Bankgeschäften",
+    "version": "v1",
+    "valid_from": "2026-01-01"
+  },
+  "Kundenberatung Firmenkunden": {
+    "patterns": [
+      "*Firmenkundenberater*",
+      "*Kundenberater Firmen*",
+      "*Corporate Banking*",
+      "*Unternehmensberater*"
+    ],
+    "min_qualification": "SPK/Bankbetriebswirt",
+    "description": "Beratung und Betreuung von Firmenkunden und Unternehmenskunden",
+    "version": "v1",
+    "valid_from": "2026-01-01"
+  },
+  "Baufinanzierung": {
+    "patterns": [
+      "*Baufinanzierung*",
+      "*Immobilienfinanzierung*",
+      "*Baufi*",
+      "*Immobilienberater*"
+    ],
+    "min_qualification": "Sparkassen/Bankfachwirt",
+    "description": "Spezialisierung auf Baufinanzierung und Immobiliendarlehen",
+    "version": "v1",
+    "valid_from": "2026-01-01"
+  },
+  "Vermögensberatung": {
+    "patterns": [
+      "*Vermögensberater*",
+      "*Anlageberater*",
+      "*Wertpapierberater*",
+      "*Private Banking*"
+    ],
+    "min_qualification": "SPK/Bankbetriebswirt",
+    "description": "Beratung vermögender Privatkunden in Anlage- und Vermögensfragen",
+    "version": "v1",
+    "valid_from": "2026-01-01"
+  },
+  "Kreditbearbeitung": {
+    "patterns": [
+      "*Kreditbearbeiter*",
+      "*Kreditprozess*",
+      "*Kreditabwicklung*",
+      "*Marktfolge Kredit*"
+    ],
+    "min_qualification": "Sparkassen/Bankfachwirt",
+    "description": "Bearbeitung und Abwicklung von Kreditanträgen und -verträgen",
+    "version": "v1",
+    "valid_from": "2026-01-01"
+  },
+  "Controlling & Rechnungswesen": {
+    "patterns": [
+      "*Controller*",
+      "*Controlling*",
+      "*Rechnungswesen*",
+      "*Buchhalter*",
+      "*Bilanzbuchhalter*"
+    ],
+    "min_qualification": "SPK/Bankbetriebswirt",
+    "description": "Finanzcontrolling, Rechnungslegung und betriebswirtschaftliche Steuerung",
+    "version": "v1",
+    "valid_from": "2026-01-01"
+  },
+  "IT & Digitalisierung": {
+    "patterns": [
+      "*IT*",
+      "*Informatiker*",
+      "*Software*",
+      "*System*",
+      "*Digitalisierung*",
+      "*Application*"
+    ],
+    "min_qualification": "Bachelor FH",
+    "description": "IT-Infrastruktur, Softwareentwicklung und Digitalisierungsprojekte",
+    "version": "v1",
+    "valid_from": "2026-01-01"
+  },
+  "Personal & HR": {
+    "patterns": [
+      "*Personal*",
+      "*HR*",
+      "*Human Resources*",
+      "*Personalentwicklung*",
+      "*Recruiting*"
+    ],
+    "min_qualification": "SPK/Bankbetriebswirt",
+    "description": "Personalmanagement, -entwicklung und -administration",
+    "version": "v1",
+    "valid_from": "2026-01-01"
+  },
+  "Marketing & Kommunikation": {
+    "patterns": [
+      "*Marketing*",
+      "*Kommunikation*",
+      "*Öffentlichkeitsarbeit*",
+      "*PR*",
+      "*Werbung*"
+    ],
+    "min_qualification": "Bachelor FH",
+    "description": "Marketing, Unternehmenskommunikation und Öffentlichkeitsarbeit",
+    "version": "v1",
+    "valid_from": "2026-01-01"
+  },
+  "Compliance & Recht": {
+    "patterns": [
+      "*Compliance*",
+      "*Recht*",
+      "*Jurist*",
+      "*Legal*",
+      "*Rechtsabteilung*"
+    ],
+    "min_qualification": "Master Universität",
+    "description": "Rechtliche Beratung, Compliance und Risikomanagement",
+    "version": "v1",
+    "valid_from": "2026-01-01"
+  },
+  "Vertriebssteuerung": {
+    "patterns": [
+      "*Vertriebssteuerung*",
+      "*Vertriebsmanagement*",
+      "*Sales Management*",
+      "*Vertriebscontrolling*"
+    ],
+    "min_qualification": "SPK/Bankbetriebswirt",
+    "description": "Steuerung und Koordination der Vertriebsaktivitäten",
+    "version": "v1",
+    "valid_from": "2026-01-01"
+  },
+  "Backoffice & Service": {
+    "patterns": [
+      "*Backoffice*",
+      "*Service*",
+      "*Sachbearbeiter*",
+      "*Assistenz*",
+      "*Sekretariat*"
+    ],
+    "min_qualification": "kfm Berufsabschluss",
+    "description": "Administrative Unterstützung und Servicefunktionen",
+    "version": "v1",
+    "valid_from": "2026-01-01"
+  },
+  "Ausbildung": {
+    "patterns": [
+      "*Azubi*",
+      "*Auszubildende*",
+      "*Berufsausbildung*",
+      "*Praktikant*"
+    ],
+    "min_qualification": "derzeit Berufsausbildung",
+    "description": "Mitarbeitende in Berufsausbildung",
+    "version": "v1",
+    "valid_from": "2026-01-01"
+  },
+  "Facility & Infrastruktur": {
+    "patterns": [
+      "*Facility*",
+      "*Hausmeister*",
+      "*Gebäude*",
+      "*Infrastruktur*",
+      "*Techniker*"
+    ],
+    "min_qualification": "nicht kfm Berufsabschluss",
+    "description": "Gebäudemanagement und technische Infrastruktur",
+    "version": "v1",
+    "valid_from": "2026-01-01"
+  }
+}

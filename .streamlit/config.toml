@@ -1,0 +1,16 @@
+[theme]
+primaryColor = "#0088DE"  # Blue Cola
+backgroundColor = "#FFFFFF"  # Weiß
+secondaryBackgroundColor = "#F5F5F5"  # Sehr helles Grau
+textColor = "#757575"  # Sonic Silver
+font = "sans serif"
+
+[server]
+headless = true
+port = 8501
+
+[browser]
+gatherUsageStats = false
+
+[runner]
+magicEnabled = true
