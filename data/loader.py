@@ -16,12 +16,16 @@ from config.settings import DATA_PATH, DEFAULT_COHORTS
 
 
 @st.cache_data
-def load_hr_data(filepath: str = None) -> Dict[str, pd.DataFrame]:
+def load_hr_data(filepath: str = None, auto_generate: bool = True) -> Dict[str, pd.DataFrame]:
     """
     Lädt HR-Daten aus Excel-Datei.
 
+    Wenn die Datei nicht existiert und auto_generate=True, werden automatisch
+    synthetische Testdaten generiert.
+
     Args:
         filepath: Pfad zur Excel-Datei (default: aus settings.py)
+        auto_generate: Automatisch Testdaten generieren falls Datei fehlt
 
     Returns:
         Dictionary mit DataFrames:
@@ -30,16 +34,32 @@ def load_hr_data(filepath: str = None) -> Dict[str, pd.DataFrame]:
         - org_structure
 
     Raises:
-        FileNotFoundError: Wenn Datei nicht existiert
+        FileNotFoundError: Wenn Datei nicht existiert und auto_generate=False
     """
     if filepath is None:
         filepath = DATA_PATH
 
     if not os.path.exists(filepath):
-        raise FileNotFoundError(
-            f"Datei nicht gefunden: {filepath}\n"
-            f"Bitte zuerst Testdaten generieren mit: python data/synthetic.py"
-        )
+        if auto_generate:
+            st.warning("⚠️ Testdaten nicht gefunden. Generiere automatisch synthetische Daten...")
+            try:
+                # Importiere und führe Testdaten-Generator aus
+                from data.synthetic import generate_synthetic_data
+
+                # Erstelle Verzeichnis falls nicht vorhanden
+                os.makedirs(os.path.dirname(filepath), exist_ok=True)
+
+                # Generiere Daten
+                generate_synthetic_data()
+                st.success("✅ Testdaten erfolgreich generiert!")
+            except Exception as e:
+                st.error(f"❌ Fehler beim Generieren der Testdaten: {str(e)}")
+                raise
+        else:
+            raise FileNotFoundError(
+                f"Datei nicht gefunden: {filepath}\n"
+                f"Bitte zuerst Testdaten generieren mit: python data/synthetic.py"
+            )
 
     # Lade alle Sheets
     data = {}
