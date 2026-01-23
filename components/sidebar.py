@@ -15,6 +15,107 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.settings import DEFAULT_COHORTS, COLORS
 
 
+# -----------------------------
+# UI Helper
+# -----------------------------
+def _smart_label(base: str, selected, total: int | None = None) -> str:
+    """
+    Creates a dynamic label like:
+    - "Qualifikation (Alle)" when none selected or all selected
+    - "Qualifikation (2 gewählt)" when some selected
+    """
+    try:
+        n = len(selected) if selected else 0
+    except TypeError:
+        n = 0
+
+    if total is not None and total > 0:
+        if n == 0 or n == total:
+            return f"{base} (Alle)"
+        return f"{base} ({n} gewählt)"
+
+    # If total unknown, use "Alle" when none selected
+    if n == 0:
+        return f"{base} (Alle)"
+    return f"{base} ({n} gewählt)"
+
+
+def _render_select_all_reset_row(
+    *,
+    select_all_key: str,
+    reset_key: str,
+    on_select_all,
+    on_reset,
+):
+    """
+    Renders two small helper buttons side-by-side.
+    """
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Alle auswählen", key=select_all_key, use_container_width=True):
+            on_select_all()
+            st.rerun()
+    with c2:
+        if st.button("Zurücksetzen", key=reset_key, use_container_width=True):
+            on_reset()
+            st.rerun()
+
+
+def _segmented_single(label: str, options: list[str], value: str, key: str):
+    """
+    Streamlit >= 1.31: st.segmented_control
+    Fallback: st.radio
+    """
+    if hasattr(st, "segmented_control"):
+        return st.segmented_control(
+            label,
+            options=options,
+            default=value,
+            key=key,
+            label_visibility="collapsed",
+        )
+    return st.radio(
+        label,
+        options=options,
+        index=options.index(value) if value in options else 0,
+        horizontal=True,
+        key=key,
+        label_visibility="collapsed",
+    )
+
+
+def _segmented_multi_gender(label: str, options: list[str], default: list[str], key: str):
+    """
+    Uses st.segmented_control in multi-select mode if available.
+    Fallback: st.multiselect.
+    """
+    if hasattr(st, "segmented_control"):
+        # Some Streamlit versions support selection_mode="multi".
+        # If not supported, we fall back gracefully.
+        try:
+            return st.segmented_control(
+                label,
+                options=options,
+                default=default,
+                selection_mode="multi",
+                key=key,
+                label_visibility="collapsed",
+            )
+        except TypeError:
+            pass
+
+    return st.multiselect(
+        label,
+        options=options,
+        default=default,
+        key=key,
+        label_visibility="collapsed",
+    )
+
+
+# -----------------------------
+# Public API
+# -----------------------------
 def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
     """
     Rendert die komplette Filter-Sidebar und aktualisiert Session State.
@@ -49,35 +150,44 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
         st.session_state["view_mode"] = "MAK"
 
     with st.sidebar:
-        # MAK/EUR Toggle ganz oben
+        # -----------------------------
+        # Header / Summary
+        # -----------------------------
+        st.markdown("## 🎛️ Dashboard Steuerung")
+        st.caption(get_filter_summary())
+
+        # -----------------------------
+        # View Mode (MAK/EUR) - compact pills
+        # -----------------------------
         st.markdown("### 💡 Ansicht")
-        view_mode = st.radio(
+        view_mode = _segmented_single(
             "Darstellungsart",
             options=["MAK", "EUR"],
-            index=0 if st.session_state.get("view_mode", "MAK") == "MAK" else 1,
-            horizontal=True,
+            value=st.session_state.get("view_mode", "MAK"),
             key="view_mode_toggle",
-            label_visibility="collapsed"
         )
         st.session_state["view_mode"] = view_mode
 
-        st.divider()
+        st.markdown("---")
 
-        st.header("🎯 Filter")
+        # -----------------------------
+        # Primary Filters (always visible)
+        # -----------------------------
+        st.markdown("### 🎯 Primäre Filter")
 
-        # Datumsbereich (aus History)
-        if not history_df.empty:
+        # Zeitraum (aus History)
+        if not history_df.empty and "Date" in history_df.columns:
             min_date = history_df["Date"].min().date()
             max_date = history_df["Date"].max().date()
 
-            st.subheader("📅 Zeitraum")
+            st.markdown("**📅 Zeitraum**")
             date_range = st.date_input(
                 "Zeitraum auswählen",
                 value=(min_date, max_date),
                 min_value=min_date,
                 max_value=max_date,
                 key="date_range_input",
-                label_visibility="collapsed"
+                label_visibility="collapsed",
             )
 
             # Update session state
@@ -86,16 +196,20 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
             else:
                 st.session_state["date_range"] = (min_date, max_date)
 
-        st.divider()
-
         # Organisationseinheiten
-        st.subheader("🏢 Organisationseinheiten")
-        org_units = sorted(snapshot_df["Kürzel OrgEinheit"].dropna().unique())
-        org_unit_names = snapshot_df[["Kürzel OrgEinheit", "Organisationseinheit"]].drop_duplicates()
-        org_unit_options = {
-            row["Kürzel OrgEinheit"]: f"{row['Kürzel OrgEinheit']} - {row['Organisationseinheit']}"
-            for _, row in org_unit_names.iterrows()
-        }
+        st.markdown("**🏢 Organisationseinheiten**")
+        if "Kürzel OrgEinheit" in snapshot_df.columns:
+            org_units = sorted(snapshot_df["Kürzel OrgEinheit"].dropna().unique())
+        else:
+            org_units = []
+
+        org_unit_options = {}
+        if {"Kürzel OrgEinheit", "Organisationseinheit"}.issubset(snapshot_df.columns):
+            org_unit_names = snapshot_df[["Kürzel OrgEinheit", "Organisationseinheit"]].drop_duplicates()
+            org_unit_options = {
+                row["Kürzel OrgEinheit"]: f"{row['Kürzel OrgEinheit']} - {row['Organisationseinheit']}"
+                for _, row in org_unit_names.iterrows()
+            }
 
         selected_orgs = st.multiselect(
             "Einheiten auswählen",
@@ -103,85 +217,139 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
             default=st.session_state.get("selected_org_units", []),
             format_func=lambda x: org_unit_options.get(x, x),
             key="org_units_select",
-            label_visibility="collapsed"
+            label_visibility="collapsed",
         )
         st.session_state["selected_org_units"] = selected_orgs
 
-        st.divider()
-
-        # Alterskohorten
-        st.markdown("#### 👥 Alterskohorten")
-
-        # Kohorte-Editor (expandable)
-        with st.expander("⚙️ Kohorten bearbeiten"):
-            render_cohort_editor()
-
-        # Kohortenauswahl
+        # Alterskohorten (Auswahl + Editor in Popover)
+        st.markdown("**👥 Alterskohorten**")
         cohorts = list(st.session_state["cohort_definitions"].keys())
+
+        # Helper row for cohort multiselect (Select all / reset)
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("Alle auswählen", key="cohorts_select_all", use_container_width=True):
+                st.session_state["selected_cohorts"] = cohorts.copy()
+                st.rerun()
+        with c2:
+            if st.button("Zurücksetzen", key="cohorts_reset", use_container_width=True):
+                st.session_state["selected_cohorts"] = []
+                st.rerun()
+
         selected_cohorts = st.multiselect(
             "Kohorten auswählen",
             options=cohorts,
             default=st.session_state.get("selected_cohorts", []),
             key="cohorts_select",
-            label_visibility="collapsed"
+            label_visibility="collapsed",
         )
         st.session_state["selected_cohorts"] = selected_cohorts
 
-        st.divider()
+        # Cohort editor in popover (configuration, not daily filter)
+        if hasattr(st, "popover"):
+            with st.popover("⚙️ Kohorten bearbeiten", use_container_width=True):
+                render_cohort_editor()
+        else:
+            with st.expander("⚙️ Kohorten bearbeiten"):
+                render_cohort_editor()
 
-        # Geschlecht
-        st.subheader("⚧ Geschlecht")
-        selected_genders = st.multiselect(
-            "Geschlecht auswählen",
-            options=["m", "w"],
-            default=st.session_state.get("selected_genders", ["m", "w"]),
-            format_func=lambda x: "Männlich" if x == "m" else "Weiblich",
-            key="gender_select",
-            label_visibility="collapsed"
+        st.markdown("---")
+
+        # -----------------------------
+        # Demography (compact)
+        # -----------------------------
+        st.markdown("### 👤 Demografie")
+
+        # Geschlecht - compact pills (multi)
+        # Keep values "m"/"w" in session state, same as before.
+        # Show as "Männlich/Weiblich" via options mapping.
+        gender_map = {"m": "Männlich", "w": "Weiblich"}
+        # We keep internal codes but render readable labels by mapping the segmented options.
+        # segmented_control returns selected option strings; we convert back to codes if needed.
+        # To keep behavior stable, we expose options as codes and rely on format elsewhere.
+        # For segmented_control we can't pass format_func, so we use readable labels as options and map back.
+        gender_display_to_code = {v: k for k, v in gender_map.items()}
+        gender_code_to_display = {k: v for k, v in gender_map.items()}
+
+        default_gender_displays = [gender_code_to_display.get(x, x) for x in st.session_state.get("selected_genders", ["m", "w"])]
+        selected_gender_displays = _segmented_multi_gender(
+            "Geschlecht",
+            options=[gender_map["m"], gender_map["w"]],
+            default=default_gender_displays,
+            key="gender_segmented",
         )
+        # Normalize selection back to codes
+        if isinstance(selected_gender_displays, str):
+            selected_gender_displays = [selected_gender_displays]
+        selected_genders = [gender_display_to_code.get(x, x) for x in (selected_gender_displays or [])]
         st.session_state["selected_genders"] = selected_genders
 
-        st.divider()
-
-        # Arbeitszeit
-        st.subheader("⏰ Arbeitszeit")
+        # Arbeitszeit (kept as multiselect; still primary for many HR dashboards)
+        st.markdown("**⏰ Arbeitszeit**")
         selected_employment = st.multiselect(
             "Arbeitszeit auswählen",
             options=["Vollzeit", "Teilzeit"],
             default=st.session_state.get("selected_employment", ["Vollzeit", "Teilzeit"]),
             key="employment_select",
-            label_visibility="collapsed"
+            label_visibility="collapsed",
         )
         st.session_state["selected_employment"] = selected_employment
 
-        st.divider()
+        st.markdown("---")
 
-        # Qualifikation
-        st.subheader("🎓 Qualifikation")
-        education_options = sorted(snapshot_df["Ausbildung"].dropna().unique())
-        selected_education = st.multiselect(
-            "Qualifikation auswählen",
-            options=education_options,
-            default=st.session_state.get("selected_education", []),
-            key="education_select",
-            label_visibility="collapsed"
-        )
-        st.session_state["selected_education"] = selected_education
+        # -----------------------------
+        # Secondary Filters (accordion principle)
+        # -----------------------------
+        st.markdown("### 🧩 Weitere Filter")
 
-        st.divider()
+        # Qualifikation (Expander with smart label + buttons)
+        education_options = []
+        if "Ausbildung" in snapshot_df.columns:
+            education_options = sorted(snapshot_df["Ausbildung"].dropna().unique())
 
-        # ATZ-Status
-        st.subheader("🔄 Altersteilzeit")
-        selected_atz = st.multiselect(
-            "ATZ-Status auswählen",
-            options=["Kein ATZ", "Arbeitsphase", "Freistellungsphase"],
-            default=st.session_state.get("selected_atz_status", ["Kein ATZ", "Arbeitsphase", "Freistellungsphase"]),
-            key="atz_select",
-            label_visibility="collapsed"
-        )
-        st.session_state["selected_atz_status"] = selected_atz
+        edu_selected = st.session_state.get("selected_education", [])
+        edu_label = _smart_label("🎓 Qualifikation", edu_selected, total=len(education_options))
 
-        st.divider()
+        with st.expander(edu_label, expanded=False):
+            _render_select_all_reset_row(
+                select_all_key="edu_select_all",
+                reset_key="edu_reset",
+                on_select_all=lambda: st.session_state.__setitem__("selected_education", education_options.copy()),
+                on_reset=lambda: st.session_state.__setitem__("selected_education", []),
+            )
+
+            selected_education = st.multiselect(
+                "Qualifikation auswählen",
+                options=education_options,
+                default=edu_selected,
+                key="education_select",
+                label_visibility="collapsed",
+            )
+            st.session_state["selected_education"] = selected_education
+
+        # ATZ-Status (Expander with smart label + buttons)
+        atz_options = ["Kein ATZ", "Arbeitsphase", "Freistellungsphase"]
+        atz_selected = st.session_state.get("selected_atz_status", atz_options)
+        atz_label = _smart_label("🔄 Altersteilzeit", atz_selected, total=len(atz_options))
+
+        with st.expander(atz_label, expanded=False):
+            _render_select_all_reset_row(
+                select_all_key="atz_select_all",
+                reset_key="atz_reset",
+                on_select_all=lambda: st.session_state.__setitem__("selected_atz_status", atz_options.copy()),
+                on_reset=lambda: st.session_state.__setitem__("selected_atz_status", atz_options.copy()),
+            )
+
+            selected_atz = st.multiselect(
+                "ATZ-Status auswählen",
+                options=atz_options,
+                default=atz_selected,
+                key="atz_select",
+                label_visibility="collapsed",
+            )
+            st.session_state["selected_atz_status"] = selected_atz
+
+        st.markdown("---")
 
         # Reset Button
         if st.button("🔄 Alle Filter zurücksetzen", use_container_width=True):
@@ -207,7 +375,7 @@ def render_cohort_editor():
                 min_value=0,
                 max_value=99,
                 value=min_age,
-                key=f"cohort_min_{cohort_name}"
+                key=f"cohort_min_{cohort_name}",
             )
         with col2:
             new_max = st.number_input(
@@ -215,7 +383,7 @@ def render_cohort_editor():
                 min_value=0,
                 max_value=99,
                 value=max_age,
-                key=f"cohort_max_{cohort_name}"
+                key=f"cohort_max_{cohort_name}",
             )
 
         if new_min != min_age or new_max != max_age:
@@ -243,47 +411,26 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
     Returns:
         Gefilterter DataFrame
     """
+    if df.empty:
+        return df
+
     filtered = df.copy()
 
-    # Nur besetzte Stellen (Vakanten rausfiltern für Mitarbeiter-Analysen)
-    # WICHTIG: Für Planstellen-Analysen muss dies optional sein
-    # filtered = filtered[~filtered["Is_Vacant"]]
+    # Filter-Mapping: session_state key -> DataFrame column
+    filter_mapping = {
+        "selected_org_units": "Kürzel OrgEinheit",
+        "selected_cohorts": "Alterskohorte",
+        "selected_genders": "Geschlecht",
+        "selected_employment": "Arbeitszeit",
+        "selected_education": "Ausbildung",
+        "selected_atz_status": "ATZ_Status",
+    }
 
-    # Organisationseinheiten
-    if st.session_state.get("selected_org_units"):
-        filtered = filtered[
-            filtered["Kürzel OrgEinheit"].isin(st.session_state["selected_org_units"])
-        ]
-
-    # Alterskohorten
-    if st.session_state.get("selected_cohorts"):
-        filtered = filtered[
-            filtered["Alterskohorte"].isin(st.session_state["selected_cohorts"])
-        ]
-
-    # Geschlecht
-    if st.session_state.get("selected_genders"):
-        filtered = filtered[
-            filtered["Geschlecht"].isin(st.session_state["selected_genders"])
-        ]
-
-    # Arbeitszeit
-    if st.session_state.get("selected_employment"):
-        filtered = filtered[
-            filtered["Arbeitszeit"].isin(st.session_state["selected_employment"])
-        ]
-
-    # Qualifikation
-    if st.session_state.get("selected_education"):
-        filtered = filtered[
-            filtered["Ausbildung"].isin(st.session_state["selected_education"])
-        ]
-
-    # ATZ-Status
-    if st.session_state.get("selected_atz_status"):
-        filtered = filtered[
-            filtered["ATZ_Status"].isin(st.session_state["selected_atz_status"])
-        ]
+    for state_key, column_name in filter_mapping.items():
+        filter_values = st.session_state.get(state_key)
+        if filter_values and column_name in filtered.columns:
+            mask = filtered[column_name].isin(filter_values)
+            filtered = filtered.loc[mask]
 
     return filtered
 

@@ -55,25 +55,30 @@ COLOR_SEQUENCE = [
 
 # Kohorten-Farben (konsistent über alle Charts)
 COHORT_COLORS = {
-    "Azubis": "#00B9FC",           # Blue Bolt (Hell)
-    "Young Professionals": "#0088DE",  # Blue Cola
-    "Mid Career": "#757575",       # Sonic Silver
-    "Senior": "#A9A9A9",           # X11 Dark Gray
-    "Pre-Retirement": "#f59e0b",   # Amber (Warnung)
-    "Retirement Ready": "#E94D3A", # Persian Red
+    "< 20 Jahre": "#00B9FC",       # Blue Bolt (Hell) - Jüngste
+    "20-30 Jahre": "#0088DE",      # Blue Cola
+    "30-40 Jahre": "#10b981",      # Emerald
+    "40-50 Jahre": "#757575",      # Sonic Silver
+    "50-55 Jahre": "#A9A9A9",      # X11 Dark Gray
+    "55-60 Jahre": "#f59e0b",      # Amber
+    "60-65 Jahre": "#E94D3A",      # Persian Red
+    "> 65 Jahre": "#8b5cf6",       # Violet
 }
 
 # =============================================================================
 # ALTERSKOHORTEN (Defaults)
 # =============================================================================
 
+# WICHTIG: OrderedDict-ähnliches Verhalten - Reihenfolge wird beibehalten (Python 3.7+)
 DEFAULT_COHORTS: Dict[str, Tuple[int, int]] = {
-    "Azubis": (16, 19),
-    "Young Professionals": (20, 29),
-    "Mid Career": (30, 44),
-    "Senior": (45, 54),
-    "Pre-Retirement": (55, 62),
-    "Retirement Ready": (63, 99),
+    "< 20 Jahre": (0, 19),
+    "20-30 Jahre": (20, 29),
+    "30-40 Jahre": (30, 39),
+    "40-50 Jahre": (40, 49),
+    "50-55 Jahre": (50, 54),
+    "55-60 Jahre": (55, 59),
+    "60-65 Jahre": (60, 64),
+    "> 65 Jahre": (65, 99),
 }
 
 # =============================================================================

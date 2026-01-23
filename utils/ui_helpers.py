@@ -182,3 +182,29 @@ def get_metric_explanation(metric_key: str) -> str:
         Erläuterungstext
     """
     return METRIC_EXPLANATIONS.get(metric_key, "")
+
+
+def sidebar_separator(label: str = None):
+    """
+    Rendert einen visuellen Trenner für die Sidebar, um Navigation und Filter zu trennen.
+    
+    Args:
+        label: Optionaler Text für den Trenner (z.B. "FILTER")
+    """
+    if label:
+        st.sidebar.markdown(
+            f"""
+            <div style="
+                margin-top: 1.5rem; 
+                margin-bottom: 0.5rem;
+                border-bottom: 1px solid #e0e0e0;
+                color: #757575;
+                font-size: 0.8rem;
+                font-weight: 600;
+                letter-spacing: 0.1em;
+            ">{label.upper()}</div>
+            """, 
+            unsafe_allow_html=True
+        )
+    else:
+        st.sidebar.markdown("<hr style='margin: 1.5rem 0; border: 0; border-top: 1px solid #e0e0e0;'>", unsafe_allow_html=True)

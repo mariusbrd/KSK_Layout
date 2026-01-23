@@ -66,6 +66,7 @@ def main():
     pages = {
         "Dashboard": [
             st.Page("pages/1_🏠_Uebersicht.py", title="Überblick", icon="🏠"),
+            st.Page("pages/7_⚡_Kompakt.py", title="Kompakt", icon="⚡"),
         ],
         "Analysen": [
             st.Page("pages/2_👥_Demografie.py", title="Demografie", icon="👥"),
