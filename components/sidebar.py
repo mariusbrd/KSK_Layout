@@ -146,10 +146,28 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
     if "selected_atz_status" not in st.session_state:
         st.session_state["selected_atz_status"] = ["Kein ATZ", "Arbeitsphase", "Freistellungsphase"]
 
+    if "selected_jobfamilies" not in st.session_state:
+        st.session_state["selected_jobfamilies"] = []
+
+    if "exclude_auszubildende" not in st.session_state:
+        st.session_state["exclude_auszubildende"] = False
+    if "exclude_elternzeit" not in st.session_state:
+        st.session_state["exclude_elternzeit"] = False
+    if "exclude_erziehungszeit" not in st.session_state:
+        st.session_state["exclude_erziehungszeit"] = False
+
     if "view_mode" not in st.session_state:
         st.session_state["view_mode"] = "MAK"
 
     with st.sidebar:
+        # -----------------------------
+        # Data Source Indicator
+        # -----------------------------
+        from components.data_source_indicator import show_data_source_badge
+        show_data_source_badge()
+
+        st.markdown("---")
+
         # -----------------------------
         # Header / Summary
         # -----------------------------
@@ -220,6 +238,35 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
             label_visibility="collapsed",
         )
         st.session_state["selected_org_units"] = selected_orgs
+
+        # Job Families
+        st.markdown("**💼 Job Families**")
+        if "Jobfamily" in snapshot_df.columns:
+            jobfamilies = sorted(
+                snapshot_df[snapshot_df["Jobfamily"] != "UNMAPPED"]["Jobfamily"].dropna().unique()
+            )
+        else:
+            jobfamilies = []
+
+        # Helper row for jobfamily multiselect (Select all / reset)
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("Alle auswählen", key="jf_select_all", use_container_width=True):
+                st.session_state["selected_jobfamilies"] = jobfamilies.copy()
+                st.rerun()
+        with c2:
+            if st.button("Zurücksetzen", key="jf_reset", use_container_width=True):
+                st.session_state["selected_jobfamilies"] = []
+                st.rerun()
+
+        selected_jf = st.multiselect(
+            "Job Families auswählen",
+            options=jobfamilies,
+            default=st.session_state.get("selected_jobfamilies", []),
+            key="jobfamily_select",
+            label_visibility="collapsed",
+        )
+        st.session_state["selected_jobfamilies"] = selected_jf
 
         # Alterskohorten (Auswahl + Editor in Popover)
         st.markdown("**👥 Alterskohorten**")
@@ -419,6 +466,7 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
     # Filter-Mapping: session_state key -> DataFrame column
     filter_mapping = {
         "selected_org_units": "Kürzel OrgEinheit",
+        "selected_jobfamilies": "Jobfamily",
         "selected_cohorts": "Alterskohorte",
         "selected_genders": "Geschlecht",
         "selected_employment": "Arbeitszeit",
@@ -432,18 +480,42 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
             mask = filtered[column_name].isin(filter_values)
             filtered = filtered.loc[mask]
 
+    # --- Gruppen-Ausschlüsse (konfiguriert in Einstellungen) ---
+    exclusion_mask = pd.Series(False, index=filtered.index)
+
+    if st.session_state.get("exclude_auszubildende", False):
+        if "Ist_Azubi" in filtered.columns:
+            exclusion_mask = exclusion_mask | (filtered["Ist_Azubi"] == True)
+        if "Kürzel OrgEinheit" in filtered.columns:
+            exclusion_mask = exclusion_mask | (filtered["Kürzel OrgEinheit"].astype(str) == "9910")
+
+    if st.session_state.get("exclude_elternzeit", False):
+        if "Kürzel OrgEinheit" in filtered.columns:
+            exclusion_mask = exclusion_mask | (filtered["Kürzel OrgEinheit"].astype(str) == "9971")
+
+    if st.session_state.get("exclude_erziehungszeit", False):
+        if "Kürzel OrgEinheit" in filtered.columns:
+            exclusion_mask = exclusion_mask | (filtered["Kürzel OrgEinheit"].astype(str) == "9975")
+
+    if exclusion_mask.any():
+        filtered = filtered[~exclusion_mask]
+
     return filtered
 
 
 def reset_filters():
     """Setzt alle Filter auf ihre Defaults zurück."""
     st.session_state["selected_org_units"] = []
+    st.session_state["selected_jobfamilies"] = []
     st.session_state["selected_cohorts"] = []
     st.session_state["selected_genders"] = ["m", "w"]
     st.session_state["selected_employment"] = ["Vollzeit", "Teilzeit"]
     st.session_state["selected_education"] = []
     st.session_state["selected_atz_status"] = ["Kein ATZ", "Arbeitsphase", "Freistellungsphase"]
     st.session_state["cohort_definitions"] = DEFAULT_COHORTS.copy()
+    st.session_state["exclude_auszubildende"] = False
+    st.session_state["exclude_elternzeit"] = False
+    st.session_state["exclude_erziehungszeit"] = False
 
 
 def get_filter_summary() -> str:
@@ -457,6 +529,9 @@ def get_filter_summary() -> str:
 
     if st.session_state.get("selected_org_units"):
         active_filters.append(f"{len(st.session_state['selected_org_units'])} Org-Einheiten")
+
+    if st.session_state.get("selected_jobfamilies"):
+        active_filters.append(f"{len(st.session_state['selected_jobfamilies'])} Job Families")
 
     if st.session_state.get("selected_cohorts"):
         active_filters.append(f"{len(st.session_state['selected_cohorts'])} Kohorten")
@@ -472,6 +547,17 @@ def get_filter_summary() -> str:
 
     if len(st.session_state.get("selected_atz_status", [])) < 3:
         active_filters.append("ATZ-Status")
+
+    # Gruppen-Ausschlüsse
+    exclusion_labels = []
+    if st.session_state.get("exclude_auszubildende", False):
+        exclusion_labels.append("Azubis")
+    if st.session_state.get("exclude_elternzeit", False):
+        exclusion_labels.append("Elternzeit")
+    if st.session_state.get("exclude_erziehungszeit", False):
+        exclusion_labels.append("Erziehungszeit")
+    if exclusion_labels:
+        active_filters.append(f"Ausschl.: {', '.join(exclusion_labels)}")
 
     if active_filters:
         return f"🎯 {len(active_filters)} Filter aktiv: " + ", ".join(active_filters)

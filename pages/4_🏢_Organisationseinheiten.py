@@ -11,7 +11,7 @@ import os
 
 # Import components
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from data.loader import load_and_prepare_data
+from dataloader.loader import load_and_prepare_data
 from components.sidebar import render_global_filters, apply_filters, get_filter_summary
 from components.kpi_card import kpi_card
 from components.charts import (
@@ -22,15 +22,13 @@ from components.charts import (
     create_bar_chart
 )
 from config.settings import COLORS, DEFAULT_COHORTS, format_currency, format_number
+from dataloader.kpi_engine import (
+    get_unique_employees, compute_headcount, compute_fte_effektiv,
+    compute_atz_kpis, compute_teilzeit_kpis, compute_alter_kpis,
+    compute_planstellen_kpis
+)
 import plotly.graph_objects as go
 import numpy as np
-
-# Page Config
-st.set_page_config(
-    page_title="Organisationseinheiten | HR Pulse",
-    page_icon="🏢",
-    layout="wide"
-)
 
 # Load CSS
 css_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "style.css")
@@ -105,25 +103,30 @@ def calculate_org_metrics(df: pd.DataFrame, org_unit: str = None) -> dict:
     # Nur aktive Mitarbeitende (keine Vakanzen)
     df_active = df_org[~df_org["Is_Vacant"]]
 
-    # === BASIS-KENNZAHLEN ===
+    # === Unique Mitarbeitende via kpi_engine ===
+    emp = get_unique_employees(df_org)
+    headcount = len(emp)
+
+    # === BASIS-KENNZAHLEN (kpi_engine) ===
     soll = df_org["Soll_FTE"].sum()
-    ist = df_active["FTE_assigned"].sum()
+    ist = compute_fte_effektiv(df_org)  # MAK (Readme-konform)
     varianz_absolut = ist - soll
     varianz_relativ = (varianz_absolut / soll * 100) if soll > 0 else 0
-    besetzte_stellen = df_active.shape[0]
-    alle_stellen = df_org.shape[0]
-    besetzungsgrad = (besetzte_stellen / alle_stellen * 100) if alle_stellen > 0 else 0
-    kosten = df_active["Total_Cost_Year"].sum()
+    plan_kpis = compute_planstellen_kpis(df_org)
+    besetzte_stellen = plan_kpis["besetzt"]
+    alle_stellen = plan_kpis["total"]
+    besetzungsgrad = plan_kpis["besetzungsquote"]
+    kosten = df_active["Total_Cost_Year"].sum() if "Total_Cost_Year" in df_active.columns else 0
 
     # Kosten für Soll-Kapazität (theoretisch bei voller Besetzung)
-    kosten_soll = df_org["Total_Cost_Year"].sum()  # Inkl. Vakanzen
+    kosten_soll = df_org["Total_Cost_Year"].sum() if "Total_Cost_Year" in df_org.columns else 0
 
-    # === DEMOGRAFISCHE KENNZAHLEN ===
-    # (Ansichts-neutral: betreffen nur Personen, nicht FTE/Kosten)
-    if len(df_active) > 0:
-        durchschnittsalter = df_active["Alter"].mean()
-        anteil_55_plus = (df_active["Alter"] >= 55).sum() / len(df_active) * 100
-        anteil_retirement_ready = (df_active["Alter"] >= 63).sum() / len(df_active) * 100
+    # === DEMOGRAFISCHE KENNZAHLEN (kpi_engine, unique Köpfe) ===
+    if headcount > 0:
+        alter_col = "Alter_Jahre" if "Alter_Jahre" in emp.columns else "Alter"
+        durchschnittsalter = emp[alter_col].mean()
+        anteil_55_plus = (emp[alter_col] >= 55).sum() / headcount * 100
+        anteil_retirement_ready = (emp[alter_col] >= 63).sum() / headcount * 100
         risk_score = anteil_55_plus * 0.6 + anteil_retirement_ready * 0.4
     else:
         durchschnittsalter = 0
@@ -131,18 +134,16 @@ def calculate_org_metrics(df: pd.DataFrame, org_unit: str = None) -> dict:
         anteil_retirement_ready = 0
         risk_score = 0
 
-    # === TEILZEIT-KENNZAHLEN (DUAL: FTE + EUR) ===
-    if len(df_active) > 0:
-        # Ansichts-neutral
-        teilzeitquote = (df_active["FTE_person"] < 0.95).sum() / len(df_active) * 100
-        durchschnitt_beschaeftigungsgrad = df_active["BsGrd"].mean()
+    # === TEILZEIT-KENNZAHLEN (kpi_engine, unique Köpfe) ===
+    if headcount > 0:
+        tz = compute_teilzeit_kpis(df_org)
+        teilzeitquote = tz["quote_pct"]
+        durchschnitt_beschaeftigungsgrad = emp["BsGrd"].mean() if "BsGrd" in emp.columns else 0
 
         # MAK: FTE-Potential
-        vollzeit_potential_fte = (df_active["Soll_FTE"].sum() - df_active["FTE_person"].sum())
+        vollzeit_potential_fte = (df_active["Soll_FTE"].sum() - df_active["FTE_person"].sum()) if "Soll_FTE" in df_active.columns else 0
 
         # EUR: Kosteneinsparung-Potential bei Vollzeit
-        # Annahme: Bei 100% Beschäftigungsgrad würden Kosten steigen
-        # Berechnung: Durchschnittliche Kosten pro FTE × Vollzeit-Potential
         avg_cost_per_fte = kosten / ist if ist > 0 else 0
         vollzeit_potential_kosten = vollzeit_potential_fte * avg_cost_per_fte
     else:
@@ -151,41 +152,30 @@ def calculate_org_metrics(df: pd.DataFrame, org_unit: str = None) -> dict:
         vollzeit_potential_fte = 0
         vollzeit_potential_kosten = 0
 
-    # === ATZ-KENNZAHLEN (DUAL: FTE + EUR) ===
-    if len(df_active) > 0:
-        # Ansichts-neutral
-        atz_quote = (df_active["Vertragsart"] == "Altersteilzeit").sum() / len(df_active) * 100
-        atz_arbeitsphase = (df_active["ATZ_Status"] == "Arbeitsphase").sum()
-        atz_freistellung = (df_active["ATZ_Status"] == "Freistellungsphase").sum()
+    # === ATZ-KENNZAHLEN (kpi_engine, unique Köpfe) ===
+    atz = compute_atz_kpis(df_org)
+    atz_quote = atz["quote_headcount_pct"]
+    atz_arbeitsphase = atz["arbeitsphase"]
+    atz_freistellung = atz["freistellung"]
 
-        # MAK: FTE in ATZ
-        atz_fte = df_active[df_active["Vertragsart"] == "Altersteilzeit"]["FTE_assigned"].sum()
-
-        # EUR: Kosten in ATZ
-        atz_kosten = df_active[df_active["Vertragsart"] == "Altersteilzeit"]["Total_Cost_Year"].sum()
-    else:
-        atz_quote = 0
-        atz_arbeitsphase = 0
-        atz_freistellung = 0
-        atz_fte = 0
-        atz_kosten = 0
+    # MAK: FTE in ATZ (Planstellen-Summe für ATZ-Personen)
+    atz_mask = df_active["ATZ_Status"].isin(["Arbeitsphase", "Freistellungsphase"]) if "ATZ_Status" in df_active.columns else pd.Series(False, index=df_active.index)
+    atz_fte = df_active.loc[atz_mask, "FTE_assigned"].sum() if "FTE_assigned" in df_active.columns else 0
+    atz_kosten = df_active.loc[atz_mask, "Total_Cost_Year"].sum() if "Total_Cost_Year" in df_active.columns else 0
 
     # === KOSTEN-EFFIZIENZ ===
-    # (Primär EUR-Ansicht, aber auch für MAK relevant)
     kosten_pro_fte = (kosten / ist) if ist > 0 else 0
-    kosten_pro_headcount = (kosten / len(df_active)) if len(df_active) > 0 else 0
+    kosten_pro_headcount = (kosten / headcount) if headcount > 0 else 0
 
     # Vakanz-Kosten: Entgangene Produktivität (hypothetisch)
-    vakanz_count = org_summary_vakanzen = (df_org["Is_Vacant"]).sum()
-    vakanz_fte = df_org[df_org["Is_Vacant"]]["Soll_FTE"].sum()
-    # Vakanz-Kosten = Kosten die bei Besetzung entstehen würden
+    vakanz_count = plan_kpis["vakanzen"]
+    vakanz_fte = df_org[df_org["Is_Vacant"]]["Soll_FTE"].sum() if "Soll_FTE" in df_org.columns else 0
     vakanz_kosten_potential = vakanz_fte * kosten_pro_fte if kosten_pro_fte > 0 else 0
 
-    # === STABILITÄT ===
-    # (Ansichts-neutral: betrifft nur Personen)
-    if len(df_active) > 0:
-        durchschnitt_betriebszugehoerigkeit = df_active["Betriebszugehörigkeit_Jahre"].mean()
-        anteil_ueber_5_jahre = (df_active["Betriebszugehörigkeit_Jahre"] >= 5).sum() / len(df_active) * 100
+    # === STABILITÄT (unique Köpfe) ===
+    if headcount > 0:
+        durchschnitt_betriebszugehoerigkeit = emp["Betriebszugehörigkeit_Jahre"].mean() if "Betriebszugehörigkeit_Jahre" in emp.columns else 0
+        anteil_ueber_5_jahre = (emp["Betriebszugehörigkeit_Jahre"] >= 5).sum() / headcount * 100 if "Betriebszugehörigkeit_Jahre" in emp.columns else 0
     else:
         durchschnitt_betriebszugehoerigkeit = 0
         anteil_ueber_5_jahre = 0
@@ -867,7 +857,7 @@ with tab3:
         # Berechne durchschnittliche Tarifgruppe als Proxy für Qualifikationsniveau
         from config.settings import TARIFF_GROUPS
 
-        tariff_mapping = {tg: idx for idx, tg in enumerate(TARIFF_GROUPS, start=6)}
+        tariff_mapping = {tg: idx for idx, tg in enumerate(TARIFF_GROUPS)}
 
         qual_level_data = []
         for org in org_units_list:

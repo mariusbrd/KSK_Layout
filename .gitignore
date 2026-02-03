@@ -44,6 +44,13 @@ data/sample_data/*.csv
 *.xlsx
 *.csv
 
+# Original-Daten Ordner (SENSIBLE HR-DATEN - NIEMALS COMMITTEN!)
+../Original-Daten/
+../Original-Daten/*.xlsx
+../Original-Daten/*.csv
+../Original-Daten/*.XLSX
+**/Original-Daten/
+
 # Logs
 *.log
 logs/

@@ -1,0 +1,185 @@
+{
+  "template_info": {
+    "id": "versicherungen",
+    "name": "Versicherungen",
+    "description": "Vorgefertigte Job Families für Versicherungsunternehmen und Versicherungsmakler",
+    "version": "1.0",
+    "industry": "insurance",
+    "icon": "🛡️",
+    "author": "HR Pulse"
+  },
+  "jobfamilies": {
+    "Vertrieb Außendienst": {
+      "description": "Außendienstmitarbeiter, Versicherungsvertreter, Makler",
+      "patterns": [
+        "*Außendienst*",
+        "*Versicherungsvertreter*",
+        "*Makler*",
+        "*Vertriebsbeauftragter*",
+        "*Bezirksdirektor*",
+        "*Generalvertreter*"
+      ],
+      "min_qualification": "Versicherungskaufmann/-frau",
+      "color": "#0088DE",
+      "manual_assignments": []
+    },
+    "Vertrieb Innendienst": {
+      "description": "Kundenservice, Telefonvertrieb, Bestandskundenbetreuung",
+      "patterns": [
+        "*Innendienst*",
+        "*Kundenservice*",
+        "*Telefonvertrieb*",
+        "*Bestandskundenbetreuung*",
+        "*Servicecenter*"
+      ],
+      "min_qualification": "Versicherungskaufmann/-frau",
+      "color": "#00B9FC",
+      "manual_assignments": []
+    },
+    "Underwriting": {
+      "description": "Risikoprüfung, Underwriter, Zeichnung",
+      "patterns": [
+        "*Underwriter*",
+        "*Underwriting*",
+        "*Risikoprüf*",
+        "*Zeichnung*",
+        "*Antragsbearbeitung*"
+      ],
+      "min_qualification": "Versicherungsfachwirt/-in",
+      "color": "#10b981",
+      "manual_assignments": []
+    },
+    "Schadenmanagement": {
+      "description": "Schadenbearbeitung, Schadenregulierung, Claims",
+      "patterns": [
+        "*Schaden*",
+        "*Claims*",
+        "*Regulierung*",
+        "*Leistungsbearbeitung*",
+        "*Schadenservice*"
+      ],
+      "min_qualification": "Versicherungskaufmann/-frau",
+      "color": "#E94D3A",
+      "manual_assignments": []
+    },
+    "Produktmanagement": {
+      "description": "Produktentwicklung, Tarifierung, Aktuariat",
+      "patterns": [
+        "*Produktmanagement*",
+        "*Produktentwicklung*",
+        "*Tarifierung*",
+        "*Aktuar*",
+        "*Versicherungsmathematik*"
+      ],
+      "min_qualification": "Versicherungsbetriebswirt/-in",
+      "color": "#f59e0b",
+      "manual_assignments": []
+    },
+    "Lebensversicherung": {
+      "description": "Leben, Altersvorsorge, Biometrie",
+      "patterns": [
+        "*Leben*",
+        "*Altersvorsorge*",
+        "*Biometrie*",
+        "*Rentenversicherung*",
+        "*Lebensversicherung*"
+      ],
+      "min_qualification": "Versicherungsfachwirt/-in",
+      "color": "#a855f7",
+      "manual_assignments": []
+    },
+    "Sachversicherung": {
+      "description": "Sach, KFZ, Haftpflicht, Unfall",
+      "patterns": [
+        "*Sach*",
+        "*KFZ*",
+        "*Kraftfahrt*",
+        "*Haftpflicht*",
+        "*Unfall*",
+        "*Hausrat*",
+        "*Wohngebäude*"
+      ],
+      "min_qualification": "Versicherungskaufmann/-frau",
+      "color": "#06b6d4",
+      "manual_assignments": []
+    },
+    "IT & Digitalisierung": {
+      "description": "IT-Administration, Entwicklung, Digitalisierung",
+      "patterns": [
+        "*IT-*",
+        "*IT *",
+        "IT*",
+        "*Administrator*",
+        "*Entwickler*",
+        "*Digital*",
+        "*Software*",
+        "*System*"
+      ],
+      "min_qualification": "Fachinformatiker/-in",
+      "color": "#8b5cf6",
+      "manual_assignments": []
+    },
+    "Personal & Organisation": {
+      "description": "Personalwesen, HR, Organisation",
+      "patterns": [
+        "*Personal*",
+        "*HR*",
+        "*Organisation*",
+        "*Recruiting*",
+        "*Human*Resources*"
+      ],
+      "min_qualification": "Kaufmann/-frau",
+      "color": "#ec4899",
+      "manual_assignments": []
+    },
+    "Controlling & Finanzen": {
+      "description": "Finanzen, Controlling, Rechnungswesen",
+      "patterns": [
+        "*Controlling*",
+        "*Controller*",
+        "*Buchhaltung*",
+        "*Rechnungswesen*",
+        "*Finanzen*",
+        "*Bilanz*"
+      ],
+      "min_qualification": "Versicherungsfachwirt/-in",
+      "color": "#84cc16",
+      "manual_assignments": []
+    },
+    "Compliance & Recht": {
+      "description": "Compliance, Recht, Revision, Datenschutz",
+      "patterns": [
+        "*Compliance*",
+        "*Recht*",
+        "*Revision*",
+        "*Audit*",
+        "*Datenschutz*",
+        "*Regulatorik*",
+        "*Jurist*"
+      ],
+      "min_qualification": "Versicherungsfachwirt/-in",
+      "color": "#f472b6",
+      "manual_assignments": []
+    },
+    "Führungskräfte": {
+      "description": "Teamleiter, Abteilungsleiter, Bereichsleiter, Vorstand",
+      "patterns": [
+        "*Leiter*",
+        "*Vorstand*",
+        "*Direktor*",
+        "*Geschäftsführ*",
+        "*Teamleiter*",
+        "*Bereichsleiter*",
+        "*Abteilungsleiter*"
+      ],
+      "min_qualification": "Versicherungsbetriebswirt/-in",
+      "color": "#eab308",
+      "manual_assignments": []
+    }
+  },
+  "metadata": {
+    "version": "2.0",
+    "created": "2026-01-28",
+    "last_modified": "2026-01-28"
+  }
+}

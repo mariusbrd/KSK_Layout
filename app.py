@@ -6,12 +6,18 @@ Streamlit-basiertes HR-Analytics-Dashboard für eine süddeutsche Sparkasse/Bank
 
 import streamlit as st
 from config.settings import PAGE_CONFIG, DEFAULT_COHORTS
+from components.setup_wizard import render_setup_wizard, needs_setup
 
 # =============================================================================
 # PAGE CONFIGURATION
 # =============================================================================
 
 st.set_page_config(**PAGE_CONFIG)
+
+# Cache einmalig leeren nach KPI-Engine-Update (kann nach erstem Start entfernt werden)
+if "kpi_engine_cache_cleared" not in st.session_state:
+    st.cache_data.clear()
+    st.session_state["kpi_engine_cache_cleared"] = True
 
 # =============================================================================
 # SESSION STATE INITIALIZATION
@@ -62,6 +68,13 @@ def main():
     # Initialisiere Session State
     initialize_session_state()
 
+    # Prüfe ob Setup-Wizard benötigt wird
+    if needs_setup():
+        # Setup-Wizard anzeigen (ohne Navigation)
+        wizard_complete = render_setup_wizard()
+        if not wizard_complete:
+            return  # Warte auf Wizard-Abschluss
+
     # Navigation Setup mit st.navigation
     pages = {
         "Dashboard": [
@@ -76,6 +89,7 @@ def main():
         ],
         "Planung": [
             st.Page("pages/6_📈_Simulation.py", title="Simulation", icon="📈"),
+            st.Page("pages/abgaenge_prognose.py", title="Abgänge Prognose", icon="📉"),
         ],
     }
 

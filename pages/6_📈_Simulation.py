@@ -13,7 +13,7 @@ from dateutil.relativedelta import relativedelta
 
 # Import components
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from data.loader import load_and_prepare_data
+from dataloader.loader import load_and_prepare_data
 from components.sidebar import render_global_filters, apply_filters, get_filter_summary
 from components.kpi_card import kpi_card
 from components.charts import create_line_chart
@@ -22,13 +22,6 @@ from utils.simulation import (
     SimulationParams,
     simulate_workforce,
     run_monte_carlo
-)
-
-# Page Config
-st.set_page_config(
-    page_title="Simulation | HR Pulse",
-    page_icon="📈",
-    layout="wide"
 )
 
 # Load CSS

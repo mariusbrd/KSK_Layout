@@ -9,16 +9,23 @@ import pandas as pd
 import plotly.graph_objects as go
 import sys
 import os
+from typing import Dict
 
 # Import components
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from data.loader import load_and_prepare_data
+from dataloader.loader import load_and_prepare_data
 from components.sidebar import render_global_filters, apply_filters, get_filter_summary
 from components.toggle import format_value
 from components.kpi_card import kpi_card
 from components.charts import create_heatmap
+from components.jobfamily_matrix import (
+    render_assignment_matrix,
+    render_bulk_actions,
+    render_quick_add_family,
+    render_matrix_legend
+)
 from config.settings import COLORS, format_percent, EDUCATION_HIERARCHY
-from utils.jobfamily_matcher import (
+from dataloader.jobfamily_matcher import (
     load_jobfamily_definitions,
     save_jobfamily_definitions,
     assign_jobfamilies,
@@ -26,12 +33,11 @@ from utils.jobfamily_matcher import (
     get_qualification_gaps,
     get_unmapped_planstellen
 )
-
-# Page Config
-st.set_page_config(
-    page_title="Jobfamilies | HR Pulse",
-    page_icon="💼",
-    layout="wide"
+from utils.template_loader import (
+    get_standard_sets,
+    load_standard_set,
+    merge_definitions,
+    get_template_preview
 )
 
 # Load CSS
@@ -50,8 +56,16 @@ snapshot_df, history_df, org_df, summary = load_and_prepare_data()
 # Render global filters
 render_global_filters(snapshot_df, history_df)
 
-# Apply filters
+# SPEZIAL-LOGIK: Job Families Filter auf dieser Seite deaktivieren
+# Damit alle Job Families für die Verwaltung sichtbar bleiben
+temp_jf_selection = st.session_state.get("selected_jobfamilies", [])
+st.session_state["selected_jobfamilies"] = []  # Temporär leeren
+
+# Apply filters (ohne Job Families)
 filtered_df = apply_filters(snapshot_df)
+
+# Filter wiederherstellen für andere Seiten
+st.session_state["selected_jobfamilies"] = temp_jf_selection
 
 # Assign Jobfamilies
 filtered_df = assign_jobfamilies(filtered_df, st.session_state["jobfamily_definitions"])
@@ -59,10 +73,15 @@ filtered_df = assign_jobfamilies(filtered_df, st.session_state["jobfamily_defini
 # Title
 st.title("💼 Jobfamilies")
 
+# Info über deaktivierten Job Families Filter
+if temp_jf_selection:
+    st.info(f"💡 **Hinweis:** Der Job Families-Filter ist auf dieser Seite deaktiviert, um alle Families verwalten zu können. "
+            f"Ihre Auswahl ({len(temp_jf_selection)} Families) bleibt für andere Seiten erhalten.")
+
 # View Mode aus Session State lesen
 view_mode = st.session_state.get("view_mode", "MAK")
 
-# Filter summary
+# Filter summary (ohne Job Families auf dieser Seite)
 filter_info = get_filter_summary()
 st.markdown(f"<div class='filter-summary'>{filter_info}</div>", unsafe_allow_html=True)
 
@@ -234,6 +253,130 @@ def render_definitions_tab(df: pd.DataFrame):
 
     st.markdown("### ⚙️ Jobfamily-Definitionen")
 
+    # Standard-Sets laden
+    st.markdown("#### 📦 Standard-Sets laden")
+
+    standard_sets = get_standard_sets()
+
+    if standard_sets:
+        with st.expander("🎯 Vordefinierte Jobfamily-Sets laden", expanded=False):
+            st.markdown("""
+            Laden Sie ein vorkonfiguriertes Set an Jobfamilies.
+            Sie können wählen, ob bestehende Definitionen ersetzt oder ergänzt werden sollen.
+            """)
+
+            # Standard-Set Auswahl als Cards
+            cols = st.columns(len(standard_sets))
+
+            for i, standard_set in enumerate(standard_sets):
+                with cols[i]:
+                    with st.container(border=True):
+                        st.markdown(f"### {standard_set['icon']} {standard_set['name']}")
+                        st.caption(standard_set['description'])
+
+                        col1, col2 = st.columns(2)
+                        col1.metric("Families", standard_set['family_count'])
+
+                        # Vorschau anzeigen
+                        with st.popover("📋 Vorschau"):
+                            preview = get_template_preview(standard_set['id'])
+                            st.markdown("**Enthaltene Job Families:**")
+                            for family in preview.get('families', [])[:8]:
+                                color = family.get('color', '#808080')
+                                st.markdown(
+                                    f"<span style='color:{color};'>●</span> **{family['name']}** "
+                                    f"<small>({family['pattern_count']} Patterns)</small>",
+                                    unsafe_allow_html=True
+                                )
+                            if len(preview.get('families', [])) > 8:
+                                st.caption(f"... und {len(preview['families']) - 8} weitere")
+
+                        st.caption(f"**Empfohlen für:** {standard_set.get('recommended_for', 'Alle')}")
+
+            st.divider()
+
+            # Lade-Optionen
+            col1, col2 = st.columns(2)
+
+            with col1:
+                selected_set = st.selectbox(
+                    "Standard-Set auswählen",
+                    options=[s['id'] for s in standard_sets],
+                    format_func=lambda x: next((s['name'] for s in standard_sets if s['id'] == x), x),
+                    key="selected_standard_set"
+                )
+
+            with col2:
+                load_mode = st.radio(
+                    "Lade-Modus",
+                    ["Ersetzen", "Zusammenführen"],
+                    horizontal=True,
+                    help="**Ersetzen:** Alle bestehenden Definitionen werden gelöscht.\n\n"
+                         "**Zusammenführen:** Neue Families werden hinzugefügt, bestehende bleiben erhalten."
+                )
+
+            # Konflikt-Handling bei Zusammenführen
+            if load_mode == "Zusammenführen":
+                conflict_mode = st.radio(
+                    "Bei Namenskonflikten",
+                    ["Bestehende behalten", "Überschreiben", "Umbenennen"],
+                    horizontal=True,
+                    key="conflict_mode"
+                )
+                conflict_map = {
+                    "Bestehende behalten": "keep_existing",
+                    "Überschreiben": "overwrite",
+                    "Umbenennen": "rename"
+                }
+            else:
+                conflict_mode = "keep_existing"
+                conflict_map = {"Bestehende behalten": "keep_existing"}
+
+            # Laden-Button
+            col1, col2 = st.columns([1, 3])
+            with col1:
+                if st.button("🚀 Laden", type="primary", use_container_width=True):
+                    new_definitions, message = load_standard_set(selected_set)
+
+                    if new_definitions:
+                        if load_mode == "Ersetzen":
+                            # Komplett ersetzen
+                            st.session_state["jobfamily_definitions"] = new_definitions
+                            save_jobfamily_definitions(new_definitions)
+                            st.success(message)
+                        else:
+                            # Zusammenführen
+                            merged, report = merge_definitions(
+                                st.session_state["jobfamily_definitions"],
+                                new_definitions,
+                                conflict_map.get(conflict_mode, "keep_existing")
+                            )
+                            st.session_state["jobfamily_definitions"] = merged
+                            save_jobfamily_definitions(merged)
+
+                            # Report anzeigen
+                            st.success(f"✅ Zusammenführung abgeschlossen ({report['total_families']} Families gesamt)")
+                            if report['added']:
+                                st.info(f"**Hinzugefügt:** {', '.join(report['added'])}")
+                            if report['skipped']:
+                                st.warning(f"**Übersprungen:** {', '.join(report['skipped'])}")
+                            if report.get('overwritten'):
+                                st.warning(f"**Überschrieben:** {', '.join(report['overwritten'])}")
+                            if report.get('renamed'):
+                                renamed_info = [f"{k} → {v}" for k, v in report['renamed'].items()]
+                                st.info(f"**Umbenannt:** {', '.join(renamed_info)}")
+
+                        st.rerun()
+                    else:
+                        st.error(message)
+
+            with col2:
+                existing_count = len(st.session_state.get("jobfamily_definitions", {}).get("jobfamilies", {}))
+                if existing_count > 0 and load_mode == "Ersetzen":
+                    st.warning(f"⚠️ Dies ersetzt Ihre {existing_count} bestehenden Jobfamilies!")
+
+    st.divider()
+
     # Editor
     st.markdown("#### Editor")
 
@@ -260,15 +403,26 @@ def render_definitions_tab(df: pd.DataFrame):
             if new_name and new_patterns:
                 patterns_list = [p.strip() for p in new_patterns.split("\n") if p.strip()]
 
-                st.session_state["jobfamily_definitions"][new_name] = {
+                # Stelle sicher, dass v2-Format vorhanden ist
+                definitions = st.session_state["jobfamily_definitions"]
+                if "jobfamilies" not in definitions:
+                    # Konvertiere altes Format zu v2
+                    definitions = {
+                        "jobfamilies": dict(definitions) if definitions else {},
+                        "manual_overrides": {},
+                        "metadata": {"version": "2.0"}
+                    }
+
+                definitions["jobfamilies"][new_name] = {
                     "patterns": patterns_list,
                     "min_qualification": new_min_qual,
                     "description": new_desc,
-                    "version": "v1",
-                    "valid_from": pd.Timestamp.now().strftime("%Y-%m-%d")
+                    "manual_assignments": [],
+                    "color": "#808080"
                 }
 
-                save_jobfamily_definitions(st.session_state["jobfamily_definitions"])
+                st.session_state["jobfamily_definitions"] = definitions
+                save_jobfamily_definitions(definitions)
                 st.success(f"✓ Jobfamily '{new_name}' gespeichert")
                 st.rerun()
             else:
@@ -281,7 +435,14 @@ def render_definitions_tab(df: pd.DataFrame):
 
     definitions = st.session_state["jobfamily_definitions"]
 
-    for family_name, family_def in definitions.items():
+    # Unterstütze sowohl v1 als auch v2 Format
+    if "jobfamilies" in definitions:
+        jobfamilies = definitions["jobfamilies"]
+    else:
+        # Altes Format: definitions ist direkt das Dict der Families
+        jobfamilies = definitions
+
+    for family_name, family_def in jobfamilies.items():
         with st.expander(f"📋 {family_name}", expanded=False):
             col1, col2 = st.columns([3, 1])
 
@@ -298,7 +459,10 @@ def render_definitions_tab(df: pd.DataFrame):
 
             with col2:
                 if st.button("🗑️ Löschen", key=f"delete_{family_name}"):
-                    del st.session_state["jobfamily_definitions"][family_name]
+                    if "jobfamilies" in st.session_state["jobfamily_definitions"]:
+                        del st.session_state["jobfamily_definitions"]["jobfamilies"][family_name]
+                    else:
+                        del st.session_state["jobfamily_definitions"][family_name]
                     save_jobfamily_definitions(st.session_state["jobfamily_definitions"])
                     st.success(f"✓ '{family_name}' gelöscht")
                     st.rerun()
@@ -330,6 +494,45 @@ def render_definitions_tab(df: pd.DataFrame):
         st.caption(f"💡 {len(unmapped)} verschiedene Planstellen-Bezeichnungen nicht zugeordnet")
     else:
         st.success("✓ Alle Planstellen sind Jobfamilies zugeordnet!")
+
+
+def render_matrix_tab(df: pd.DataFrame, definitions: Dict):
+    """Rendert den Zuordnungs-Matrix-Tab."""
+
+    st.markdown("### 📋 Job-Zuordnungs-Matrix")
+    st.caption("Ordnen Sie Jobs manuell zu Job Families zu oder nutzen Sie Bulk-Actions")
+
+    st.divider()
+
+    # Quick-Add für neue Families
+    render_quick_add_family(
+        definitions,
+        on_add_callback=lambda defs: st.session_state.update({"jobfamily_definitions": defs})
+    )
+
+    st.divider()
+
+    # Legend
+    render_matrix_legend()
+
+    st.divider()
+
+    # Matrix
+    render_assignment_matrix(
+        df,
+        definitions,
+        on_change_callback=lambda defs: st.session_state.update({"jobfamily_definitions": defs}),
+        page_size=50
+    )
+
+    st.divider()
+
+    # Bulk Actions
+    render_bulk_actions(
+        df,
+        definitions,
+        on_change_callback=lambda defs: st.session_state.update({"jobfamily_definitions": defs})
+    )
 
 
 def render_qualifications_tab(df: pd.DataFrame):
@@ -478,8 +681,9 @@ def render_qualifications_tab(df: pd.DataFrame):
 
 
 # Tabs
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     "📊 Analyse",
+    "📋 Zuordnungs-Matrix",
     "⚙️ Definitionen",
     "🎓 Qualifikationen"
 ])
@@ -491,13 +695,19 @@ with tab1:
     render_analysis_tab(filtered_df, view_mode, stats)
 
 # =====================================================================
-# TAB 2: DEFINITIONEN
+# TAB 2: ZUORDNUNGS-MATRIX
 # =====================================================================
 with tab2:
+    render_matrix_tab(filtered_df, st.session_state["jobfamily_definitions"])
+
+# =====================================================================
+# TAB 3: DEFINITIONEN
+# =====================================================================
+with tab3:
     render_definitions_tab(filtered_df)
 
 # =====================================================================
-# TAB 3: QUALIFIKATIONEN
+# TAB 4: QUALIFIKATIONEN
 # =====================================================================
-with tab3:
+with tab4:
     render_qualifications_tab(filtered_df)

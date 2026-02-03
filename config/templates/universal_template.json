@@ -1,0 +1,188 @@
+{
+  "template_info": {
+    "id": "universal",
+    "name": "Universal / Allgemein",
+    "description": "Branchenübergreifende Job Families für alle Unternehmen und Organisationen",
+    "version": "1.0",
+    "industry": "general",
+    "icon": "🏢",
+    "author": "HR Pulse"
+  },
+  "jobfamilies": {
+    "Vertrieb & Kundenservice": {
+      "description": "Vertrieb, Kundenbetreuung, Service, Account Management",
+      "patterns": [
+        "*Vertrieb*",
+        "*Kundenberater*",
+        "*Kundenservice*",
+        "*Sales*",
+        "*Account*",
+        "*Kundenbetreuer*",
+        "*Service*"
+      ],
+      "min_qualification": "Kaufmann/-frau",
+      "color": "#0088DE",
+      "manual_assignments": []
+    },
+    "IT & Technik": {
+      "description": "IT, Entwicklung, Administration, technische Berufe",
+      "patterns": [
+        "*IT-*",
+        "*IT *",
+        "IT*",
+        "*Entwickler*",
+        "*Techniker*",
+        "*Software*",
+        "*Admin*",
+        "*System*",
+        "*Programmierer*",
+        "*DevOps*",
+        "*Data*"
+      ],
+      "min_qualification": "Fachinformatiker/-in",
+      "color": "#8b5cf6",
+      "manual_assignments": []
+    },
+    "Finanzen & Controlling": {
+      "description": "Buchhaltung, Controlling, Finanzen, Treasury",
+      "patterns": [
+        "*Controlling*",
+        "*Controller*",
+        "*Buchhaltung*",
+        "*Finanz*",
+        "*Bilanz*",
+        "*Treasury*",
+        "*Rechnungswesen*"
+      ],
+      "min_qualification": "Kaufmann/-frau",
+      "color": "#10b981",
+      "manual_assignments": []
+    },
+    "Personal & HR": {
+      "description": "Personalwesen, Recruiting, HR Business Partner",
+      "patterns": [
+        "*Personal*",
+        "*HR*",
+        "*Recruiting*",
+        "*Human*Resources*",
+        "*Talent*",
+        "*Payroll*",
+        "*Lohn*Gehalt*"
+      ],
+      "min_qualification": "Kaufmann/-frau",
+      "color": "#ec4899",
+      "manual_assignments": []
+    },
+    "Marketing & Kommunikation": {
+      "description": "Marketing, PR, Kommunikation, Content",
+      "patterns": [
+        "*Marketing*",
+        "*Kommunikation*",
+        "*PR*",
+        "*Presse*",
+        "*Content*",
+        "*Social*Media*",
+        "*Brand*"
+      ],
+      "min_qualification": "Kaufmann/-frau",
+      "color": "#f59e0b",
+      "manual_assignments": []
+    },
+    "Verwaltung & Assistenz": {
+      "description": "Verwaltung, Assistenz, Sekretariat, Office Management",
+      "patterns": [
+        "*Assistenz*",
+        "*Sekretariat*",
+        "*Verwaltung*",
+        "*Sachbearbeiter*",
+        "*Office*",
+        "*Empfang*",
+        "*Büro*"
+      ],
+      "min_qualification": "Kaufmann/-frau",
+      "color": "#06b6d4",
+      "manual_assignments": []
+    },
+    "Einkauf & Beschaffung": {
+      "description": "Einkauf, Beschaffung, Procurement, Supplier Management",
+      "patterns": [
+        "*Einkauf*",
+        "*Beschaffung*",
+        "*Procurement*",
+        "*Supplier*",
+        "*Lieferant*"
+      ],
+      "min_qualification": "Kaufmann/-frau",
+      "color": "#a855f7",
+      "manual_assignments": []
+    },
+    "Produktion & Fertigung": {
+      "description": "Produktion, Fertigung, Montage, Qualität",
+      "patterns": [
+        "*Produktion*",
+        "*Fertigung*",
+        "*Montage*",
+        "*Qualität*",
+        "*Meister*",
+        "*Facharbeiter*"
+      ],
+      "min_qualification": "Facharbeiter/-in",
+      "color": "#E94D3A",
+      "manual_assignments": []
+    },
+    "Logistik & Lager": {
+      "description": "Logistik, Lager, Versand, Supply Chain",
+      "patterns": [
+        "*Logistik*",
+        "*Lager*",
+        "*Versand*",
+        "*Supply*Chain*",
+        "*Spedition*",
+        "*Transport*"
+      ],
+      "min_qualification": "Fachkraft für Lagerlogistik",
+      "color": "#84cc16",
+      "manual_assignments": []
+    },
+    "Recht & Compliance": {
+      "description": "Recht, Compliance, Revision, Datenschutz",
+      "patterns": [
+        "*Recht*",
+        "*Compliance*",
+        "*Revision*",
+        "*Audit*",
+        "*Datenschutz*",
+        "*Jurist*",
+        "*Legal*"
+      ],
+      "min_qualification": "Kaufmann/-frau",
+      "color": "#f472b6",
+      "manual_assignments": []
+    },
+    "Management & Führung": {
+      "description": "Führungskräfte, Management, Geschäftsführung",
+      "patterns": [
+        "*Leiter*",
+        "*Manager*",
+        "*Direktor*",
+        "*Geschäftsführ*",
+        "*Head*of*",
+        "*Teamleiter*",
+        "*Abteilungsleiter*",
+        "*Bereichsleiter*",
+        "*Vorstand*",
+        "*CEO*",
+        "*CFO*",
+        "*CTO*"
+      ],
+      "min_qualification": "Bachelor",
+      "color": "#eab308",
+      "manual_assignments": []
+    }
+  },
+  "metadata": {
+    "version": "2.0",
+    "created": "2026-01-28",
+    "last_modified": "2026-01-28"
+  }
+}

@@ -1,4 +1,13 @@
 {
+  "template_info": {
+    "id": "sparkassen",
+    "name": "Sparkassen & Banken",
+    "description": "Vorgefertigte Job Families für Sparkassen, Genossenschaftsbanken und regionale Kreditinstitute",
+    "version": "1.0",
+    "industry": "banking",
+    "icon": "🏦",
+    "author": "HR Pulse"
+  },
   "jobfamilies": {
     "Kundenberatung Privat": {
       "description": "Privatkundenberater, Service, Kasse",
@@ -168,13 +177,9 @@
       "manual_assignments": []
     }
   },
-  "manual_overrides": {},
   "metadata": {
     "version": "2.0",
-    "source": "standard_set",
-    "template_id": "sparkassen",
-    "template_name": "Sparkassen & Banken",
-    "loaded_at": "2026-01-28T16:16:30.726263",
-    "last_modified": "2026-01-28T16:16:30.727266"
+    "created": "2026-01-28",
+    "last_modified": "2026-01-28"
   }
 }

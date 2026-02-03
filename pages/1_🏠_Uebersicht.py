@@ -12,7 +12,7 @@ import os
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from data.loader import load_and_prepare_data
+from dataloader.loader import load_and_prepare_data
 from config.settings import format_number, format_currency, format_percent, get_status_color, THRESHOLDS
 from components.sidebar import render_global_filters, apply_filters, get_filter_summary
 from components.toggle import format_value
@@ -76,11 +76,11 @@ def main():
 
         # Werte basierend auf View Mode
         if view_mode == "MAK":
-            main_value = format_value(filtered_summary["total_fte"], "MAK")
+            main_value = format_value(filtered_summary["total_mak"], "MAK")
             main_subtitle = f"{filtered_summary['total_employees']:,} Mitarbeitende".replace(",", ".")
         else:
             main_value = format_value(filtered_summary["total_cost"], "Euro")
-            main_subtitle = f"{filtered_summary['total_fte']:.1f} FTE"
+            main_subtitle = f"{filtered_summary['total_mak']:.1f} MAK"
 
         # Besetzungsgrad Status
         besetzungsgrad_status = "good" if filtered_summary["besetzungsgrad"] >= THRESHOLDS["besetzungsgrad"]["good"] else \
@@ -136,6 +136,13 @@ def main():
         # Nur besetzte Stellen für Analysen
         active_df = filtered_df[~filtered_df["Is_Vacant"]]
 
+        # Unique Mitarbeitende für personenbezogene Charts (Readme-konform)
+        from dataloader.kpi_engine import get_unique_employees
+        unique_emp = get_unique_employees(filtered_df)
+
+        # MAK-Spalte als korrekte FTE-Metrik (statt FTE_assigned)
+        mak_col = "MAK" if "MAK" in unique_emp.columns else "FTE_assigned"
+
         # Row 1: Zeitreihe
         if not history_df.empty:
             st.markdown("#### 📈 Kapazitätsentwicklung über Zeit")
@@ -173,8 +180,8 @@ def main():
 
         with col1:
             st.markdown("#### Verteilung nach Geschlecht")
-            gender_dist = active_df.groupby("Geschlecht").agg({
-                "FTE_assigned" if view_mode == "MAK" else "Total_Cost_Year": "sum"
+            gender_dist = unique_emp.groupby("Geschlecht").agg({
+                mak_col if view_mode == "MAK" else "Total_Cost_Year": "sum"
             }).reset_index()
             gender_dist.columns = ["Geschlecht", "Wert"]
             gender_dist["Geschlecht"] = gender_dist["Geschlecht"].map({"m": "Männlich", "w": "Weiblich"})
@@ -189,8 +196,8 @@ def main():
 
         with col2:
             st.markdown("#### Verteilung nach Arbeitszeit")
-            employment_dist = active_df.groupby("Arbeitszeit").agg({
-                "FTE_assigned" if view_mode == "MAK" else "Total_Cost_Year": "sum"
+            employment_dist = unique_emp.groupby("Arbeitszeit").agg({
+                mak_col if view_mode == "MAK" else "Total_Cost_Year": "sum"
             }).reset_index()
             employment_dist.columns = ["Arbeitszeit", "Wert"]
 
@@ -204,8 +211,8 @@ def main():
 
         # Row 3: Top Organisationseinheiten
         st.markdown("#### Top 10 Organisationseinheiten")
-        org_agg = active_df.groupby("Organisationseinheit").agg({
-            "FTE_assigned" if view_mode == "MAK" else "Total_Cost_Year": "sum"
+        org_agg = unique_emp.groupby("Organisationseinheit").agg({
+            mak_col if view_mode == "MAK" else "Total_Cost_Year": "sum"
         }).reset_index()
         org_agg.columns = ["Organisation", "Wert"]
         org_agg = org_agg.nlargest(10, "Wert")
@@ -221,8 +228,8 @@ def main():
 
         # Row 4: Alterskohorten
         st.markdown("#### Verteilung nach Alterskohorte")
-        cohort_agg = active_df.groupby("Alterskohorte").agg({
-            "FTE_assigned" if view_mode == "MAK" else "Total_Cost_Year": "sum"
+        cohort_agg = unique_emp.groupby("Alterskohorte").agg({
+            mak_col if view_mode == "MAK" else "Total_Cost_Year": "sum"
         }).reset_index()
         cohort_agg.columns = ["Kohorte", "Wert"]
 
@@ -264,27 +271,11 @@ def main():
 
 
 def calculate_summary(df: pd.DataFrame) -> dict:
-    """Berechnet Zusammenfassungsstatistiken für gefilterten DataFrame."""
-    besetzt = df[~df["Is_Vacant"]]
-
-    return {
-        "total_planstellen": len(df),
-        "total_employees": besetzt["PersNr"].nunique() if "PersNr" in besetzt.columns else len(besetzt),
-        "total_fte": df["FTE_assigned"].sum(),
-        "total_soll_fte": df["Soll_FTE"].sum(),
-        "total_cost": df["Total_Cost_Year"].sum(),
-        "vacancy_count": df["Is_Vacant"].sum(),
-        "vacancy_rate": df["Is_Vacant"].mean(),
-        "besetzungsgrad": 1 - df["Is_Vacant"].mean() if len(df) > 0 else 0,
-        "avg_age": besetzt["Alter"].mean() if len(besetzt) > 0 else 0,
-        "avg_tenure": besetzt["Betriebszugehörigkeit_Jahre"].mean() if len(besetzt) > 0 else 0,
-        "teilzeit_count": (besetzt["Arbeitszeit"] == "Teilzeit").sum() if len(besetzt) > 0 else 0,
-        "teilzeit_rate": (besetzt["Arbeitszeit"] == "Teilzeit").mean() if len(besetzt) > 0 else 0,
-        "atz_count": (besetzt["ATZ_Status"] != "Kein ATZ").sum() if len(besetzt) > 0 else 0,
-        "atz_rate": (besetzt["ATZ_Status"] != "Kein ATZ").mean() if len(besetzt) > 0 else 0,
-        "female_count": (besetzt["Geschlecht"] == "w").sum() if len(besetzt) > 0 else 0,
-        "female_rate": (besetzt["Geschlecht"] == "w").mean() if len(besetzt) > 0 else 0,
-    }
+    """Berechnet Zusammenfassungsstatistiken (Readme-konform) für gefilterten DataFrame."""
+    from dataloader.kpi_engine import compute_readme_summary, enrich_summary_with_gender
+    summary = compute_readme_summary(df)
+    summary = enrich_summary_with_gender(summary, df)
+    return summary
 
 
 if __name__ == "__main__":

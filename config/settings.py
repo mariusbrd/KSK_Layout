@@ -55,42 +55,60 @@ COLOR_SEQUENCE = [
 
 # Kohorten-Farben (konsistent über alle Charts)
 COHORT_COLORS = {
-    "< 20 Jahre": "#00B9FC",       # Blue Bolt (Hell) - Jüngste
-    "20-30 Jahre": "#0088DE",      # Blue Cola
-    "30-40 Jahre": "#10b981",      # Emerald
-    "40-50 Jahre": "#757575",      # Sonic Silver
-    "50-55 Jahre": "#A9A9A9",      # X11 Dark Gray
-    "55-60 Jahre": "#f59e0b",      # Amber
-    "60-65 Jahre": "#E94D3A",      # Persian Red
-    "> 65 Jahre": "#8b5cf6",       # Violet
+    "15-19": "#00B9FC",       # Blue Bolt (Hell) - Jüngste
+    "20-24": "#0088DE",       # Blue Cola
+    "25-29": "#3b82f6",       # Blue (Akzent)
+    "30-34": "#10b981",       # Emerald
+    "35-39": "#84cc16",       # Lime
+    "40-44": "#757575",       # Sonic Silver
+    "45-49": "#A9A9A9",       # X11 Dark Gray
+    "50-54": "#f59e0b",       # Amber
+    "55-59": "#E94D3A",       # Persian Red
+    "60-64": "#8b5cf6",       # Violet
+    "65-69": "#ec4899",       # Pink
 }
 
 # =============================================================================
-# ALTERSKOHORTEN (Defaults)
+# ALTERSKOHORTEN (Defaults) - 5-Jahres-Bins gemäß Ergebnisformat
 # =============================================================================
 
 # WICHTIG: OrderedDict-ähnliches Verhalten - Reihenfolge wird beibehalten (Python 3.7+)
 DEFAULT_COHORTS: Dict[str, Tuple[int, int]] = {
-    "< 20 Jahre": (0, 19),
-    "20-30 Jahre": (20, 29),
-    "30-40 Jahre": (30, 39),
-    "40-50 Jahre": (40, 49),
-    "50-55 Jahre": (50, 54),
-    "55-60 Jahre": (55, 59),
-    "60-65 Jahre": (60, 64),
-    "> 65 Jahre": (65, 99),
+    "15-19": (15, 19),
+    "20-24": (20, 24),
+    "25-29": (25, 29),
+    "30-34": (30, 34),
+    "35-39": (35, 39),
+    "40-44": (40, 44),
+    "45-49": (45, 49),
+    "50-54": (50, 54),
+    "55-59": (55, 59),
+    "60-64": (60, 64),
+    "65-69": (65, 69),
 }
 
 # =============================================================================
 # TARIFSTRUKTUR
 # =============================================================================
 
-TARIFF_GROUPS = ["E6", "E7", "E8", "E9A", "E9B", "E9C", "E10", "E11", "E12", "E13", "E14", "E15"]
+TARIFF_GROUPS = [
+    "E1", "E2", "E2U", "E3", "E4", "E5",
+    "E6", "E7", "E8", "E9A", "E9B", "E9C",
+    "E10", "E11", "E12", "E13", "E14", "E15", "E15U",
+]
 
 TARIFF_STEPS = [1, 2, 3, 4, 5, 6]
 
-# Basis-Jahresgehälter nach Tarifgruppe (TVöD-S, Stufe 4, ca.-Werte)
+# Fallback-Jahresgehälter nach Tarifgruppe (TVöD-S, Stufe 4, ca.-Werte).
+# HINWEIS: Diese Werte werden nur verwendet, wenn TVÖD.xlsx nicht verfügbar ist.
+# Bei vorhandener TVÖD.xlsx werden die echten Tabellenwerte genutzt.
 BASE_SALARY: Dict[str, int] = {
+    "E1": 28000,
+    "E2": 31000,
+    "E2U": 33000,
+    "E3": 34000,
+    "E4": 36000,
+    "E5": 39000,
     "E6": 42000,
     "E7": 45000,
     "E8": 48000,
@@ -103,9 +121,11 @@ BASE_SALARY: Dict[str, int] = {
     "E13": 78000,
     "E14": 85000,
     "E15": 95000,
+    "E15U": 100000,
 }
 
-# Stufenmultiplikatoren (relativ zu Stufe 4)
+# Fallback-Stufenmultiplikatoren (relativ zu Stufe 4).
+# Werden nur verwendet, wenn TVÖD.xlsx nicht verfügbar ist.
 STEP_MULTIPLIER: Dict[int, float] = {
     1: 0.85,
     2: 0.92,
@@ -117,6 +137,10 @@ STEP_MULTIPLIER: Dict[int, float] = {
 
 # Arbeitgeber-Kostenfaktor (inkl. Sozialabgaben etc.)
 EMPLOYER_COST_FACTOR = 1.25
+
+# Sonderfall-Defaults (konfigurierbar über Einstellungen-Seite)
+DEFAULT_AZUBI_JAHRESGEHALT = 14400.0
+DEFAULT_VORSTAND_JAHRESGEHALT = 200000.0
 
 # =============================================================================
 # BESCHÄFTIGUNG

@@ -13,7 +13,7 @@ import os
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from data.loader import load_and_prepare_data
+from dataloader.loader import load_and_prepare_data
 from config.settings import format_percent, COLORS, COHORT_COLORS
 from components.sidebar import render_global_filters, apply_filters, get_filter_summary
 from components.toggle import format_value
@@ -23,6 +23,7 @@ from components.charts import (
     create_heatmap
 )
 from utils.ui_helpers import metric_info, section_header
+from dataloader.kpi_engine import get_unique_employees
 
 
 def load_custom_css():
@@ -56,12 +57,15 @@ def main():
 
         st.divider()
 
-        # Nur aktive Mitarbeitende (keine Vakanzen)
-        active_df = filtered_df[~filtered_df["Is_Vacant"]].copy()
+        # Unique Mitarbeitende (dedupliziert nach PersNr, Readme-konform)
+        unique_emp = get_unique_employees(filtered_df)
 
-        if len(active_df) == 0:
+        if len(unique_emp) == 0:
             st.warning("Keine Daten für die aktuellen Filter verfügbar.")
             return
+
+        # MAK-Spalte als korrekte FTE-Metrik
+        mak_col = "MAK" if "MAK" in unique_emp.columns else "FTE_assigned"
 
         # Tabs
         tab1, tab2, tab3, tab4 = st.tabs([
@@ -75,25 +79,25 @@ def main():
         # TAB 1: ALTER
         # =====================================================================
         with tab1:
-            render_age_tab(active_df, view_mode)
+            render_age_tab(unique_emp, view_mode, mak_col)
 
         # =====================================================================
         # TAB 2: GESCHLECHT
         # =====================================================================
         with tab2:
-            render_gender_tab(active_df, view_mode)
+            render_gender_tab(unique_emp, view_mode, mak_col)
 
         # =====================================================================
         # TAB 3: QUALIFIKATION
         # =====================================================================
         with tab3:
-            render_education_tab(active_df, view_mode)
+            render_education_tab(unique_emp, view_mode, mak_col)
 
         # =====================================================================
         # TAB 4: ARBEITSZEIT
         # =====================================================================
         with tab4:
-            render_worktime_tab(active_df, view_mode)
+            render_worktime_tab(unique_emp, view_mode, mak_col)
 
     except FileNotFoundError:
         st.error("❌ Testdaten nicht gefunden! Bitte generiere zuerst die Testdaten.")
@@ -103,7 +107,7 @@ def main():
         st.code(traceback.format_exc())
 
 
-def render_age_tab(df: pd.DataFrame, view_mode: str):
+def render_age_tab(df: pd.DataFrame, view_mode: str, mak_col: str = "MAK"):
     """Rendert den Alter-Tab mit Population Pyramid und Kohorten-Analyse."""
 
     section_header(
@@ -122,11 +126,14 @@ def render_age_tab(df: pd.DataFrame, view_mode: str):
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        avg_age = df["Alter"].mean()
+        # Alter_Jahre (float) für präzise Berechnung, Alter (int) als Fallback
+        alter_col = "Alter_Jahre" if "Alter_Jahre" in df.columns else "Alter"
+        avg_age = df[alter_col].mean()
+        median_age = df[alter_col].median()
         kpi_card(
             title="Durchschnittsalter",
             value=f"{avg_age:.1f} Jahre",
-            subtitle=f"Median: {df['Alter'].median():.0f} Jahre",
+            subtitle=f"Median: {median_age:.1f} Jahre",
             icon="👤"
         )
 
@@ -163,7 +170,7 @@ def render_age_tab(df: pd.DataFrame, view_mode: str):
         "breite Spitze = Überalterung. Ideal ist eine relativ gleichmäßige Verteilung."
     )
 
-    value_col = "FTE_assigned" if view_mode == "MAK" else "Total_Cost_Year"
+    value_col = mak_col if view_mode == "MAK" else "Total_Cost_Year"
     fig_pyramid = create_population_pyramid(
         df,
         age_col="Alter",
@@ -178,11 +185,11 @@ def render_age_tab(df: pd.DataFrame, view_mode: str):
 
     cohort_data = df.groupby("Alterskohorte").agg({
         "PersNr": "count",
-        "FTE_assigned": "sum",
+        mak_col: "sum",
         "Total_Cost_Year": "sum",
         "Alter": "mean"
     }).reset_index()
-    cohort_data.columns = ["Kohorte", "Anzahl", "FTE", "Kosten", "Ø Alter"]
+    cohort_data.columns = ["Kohorte", "Anzahl", "MAK", "Kosten", "Ø Alter"]
 
     # Sortiere nach Altersgruppen-Logik
     cohort_order = list(st.session_state.get("cohort_definitions", {}).keys())
@@ -197,7 +204,7 @@ def render_age_tab(df: pd.DataFrame, view_mode: str):
     # Formatiere Tabelle
     cohort_display = cohort_data.copy()
     cohort_display["Anteil"] = cohort_display["Anteil"].apply(lambda x: format_percent(x))
-    cohort_display["FTE"] = cohort_display["FTE"].apply(lambda x: f"{x:.1f}")
+    cohort_display["MAK"] = cohort_display["MAK"].apply(lambda x: f"{x:.1f}")
     cohort_display["Kosten"] = cohort_display["Kosten"].apply(lambda x: format_value(x, "Euro"))
     cohort_display["Ø Alter"] = cohort_display["Ø Alter"].apply(lambda x: f"{x:.1f}")
 
@@ -536,15 +543,23 @@ def render_worktime_tab(df: pd.DataFrame, view_mode: str):
 
     st.markdown("### ⏰ Arbeitszeitmodelle")
 
-    # KPIs
-    vz_count = (df["Arbeitszeit"] == "Vollzeit").sum()
-    tz_count = (df["Arbeitszeit"] == "Teilzeit").sum()
-    total = len(df)
+    # KPIs (unique Köpfe via kpi_engine)
+    from dataloader.kpi_engine import compute_teilzeit_kpis, get_unique_employees, compute_headcount
+    _emp = get_unique_employees(df) if "Is_Vacant" in df.columns else df
+    _tz = compute_teilzeit_kpis(df) if "Is_Vacant" in df.columns else {"count": 0, "quote_pct": 0}
+    _hc = len(_emp)
+
+    tz_count = _tz["count"]
+    vz_count = _hc - tz_count  # Vollzeit = Headcount minus Teilzeit
+    # Korrektur: Inaktive (BsGrd=0) abziehen
+    _inaktiv = int((_emp["BsGrd"] == 0).sum()) if "BsGrd" in _emp.columns else 0
+    vz_count = max(0, vz_count - _inaktiv)
+    total = _hc
 
     vz_rate = vz_count / total if total > 0 else 0
     tz_rate = tz_count / total if total > 0 else 0
 
-    avg_fte = df["FTE_person"].mean()
+    avg_fte = _emp["FTE_person"].mean() if "FTE_person" in _emp.columns else (df["FTE_person"].mean() if "FTE_person" in df.columns else 0)
 
     col1, col2, col3 = st.columns(3)
 

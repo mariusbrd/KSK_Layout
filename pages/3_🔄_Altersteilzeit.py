@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from data.loader import load_and_prepare_data
+from dataloader.loader import load_and_prepare_data
 from config.settings import format_number, format_currency, format_percent, get_status_color, THRESHOLDS
 from components.sidebar import render_global_filters, apply_filters, get_filter_summary
 from components.toggle import format_value
@@ -24,6 +24,7 @@ from components.charts import (
     create_funnel_chart, create_gantt_chart
 )
 from utils.ui_helpers import metric_info, section_header
+from dataloader.kpi_engine import compute_atz_kpis, get_unique_employees, compute_headcount
 
 
 def load_custom_css():
@@ -66,15 +67,15 @@ def render_funnel_section(df: pd.DataFrame):
     """Rendert den ATZ-Funnel."""
     st.markdown("#### 📊 ATZ-Funnel: Vom Gesamtbestand zur Freistellungsphase")
 
-    # Nur besetzte Stellen
-    active_df = df[~df["Is_Vacant"]]
-
-    # Funnel-Stufen
-    total_employees = len(active_df)
-    atz_berechtigt = len(active_df[active_df["Alter"] >= 55])  # 55+ berechtigt
-    in_atz = len(active_df[active_df["ATZ_Status"] != "Kein ATZ"])
-    arbeitsphase = len(active_df[active_df["ATZ_Status"] == "Arbeitsphase"])
-    freistellung = len(active_df[active_df["ATZ_Status"] == "Freistellungsphase"])
+    # Unique Köpfe für korrekte Zählung (nicht Planstellen-Zeilen)
+    atz_kpis = compute_atz_kpis(df)
+    emp = get_unique_employees(df)
+    total_employees = len(emp)
+    alter_col = "Alter_Jahre" if "Alter_Jahre" in emp.columns else "Alter"
+    atz_berechtigt = int((emp[alter_col] >= 55).sum())
+    in_atz = atz_kpis["gesamt"]
+    arbeitsphase = atz_kpis["arbeitsphase"]
+    freistellung = atz_kpis["freistellung"]
 
     stages = [
         "Gesamtbelegschaft",
@@ -186,9 +187,10 @@ def render_org_breakdown(df: pd.DataFrame, view_mode: str):
         st.info("Keine ATZ-Mitarbeitenden im ausgewählten Bereich.")
         return
 
-    # Aggregiere nach Org und Phase
+    # Aggregiere nach Org und Phase (MAK statt FTE_assigned)
+    mak_col = "MAK" if "MAK" in atz_df.columns else "FTE_assigned"
     org_phase = atz_df.groupby(["Organisationseinheit", "ATZ_Status"]).agg({
-        "FTE_assigned" if view_mode == "MAK" else "Total_Cost_Year": "sum"
+        mak_col if view_mode == "MAK" else "Total_Cost_Year": "sum"
     }).reset_index()
 
     org_phase.columns = ["Organisation", "Phase", "Wert"]
@@ -362,10 +364,16 @@ def main():
         # KPI Row
         st.markdown("### 📈 Zentrale Kennzahlen")
 
-        atz_gesamt = len(active_df[active_df["ATZ_Status"] != "Kein ATZ"])
-        atz_arbeitsphase = len(active_df[active_df["ATZ_Status"] == "Arbeitsphase"])
-        atz_freistellung = len(active_df[active_df["ATZ_Status"] == "Freistellungsphase"])
-        atz_berechtigt = len(active_df[active_df["Alter"] >= 55])
+        # ATZ-KPIs über kpi_engine (unique Köpfe, nicht Planstellen-Zeilen)
+        atz_kpis = compute_atz_kpis(filtered_df)
+        atz_gesamt = atz_kpis["gesamt"]
+        atz_arbeitsphase = atz_kpis["arbeitsphase"]
+        atz_freistellung = atz_kpis["freistellung"]
+
+        # ATZ-Berechtigt: 55+ (unique Köpfe)
+        emp = get_unique_employees(filtered_df)
+        alter_col = "Alter_Jahre" if "Alter_Jahre" in emp.columns else "Alter"
+        atz_berechtigt = int((emp[alter_col] >= 55).sum())
 
         if view_mode == "MAK":
             atz_fte = active_df[active_df["ATZ_Status"] != "Kein ATZ"]["FTE_assigned"].sum()
@@ -374,8 +382,9 @@ def main():
             atz_cost = active_df[active_df["ATZ_Status"] != "Kein ATZ"]["Total_Cost_Year"].sum()
             atz_value = format_value(atz_cost, "Euro")
 
-        # ATZ-Quote Status
-        atz_quote = (atz_gesamt / len(active_df)) if len(active_df) > 0 else 0
+        # ATZ-Quote Status (Bezug: Headcount unique Köpfe)
+        headcount = compute_headcount(filtered_df)
+        atz_quote = (atz_gesamt / headcount) if headcount > 0 else 0
         atz_status = "good" if atz_quote <= THRESHOLDS["atz_quote"]["good"] else \
                      "warning" if atz_quote <= THRESHOLDS["atz_quote"]["warning"] else \
                      "critical"
@@ -405,7 +414,7 @@ def main():
             {
                 "title": "ATZ-Berechtigt (55+)",
                 "value": str(atz_berechtigt),
-                "subtitle": f"{(atz_berechtigt/len(active_df)*100) if len(active_df) > 0 else 0:.1f}% der Belegschaft",
+                "subtitle": f"{(atz_berechtigt/headcount*100) if headcount > 0 else 0:.1f}% der Belegschaft",
                 "icon": "👥"
             }
         ]
