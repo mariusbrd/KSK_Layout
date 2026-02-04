@@ -512,6 +512,10 @@ def create_combined_snapshot(
     ausbildung["Personalnummer"] = normalize_persnr(ausbildung["Personalnummer"])
 
     # Merge Mitarbeiter
+    # Ensure join keys have same type
+    df["PersNr_Plan"] = df["PersNr_Plan"].astype(str)
+    mitarbeiter["PersNr"] = mitarbeiter["PersNr"].astype(str)
+    
     df = df.merge(
         mitarbeiter,
         left_on="PersNr_Plan",
@@ -520,15 +524,19 @@ def create_combined_snapshot(
         suffixes=("", "_ma")
     )
     if "Austritt" in df.columns:
-        austritt_year = pd.DatetimeIndex(df["Austritt"]).year
-        df.loc[austritt_year == 9999, "Austritt"] = pd.NaT
+        # Fix: 9999-12-31 can cause OutOfBoundsDatetime with pd.DatetimeIndex or .year
+        df["Austritt"] = pd.to_datetime(df["Austritt"], errors="coerce")
 
     # Merge Ausbildung
+    if "Personalnummer" in ausbildung.columns:
+        ausbildung["Personalnummer"] = ausbildung["Personalnummer"].astype(str)
+        
     df = df.merge(
         ausbildung[["Personalnummer", "BV Ausbildungsgruppentext"]],
         left_on="PersNr",
         right_on="Personalnummer",
-        how="left"
+        how="left",
+        suffixes=("", "_ausb")
     )
     df = df.rename(columns={"BV Ausbildungsgruppentext": "Ausbildung"})
 
@@ -547,6 +555,13 @@ def create_combined_snapshot(
         (atz['Beginn'] <= stichtag) & 
         (atz['Ende'] >= stichtag)
     ].copy()
+    
+    # Check types for merge
+    # df['PersNr'] comes from mitarbeiter merge above.
+    if "PersNr" in df.columns:
+        df["PersNr"] = df["PersNr"].astype(str)
+    if "PersNr" in atz_aktuell.columns:
+        atz_aktuell["PersNr"] = atz_aktuell["PersNr"].astype(str)
     
     df = df.merge(
         atz_aktuell[["PersNr", "Phase", "Beginn", "Ende", "Ende ATZ Vertrag", "Modell"]],
@@ -578,6 +593,9 @@ def create_combined_snapshot(
 
     # ATZ-Ableitungen (Readme)
     atz_derived = derive_atz_fields(atz)
+    if "PersNr" in atz_derived.columns:
+        atz_derived["PersNr"] = atz_derived["PersNr"].astype(str)
+        
     df = df.merge(atz_derived, on="PersNr", how="left")
 
     # ATZ-Flags für MAK-Berechnung

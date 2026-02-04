@@ -63,15 +63,68 @@ def main():
         df_atz = _load_atz_cached(str(BASE_PATH))
         
         # 5. Preprocessing for Forecast Engine (CRITICAL fix)
-        # The snapshot_df contains Vacancies (Planstellen without Person) and duplicates (1 Person on multiple Planstellen).
-        # We must clean this for the forecast simulation which expects a unique list of active people.
+        # The snapshot_df is position-level data. Employees with multiple positions
+        # contribute MAK from each position (e.g., 2x 50% = 1.0 FTE total).
+        # The forecast engine expects employee-level data (1 row per person).
+        # Solution: Pre-aggregate MAK by employee to match Kompakt page logic.
         
         # Remove Vacancies
         df_ma_filtered = df_ma_filtered.dropna(subset=["PersNr"])
         
-        # Deduplicate (Keep first or based on criteria? 'loader' logic usually assumes clean 'Mitarbeiter' list. 
-        # But merged snapshot can have duplicates. We group by PersNr to be safe.)
-        df_ma_filtered = df_ma_filtered.drop_duplicates(subset=["PersNr"])
+        # Calculate MAK for each position (same logic as Kompakt)
+        # Use berechne_mak function from loader
+        from dataloader.loader import berechne_mak
+        
+        # Get ATZ FR employees if available (for MAK calculation)
+        atz_fr_persnr_set = set()
+        if not df_atz.empty:
+            if "PersNr" in df_atz.columns and "Phase" in df_atz.columns:
+                # People currently in Freistellungsphase have MAK = 0
+                stichtag_ts = pd.Timestamp(get_current_stichtag())
+                atz_fr = df_atz[
+                    (df_atz["Phase"] == "FR") &
+                    (df_atz["Beginn"] <= stichtag_ts) &
+                    (df_atz["Ende"] >= stichtag_ts)
+                ]
+                if not atz_fr.empty:
+                    atz_fr_persnr_set = set(atz_fr["PersNr"].dropna().astype(str).unique())
+        
+        # Calculate MAK for each row (position) - Vectorized!
+        # Replaces slow apply(lambda...) with calculate_mak_vectorized
+        from dataloader.loader import calculate_mak_vectorized
+        df_ma_filtered = calculate_mak_vectorized(df_ma_filtered, atz_fr_persnr_set)
+        
+        # Aggregate by employee: sum MAK, keep first occurrence of other attributes
+        agg_dict = {
+            "MAK_Calculated": "sum",  # Sum MAK across all positions
+            "GebDatum": "first",
+            "Eintritt": "first",
+            "Austritt": "first",
+            "Status kundenindividuell": "first",
+            "Sollarbeitszeit": "sum",  # Sum work hours across positions
+        }
+        
+        # Optional: include other columns if they exist
+        for col in ["Geschlecht", "Organisationseinheit", "Planstelle"]:
+            if col in df_ma_filtered.columns:
+                agg_dict[col] = "first"
+        
+        df_employee_agg = df_ma_filtered.groupby("PersNr", as_index=False).agg(agg_dict)
+        
+        # Backcalculate BsGrd from aggregated MAK for engine compatibility
+        # Forecast Engine Logic: MAK = (BsGrd/100) * (Soll/39)
+        # We want: MAK = MAK_Calculated
+        # So we set Soll = 39.0 (Factor=1) and BsGrd = MAK_Calculated * 100
+        import numpy as np
+        
+        # 1. Neutralize Soll-Factor in Engine
+        df_employee_agg["Sollarbeitszeit"] = 39.0
+        
+        # 2. Set BsGrd to match desired MAK exactly
+        df_employee_agg["BsGrd"] = df_employee_agg["MAK_Calculated"] * 100.0
+        
+        # Use aggregated data for forecast
+        df_ma = df_employee_agg
         
     except FileNotFoundError as e:
         st.error(str(e))

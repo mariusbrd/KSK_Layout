@@ -225,19 +225,28 @@ def run_forecast_abgaenge(
     rng = np.random.RandomState(int(params.get("random_seed", 42)))
 
     # --- DATEN-FILTERUNG (Neu: Baseline muss zum Stichtag passen) ---
-    # Nur Mitarbeiter, die am Startdatum bereits da sind und noch nicht weg
-    if COL_EINTRITT in df_ma.columns:
-        df_ma = df_ma[df_ma[COL_EINTRITT] <= start_date]
-
-    if COL_AUSTRITT in df_ma.columns:
-        df_ma = df_ma[
-            (df_ma[COL_AUSTRITT].isna()) |
-            (df_ma[COL_AUSTRITT] >= start_date)
-        ]
+    # REMOVED: The input df_ma is already filtered by loader.py based on Global Settings.
+    # We trust the input to contain the correct population (including Future Hires if enabled).
+    # Re-filtering here drops valid rows (e.g. NaT Eintritt) causing discrepancy with Kompakt.
+    
+    # if COL_EINTRITT in df_ma.columns:
+    #     df_ma = df_ma[df_ma[COL_EINTRITT] <= start_date]
+    #
+    # if COL_AUSTRITT in df_ma.columns:
+    #     df_ma = df_ma[
+    #         (df_ma[COL_AUSTRITT].isna()) |
+    #         (df_ma[COL_AUSTRITT] >= start_date)
+    #     ]
 
     # Build baseline state
     df_state = df_ma.copy()
+    df_state = df_ma.copy()
     df_state = df_state.set_index(COL_PERSNR, drop=True)
+    
+    # CRITICAL FIX: Ensure unique index to avoid "Series is ambiguous" errors
+    # when accessing .loc[persnr] inside loops.
+    if df_state.index.duplicated().any():
+        df_state = df_state[~df_state.index.duplicated(keep='first')]
     df_state["age"] = _calc_age(df_state[COL_GEB], start_date)
     df_state["tenure"] = _calc_tenure(df_state[COL_EINTRITT], start_date)
     df_state["status_ruhend"] = df_state[COL_STATUS] == "Ruhendes Beschäftigungsverhältnis"
@@ -267,13 +276,20 @@ def run_forecast_abgaenge(
     else:
         soll_fte_factor = 1.0
 
-    raw_mak = (bsgrd / 100.0) * soll_fte_factor
-
-    df_state["mak"] = np.where(
-        (df_state["status_ruhend"] | df_state["atz_fr_active"]),
-        0.0,
-        raw_mak,
-    )
+    # Explicit MAK Override from Loader (Guarantees 1:1 match with Dashboard)
+    # Explicit MAK Override from Loader (Guarantees 1:1 match with Dashboard)
+    if "MAK_Calculated" in df_state.columns:
+        df_state["mak"] = pd.to_numeric(df_state["MAK_Calculated"], errors="coerce").fillna(0.0)
+        # Note: We intentionally skip the 'status_ruhend/atz_fr' zeroing here,
+        # because MAK_Calculated from Loader already accounts for that.
+    else:
+        # Fallback Calculation
+        raw_mak = (bsgrd / 100.0) * soll_fte_factor
+        df_state["mak"] = np.where(
+            (df_state["status_ruhend"] | df_state["atz_fr_active"]),
+            0.0,
+            raw_mak,
+        )
 
     # Ruhend return schedule
     ruhend_months = int(params.get("ruhend", {}).get("ruhend_avg_duration_months", 12))
