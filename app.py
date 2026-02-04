@@ -77,22 +77,12 @@ def main():
 
     # Navigation Setup mit st.navigation
     pages = {
-        "Dashboard": [
-            st.Page("pages/1_🏠_Uebersicht.py", title="Überblick", icon="🏠"),
-            st.Page("pages/7_⚡_Kompakt.py", title="Kompakt", icon="⚡"),
-        ],
-        "Analysen": [
-            st.Page("pages/2_👥_Demografie.py", title="Demografie", icon="👥"),
-            st.Page("pages/3_🔄_Altersteilzeit.py", title="Altersteilzeit", icon="🔄"),
-            st.Page("pages/4_🏢_Organisationseinheiten.py", title="Organisationseinheiten", icon="🏢"),
-            st.Page("pages/5_💼_Jobfamilies.py", title="Jobfamilies", icon="💼"),
-        ],
-        "Planung": [
-            st.Page("pages/6_📈_Simulation.py", title="Simulation", icon="📈"),
-            st.Page("pages/9_📉_Prognose_Abgänge.py", title="Prognose: Abgänge", icon="📉"),
+        "Navigation": [
+            st.Page("pages/7_⚡_Kompakt.py", title="Kompakt"),
+            st.Page("pages/9_📉_Prognose_Abgänge.py", title="Prognose: Abgaenge"),
+            st.Page("pages/8_⚙️_Einstellungen.py", title="Einstellungen"),
         ],
     }
-
     pg = st.navigation(pages)
 
     # Header
