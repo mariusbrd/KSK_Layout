@@ -89,7 +89,7 @@ def main():
         ],
         "Planung": [
             st.Page("pages/6_📈_Simulation.py", title="Simulation", icon="📈"),
-            st.Page("pages/abgaenge_prognose.py", title="Abgänge Prognose", icon="📉"),
+            st.Page("pages/9_📉_Prognose_Abgänge.py", title="Prognose: Abgänge", icon="📉"),
         ],
     }
 

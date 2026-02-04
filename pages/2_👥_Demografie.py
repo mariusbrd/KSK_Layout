@@ -211,7 +211,7 @@ def render_age_tab(df: pd.DataFrame, view_mode: str, mak_col: str = "MAK"):
     st.dataframe(
         cohort_display,
         hide_index=True,
-        use_container_width=True
+        width="stretch"
     )
 
     # Kohorten-Chart

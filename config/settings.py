@@ -4,6 +4,9 @@ HR Pulse Dashboard - Globale Einstellungen und Konstanten
 
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
+from utils.settings_loader import load_user_settings
+
+USER_SETTINGS = load_user_settings()
 
 # =============================================================================
 # FARBPALETTE
@@ -224,7 +227,18 @@ class SimulationDefaults:
                 "Retirement Ready": 0.01,
             }
 
-SIMULATION_DEFAULTS = SimulationDefaults()
+# Laden aus User-Settings oder Defaults
+sim_settings = USER_SETTINGS.get("simulation", {})
+SIMULATION_DEFAULTS = SimulationDefaults(
+    horizon_months=sim_settings.get("horizon_months", 60),
+    retirement_age=sim_settings.get("retirement_age", 67),
+    early_retirement_share=sim_settings.get("early_retirement_share", 0.10),
+    azubi_intake_per_year=sim_settings.get("azubi_intake_per_year", 40),
+    azubi_duration_months=sim_settings.get("azubi_duration_months", 36),
+    azubi_takeover_rate=sim_settings.get("azubi_takeover_rate", 0.70),
+    hiring_rate_pa=sim_settings.get("hiring_rate_pa", 0.04),
+    time_to_fill_months=sim_settings.get("time_to_fill_months", 3),
+)
 
 # =============================================================================
 # KPI SCHWELLENWERTE

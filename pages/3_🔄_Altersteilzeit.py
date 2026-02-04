@@ -51,14 +51,22 @@ def calculate_atz_end_dates(df: pd.DataFrame) -> pd.DataFrame:
     if len(atz_df) == 0:
         return pd.DataFrame()
 
-    # Berechne Renteneintritt (67 Jahre)
-    atz_df["Renteneintritt"] = pd.to_datetime(atz_df["GebDatum"]) + pd.DateOffset(years=67)
+    # Verwende die im Loader abgeleiteten echten Daten (falls vorhanden)
+    # Fallback auf alte Logik nur wenn Spalten fehlen (Sicherheit)
+    if "atz_end_date" in atz_df.columns:
+        atz_df["Renteneintritt"] = atz_df["atz_end_date"]
+        atz_df["ATZ_Start"] = atz_df["atz_start_date"]
+        atz_df["Phasen_Wechsel"] = atz_df["atz_rest_start_date"]
+    else:
+        # Fallback (sollte nicht passieren mit aktuellem Loader)
+        atz_df["Renteneintritt"] = pd.to_datetime(atz_df["GebDatum"]) + pd.DateOffset(years=67)
+        atz_df["ATZ_Start"] = atz_df["Renteneintritt"] - pd.DateOffset(years=5)
+        atz_df["Phasen_Wechsel"] = atz_df["ATZ_Start"] + (atz_df["Renteneintritt"] - atz_df["ATZ_Start"]) / 2
 
-    # Berechne ATZ-Start (geschätzt 5 Jahre vor Renteneintritt)
-    atz_df["ATZ_Start"] = atz_df["Renteneintritt"] - pd.DateOffset(years=5)
-
-    # Berechne Phasenende (Mitte zwischen Start und Renteneintritt)
-    atz_df["Phasen_Wechsel"] = atz_df["ATZ_Start"] + (atz_df["Renteneintritt"] - atz_df["ATZ_Start"]) / 2
+    # Datums-Konvertierung sicherstellen
+    for col in ["Renteneintritt", "ATZ_Start", "Phasen_Wechsel"]:
+        if col in atz_df.columns:
+            atz_df[col] = pd.to_datetime(atz_df[col], errors="coerce")
 
     return atz_df
 
@@ -315,7 +323,7 @@ def render_detail_table(df: pd.DataFrame, view_mode: str):
     # Tabelle anzeigen
     st.dataframe(
         display_df,
-        use_container_width=True,
+        width="stretch",
         height=400
     )
 
@@ -329,7 +337,7 @@ def render_detail_table(df: pd.DataFrame, view_mode: str):
             data=csv,
             file_name=f"atz_detailliste_{datetime.now().strftime('%Y%m%d')}.csv",
             mime="text/csv",
-            use_container_width=True
+            width="stretch"
         )
 
 

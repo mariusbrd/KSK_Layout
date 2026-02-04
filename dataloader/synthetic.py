@@ -29,7 +29,7 @@ from config.settings import (
     DEFAULT_COHORTS, TARIFF_GROUPS
 )
 
-from dataloader.original_loader import (
+from dataloader.loader import (
     EDUCATION_MAPPING,
     EDUCATION_RANKING,
     derive_atz_fields,

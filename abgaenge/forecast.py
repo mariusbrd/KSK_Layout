@@ -17,6 +17,7 @@ from .schemas import (
     COL_AUSTRITT,
     COL_BSGRD,
     COL_STATUS,
+    COL_SOLL,
     COL_ATZ_PHASE,
     COL_ATZ_BEGINN,
     COL_ATZ_ENDE,
@@ -223,6 +224,17 @@ def run_forecast_abgaenge(
 
     rng = np.random.RandomState(int(params.get("random_seed", 42)))
 
+    # --- DATEN-FILTERUNG (Neu: Baseline muss zum Stichtag passen) ---
+    # Nur Mitarbeiter, die am Startdatum bereits da sind und noch nicht weg
+    if COL_EINTRITT in df_ma.columns:
+        df_ma = df_ma[df_ma[COL_EINTRITT] <= start_date]
+
+    if COL_AUSTRITT in df_ma.columns:
+        df_ma = df_ma[
+            (df_ma[COL_AUSTRITT].isna()) |
+            (df_ma[COL_AUSTRITT] >= start_date)
+        ]
+
     # Build baseline state
     df_state = df_ma.copy()
     df_state = df_state.set_index(COL_PERSNR, drop=True)
@@ -244,10 +256,23 @@ def run_forecast_abgaenge(
     df_state["active"] = True
 
     bsgrd = pd.to_numeric(df_state[COL_BSGRD], errors="coerce").fillna(0.0)
+    
+    # Neu: Normalisierung analog zu loader.py (Sollarbeitszeit / 39.0)
+    # Default 39.0, falls leer
+    if COL_SOLL in df_state.columns:
+        soll_hours = pd.to_numeric(df_state[COL_SOLL], errors="coerce").fillna(0.0)
+        # Fix: Wenn Soll=0 (fehlt/unmapped), dann Standard 39.0 annehmen (FTE Factor 1.0)
+        soll_hours = np.where(soll_hours <= 0.01, 39.0, soll_hours)
+        soll_fte_factor = soll_hours / 39.0
+    else:
+        soll_fte_factor = 1.0
+
+    raw_mak = (bsgrd / 100.0) * soll_fte_factor
+
     df_state["mak"] = np.where(
         (df_state["status_ruhend"] | df_state["atz_fr_active"]),
         0.0,
-        bsgrd / 100.0,
+        raw_mak,
     )
 
     # Ruhend return schedule

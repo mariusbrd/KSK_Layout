@@ -335,7 +335,7 @@ def render_definitions_tab(df: pd.DataFrame):
             # Laden-Button
             col1, col2 = st.columns([1, 3])
             with col1:
-                if st.button("🚀 Laden", type="primary", use_container_width=True):
+                if st.button("🚀 Laden", type="primary", width="stretch"):
                     new_definitions, message = load_standard_set(selected_set)
 
                     if new_definitions:
@@ -477,7 +477,7 @@ def render_definitions_tab(df: pd.DataFrame):
     if not unmapped.empty:
         st.dataframe(
             unmapped,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             height=400
         )
@@ -663,7 +663,7 @@ def render_qualifications_tab(df: pd.DataFrame):
 
         st.dataframe(
             display_df,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             height=400
         )

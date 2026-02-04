@@ -9,6 +9,7 @@ COL_EINTRITT = "Eintritt"
 COL_AUSTRITT = "Austritt"
 COL_BSGRD = "BsGrd"
 COL_STATUS = "Status kundenindividuell"
+COL_SOLL = "Sollarbeitszeit"
 
 COL_ATZ_PHASE = "Phase"
 COL_ATZ_BEGINN = "Beginn"

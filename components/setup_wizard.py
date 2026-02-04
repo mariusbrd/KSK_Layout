@@ -582,7 +582,7 @@ def render_import_step():
 
             else:  # Excel oder CSV
                 st.markdown("### Vorschau der Daten")
-                st.dataframe(preview_df, use_container_width=True)
+                st.dataframe(preview_df, width="stretch")
 
                 st.markdown("---")
                 st.markdown("### Spalten zuordnen")
@@ -1337,7 +1337,7 @@ def render_review_step(df: Optional[pd.DataFrame] = None):
         with st.expander(f"Nicht zugeordnete Jobs anzeigen ({min(50, stats['unmapped'])} von {stats['unmapped']})", expanded=False):
             # Zeige als Liste
             unmapped_df = pd.DataFrame({"Job-Titel": stats["unmapped_jobs"]})
-            st.dataframe(unmapped_df, use_container_width=True, hide_index=True)
+            st.dataframe(unmapped_df, width="stretch", hide_index=True)
 
     st.markdown("---")
 

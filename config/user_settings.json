@@ -1,0 +1,7 @@
+{
+    "stichtag": "2025-01-30",
+    "simulation": {
+        "horizon_months": 99
+    },
+    "include_future_hires": true
+}

@@ -1149,7 +1149,7 @@ def render_education_range_section(df: pd.DataFrame,
             "Planstelle", "min_label", "n_min", "mean_label", "max_label", "n_max", "count"
         ]].copy()
         display_df.columns = ["Planstelle", "Min", "n(Min)", "Mittel", "Max", "n(Max)", "Gesamt"]
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        st.dataframe(display_df, width="stretch", hide_index=True)
 
         csv_data = export_to_csv(
             range_df[["Planstelle", "min_label", "n_min", "max_label", "n_max",
@@ -1161,7 +1161,7 @@ def render_education_range_section(df: pd.DataFrame,
             file_name=f"{key_prefix}_qualifikation_spannweite.csv",
             mime="text/csv",
             key=f"download_{key_prefix}_edu_range",
-            use_container_width=True,
+            width="stretch",
         )
 
     if print_mode:
@@ -1279,7 +1279,7 @@ def render_single_breakdown(df: pd.DataFrame, dimension_name: str, dimension_col
                         if pd.notna(x) and x != 0 else "-"
                     )
 
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            st.dataframe(display_df, width="stretch", hide_index=True)
 
             csv_data = export_to_csv(breakdown_df)
             st.download_button(
@@ -1288,7 +1288,7 @@ def render_single_breakdown(df: pd.DataFrame, dimension_name: str, dimension_col
                 file_name=f"{key_prefix}_verguetungsklassen.csv",
                 mime="text/csv",
                 key=f"download_{key_prefix}_{dimension_col}",
-                use_container_width=True,
+                width="stretch",
             )
     else:
         # Standard: Horizontales Balkendiagramm
@@ -1315,7 +1315,7 @@ def render_single_breakdown(df: pd.DataFrame, dimension_name: str, dimension_col
         with col_table:
             st.markdown("**Datentabelle**")
             display_df = format_dataframe_for_display(breakdown_df, value_type)
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            st.dataframe(display_df, width="stretch", hide_index=True)
 
             csv_data = export_to_csv(breakdown_df)
             st.download_button(
@@ -1324,7 +1324,7 @@ def render_single_breakdown(df: pd.DataFrame, dimension_name: str, dimension_col
                 file_name=f"{key_prefix}_{dimension_name.lower().replace(' ', '_')}.csv",
                 mime="text/csv",
                 key=f"download_{key_prefix}_{dimension_col}",
-                use_container_width=True,
+                width="stretch",
             )
 
     # Print-Block Wrapper schließen
@@ -1386,7 +1386,7 @@ def render_single_comparison(df: pd.DataFrame, dimension_name: str, dimension_co
                         if pd.notna(x) and x != 0 else "-"
                     )
 
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            st.dataframe(display_df, width="stretch", hide_index=True)
 
             csv_data = export_to_csv(breakdown_df)
             st.download_button(
@@ -1395,7 +1395,7 @@ def render_single_comparison(df: pd.DataFrame, dimension_name: str, dimension_co
                 file_name=f"{key_prefix}_verguetungsklassen.csv",
                 mime="text/csv",
                 key=f"download_{key_prefix}_{dimension_col}",
-                use_container_width=True,
+                width="stretch",
             )
     else:
         breakdown_df = create_breakdown_table(df, dimension_col, ist_col,
@@ -1416,7 +1416,7 @@ def render_single_comparison(df: pd.DataFrame, dimension_name: str, dimension_co
         with col_table:
             st.markdown("**Datentabelle**")
             display_df = format_dataframe_for_display(breakdown_df, value_type)
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            st.dataframe(display_df, width="stretch", hide_index=True)
 
             csv_data = export_to_csv(breakdown_df)
             st.download_button(
@@ -1425,7 +1425,7 @@ def render_single_comparison(df: pd.DataFrame, dimension_name: str, dimension_co
                 file_name=f"{key_prefix}_{dimension_name.lower().replace(' ', '_')}.csv",
                 mime="text/csv",
                 key=f"download_{key_prefix}_{dimension_col}",
-                use_container_width=True,
+                width="stretch",
             )
 
     # Print-Block Wrapper schließen
@@ -1437,17 +1437,19 @@ def render_ist_mak_tab(df: pd.DataFrame, print_mode: bool = False):
     """Rendert den IST-MAK Tab mit allen Themenfeldern untereinander."""
     emp_df = df[~df["Is_Vacant"]] if "Is_Vacant" in df.columns else df
 
+
     # KPIs berechnen
-    from dataloader.kpi_engine import compute_teilzeit_kpis
+    from dataloader.kpi_engine import compute_teilzeit_kpis, compute_fte_roh
     total_mak = get_ist_mak(emp_df)
+    total_fte_roh = compute_fte_roh(emp_df)
     total_koepfe = get_ist_koepfe(emp_df)
     teilzeit = compute_teilzeit_kpis(emp_df)
     avg_fte = total_mak / total_koepfe if total_koepfe > 0 else 0
 
     # KPI-Row mit styled cards
     kpis = [
-        {"title": "Gesamt MAK", "value": format_number(total_mak, 1),
-         "subtitle": f"{total_koepfe} Mitarbeitende", "icon": "📊", "status": "good"},
+        {"title": "Gesamt MAK (Effektiv)", "value": format_number(total_mak, 1),
+         "subtitle": f"Roh: {format_number(total_fte_roh, 1)} | {total_koepfe} Köpfe", "icon": "📊", "status": "good"},
         {"title": "Durchschnitt FTE", "value": format_number(avg_fte, 2),
          "subtitle": "pro Mitarbeitenden", "icon": "👤", "status": "default"},
         {"title": "Teilzeit-Quote", "value": f"{teilzeit['quote_pct']:.1f}%".replace(".", ","),

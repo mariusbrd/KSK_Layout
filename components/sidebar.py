@@ -3,6 +3,7 @@ Globale Filter-Sidebar für HR Pulse Dashboard.
 
 Rendert alle Filter und wendet sie auf den DataFrame an.
 """
+from __future__ import annotations
 
 import streamlit as st
 import pandas as pd
@@ -138,7 +139,7 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
         st.session_state["selected_genders"] = ["m", "w"]
 
     if "selected_employment" not in st.session_state:
-        st.session_state["selected_employment"] = ["Vollzeit", "Teilzeit"]
+        st.session_state["selected_employment"] = ["Vollzeit", "Teilzeit", "Inaktiv"]
 
     if "selected_education" not in st.session_state:
         st.session_state["selected_education"] = []
@@ -335,8 +336,8 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
         st.markdown("**⏰ Arbeitszeit**")
         selected_employment = st.multiselect(
             "Arbeitszeit auswählen",
-            options=["Vollzeit", "Teilzeit"],
-            default=st.session_state.get("selected_employment", ["Vollzeit", "Teilzeit"]),
+            options=["Vollzeit", "Teilzeit", "Inaktiv"],
+            default=st.session_state.get("selected_employment", ["Vollzeit", "Teilzeit", "Inaktiv"]),
             key="employment_select",
             label_visibility="collapsed",
         )
@@ -509,7 +510,7 @@ def reset_filters():
     st.session_state["selected_jobfamilies"] = []
     st.session_state["selected_cohorts"] = []
     st.session_state["selected_genders"] = ["m", "w"]
-    st.session_state["selected_employment"] = ["Vollzeit", "Teilzeit"]
+    st.session_state["selected_employment"] = ["Vollzeit", "Teilzeit", "Inaktiv"]
     st.session_state["selected_education"] = []
     st.session_state["selected_atz_status"] = ["Kein ATZ", "Arbeitsphase", "Freistellungsphase"]
     st.session_state["cohort_definitions"] = DEFAULT_COHORTS.copy()

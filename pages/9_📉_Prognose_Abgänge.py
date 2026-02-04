@@ -20,9 +20,11 @@ if SRC_PATH.exists():
 else:
     sys.path.append(str(BASE_PATH))
 
+from kpi_reference import get_current_stichtag  # Import dynamic Stichtag
+
 from abgaenge import (
     load_inputs,
-    preprocess_inputs,
+    # preprocess_inputs, # Removed, done by loader
     default_params,
     build_params_from_ui,
     run_forecast_abgaenge,
@@ -31,50 +33,60 @@ from abgaenge import (
     to_csv_bytes,
 )
 
+# Shared Components
+from dataloader.loader import load_and_prepare_data
+from components.sidebar import render_global_filters, apply_filters
+
 
 @st.cache_data
-def _load_inputs_cached(base_path_str: str):
-    return load_inputs(Path(base_path_str))
-
-
-@st.cache_data
-def _preprocess_cached(df_ma: pd.DataFrame, df_atz: pd.DataFrame):
-    return preprocess_inputs(df_ma, df_atz)
-
-
-def _default_start_date(df_ma: pd.DataFrame, df_atz: pd.DataFrame) -> date:
-    today = pd.Timestamp.today().normalize()
-    max_dates = [today]
-    for col in ["Eintritt", "GebDatum", "Austritt"]:
-        if col in df_ma.columns:
-            col_max = pd.to_datetime(df_ma[col], errors="coerce").max()
-            if pd.notna(col_max):
-                max_dates.append(col_max)
-    for col in ["Ende", "Ende ATZ Vertrag", "Beginn"]:
-        if col in df_atz.columns:
-            col_max = pd.to_datetime(df_atz[col], errors="coerce").max()
-            if pd.notna(col_max):
-                max_dates.append(col_max)
-    return max(max_dates).date()
+def _load_atz_cached(base_path_str: str):
+    """Loads only ATZ data needed for forecast engine details."""
+    _, df_atz = load_inputs(Path(base_path_str))
+    return df_atz
 
 
 def main():
-    st.title("Abgänge Prognose")
+    st.title("📉 Prognose: Abgänge")
     st.write("Prognose von Abgängen (ATZ, Rente, Kündigung, Ruhend) mit klarer Trennung von MAK und Headcount.")
 
     try:
-        df_ma_raw, df_atz_raw = _load_inputs_cached(str(BASE_PATH))
-        df_ma, df_atz = _preprocess_cached(df_ma_raw, df_atz_raw)
+        # 1. Load Central Data (Consistent with Kompakt)
+        snapshot_df, history_df, _, _ = load_and_prepare_data()
+
+        # 2. Render Sidebar Filters (Standard Dashboard Logic)
+        render_global_filters(snapshot_df, history_df)
+        
+        # 3. Apply Filters (Settings exclusions + Sidebar selections)
+        df_ma_filtered = apply_filters(snapshot_df)
+        
+        # 4. Load ATZ Details (needed for engine phases)
+        df_atz = _load_atz_cached(str(BASE_PATH))
+        
+        # 5. Preprocessing for Forecast Engine (CRITICAL fix)
+        # The snapshot_df contains Vacancies (Planstellen without Person) and duplicates (1 Person on multiple Planstellen).
+        # We must clean this for the forecast simulation which expects a unique list of active people.
+        
+        # Remove Vacancies
+        df_ma_filtered = df_ma_filtered.dropna(subset=["PersNr"])
+        
+        # Deduplicate (Keep first or based on criteria? 'loader' logic usually assumes clean 'Mitarbeiter' list. 
+        # But merged snapshot can have duplicates. We group by PersNr to be safe.)
+        df_ma_filtered = df_ma_filtered.drop_duplicates(subset=["PersNr"])
+        
     except FileNotFoundError as e:
         st.error(str(e))
         return
     except Exception as e:
-        st.error(f"Fehler beim Laden der Daten: {e}")
+        st.error(f"Fehler beim Laden/Filtern der Daten: {e}")
+        # st.json(e) # Debug
         return
+    
+    # Use the filtered dataframe as input for the forecast
+    df_ma = df_ma_filtered
 
     params = default_params()
 
-    default_start = _default_start_date(df_ma, df_atz)
+    default_start = get_current_stichtag().date()
     default_end = date(default_start.year + 2, default_start.month, default_start.day)
 
     with st.sidebar.form("abgaenge_form"):
@@ -201,7 +213,7 @@ def main():
     with tab1:
         st.plotly_chart(charts.get("line_headcount_mak"), use_container_width=True)
         st.plotly_chart(charts.get("bar_abgaenge_reasons"), use_container_width=True)
-        st.dataframe(forecast_kpis, use_container_width=True)
+        st.dataframe(forecast_kpis, width="stretch")
 
     with tab2:
         for key, fig in charts.items():
@@ -216,7 +228,7 @@ def main():
                 if df is None or df.empty:
                     continue
                 st.markdown(f"**{name.capitalize()}**")
-                st.dataframe(df, use_container_width=True)
+                st.dataframe(df, width="stretch")
 
     with tab3:
         if events.empty:
@@ -226,7 +238,7 @@ def main():
                 reason_df = events[events["reason_label"] == reason]
                 safe_reason = "".join([c if c.isalnum() else "_" for c in reason]).strip("_").lower()
                 with st.expander(f"{reason} ({len(reason_df)})", expanded=False):
-                    st.dataframe(reason_df, use_container_width=True)
+                    st.dataframe(reason_df, width="stretch")
                     st.download_button(
                         label=f"CSV Export {reason}",
                         data=to_csv_bytes(reason_df),

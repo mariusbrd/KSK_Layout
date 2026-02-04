@@ -11,6 +11,8 @@ VERSION 2.0 - KORRIGIERT:
 
 import pandas as pd
 import streamlit as st
+import numpy as np
+from datetime import datetime
 from typing import Dict, Tuple, Optional, Set
 import sys
 import os
@@ -18,11 +20,10 @@ import os
 # Import settings
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.settings import DATA_PATH, DEFAULT_COHORTS
+from utils.settings_loader import get_setting
+from kpi_reference import get_current_stichtag
 
 ID_PAD_LENGTH = 6
-
-# Stichtag (verbindlich, kein Systemdatum!)
-STICHTAG = pd.Timestamp("2025-01-30")
 
 
 def normalize_persnr(series: pd.Series) -> pd.Series:
@@ -218,7 +219,7 @@ def berechne_mak(row, atz_fr_persnr_set: Optional[Set[str]] = None) -> float:
 
 
 @st.cache_data
-def enrich_snapshot_data(df: pd.DataFrame) -> pd.DataFrame:
+def enrich_snapshot_data(df: pd.DataFrame, stichtag: Optional[pd.Timestamp] = None) -> pd.DataFrame:
     """
     Reichert Snapshot-Daten mit berechneten Feldern an.
 
@@ -228,11 +229,15 @@ def enrich_snapshot_data(df: pd.DataFrame) -> pd.DataFrame:
     
     Args:
         df: Snapshot_Detail DataFrame
+        stichtag: Referenzdatum für Berechnungen (Default: get_current_stichtag())
 
     Returns:
         Angereicherter DataFrame
     """
     df = df.copy()
+
+    if stichtag is None:
+        stichtag = get_current_stichtag()
 
     # IDs standardisieren
     if "PersNr" in df.columns:
@@ -248,7 +253,6 @@ def enrich_snapshot_data(df: pd.DataFrame) -> pd.DataFrame:
         df.loc[austritt_year == 9999, "Austritt"] = pd.NaT
 
     # Alter berechnen (zum STICHTAG, nicht Systemdatum!)
-    stichtag = STICHTAG
     df["Alter_Jahre"] = (stichtag - pd.to_datetime(df["GebDatum"], errors="coerce")).dt.days / 365.25
     df["Alter_Jahre"] = df["Alter_Jahre"].fillna(0)
     df["Alter"] = df["Alter_Jahre"].astype(int)
@@ -338,47 +342,74 @@ def load_and_prepare_data(use_original: bool = True) -> Tuple[pd.DataFrame, pd.D
     # Versuche Original-Daten zu laden (wenn use_original=True)
     if use_original:
         try:
-            from dataloader.original_loader import load_original_and_prepare_data
-
             # Prüfe ob Original-Daten existieren (alle benötigten Dateien)
-            original_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "Original-Daten")
-
-            required_files = {
-                "Mitarbeiter.xlsx": os.path.join(original_dir, "Mitarbeiter.xlsx"),
-                "Planstellen.XLSX": os.path.join(original_dir, "Planstellen.XLSX"),
-                "ATZ.xlsx": os.path.join(original_dir, "ATZ.xlsx"),
-                "Ausbildung.xlsx": os.path.join(original_dir, "Ausbildung.xlsx"),
-            }
-            optional_files = {
-                "TVÖD.xlsx": os.path.join(original_dir, "TVÖD.xlsx"),
-            }
-
-            missing_required = [name for name, path in required_files.items() if not os.path.exists(path)]
-            missing_optional = [name for name, path in optional_files.items() if not os.path.exists(path)]
-
+            missing_required = [name for name, path in ORIGINAL_FILES.items() if not os.path.exists(path)]
+            
             if not missing_required:
-                if missing_optional:
-                    st.warning(
-                        "Optional fehlend: " + ", ".join(missing_optional) + ". "
-                        "Kosten werden aus approximierten Fallback-Werten berechnet "
-                        "(nicht exakte TVöD-Tabelle)."
-                    )
-                    st.session_state["tvoed_available"] = False
-                return load_original_and_prepare_data()
+                # 1. Lade Original-Daten
+                original = load_original_data()
+
+                # 2. Lade TVÖD-Entgelttabelle (optional)
+                from dataloader.tvoed_loader import load_tvoed_table
+                tvoed_lookup = {}
+                if os.path.exists(TVOED_FILE):
+                     tvoed_lookup = load_tvoed_table(TVOED_FILE)
+                
+                st.session_state["tvoed_lookup"] = tvoed_lookup
+                st.session_state["tvoed_available"] = len(tvoed_lookup) > 0
+
+                # 3. Kombiniere zu Snapshot (mit TVÖD-Lookup)
+                current_stichtag = get_current_stichtag()
+                snapshot_df = combine_to_snapshot(
+                    original["mitarbeiter"],
+                    original["planstellen"],
+                    original["atz"],
+                    original["ausbildung"],
+                    stichtag=current_stichtag,
+                    tvoed_lookup=tvoed_lookup,
+                )
+
+                # 4. Reichere Snapshot an (Standard-Prozedur)
+                snapshot_df = enrich_snapshot_data(snapshot_df, stichtag=current_stichtag)
+
+                # 5. Füge Jobfamily-Spalte hinzu
+                from dataloader.jobfamily_matcher import assign_jobfamilies, load_jobfamily_definitions
+                try:
+                    definitions = load_jobfamily_definitions()
+                    snapshot_df = assign_jobfamilies(snapshot_df, definitions)
+                except Exception:
+                    if "Jobfamily" not in snapshot_df.columns:
+                        snapshot_df["Jobfamily"] = "UNMAPPED"
+
+                # 6. Generiere History
+                history_df = generate_history_from_snapshot(snapshot_df)
+
+                # 7. Erstelle Org-Struktur
+                org_df = create_org_structure(original["planstellen"])
+
+                # 8. Berechne Summary
+                summary = get_data_summary(snapshot_df)
+
+                return snapshot_df, history_df, org_df, summary
+
             else:
                 st.info(
                     "ℹ️ Original-Daten unvollständig oder nicht gefunden. "
                     "Fehlend: " + ", ".join(missing_required) + ". "
                     "Verwende synthetische Testdaten."
                 )
+
         except Exception as e:
             st.warning(f"⚠️ Fehler beim Laden der Original-Daten: {str(e)}\nVerwende synthetische Testdaten.")
+            # Optional: Traceback bei Fehler
+            # import traceback
+            # st.code(traceback.format_exc())
 
     # Fallback: Lade synthetische Daten
     data = load_hr_data()
 
     # Reichere Snapshot an
-    snapshot_df = enrich_snapshot_data(data["snapshot_detail"])
+    snapshot_df = enrich_snapshot_data(data["snapshot_detail"], stichtag=get_current_stichtag())
 
     # Füge Jobfamily-Spalte hinzu
     from dataloader.jobfamily_matcher import assign_jobfamilies, load_jobfamily_definitions
@@ -401,42 +432,366 @@ def load_and_prepare_data(use_original: bool = True) -> Tuple[pd.DataFrame, pd.D
     )
 
 
+
+# =============================================================================
+# KONSTANTEN & SETUP (aus original_loader.py)
+# =============================================================================
+
+from config.settings import DEFAULT_COHORTS, BASE_SALARY, STEP_MULTIPLIER, EMPLOYER_COST_FACTOR
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ORIGINAL_DATA_DIR = os.path.join(BASE_DIR, "..", "Original-Daten")
+
+ORIGINAL_FILES = {
+    "mitarbeiter": os.path.join(ORIGINAL_DATA_DIR, "Mitarbeiter.xlsx"),
+    "planstellen": os.path.join(ORIGINAL_DATA_DIR, "Planstellen.XLSX"),
+    "atz": os.path.join(ORIGINAL_DATA_DIR, "ATZ.xlsx"),
+    "ausbildung": os.path.join(ORIGINAL_DATA_DIR, "Ausbildung.xlsx"),
+}
+
+TVOED_FILE = os.path.join(ORIGINAL_DATA_DIR, "TVÖD.xlsx")
+
+EDUCATION_MAPPING = {
+    "Bachelor FH": "Bachelor",
+    "Bachelor Universität": "Bachelor",
+    "Master FH": "Master",
+    "Master Universität": "Master",
+    "Studium Lehrinstitut": "Sonstiges Studium",
+    "SPK/Bankbetriebswirt": "Bankspezifische Weiterbildung",
+    "Sparkassen/Bankfachwirt": "Bankspezifische Weiterbildung",
+    "Bankberufsabschluss": "Berufsausbildung",
+    "kfm Berufsabschluss": "Berufsausbildung",
+    "nicht kfm Berufsabschluss": "Berufsausbildung",
+    "derzeit Berufsausbildung": "In Ausbildung",
+    "ohne Berufsabschluss": "Ohne Abschluss",
+}
+
+EDUCATION_RANKING = {
+    "Master Universität": 6,
+    "Master FH": 6,
+    "Bachelor Universität": 5,
+    "Bachelor FH": 5,
+    "Studium Lehrinstitut": 5,
+    "SPK/Bankbetriebswirt": 4,
+    "Sparkassen/Bankfachwirt": 4,
+    "Bankberufsabschluss": 3,
+    "kfm Berufsabschluss": 3,
+    "nicht kfm Berufsabschluss": 3,
+    "derzeit Berufsausbildung": 2,
+    "ohne Berufsabschluss": 1,
+}
+
+# =============================================================================
+# HILFSFUNKTIONEN (aus original_loader.py)
+# =============================================================================
+
+def normalize_atz(atz_df: pd.DataFrame) -> pd.DataFrame:
+    """Bereinigt ATZ-Daten und standardisiert PersNr und Datumsfelder."""
+    df = atz_df.copy()
+    df["PersNr"] = normalize_persnr(df["PersNr"])
+    df["Beginn"] = pd.to_datetime(df["Beginn"], errors="coerce")
+    df["Ende"] = pd.to_datetime(df["Ende"], errors="coerce")
+    df["Ende ATZ Vertrag"] = pd.to_datetime(df["Ende ATZ Vertrag"], errors="coerce")
+    return df
+
+
+def safe_parse_austritt(series: pd.Series) -> pd.Series:
+    """Parst Austritt robust (9999-12-31 ist außerhalb pandas datetime64[ns])."""
+    def _to_na_if_out_of_bounds(val):
+        if pd.isna(val):
+            return pd.NaT
+        try:
+            year = getattr(val, "year", None)
+            if year is not None and (year == 9999 or year > 2262):
+                return pd.NaT
+        except Exception:
+            pass
+        s = str(val).strip()
+        if s.startswith("9999-") or s.startswith("9999/"):
+            return pd.NaT
+        return val
+
+    cleaned = series.map(_to_na_if_out_of_bounds)
+    return pd.to_datetime(cleaned, errors="coerce")
+
+
+def derive_atz_fields(atz_df: pd.DataFrame) -> pd.DataFrame:
+    """Erzeugt ATZ-Ableitungen pro Person gemäß Readme."""
+    if atz_df.empty:
+        return pd.DataFrame(columns=[
+            "PersNr", "atz_start_date", "atz_rest_start_date", "atz_end_date",
+            "atz_duration_ar_months", "atz_duration_fr_months",
+            "atz_has_two_phases", "atz_phase_gap_ok", "atz_phase_end_matches_contract"
+        ])
+
+    df = atz_df.copy()
+    df["Phase"] = df["Phase"].astype(str).str.strip()
+
+    phase_counts = df.groupby("PersNr")["Phase"].nunique().rename("atz_phase_count")
+    phase_counts = phase_counts.to_frame()
+    phase_counts["atz_has_two_phases"] = phase_counts["atz_phase_count"] == 2
+
+    pivot = df.pivot_table(
+        index="PersNr", columns="Phase", values=["Beginn", "Ende", "Ende ATZ Vertrag"], aggfunc="min"
+    )
+    pivot.columns = [f"{col[0]}_{col[1]}" for col in pivot.columns]
+    result = pivot.join(phase_counts, how="left").reset_index()
+
+    result["atz_start_date"] = result.get("Beginn_AR", pd.NaT)
+    result["atz_rest_start_date"] = result.get("Beginn_FR", pd.NaT)
+    result["atz_end_date"] = pd.Series(result.get("Ende ATZ Vertrag_FR", pd.NaT)).combine_first(pd.Series(result.get("Ende ATZ Vertrag_AR", pd.NaT)))
+
+    ar_end = pd.Series(result.get("Ende_AR", pd.NaT))
+    fr_begin = pd.Series(result.get("Beginn_FR", pd.NaT))
+    fr_end = pd.Series(result.get("Ende_FR", pd.NaT))
+    contract_end = pd.Series(result["atz_end_date"])
+
+    result["atz_duration_ar_months"] = ((ar_end - pd.to_datetime(result["atz_start_date"], errors="coerce")).dt.days / 30.44)
+    result["atz_duration_fr_months"] = ((pd.to_datetime(fr_end, errors="coerce") - pd.to_datetime(fr_begin, errors="coerce")).dt.days / 30.44)
+    result["atz_phase_gap_ok"] = (ar_end.notna() & fr_begin.notna()) & ((pd.to_datetime(fr_begin, errors="coerce") - pd.to_datetime(ar_end, errors="coerce")).dt.days == 1)
+    result["atz_phase_end_matches_contract"] = (fr_end.notna() & contract_end.notna() & (fr_end == contract_end))
+
+    return result[[
+        "PersNr", "atz_start_date", "atz_rest_start_date", "atz_end_date",
+        "atz_duration_ar_months", "atz_duration_fr_months",
+        "atz_has_two_phases", "atz_phase_gap_ok", "atz_phase_end_matches_contract"
+    ]]
+
+
+def clean_step(step) -> int:
+    """Bereinigt Stufen-Werte wie '2+' zu 2."""
+    if pd.isna(step):
+        return 4
+    step_str = str(step).strip().replace("+", "").replace("-", "")
+    try:
+        return int(step_str)
+    except (ValueError, TypeError):
+        return 4
+
+
+def clean_planstellen(df: pd.DataFrame) -> pd.DataFrame:
+    """Bereinigt Planstellen-Daten (entfernt Summenzeile, korrigiert Azubi)."""
+    df = df.copy()
+    df = df[df['Kürzel OrgEinheit'].notna()]
+    azubi_mask = (df['Kürzel OrgEinheit'] == '9910') & (df['Sollarbeitszeit'] == 0.01)
+    df.loc[azubi_mask, 'Sollarbeitszeit'] = 39.0
+    if "Personalnummer" in df.columns:
+        df["Personalnummer"] = normalize_persnr(df["Personalnummer"])
+    return df
+
+
+def get_current_atz_phase(atz_df: pd.DataFrame, stichtag: Optional[pd.Timestamp] = None) -> pd.DataFrame:
+    """Filtert ATZ-Daten auf die aktuelle Phase zum Stichtag."""
+    if stichtag is None:
+        stichtag = get_current_stichtag()
+    atz_aktuell = atz_df[(atz_df['Beginn'] <= stichtag) & (atz_df['Ende'] >= stichtag)].copy()
+    if atz_aktuell.empty:
+        return atz_aktuell
+    if atz_aktuell['PersNr'].duplicated().any():
+        atz_aktuell = atz_aktuell.sort_values('Phase', ascending=False)
+        atz_aktuell = atz_aktuell.drop_duplicates(subset='PersNr', keep='first')
+    return atz_aktuell
+
+
+def calculate_cost_row(row, tvoed_lookup=None) -> float:
+    """Berechnet Jahreskosten für eine Zeile."""
+    from dataloader.tvoed_loader import get_annual_salary, get_special_salary
+
+    if row.get("Is_Vacant", True):
+        return 0.0
+
+    tariff = row.get("TrfGr", "E9A")
+    step = row.get("St", 4)
+    fte = row.get("FTE_person", 1.0) # Nutze FTE_person statt BsGrd
+
+    if pd.isna(tariff): tariff = "E9A"
+    if pd.isna(step): step = 4
+    if pd.isna(fte): fte = 1.0
+
+    tariff = str(tariff).strip().upper().replace(" ", "")
+    step_int = clean_step(step)
+
+    special = get_special_salary(tariff)
+    employer_factor = st.session_state.get("employer_cost_factor", EMPLOYER_COST_FACTOR)
+
+    if special is not None:
+        return special * fte * employer_factor
+
+    annual = get_annual_salary(tvoed_lookup or {}, tariff, step_int, BASE_SALARY, STEP_MULTIPLIER)
+    return annual * fte * employer_factor
+
+# =============================================================================
+# CORE LOADING FUNKTIONEN (aus original_loader.py)
+# =============================================================================
+
+@st.cache_data
+def load_original_data() -> Dict[str, pd.DataFrame]:
+    """Lädt die 4 Original-Excel-Dateien."""
+    data = {}
+    missing_files = [fp for fp in ORIGINAL_FILES.values() if not os.path.exists(fp)]
+    if missing_files:
+        raise FileNotFoundError(f"Original-Daten nicht gefunden:\n" + "\n".join(missing_files))
+
+    data["mitarbeiter"] = pd.read_excel(ORIGINAL_FILES["mitarbeiter"])
+    if "GebDatum" in data["mitarbeiter"].columns:
+        data["mitarbeiter"]["GebDatum"] = pd.to_datetime(data["mitarbeiter"]["GebDatum"], errors="coerce")
+    if "Eintritt" in data["mitarbeiter"].columns:
+        data["mitarbeiter"]["Eintritt"] = pd.to_datetime(data["mitarbeiter"]["Eintritt"], errors="coerce")
+    if "Austritt" in data["mitarbeiter"].columns:
+        data["mitarbeiter"]["Austritt"] = safe_parse_austritt(data["mitarbeiter"]["Austritt"])
+    data["mitarbeiter"]["PersNr"] = normalize_persnr(data["mitarbeiter"]["PersNr"])
+
+    data["planstellen"] = pd.read_excel(ORIGINAL_FILES["planstellen"])
+
+    data["atz"] = pd.read_excel(ORIGINAL_FILES["atz"], parse_dates=["Beginn", "Ende", "Ende ATZ Vertrag"])
+    data["atz"] = normalize_atz(data["atz"])
+
+    data["ausbildung"] = pd.read_excel(ORIGINAL_FILES["ausbildung"])
+    data["ausbildung"]["Personalnummer"] = normalize_persnr(data["ausbildung"]["Personalnummer"])
+    data["ausbildung"]["BV Ausbildungsgruppentext"] = data["ausbildung"]["BV Ausbildungsgruppentext"].astype(str).str.strip()
+
+    return data
+
+
+def combine_to_snapshot(mitarbeiter, planstellen, atz, ausbildung, stichtag=None, tvoed_lookup=None) -> pd.DataFrame:
+    """Kombiniert die 4 Original-Dateien zu einem Snapshot DataFrame."""
+    if stichtag is None: stichtag = get_current_stichtag()
+
+    mitarbeiter = mitarbeiter.copy()
+    mitarbeiter["PersNr"] = normalize_persnr(mitarbeiter["PersNr"])
+    if "Austritt" in mitarbeiter.columns:
+        mitarbeiter["Austritt"] = pd.to_datetime(mitarbeiter["Austritt"], errors="coerce")
+        austritt_year = pd.DatetimeIndex(mitarbeiter["Austritt"]).year
+        mitarbeiter.loc[austritt_year == 9999, "Austritt"] = pd.NaT
+
+    # --- FILTERUNG NACH STICHTAG (Neu: Konfigurierbar) ---
+    # Nur Mitarbeiter berücksichtigen, die am Stichtag bereits da sind
+    # und noch nicht ausgetreten sind.
+    
+    # 1. Konfiguration laden
+    include_future = get_setting("include_future_hires", False)
+    
+    # 2. Eintritts-Logik
+    if "Eintritt" in mitarbeiter.columns:
+        mitarbeiter["Eintritt"] = pd.to_datetime(mitarbeiter["Eintritt"], errors="coerce")
+        
+        # Statistik: Wie viele liegen in der Zukunft?
+        future_hires_mask = mitarbeiter["Eintritt"] > stichtag
+        future_hires_count = future_hires_mask.sum()
+        # Store in session state for display in Settings
+        if "stats_future_hires" not in st.session_state or st.session_state["stats_future_hires"] != future_hires_count:
+             st.session_state["stats_future_hires"] = int(future_hires_count)
+        
+        # Filter anwenden (wenn nicht explizit gewünscht)
+        if not include_future:
+            mitarbeiter = mitarbeiter[mitarbeiter["Eintritt"] <= stichtag]
+    
+    # 3. Austritts-Logik (Bleibt strikt: Wer weg ist, ist weg)
+    if "Austritt" in mitarbeiter.columns:
+        mitarbeiter = mitarbeiter[
+            (mitarbeiter["Austritt"].isna()) | 
+            (mitarbeiter["Austritt"] >= stichtag)
+        ]
+
+    ausbildung = ausbildung.copy()
+    ausbildung["Personalnummer"] = normalize_persnr(ausbildung["Personalnummer"])
+    ausbildung["BV Ausbildungsgruppentext"] = ausbildung["BV Ausbildungsgruppentext"].astype(str).str.strip()
+
+    atz = normalize_atz(atz)
+    df = clean_planstellen(planstellen)
+
+    df = df.merge(mitarbeiter, left_on="Personalnummer", right_on="PersNr", how="left", suffixes=("", "_ma"))
+    df = df.merge(ausbildung[["Personalnummer", "BV Ausbildungsgruppentext"]], left_on="Personalnummer", right_on="Personalnummer", how="left", suffixes=("", "_ausb"))
+    df = df.rename(columns={"BV Ausbildungsgruppentext": "Ausbildung"})
+
+    if "Ausbildung" in df.columns: df["Ausbildung"] = df["Ausbildung"].astype("string")
+    df["Bildungskategorie"] = df["Ausbildung"].map(EDUCATION_MAPPING)
+    df["Bildungsrang"] = df["Ausbildung"].map(EDUCATION_RANKING)
+
+    if "MitarbGruppenbez." in df.columns:
+        df["Ist_Azubi"] = df["MitarbGruppenbez."] == "Auszubildende"
+
+    atz_aktuell = get_current_atz_phase(atz, stichtag)
+    df = df.merge(atz_aktuell[["PersNr", "Phase", "Beginn", "Ende", "Ende ATZ Vertrag", "Modell"]], left_on="PersNr", right_on="PersNr", how="left", suffixes=("", "_atz"))
+    if "Phase" in df.columns:
+        df["Phase"] = df["Phase"].astype(str).str.strip()
+
+    df["Is_Vacant"] = df["Personalnummer"].isna()
+    df["FTE_person"] = df["BsGrd"].fillna(0) / 100.0
+    df["Soll_FTE"] = df["Sollarbeitszeit"].fillna(0) / 39.0
+    df["FTE_assigned"] = df["FTE_person"] * df["Soll_FTE"]
+
+    if "St" in df.columns:
+        df["St"] = df["St"].apply(clean_step)
+
+    atz_derived = derive_atz_fields(atz)
+    df = df.merge(atz_derived, on="PersNr", how="left")
+
+    atz_fr_persnr = set(atz_aktuell[atz_aktuell['Phase'] == 'FR']['PersNr'])
+    df['ist_atz_fr'] = df['PersNr'].isin(atz_fr_persnr)
+
+    df["Total_Cost_Year"] = df.apply(lambda row: calculate_cost_row(row, tvoed_lookup=tvoed_lookup), axis=1)
+
+    return df
+
+
+def generate_history_from_snapshot(snapshot_df: pd.DataFrame, start_date="2024-01-01", end_date="2026-01-18") -> pd.DataFrame:
+    """Generiert History Cube aus Snapshot (monatliche Zeitreihen)."""
+    start = pd.to_datetime(start_date)
+    end = pd.to_datetime(end_date)
+    dates = pd.date_range(start=start, end=end, freq='MS')
+    data = []
+
+    for org_unit in snapshot_df["Kürzel OrgEinheit"].unique():
+        org_data = snapshot_df[snapshot_df["Kürzel OrgEinheit"] == org_unit]
+        current_headcount = org_data[~org_data["Is_Vacant"]]["PersNr"].nunique()
+        current_fte = org_data["FTE_assigned"].sum()
+        current_cost = org_data["Total_Cost_Year"].sum()
+        current_vacancy = org_data["Is_Vacant"].sum()
+
+        for date in dates:
+            months_from_end = (end.year - date.year) * 12 + (end.month - date.month)
+            trend_factor = 1.0 - (months_from_end / len(dates)) * 0.05
+            noise = np.random.normal(1.0, 0.01)
+
+            data.append({
+                "Kürzel OrgEinheit": org_unit,
+                "Date": date,
+                "Headcount": max(0, int(current_headcount * trend_factor * noise)),
+                "FTE": max(0, current_fte * trend_factor * noise),
+                "Total_Cost": max(0, current_cost * trend_factor * noise),
+                "Vacancy_Count": max(0, int(current_vacancy * noise)),
+            })
+    return pd.DataFrame(data)
+
+
+def create_org_structure(planstellen: pd.DataFrame) -> pd.DataFrame:
+    """Erstellt Org-Struktur DataFrame aus Planstellen."""
+    planstellen_clean = clean_planstellen(planstellen)
+    org_df = planstellen_clean[["Kürzel OrgEinheit", "OrgEinheitNr", "Organisationseinheit"]].drop_duplicates()
+    org_df = org_df.sort_values("Kürzel OrgEinheit")
+    return org_df
+
+
 # =============================================================================
 # VALIDIERUNGSFUNKTIONEN
 # =============================================================================
 
 def validate_snapshot(df: pd.DataFrame) -> Dict[str, bool]:
-    """
-    Validiert einen Snapshot DataFrame auf bekannte Probleme.
-    
-    Returns:
-        Dict mit Validierungsergebnissen
-    """
+    """Validiert einen Snapshot DataFrame auf bekannte Probleme."""
     results = {}
-    
-    # 1. Keine übermäßigen Duplikate?
     if 'PersNr' in df.columns:
         pers_counts = df[df['PersNr'].notna()].groupby('PersNr').size()
         max_dups = pers_counts.max() if len(pers_counts) > 0 else 0
         results["max_planstellen_pro_person"] = max_dups
-        results["keine_atz_duplikate"] = max_dups <= 3  # 2-3 ist ok (Mehrfachplanstellen)
-    
-    # 2. Azubi-Sollarbeitszeit korrigiert?
+        results["keine_atz_duplikate"] = max_dups <= 3
     if 'Kürzel OrgEinheit' in df.columns and 'Sollarbeitszeit' in df.columns:
         azubi_soll = df[df['Kürzel OrgEinheit'] == '9910']['Sollarbeitszeit']
-        if len(azubi_soll) > 0:
-            results["azubi_sollarbeitszeit_ok"] = (azubi_soll >= 38.0).all()
-        else:
-            results["azubi_sollarbeitszeit_ok"] = True
-    
-    # 3. MAK-Spalte vorhanden?
+        results["azubi_sollarbeitszeit_ok"] = (azubi_soll >= 38.0).all() if len(azubi_soll) > 0 else True
     results["mak_vorhanden"] = "MAK" in df.columns
-    
-    # 4. ATZ_Status gültig?
     if "ATZ_Status" in df.columns:
         valid_status = {"Kein ATZ", "Arbeitsphase", "Freistellungsphase"}
         results["atz_status_valid"] = df["ATZ_Status"].isin(valid_status).all()
-    
     return results
 
 

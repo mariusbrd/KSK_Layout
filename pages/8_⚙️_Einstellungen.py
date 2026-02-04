@@ -26,87 +26,86 @@ def render_settings_page():
 
     st.divider()
 
-    # --- TVÖD-Status ---
-    st.subheader("TVöD-Entgelttabelle")
+    st.divider()
 
-    tvoed_available = st.session_state.get("tvoed_available", False)
-    tvoed_lookup = st.session_state.get("tvoed_lookup", {})
+    # --- Allgemeine Einstellungen (Stichtag) ---
+    st.subheader("Allgemeine Einstellungen")
+    
+    from utils.settings_loader import get_setting, set_setting, save_user_settings, load_user_settings
+    
+    # Stichtag
+    current_stichtag_str = get_setting("stichtag", "2025-01-30")
+    try:
+        current_stichtag = pd.to_datetime(current_stichtag_str).date()
+    except:
+        current_stichtag = pd.to_datetime("2025-01-30").date()
+        
+    new_stichtag = st.date_input(
+        "Stichtag (Reference Date)",
+        value=current_stichtag,
+        help="Bestimmt das Datum für alle Berechnungen (Alter, Dienstjahre, Status).",
+    )
+    
+    if new_stichtag != current_stichtag:
+        if st.button("Stichtag speichern"):
+            set_setting("stichtag", str(new_stichtag))
+            st.success(f"Stichtag auf {new_stichtag} geändert. Bitte Daten neu laden.")
+            
+    # Zukünftige Eintritte
+    include_future_hires = get_setting("include_future_hires", False)
+    include_future_cb = st.checkbox(
+        "Zukünftige Eintritte berücksichtigen?",
+        value=include_future_hires,
+        help="Wenn aktiviert, werden Mitarbeiter mit Eintrittsdatum > Stichtag im Headcount mitgezählt.",
+    )
+    
+    if include_future_cb != include_future_hires:
+        set_setting("include_future_hires", include_future_cb)
+        st.rerun()
 
-    if tvoed_available:
-        st.success(
-            f"TVöD-Tabelle geladen: {len(tvoed_lookup)} Einträge "
-            f"(Gruppe x Stufe Kombinationen)"
-        )
-        with st.expander("Geladene Tarifgruppen anzeigen"):
-            groups = sorted(set(g for g, _ in tvoed_lookup.keys()))
-            st.write(", ".join(groups))
-    else:
-        st.warning(
-            "TVöD-Tabelle nicht verfügbar. "
-            "Kosten werden aus approximierten Fallback-Werten berechnet. "
-            "Legen Sie die Datei TVÖD.xlsx im Ordner Original-Daten ab, "
-            "um exakte Werte zu verwenden."
-        )
+    # Statistik anzeigen
+    if "stats_future_hires" in st.session_state:
+        future_count = st.session_state["stats_future_hires"]
+        status_text = "enthalten" if include_future_cb else "ausgefiltert"
+        if future_count > 0:
+            st.info(f"ℹ️ {future_count} Mitarbeiter mit Eintrittsdatum > {current_stichtag} gefunden (aktuell {status_text}).")
+        else:
+            st.caption(f"Keine Mitarbeiter mit Eintrittsdatum > {current_stichtag} gefunden.")
 
     st.divider()
 
-    # --- Sonderfall-Gehälter ---
-    st.subheader("Sonderfall-Gehälter")
-    st.caption(
-        "Für Tarifgruppen, die nicht in der TVöD-Tabelle enthalten sind, "
-        "können hier manuelle Jahresgehälter festgelegt werden."
-    )
+    # --- Simulations-Parameter ---
+    st.subheader("Simulations-Parameter")
+    st.caption("Standardwerte für Prognosen und Szenarien.")
 
-    col1, col2 = st.columns(2)
+    sim_settings = get_setting("simulation", {})
+    
+    with st.form("simulation_settings_form"):
+        c1, c2 = st.columns(2)
+        with c1:
+            s_horizon = st.number_input("Prognose-Horizont (Monate)", value=sim_settings.get("horizon_months", 60), min_value=12, max_value=120)
+            s_retire_age = st.number_input("Regelaltersgrenze", value=sim_settings.get("retirement_age", 67), min_value=60, max_value=70)
+            s_early_retire = st.number_input("Frühverrentungs-Quote", value=sim_settings.get("early_retirement_share", 0.10), min_value=0.0, max_value=1.0, format="%.2f")
+        
+        with c2:
+            s_hiring_rate = st.number_input("Nachbesetzungs-Quote (p.a.)", value=sim_settings.get("hiring_rate_pa", 0.04), min_value=0.0, max_value=1.0, format="%.2f")
+            s_time_to_fill = st.number_input("Time-to-Fill (Monate)", value=sim_settings.get("time_to_fill_months", 3), min_value=1, max_value=24)
+            s_azubi_intake = st.number_input("Azubi-Neueinstellungen (p.a.)", value=sim_settings.get("azubi_intake_per_year", 40), min_value=0)
 
-    with col1:
-        st.markdown("**Auszubildende** (TrfGr = TVAÖD)")
-        azubi_gehalt = st.number_input(
-            "Azubi-Jahresgehalt (brutto)",
-            min_value=0.0,
-            max_value=100000.0,
-            value=st.session_state.get("azubi_jahresgehalt", DEFAULT_AZUBI_JAHRESGEHALT),
-            step=100.0,
-            format="%.2f",
-            key="input_azubi_gehalt",
-            help="Typisches Azubi-Gehalt im TVöD liegt bei ca. 1.200 EUR/Monat (14.400 EUR/Jahr)",
-        )
-        st.session_state["azubi_jahresgehalt"] = azubi_gehalt
-
-    with col2:
-        st.markdown("**Vorstand** (TrfGr = 1)")
-        vorstand_gehalt = st.number_input(
-            "Vorstand-Jahresgehalt (brutto)",
-            min_value=0.0,
-            max_value=1000000.0,
-            value=st.session_state.get("vorstand_jahresgehalt", DEFAULT_VORSTAND_JAHRESGEHALT),
-            step=1000.0,
-            format="%.2f",
-            key="input_vorstand_gehalt",
-            help="Vorstandsvergütung ist nicht im TVöD geregelt",
-        )
-        st.session_state["vorstand_jahresgehalt"] = vorstand_gehalt
-
-    st.divider()
-
-    # --- Arbeitgeber-Kostenfaktor ---
-    st.subheader("Arbeitgeber-Kostenfaktor")
-    st.caption(
-        "Aufschlag auf das Bruttogehalt für Sozialabgaben, "
-        "Zusatzversorgung und sonstige Arbeitgeberkosten."
-    )
-
-    employer_factor = st.number_input(
-        "Kostenfaktor",
-        min_value=1.0,
-        max_value=2.0,
-        value=st.session_state.get("employer_cost_factor", EMPLOYER_COST_FACTOR),
-        step=0.01,
-        format="%.2f",
-        key="input_employer_factor",
-        help="1.25 bedeutet 25% Aufschlag auf das Bruttogehalt",
-    )
-    st.session_state["employer_cost_factor"] = employer_factor
+        if st.form_submit_button("Simulations-Parameter speichern"):
+            new_sim_settings = {
+                "horizon_months": s_horizon,
+                "retirement_age": s_retire_age,
+                "early_retirement_share": s_early_retire,
+                "hiring_rate_pa": s_hiring_rate,
+                "time_to_fill_months": s_time_to_fill,
+                "azubi_intake_per_year": s_azubi_intake,
+                # Preserve other keys if they exist in defaults but not here
+                "azubi_duration_months": sim_settings.get("azubi_duration_months", 36),
+                "azubi_takeover_rate": sim_settings.get("azubi_takeover_rate", 0.70),
+            }
+            set_setting("simulation", new_sim_settings)
+            st.success("Simulations-Parameter gespeichert. Bitte Layout/Daten neu laden.")
 
     st.divider()
 
@@ -170,6 +169,79 @@ def render_settings_page():
         help="Schließt Personen in Erziehungszeit aus (OrgEinheit 9975)",
     )
     st.session_state["exclude_erziehungszeit"] = st.session_state["cb_exclude_erziehungszeit"]
+
+    st.divider()
+
+    # --- TVÖD-Status ---
+    st.subheader("Entgelt & Kosten")
+    st.caption("Konfiguration für Gehaltsberechnungen und TVöD.")
+
+    tvoed_available = st.session_state.get("tvoed_available", False)
+    tvoed_lookup = st.session_state.get("tvoed_lookup", {})
+
+    if tvoed_available:
+        st.success(
+            f"TVöD-Tabelle geladen: {len(tvoed_lookup)} Einträge "
+            f"(Gruppe x Stufe Kombinationen)"
+        )
+        with st.expander("Geladene Tarifgruppen anzeigen"):
+            groups = sorted(set(g for g, _ in tvoed_lookup.keys()))
+            st.write(", ".join(groups))
+    else:
+        st.warning(
+            "TVöD-Tabelle nicht verfügbar. "
+            "Kosten werden aus approximierten Fallback-Werten berechnet. "
+            "Legen Sie die Datei TVÖD.xlsx im Ordner Original-Daten ab, "
+            "um exakte Werte zu verwenden."
+        )
+    
+    st.markdown("##### Arbeitgeber-Kostenfaktor")
+    employer_factor = st.number_input(
+        "Kostenfaktor",
+        min_value=1.0,
+        max_value=2.0,
+        value=st.session_state.get("employer_cost_factor", EMPLOYER_COST_FACTOR),
+        step=0.01,
+        format="%.2f",
+        key="input_employer_factor",
+        help="1.25 bedeutet 25% Aufschlag auf das Bruttogehalt",
+        label_visibility="collapsed"
+    )
+    st.session_state["employer_cost_factor"] = employer_factor
+    st.caption("Aufschlag für Sozialabgaben (z.B. 1.25 = +25%)")
+
+    st.markdown("##### Sonderfall-Gehälter")
+    st.caption("Manuelle Jahresgehälter für nicht-TVöD Gruppen.")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("**Auszubildende** (TrfGr = TVAÖD)")
+        azubi_gehalt = st.number_input(
+            "Azubi-Jahresgehalt (brutto)",
+            min_value=0.0,
+            max_value=100000.0,
+            value=st.session_state.get("azubi_jahresgehalt", DEFAULT_AZUBI_JAHRESGEHALT),
+            step=100.0,
+            format="%.2f",
+            key="input_azubi_gehalt",
+            help="Typisches Azubi-Gehalt im TVöD liegt bei ca. 1.200 EUR/Monat (14.400 EUR/Jahr)",
+        )
+        st.session_state["azubi_jahresgehalt"] = azubi_gehalt
+
+    with col2:
+        st.markdown("**Vorstand** (TrfGr = 1)")
+        vorstand_gehalt = st.number_input(
+            "Vorstand-Jahresgehalt (brutto)",
+            min_value=0.0,
+            max_value=1000000.0,
+            value=st.session_state.get("vorstand_jahresgehalt", DEFAULT_VORSTAND_JAHRESGEHALT),
+            step=1000.0,
+            format="%.2f",
+            key="input_vorstand_gehalt",
+            help="Vorstandsvergütung ist nicht im TVöD geregelt",
+        )
+        st.session_state["vorstand_jahresgehalt"] = vorstand_gehalt
 
     st.divider()
 

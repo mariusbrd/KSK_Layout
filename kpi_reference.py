@@ -17,13 +17,27 @@ from pathlib import Path
 # KONSTANTEN
 # =============================================================================
 
-STICHTAG = pd.Timestamp("2025-01-30")
+from utils.settings_loader import get_setting
+
+# Stichtag aus Settings laden oder Default verwenden
+_stichtag_str = get_setting("stichtag")
+if _stichtag_str:
+    STICHTAG = pd.Timestamp(_stichtag_str)
+else:
+    STICHTAG = pd.Timestamp("2025-01-30")
+
+def get_current_stichtag() -> pd.Timestamp:
+    """Holt den aktuellen Stichtag frisch aus den Settings."""
+    val = get_setting("stichtag")
+    if val:
+        return pd.Timestamp(val)
+    return pd.Timestamp("2025-01-30")
 VOLLZEIT_REFERENZ = 39.0  # Wochenstunden
 ID_PAD_LENGTH = 6
 
 # Pfade zu Original-Daten
 BASE_DIR = Path(__file__).parent
-ORIGINAL_DATA_DIR = BASE_DIR / "Original-Daten"
+ORIGINAL_DATA_DIR = BASE_DIR.parent / "Original-Daten"
 
 ORIGINAL_FILES = {
     "mitarbeiter": ORIGINAL_DATA_DIR / "Mitarbeiter.xlsx",

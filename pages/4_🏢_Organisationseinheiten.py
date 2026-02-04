@@ -456,7 +456,7 @@ def render_unit_detail_section(org_unit: str):
 
     st.dataframe(
         df_display,
-        use_container_width=True,
+        width="stretch",
         height=400,
         hide_index=True
     )
@@ -748,7 +748,7 @@ with tab2:
 
     st.dataframe(
         display_df,
-        use_container_width=True,
+        width="stretch",
         height=400,
         hide_index=True,
         column_config={
@@ -1039,7 +1039,7 @@ with tab3:
 
     st.dataframe(
         display_qual_df,
-        use_container_width=True,
+        width="stretch",
         height=400,
         hide_index=True,
         column_config={

@@ -40,17 +40,56 @@ def get_unique_employees(snapshot_df: pd.DataFrame) -> pd.DataFrame:
     Ein Mitarbeiter kann auf mehreren Planstellen stehen.
     Für personenbezogene KPIs (Headcount, FTE, Teilzeit, Alter)
     brauchen wir eine deduplizierte Sicht.
+    
+    WICHTIG: Sollarbeitszeit und Soll_FTE werden SUMMIERT über alle
+    Planstellen einer Person, bevor dedupliziert wird.
+    (Readme_Planstellen_Excel.md: "Bei Kapazitätsberechnungen: Planstellen summieren")
 
     Returns:
-        DataFrame mit einer Zeile pro Person (erste Planstelle behalten).
+        DataFrame mit einer Zeile pro Person, Sollarbeitszeit/Soll_FTE summiert.
     """
-    besetzt = snapshot_df[~snapshot_df["Is_Vacant"]].copy()
-    if "PersNr" not in besetzt.columns:
+    # Idempotenz-Check: Wenn bereits unique Mitarbeiter-Liste, gib direkt zurück
+    # Dies verhindert Datenverlust bei erneutem Aufruf (z.B. durch verschachtelte Berechnungen)
+    if "PersNr" in snapshot_df.columns and snapshot_df["PersNr"].is_unique:
+        # Prüfe ob auch keine Vakanzen enthalten sind (Vakanzen haben meist NaN als PersNr, also nicht unique)
+        # Aber sicherheitshalber:
+        if "Is_Vacant" in snapshot_df.columns:
+            if not snapshot_df["Is_Vacant"].any():
+                return snapshot_df
+        else:
+            # Ohne Is_Vacant Spalte aber unique PersNr -> behaupte es ist ok
+            return snapshot_df
+
+    besetzt = snapshot_df[~snapshot_df["Is_Vacant"]].copy() if "Is_Vacant" in snapshot_df.columns else snapshot_df.copy()
+    if "PersNr" not in besetzt.columns or besetzt.empty:
         return besetzt
 
-    # Dedupliziere: Behalte erste Planstelle pro Person
-    unique = besetzt.drop_duplicates(subset="PersNr", keep="first")
-    return unique
+    # Felder die summiert werden müssen (Planstellen-basiert)
+    sum_cols = []
+    if "Sollarbeitszeit" in besetzt.columns:
+        sum_cols.append("Sollarbeitszeit")
+    if "Soll_FTE" in besetzt.columns:
+        sum_cols.append("Soll_FTE")
+    
+    # Wenn es Felder zum Summieren gibt, aggregiere pro Person
+    if sum_cols:
+        # Berechne Summen pro Person
+        sums = besetzt.groupby("PersNr")[sum_cols].sum().reset_index()
+        sums.columns = ["PersNr"] + [f"{col}_sum" for col in sum_cols]
+        
+        # Dedupliziere: Behalte erste Planstelle pro Person (für andere Felder)
+        unique = besetzt.drop_duplicates(subset="PersNr", keep="first").copy()
+        
+        # Ersetze die Einzelwerte durch Summen
+        unique = unique.merge(sums, on="PersNr", how="left")
+        for col in sum_cols:
+            unique[col] = unique[f"{col}_sum"]
+            unique = unique.drop(columns=[f"{col}_sum"])
+        
+        return unique
+    else:
+        # Fallback: Einfache Deduplizierung
+        return besetzt.drop_duplicates(subset="PersNr", keep="first")
 
 
 def compute_headcount(snapshot_df: pd.DataFrame) -> int:
@@ -171,9 +210,16 @@ def compute_verrentung(snapshot_df: pd.DataFrame, stichtag: pd.Timestamp = STICH
     if "GebDatum" not in emp.columns:
         return {"bis_2030": 0, "bis_2035": 0, "bis_2040": 0}
 
-    renten_datum = emp["GebDatum"].apply(
-        lambda x: x + pd.DateOffset(years=67) if pd.notna(x) else pd.NaT
-    )
+    def get_renten_datum(row):
+        # 1. Priorität: Echtes Vertragsende aus ATZ
+        if "atz_end_date" in row and pd.notna(row["atz_end_date"]):
+            return row["atz_end_date"]
+        # 2. Fallback: Regelaltersgrenze 67
+        if pd.notna(row.get("GebDatum")):
+            return row["GebDatum"] + pd.DateOffset(years=67)
+        return pd.NaT
+
+    renten_datum = emp.apply(get_renten_datum, axis=1)
 
     result = {}
     for key, end_date in [
