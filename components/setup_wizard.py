@@ -16,6 +16,7 @@ from datetime import datetime
 # Path setup
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from components.ui_compat import dataframe_compat
 from dataloader.jobfamily_matcher import (
     load_jobfamily_definitions,
     save_jobfamily_definitions,
@@ -582,7 +583,7 @@ def render_import_step():
 
             else:  # Excel oder CSV
                 st.markdown("### Vorschau der Daten")
-                st.dataframe(preview_df, width="stretch")
+                dataframe_compat(preview_df, width="stretch")
 
                 st.markdown("---")
                 st.markdown("### Spalten zuordnen")
@@ -1337,7 +1338,7 @@ def render_review_step(df: Optional[pd.DataFrame] = None):
         with st.expander(f"Nicht zugeordnete Jobs anzeigen ({min(50, stats['unmapped'])} von {stats['unmapped']})", expanded=False):
             # Zeige als Liste
             unmapped_df = pd.DataFrame({"Job-Titel": stats["unmapped_jobs"]})
-            st.dataframe(unmapped_df, width="stretch", hide_index=True)
+            dataframe_compat(unmapped_df, width="stretch", hide_index=True)
 
     st.markdown("---")
 

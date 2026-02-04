@@ -13,6 +13,7 @@ from typing import Dict
 
 # Import components
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from components.ui_compat import button_compat, dataframe_compat
 from dataloader.loader import load_and_prepare_data
 from components.sidebar import render_global_filters, apply_filters, get_filter_summary
 from components.toggle import format_value
@@ -335,7 +336,7 @@ def render_definitions_tab(df: pd.DataFrame):
             # Laden-Button
             col1, col2 = st.columns([1, 3])
             with col1:
-                if st.button("🚀 Laden", type="primary", width="stretch"):
+                if button_compat("🚀 Laden", type="primary", width="stretch"):
                     new_definitions, message = load_standard_set(selected_set)
 
                     if new_definitions:
@@ -399,7 +400,7 @@ def render_definitions_tab(df: pd.DataFrame):
                 key="new_family_qual"
             )
 
-        if st.button("💾 Jobfamily speichern", key="save_new_family"):
+        if button_compat("💾 Jobfamily speichern", key="save_new_family"):
             if new_name and new_patterns:
                 patterns_list = [p.strip() for p in new_patterns.split("\n") if p.strip()]
 
@@ -458,7 +459,7 @@ def render_definitions_tab(df: pd.DataFrame):
                 st.write(f"**Zugeordnete Stellen:** {count}")
 
             with col2:
-                if st.button("🗑️ Löschen", key=f"delete_{family_name}"):
+                if button_compat("🗑️ Löschen", key=f"delete_{family_name}"):
                     if "jobfamilies" in st.session_state["jobfamily_definitions"]:
                         del st.session_state["jobfamily_definitions"]["jobfamilies"][family_name]
                     else:
@@ -475,7 +476,7 @@ def render_definitions_tab(df: pd.DataFrame):
     unmapped = get_unmapped_planstellen(df)
 
     if not unmapped.empty:
-        st.dataframe(
+        dataframe_compat(
             unmapped,
             width="stretch",
             hide_index=True,
@@ -661,7 +662,7 @@ def render_qualifications_tab(df: pd.DataFrame):
             "Gap (Stufen)"
         ]
 
-        st.dataframe(
+        dataframe_compat(
             display_df,
             width="stretch",
             hide_index=True,

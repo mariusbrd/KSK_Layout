@@ -22,6 +22,7 @@ from typing import Dict
 # Path setup
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from components.ui_compat import dataframe_compat, download_button_compat
 from dataloader.loader import load_and_prepare_data
 from components.sidebar import render_global_filters, apply_filters, get_filter_summary
 from config.settings import (
@@ -1149,13 +1150,13 @@ def render_education_range_section(df: pd.DataFrame,
             "Planstelle", "min_label", "n_min", "mean_label", "max_label", "n_max", "count"
         ]].copy()
         display_df.columns = ["Planstelle", "Min", "n(Min)", "Mittel", "Max", "n(Max)", "Gesamt"]
-        st.dataframe(display_df, width="stretch", hide_index=True)
+        dataframe_compat(display_df, width="stretch", hide_index=True)
 
         csv_data = export_to_csv(
             range_df[["Planstelle", "min_label", "n_min", "max_label", "n_max",
                        "mean_label", "min_ord", "max_ord", "mean_ord", "count"]]
         )
-        st.download_button(
+        download_button_compat(
             label="CSV Download",
             data=csv_data,
             file_name=f"{key_prefix}_qualifikation_spannweite.csv",
@@ -1279,10 +1280,10 @@ def render_single_breakdown(df: pd.DataFrame, dimension_name: str, dimension_col
                         if pd.notna(x) and x != 0 else "-"
                     )
 
-            st.dataframe(display_df, width="stretch", hide_index=True)
+            dataframe_compat(display_df, width="stretch", hide_index=True)
 
             csv_data = export_to_csv(breakdown_df)
-            st.download_button(
+            download_button_compat(
                 label="CSV Download",
                 data=csv_data,
                 file_name=f"{key_prefix}_verguetungsklassen.csv",
@@ -1315,10 +1316,10 @@ def render_single_breakdown(df: pd.DataFrame, dimension_name: str, dimension_col
         with col_table:
             st.markdown("**Datentabelle**")
             display_df = format_dataframe_for_display(breakdown_df, value_type)
-            st.dataframe(display_df, width="stretch", hide_index=True)
+            dataframe_compat(display_df, width="stretch", hide_index=True)
 
             csv_data = export_to_csv(breakdown_df)
-            st.download_button(
+            download_button_compat(
                 label="CSV Download",
                 data=csv_data,
                 file_name=f"{key_prefix}_{dimension_name.lower().replace(' ', '_')}.csv",
@@ -1386,10 +1387,10 @@ def render_single_comparison(df: pd.DataFrame, dimension_name: str, dimension_co
                         if pd.notna(x) and x != 0 else "-"
                     )
 
-            st.dataframe(display_df, width="stretch", hide_index=True)
+            dataframe_compat(display_df, width="stretch", hide_index=True)
 
             csv_data = export_to_csv(breakdown_df)
-            st.download_button(
+            download_button_compat(
                 label="CSV Download",
                 data=csv_data,
                 file_name=f"{key_prefix}_verguetungsklassen.csv",
@@ -1416,10 +1417,10 @@ def render_single_comparison(df: pd.DataFrame, dimension_name: str, dimension_co
         with col_table:
             st.markdown("**Datentabelle**")
             display_df = format_dataframe_for_display(breakdown_df, value_type)
-            st.dataframe(display_df, width="stretch", hide_index=True)
+            dataframe_compat(display_df, width="stretch", hide_index=True)
 
             csv_data = export_to_csv(breakdown_df)
-            st.download_button(
+            download_button_compat(
                 label="CSV Download",
                 data=csv_data,
                 file_name=f"{key_prefix}_{dimension_name.lower().replace(' ', '_')}.csv",

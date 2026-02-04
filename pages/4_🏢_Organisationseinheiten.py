@@ -11,6 +11,7 @@ import os
 
 # Import components
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from components.ui_compat import dataframe_compat
 from dataloader.loader import load_and_prepare_data
 from components.sidebar import render_global_filters, apply_filters, get_filter_summary
 from components.kpi_card import kpi_card
@@ -454,7 +455,7 @@ def render_unit_detail_section(org_unit: str):
     df_display["Vakant"] = df_display["Vakant"].map({True: "✓", False: ""})
     df_display["Geschlecht"] = df_display["Geschlecht"].fillna("")
 
-    st.dataframe(
+    dataframe_compat(
         df_display,
         width="stretch",
         height=400,
@@ -746,7 +747,7 @@ with tab2:
 
     display_df = display_df.sort_values("Risk_Score", ascending=False)
 
-    st.dataframe(
+    dataframe_compat(
         display_df,
         width="stretch",
         height=400,
@@ -1037,7 +1038,7 @@ with tab3:
 
     display_qual_df = display_qual_df.sort_values("Headcount", ascending=False)
 
-    st.dataframe(
+    dataframe_compat(
         display_qual_df,
         width="stretch",
         height=400,
@@ -1280,7 +1281,7 @@ with tab4:
                 display_yoy["Kosten_Änderung"] = display_yoy["Kosten_Änderung"].apply(lambda x: f"{x:,.0f}€")
                 display_yoy["Kosten_Änderung_%"] = display_yoy["Kosten_Änderung_%"].round(1).astype(str) + "%"
 
-                st.dataframe(
+                dataframe_compat(
                     display_yoy,
                     use_container_width=True,
                     height=300,

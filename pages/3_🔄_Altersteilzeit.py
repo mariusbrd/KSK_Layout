@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from components.ui_compat import download_button_compat
 from dataloader.loader import load_and_prepare_data
 from config.settings import format_number, format_currency, format_percent, get_status_color, THRESHOLDS
 from components.sidebar import render_global_filters, apply_filters, get_filter_summary
@@ -323,7 +324,7 @@ def render_detail_table(df: pd.DataFrame, view_mode: str):
     # Tabelle anzeigen
     st.dataframe(
         display_df,
-        width="stretch",
+        use_container_width=True,
         height=400
     )
 
@@ -332,7 +333,7 @@ def render_detail_table(df: pd.DataFrame, view_mode: str):
 
     with col2:
         csv = display_df.to_csv(index=False).encode('utf-8')
-        st.download_button(
+        download_button_compat(
             label="📥 CSV Export",
             data=csv,
             file_name=f"atz_detailliste_{datetime.now().strftime('%Y%m%d')}.csv",

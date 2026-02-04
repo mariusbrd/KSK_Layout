@@ -213,7 +213,7 @@ def main():
     with tab1:
         st.plotly_chart(charts.get("line_headcount_mak"), use_container_width=True)
         st.plotly_chart(charts.get("bar_abgaenge_reasons"), use_container_width=True)
-        st.dataframe(forecast_kpis, width="stretch")
+        st.dataframe(forecast_kpis, use_container_width=True)
 
     with tab2:
         for key, fig in charts.items():
@@ -228,7 +228,7 @@ def main():
                 if df is None or df.empty:
                     continue
                 st.markdown(f"**{name.capitalize()}**")
-                st.dataframe(df, width="stretch")
+                st.dataframe(df, use_container_width=True)
 
     with tab3:
         if events.empty:
@@ -238,7 +238,7 @@ def main():
                 reason_df = events[events["reason_label"] == reason]
                 safe_reason = "".join([c if c.isalnum() else "_" for c in reason]).strip("_").lower()
                 with st.expander(f"{reason} ({len(reason_df)})", expanded=False):
-                    st.dataframe(reason_df, width="stretch")
+                    st.dataframe(reason_df, use_container_width=True)
                     st.download_button(
                         label=f"CSV Export {reason}",
                         data=to_csv_bytes(reason_df),
