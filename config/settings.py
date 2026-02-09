@@ -102,40 +102,42 @@ TARIFF_GROUPS = [
 
 TARIFF_STEPS = [1, 2, 3, 4, 5, 6]
 
-# Fallback-Jahresgehälter nach Tarifgruppe (TVöD-S, Stufe 4, ca.-Werte).
+# Fallback-Jahresgehälter nach Tarifgruppe (TVöD-Bund 2026, Stufe 4, Monat×12).
+# Quelle: Original-Daten/TVÖD.xlsx – Entgelttabelle TVÖD Bund 2026.
 # HINWEIS: Diese Werte werden nur verwendet, wenn TVÖD.xlsx nicht verfügbar ist.
 # Bei vorhandener TVÖD.xlsx werden die echten Tabellenwerte genutzt.
 BASE_SALARY: Dict[str, int] = {
-    "E1": 28000,
-    "E2": 31000,
-    "E2U": 33000,
-    "E3": 34000,
-    "E4": 36000,
-    "E5": 39000,
-    "E6": 42000,
-    "E7": 45000,
-    "E8": 48000,
-    "E9A": 52000,
-    "E9B": 54000,
-    "E9C": 56000,
-    "E10": 60000,
-    "E11": 65000,
-    "E12": 72000,
-    "E13": 78000,
-    "E14": 85000,
-    "E15": 95000,
-    "E15U": 100000,
+    "E1":   31820,  # 2651.64 × 12
+    "E2":   37213,  # 3101.04 × 12
+    "E2U":  38809,  # 3234.12 × 12
+    "E3":   39996,  # 3332.99 × 12
+    "E4":   41492,  # 3457.66 × 12
+    "E5":   43053,  # 3587.78 × 12
+    "E6":   44631,  # 3719.22 × 12
+    "E7":   45945,  # 3828.76 × 12
+    "E8":   47909,  # 3992.40 × 12
+    "E9A":  50356,  # 4196.35 × 12
+    "E9B":  55298,  # 4608.13 × 12
+    "E9C":  59503,  # 4958.59 × 12
+    "E10":  62176,  # 5181.37 × 12
+    "E11":  65449,  # 5454.10 × 12
+    "E12":  71086,  # 5923.82 × 12
+    "E13":  74128,  # 6177.31 × 12
+    "E14":  79129,  # 6594.12 × 12
+    "E15":  86573,  # 7214.39 × 12
+    "E15U": 108002, # 9000.15 × 12
 }
 
 # Fallback-Stufenmultiplikatoren (relativ zu Stufe 4).
+# Durchschnittswerte über alle TVöD-Bund-2026-Tarifgruppen.
 # Werden nur verwendet, wenn TVÖD.xlsx nicht verfügbar ist.
 STEP_MULTIPLIER: Dict[int, float] = {
     1: 0.85,
-    2: 0.92,
-    3: 0.97,
+    2: 0.91,
+    3: 0.96,
     4: 1.00,
-    5: 1.05,
-    6: 1.12,
+    5: 1.07,
+    6: 1.11,
 }
 
 # Arbeitgeber-Kostenfaktor (inkl. Sozialabgaben etc.)

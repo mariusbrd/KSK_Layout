@@ -385,7 +385,7 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
                 select_all_key="atz_select_all",
                 reset_key="atz_reset",
                 on_select_all=lambda: st.session_state.__setitem__("selected_atz_status", atz_options.copy()),
-                on_reset=lambda: st.session_state.__setitem__("selected_atz_status", atz_options.copy()),
+                on_reset=lambda: st.session_state.__setitem__("selected_atz_status", []),
             )
 
             selected_atz = st.multiselect(

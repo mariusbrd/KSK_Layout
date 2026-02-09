@@ -39,7 +39,7 @@ def initialize_session_state():
         st.session_state["selected_genders"] = ["m", "w"]
 
     if "selected_employment" not in st.session_state:
-        st.session_state["selected_employment"] = ["Vollzeit", "Teilzeit"]
+        st.session_state["selected_employment"] = ["Vollzeit", "Teilzeit", "Inaktiv"]
 
     if "selected_atz_status" not in st.session_state:
         st.session_state["selected_atz_status"] = ["Kein ATZ", "Arbeitsphase", "Freistellungsphase"]

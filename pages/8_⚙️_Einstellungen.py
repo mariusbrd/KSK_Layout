@@ -18,6 +18,7 @@ from config.settings import (
     DEFAULT_AZUBI_JAHRESGEHALT, DEFAULT_VORSTAND_JAHRESGEHALT,
     format_currency,
 )
+from kpi_reference import STICHTAG_DEFAULT
 
 
 def render_settings_page():
@@ -26,19 +27,17 @@ def render_settings_page():
 
     st.divider()
 
-    st.divider()
-
     # --- Allgemeine Einstellungen (Stichtag) ---
     st.subheader("Allgemeine Einstellungen")
-    
+
     from utils.settings_loader import get_setting, set_setting, save_user_settings, load_user_settings
-    
+
     # Stichtag
-    current_stichtag_str = get_setting("stichtag", "2025-01-30")
+    current_stichtag_str = get_setting("stichtag", STICHTAG_DEFAULT)
     try:
         current_stichtag = pd.to_datetime(current_stichtag_str).date()
-    except:
-        current_stichtag = pd.to_datetime("2025-01-30").date()
+    except Exception:
+        current_stichtag = pd.to_datetime(STICHTAG_DEFAULT).date()
         
     new_stichtag = st.date_input(
         "Stichtag (Reference Date)",

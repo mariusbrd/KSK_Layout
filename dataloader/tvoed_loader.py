@@ -15,16 +15,7 @@ from typing import Dict, Tuple
 import pandas as pd
 import streamlit as st
 
-# FALLBACK CONSTANTS
-# Used when TVÖD table is missing or specific entry not found.
-BASE_SALARY = {
-    "E1": 25000, "E2": 30000, "E3": 35000, "E4": 38000, "E5": 40000,
-    "E6": 42000, "E7": 45000, "E8": 48000, "E9A": 50000, "E9B": 52000,
-    "E10": 55000, "E11": 60000, "E12": 65000, "E13": 70000, "E14": 80000, "E15": 90000,
-    "1": 200000, # Vorstand
-}
-STEP_MULTIPLIER = {1: 1.0, 2: 1.1, 3: 1.2, 4: 1.3, 5: 1.4, 6: 1.5}
-EMPLOYER_COST_FACTOR = 1.23
+from config.settings import BASE_SALARY, STEP_MULTIPLIER, EMPLOYER_COST_FACTOR
 
 def normalize_group_name(raw: str) -> str:
     """

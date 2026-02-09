@@ -659,8 +659,6 @@ def calculate_cost_vectorized(df: pd.DataFrame, tvoed_lookup: Dict) -> pd.DataFr
     Berechnet Total_Cost_Year mittels vektorisierter Operationen (Merge statt Apply).
     100x schneller als iteratives apply().
     """
-    # Import Constants locally or ensure global
-    from dataloader.tvoed_loader import BASE_SALARY, STEP_MULTIPLIER, EMPLOYER_COST_FACTOR
     import numpy as np
     
     df_out = df.copy()

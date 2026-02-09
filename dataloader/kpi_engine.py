@@ -15,18 +15,18 @@ Source of Truth: Readme_Kennzahlen-Definition.md
 import pandas as pd
 import numpy as np
 from typing import Dict, Set, Optional
+from kpi_reference import get_current_stichtag
 
 # =============================================================================
-# STICHTAG
+# STICHTAG (zentral aus kpi_reference.py)
 # =============================================================================
 
-STICHTAG = pd.Timestamp("2025-01-30")
 VOLLZEIT_REFERENZ = 39.0
 
 
 def get_stichtag() -> pd.Timestamp:
-    """Gibt den verbindlichen Stichtag zurück."""
-    return STICHTAG
+    """Gibt den konfigurierten Stichtag zurück (aus kpi_reference)."""
+    return get_current_stichtag()
 
 
 # =============================================================================
@@ -48,18 +48,6 @@ def get_unique_employees(snapshot_df: pd.DataFrame) -> pd.DataFrame:
     Returns:
         DataFrame mit einer Zeile pro Person, Sollarbeitszeit/Soll_FTE summiert.
     """
-    # Idempotenz-Check: Wenn bereits unique Mitarbeiter-Liste, gib direkt zurück
-    # Dies verhindert Datenverlust bei erneutem Aufruf (z.B. durch verschachtelte Berechnungen)
-    if "PersNr" in snapshot_df.columns and snapshot_df["PersNr"].is_unique:
-        # Prüfe ob auch keine Vakanzen enthalten sind (Vakanzen haben meist NaN als PersNr, also nicht unique)
-        # Aber sicherheitshalber:
-        if "Is_Vacant" in snapshot_df.columns:
-            if not snapshot_df["Is_Vacant"].any():
-                return snapshot_df
-        else:
-            # Ohne Is_Vacant Spalte aber unique PersNr -> behaupte es ist ok
-            return snapshot_df
-
     besetzt = snapshot_df[~snapshot_df["Is_Vacant"]].copy() if "Is_Vacant" in snapshot_df.columns else snapshot_df.copy()
     if "PersNr" not in besetzt.columns or besetzt.empty:
         return besetzt
@@ -200,12 +188,14 @@ def compute_alter_kpis(snapshot_df: pd.DataFrame) -> Dict:
     }
 
 
-def compute_verrentung(snapshot_df: pd.DataFrame, stichtag: pd.Timestamp = STICHTAG) -> Dict:
+def compute_verrentung(snapshot_df: pd.DataFrame, stichtag: pd.Timestamp = None) -> Dict:
     """
     Verrentungswelle: Regelaltersgrenze 67.
     Zählt Personen deren Rentendatum (GebDatum + 67y) zwischen
     Stichtag und Jahresende des Horizonts liegt.
     """
+    if stichtag is None:
+        stichtag = get_current_stichtag()
     emp = get_unique_employees(snapshot_df)
     if "GebDatum" not in emp.columns:
         return {"bis_2030": 0, "bis_2035": 0, "bis_2040": 0}

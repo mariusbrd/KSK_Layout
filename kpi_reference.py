@@ -5,7 +5,7 @@ Dieses Modul ist die EINZIGE Quelle der Wahrheit für KPI-Berechnungen.
 Alle Streamlit-Seiten sollen diese Funktionen nutzen.
 
 Source of Truth: Readme_Kennzahlen-Definition.md
-Stichtag: 2025-01-30 (fest, kein Systemdatum)
+Stichtag: Wird aus user_settings.json gelesen (konfigurierbar über Einstellungsseite).
 """
 
 import pandas as pd
@@ -19,19 +19,32 @@ from pathlib import Path
 
 from utils.settings_loader import get_setting
 
-# Stichtag aus Settings laden oder Default verwenden
-_stichtag_str = get_setting("stichtag")
-if _stichtag_str:
-    STICHTAG = pd.Timestamp(_stichtag_str)
-else:
-    STICHTAG = pd.Timestamp("2025-01-30")
+# Einziger hardcoded Stichtag-Default im gesamten Projekt.
+# Alle anderen Module sollen get_current_stichtag() verwenden.
+STICHTAG_DEFAULT = "2025-01-30"
+
 
 def get_current_stichtag() -> pd.Timestamp:
-    """Holt den aktuellen Stichtag frisch aus den Settings."""
+    """Holt den aktuellen Stichtag aus den User-Settings.
+
+    Fallback auf STICHTAG_DEFAULT wenn kein Wert konfiguriert ist.
+    Dies ist die einzige Funktion, die alle Module nutzen sollen.
+    """
     val = get_setting("stichtag")
     if val:
         return pd.Timestamp(val)
-    return pd.Timestamp("2025-01-30")
+    return pd.Timestamp(STICHTAG_DEFAULT)
+
+
+# Abwärtskompatibilität: STICHTAG-Modul-Variable und get_stichtag()
+STICHTAG = get_current_stichtag()
+
+
+def get_stichtag() -> pd.Timestamp:
+    """Alias für get_current_stichtag() (Abwärtskompatibilität)."""
+    return get_current_stichtag()
+
+
 VOLLZEIT_REFERENZ = 39.0  # Wochenstunden
 ID_PAD_LENGTH = 6
 
