@@ -175,6 +175,7 @@ def _schedule_new_atz_cases(
         return atz_pivot
 
     eligible_age_min = int(atz_params.get("atz_eligible_age_min", 55))
+    eligible_age_max = int(atz_params.get("atz_eligible_age_max", 60))  # F02: Upper bound
     ar_months = int(round(float(atz_params.get("atz_duration_ar_years", 2.5)) * 12))
     fr_months = int(round(float(atz_params.get("atz_duration_fr_years", 2.5)) * 12))
 
@@ -182,7 +183,8 @@ def _schedule_new_atz_cases(
         (df_state["active"] == True) &
         (~df_state["in_atz"]) &
         (~df_state["status_ruhend"]) &
-        (df_state["age"] >= eligible_age_min)
+        (df_state["age"] >= eligible_age_min) &
+        (df_state["age"] <= eligible_age_max)  # F02: Apply upper bound
     ]
 
     if eligible.empty:

@@ -135,8 +135,8 @@ def main():
         # st.json(e) # Debug
         return
     
-    # Use the filtered dataframe as input for the forecast
-    df_ma = df_ma_filtered
+    # df_ma is already set to aggregated employee-level data (line 128)
+    # Do NOT overwrite with df_ma_filtered - that discards aggregation!
 
     params = default_params()
 
@@ -159,6 +159,7 @@ def main():
         with st.expander("ATZ-Parameter"):
             new_atz = st.number_input("Neue ATZ-Fälle pro Jahr", value=int(params["atz"]["new_atz_cases_per_year"]), step=1)
             eligible_age = st.number_input("ATZ-Mindestalter", value=int(params["atz"]["atz_eligible_age_min"]), step=1)
+            eligible_age_max = st.number_input("ATZ-Höchstalter", value=int(params["atz"]["atz_eligible_age_max"]), step=1)
             ar_years = st.number_input("AR-Dauer (Jahre)", value=float(params["atz"]["atz_duration_ar_years"]), step=0.5)
             fr_years = st.number_input("FR-Dauer (Jahre)", value=float(params["atz"]["atz_duration_fr_years"]), step=0.5)
 
@@ -200,6 +201,7 @@ def main():
         "atz": {
             "new_atz_cases_per_year": new_atz,
             "atz_eligible_age_min": eligible_age,
+            "atz_eligible_age_max": eligible_age_max,  # F02: Pass upper bound
             "atz_duration_ar_years": ar_years,
             "atz_duration_fr_years": fr_years,
         },

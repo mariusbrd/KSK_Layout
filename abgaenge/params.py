@@ -17,6 +17,7 @@ def default_params() -> Dict[str, Any]:
         "atz": {
             "new_atz_cases_per_year": 0,
             "atz_eligible_age_min": 55,
+            "atz_eligible_age_max": 60,  # F02: Upper bound for ATZ eligibility
             "atz_duration_ar_years": 2.5,
             "atz_duration_fr_years": 2.5,
         },
