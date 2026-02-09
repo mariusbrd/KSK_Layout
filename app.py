@@ -89,7 +89,7 @@ def main():
     st.markdown(
         """
         <div style='text-align: center; padding: 1rem 0 2rem 0;'>
-            <h1 style='color: #14b8a6; margin-bottom: 0.5rem;'>📊 HR Pulse</h1>
+            <h1 style='color: #14b8a6; margin-bottom: 0.5rem;'>📊 HR Dashboard</h1>
             <p style='color: #94a3b8; font-size: 1.1rem;'>
                 HR-Analytics Dashboard
             </p>
