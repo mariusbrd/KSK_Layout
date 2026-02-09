@@ -80,6 +80,15 @@ def _build_atz_pivot(df_atz: pd.DataFrame) -> pd.DataFrame:
         ])
 
     df = df_atz.copy()
+    
+    # Harden types
+    if COL_PERSNR in df.columns:
+        df[COL_PERSNR] = df[COL_PERSNR].astype(str)
+        
+    date_cols = [COL_ATZ_BEGINN, COL_ATZ_ENDE, COL_ATZ_VERTRAG_ENDE]
+    for c in date_cols:
+        if c in df.columns:
+            df[c] = pd.to_datetime(df[c], errors="coerce")
 
     ar = df[df[COL_ATZ_PHASE] == "AR"][[COL_PERSNR, COL_ATZ_BEGINN, COL_ATZ_ENDE, COL_ATZ_VERTRAG_ENDE]].copy()
     fr = df[df[COL_ATZ_PHASE] == "FR"][[COL_PERSNR, COL_ATZ_BEGINN, COL_ATZ_ENDE, COL_ATZ_VERTRAG_ENDE]].copy()
@@ -105,10 +114,18 @@ def _get_atz_events_from_schedule(
     if atz_pivot.empty:
         return [], []
 
+    # Ensure robust datetime comparison
+    if "fr_begin" in atz_pivot.columns:
+        atz_pivot["fr_begin"] = pd.to_datetime(atz_pivot["fr_begin"], errors="coerce")
+    if "contract_end" in atz_pivot.columns:
+        atz_pivot["contract_end"] = pd.to_datetime(atz_pivot["contract_end"], errors="coerce")
+
+    # AR to FR transitions in this period
     ar_to_fr = atz_pivot[
         (atz_pivot["fr_begin"] >= period_start) & (atz_pivot["fr_begin"] <= period_end)
     ][COL_PERSNR].dropna().astype(str).unique().tolist()
 
+    # ATZ End (Retirement) in this period
     atz_end = atz_pivot[
         (atz_pivot["contract_end"] >= period_start) & (atz_pivot["contract_end"] <= period_end)
     ][COL_PERSNR].dropna().astype(str).unique().tolist()
@@ -240,8 +257,16 @@ def run_forecast_abgaenge(
 
     # Build baseline state
     df_state = df_ma.copy()
-    df_state = df_ma.copy()
+    
+    # Ensure PersNr column is string BEFORE setting index if possible,
+    # or cast index after.
+    if COL_PERSNR in df_state.columns:
+        df_state[COL_PERSNR] = df_state[COL_PERSNR].astype(str)
+
     df_state = df_state.set_index(COL_PERSNR, drop=True)
+    
+    # Force Index to String (Defensive)
+    df_state.index = df_state.index.astype(str)
     
     # CRITICAL FIX: Ensure unique index to avoid "Series is ambiguous" errors
     # when accessing .loc[persnr] inside loops.

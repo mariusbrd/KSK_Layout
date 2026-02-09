@@ -102,6 +102,7 @@ def main():
             "Austritt": "first",
             "Status kundenindividuell": "first",
             "Sollarbeitszeit": "sum",  # Sum work hours across positions
+            "Organisationseinheit": "first", # Preserve OrgUnit for Analytics
         }
         
         # Optional: include other columns if they exist
@@ -237,6 +238,23 @@ def main():
 
     forecast_kpis = result["forecast_kpis"]
     events = result["events_person_level"]
+    
+    # Feature: Enrich events with Organisationseinheit (Last Known)
+    # df_ma has aggregated info per employee, including OrgUnit (added to agg_dict)
+    if not events.empty and "Organisationseinheit" in df_ma.columns:
+        # Ensure join keys are compatible (str)
+        events["persnr_str"] = events["persnr"].astype(str)
+        df_ma["PersNr_str"] = df_ma["PersNr"].astype(str)
+        
+        events = events.merge(
+            df_ma[["PersNr_str", "Organisationseinheit"]],
+            left_on="persnr_str",
+            right_on="PersNr_str",
+            how="left"
+        )
+        events["Organisationseinheit"] = events["Organisationseinheit"].fillna("Unbekannt")
+        # Cleanup temp cols
+        events.drop(columns=["persnr_str", "PersNr_str"], inplace=True)
 
     # KPI Metrics
     if not forecast_kpis.empty:
@@ -266,6 +284,33 @@ def main():
     with tab1:
         st.plotly_chart(charts.get("line_headcount_mak"), use_container_width=True)
         st.plotly_chart(charts.get("bar_abgaenge_reasons"), use_container_width=True)
+        
+        # New OrgUnit Chart
+        if "Organisationseinheit" in events.columns:
+            st.markdown("### 🏢 Prognostizierte Abgänge nach Organisationseinheit")
+            
+            # Aggregate
+            exclude_units = ["Unbekannt", None]
+            org_events = events[~events["Organisationseinheit"].isin(exclude_units)]
+            if not org_events.empty:
+                org_stats = org_events.groupby("Organisationseinheit").size().reset_index(name="Abgänge")
+                # Top 10 desc
+                org_stats = org_stats.sort_values("Abgänge", ascending=True).tail(15) 
+                
+                import plotly.express as px
+                fig_org = px.bar(
+                    org_stats, 
+                    x="Abgänge", 
+                    y="Organisationseinheit", 
+                    orientation="h",
+                    title="Top 15 Organisationseinheiten nach Abgängen",
+                    text="Abgänge",
+                    color="Abgänge",
+                    color_continuous_scale="Reds"
+                )
+                fig_org.update_layout(yaxis_title=None, showlegend=False)
+                st.plotly_chart(fig_org, use_container_width=True)
+
         st.dataframe(forecast_kpis, use_container_width=True)
 
     with tab2:
