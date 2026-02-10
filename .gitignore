@@ -79,7 +79,6 @@ docs/archive/
 # Config files mit sensiblen Daten
 config/secrets.py
 config/database.ini
-config/user_settings.json
 
 # Dropbox
 .dropbox

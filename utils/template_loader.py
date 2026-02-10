@@ -38,8 +38,8 @@ def get_available_templates() -> List[Dict]:
 
     Returns:
         List[{
-            "id": "banken",
-            "name": "Banken & Finanzdienstleister",
+            "id": "sparkassen",
+            "name": "Sparkassen & Banken",
             "description": "...",
             "icon": "🏦",
             "family_count": 12,
@@ -86,7 +86,7 @@ def load_template(template_id: str) -> Optional[Dict]:
     Laedt ein spezifisches Template.
 
     Args:
-        template_id: ID des Templates (z.B. "banken", "universal")
+        template_id: ID des Templates (z.B. "sparkassen", "universal")
 
     Returns:
         Template-Dictionary oder None wenn nicht gefunden
@@ -399,12 +399,12 @@ def get_standard_sets() -> List[Dict]:
 
     Returns:
         List[{
-            "id": "banken",
-            "name": "Banken & Finanzdienstleister",
-            "description": "10 Job Families fuer Banken",
+            "id": "sparkassen",
+            "name": "Sparkassen & Banken",
+            "description": "10 Job Families fuer Sparkassen",
             "icon": "🏦",
             "family_count": 10,
-            "recommended_for": "Banken, Volksbanken, Kreditinstitute"
+            "recommended_for": "Sparkassen, Volksbanken, Genossenschaftsbanken"
         }]
     """
     templates = get_available_templates()
@@ -423,7 +423,7 @@ def get_standard_sets() -> List[Dict]:
 
         # Empfehlungen je nach Branche
         if template["industry"] == "banking":
-            set_info["recommended_for"] = "Banken, Volksbanken, Kreditinstitute"
+            set_info["recommended_for"] = "Sparkassen, Volksbanken, Genossenschaftsbanken"
         elif template["industry"] == "insurance":
             set_info["recommended_for"] = "Versicherungen, Finanzdienstleister"
         else:
@@ -442,7 +442,7 @@ def load_standard_set(
     Laedt ein Standard-Set und gibt fertige Definitionen zurueck.
 
     Args:
-        set_id: ID des Standard-Sets (z.B. "banken", "universal")
+        set_id: ID des Standard-Sets (z.B. "sparkassen", "universal")
         merge_mode: "replace" = komplett ersetzen, "merge" = zusammenfuehren
 
     Returns:
