@@ -880,7 +880,7 @@ def _build_education_tick_labels():
     """
     Erstellt Tick-Labels für die ordinale Ausbildungsskala.
 
-    Bei geteiltem Rang (z.B. Rang 6 = SPK/Bankbetriebswirt und Bachelor FH)
+    Bei geteiltem Rang (z.B. Rang 6 = Bankbetriebswirt und Bachelor FH)
     werden die Labels mit ' / ' kombiniert.
 
     Returns:
@@ -901,8 +901,8 @@ def _build_education_tick_labels():
         short = [l.replace("Berufsabschluss", "Abschl.")
                   .replace("Berufsausbildung", "Ausb.")
                   .replace("Universität", "Uni")
-                  .replace("Sparkassen/", "SPK/")
-                  .replace("SPK/Bankbetriebswirt", "SPK/BWirt")
+                  .replace("Berufsausbildung", "Ausb.")
+                  .replace("Bankbetriebswirt", "BankBWirt")
                   .replace("Studium Lehrinstitut", "Studium LI")
                  for l in labels]
         tick_labels.append(" / ".join(short))
@@ -1780,7 +1780,7 @@ def inject_print_styles():
 
                 /* Fußzeile */
                 @bottom-left {{
-                    content: "KSK Böblingen";
+                    content: "HR Dashboard";
                     font-size: 8pt;
                     color: #94a3b8;
                 }}
@@ -2034,7 +2034,7 @@ def render_print_header_footer(filter_summary: str):
     # Footer (wird automatisch auf jeder Seite wiederholt)
     st.markdown("""
     <div class="print-footer">
-        <div class="print-footer-left">KSK Böblingen</div>
+        <div class="print-footer-left">HR Dashboard</div>
         <div class="print-footer-center">VERTRAULICH</div>
         <div class="print-footer-right">HR Pulse Dashboard</div>
     </div>

@@ -7,7 +7,7 @@ Generiert realistische HR-Daten die 1:1 die Original-Datenstruktur abbilden:
 - ATZ.xlsx (6 Spalten)
 - Ausbildung.xlsx (4 Spalten)
 
-Die Daten bilden eine süddeutsche Sparkasse/Bank mit ~1200 Mitarbeitenden ab.
+Die Daten bilden eine süddeutsche Bank mit ~1200 Mitarbeitenden ab.
 
 VERSION 2.0 - KORRIGIERT:
 - Azubi-Sollarbeitszeit = 39 (nicht 0.01)
@@ -52,56 +52,37 @@ def normalize_persnr(series: pd.Series) -> pd.Series:
 # =============================================================================
 
 # Organisationseinheiten
+# Organisationseinheiten (Anonymisiert)
 ORG_UNITS = [
-    {"kuerzel": "800", "nr": 50002405, "name": "Steuerung"},
-    {"kuerzel": "801", "nr": 50002406, "name": "Compliance"},
-    {"kuerzel": "802", "nr": 50002407, "name": "Controlling und Rechnungswesen"},
-    {"kuerzel": "803", "nr": 50002408, "name": "CR Controlling"},
-    {"kuerzel": "804", "nr": 50002409, "name": "CR Rechnungswesen"},
+    # Stäbe & Steuerung
+    {"kuerzel": "800", "nr": 50002405, "name": "Unternehmenssteuerung"},
+    {"kuerzel": "801", "nr": 50002406, "name": "Compliance & Recht"},
+    {"kuerzel": "802", "nr": 50002407, "name": "Finanzen & Controlling"},
     {"kuerzel": "810", "nr": 50002410, "name": "Treasury"},
-    {"kuerzel": "815", "nr": 50002411, "name": "Facility Management"},
     {"kuerzel": "820", "nr": 50002412, "name": "Risikomanagement"},
-    {"kuerzel": "826", "nr": 50002413, "name": "Marktfolge Kredit"},
-    {"kuerzel": "830", "nr": 50002414, "name": "Recht"},
-    {"kuerzel": "840", "nr": 50002415, "name": "Rechnungswesen"},
-    {"kuerzel": "850", "nr": 50002416, "name": "Marketing"},
-    {"kuerzel": "025", "nr": 50002417, "name": "Privatkunden Region Nord"},
-    {"kuerzel": "026", "nr": 50002418, "name": "Privatkunden Region Süd"},
-    {"kuerzel": "027", "nr": 50002419, "name": "Privatkunden Region West"},
-    {"kuerzel": "028", "nr": 50002420, "name": "Firmenkunden"},
-    {"kuerzel": "029", "nr": 50002421, "name": "Firmenkunden Spezial"},
-    {"kuerzel": "030", "nr": 50002422, "name": "Baufinanzierung"},
-    {"kuerzel": "031", "nr": 50002423, "name": "Immobiliencenter"},
+    {"kuerzel": "300", "nr": 50002435, "name": "Human Resources"},
+    {"kuerzel": "400", "nr": 50002439, "name": "IT & Organisation"},
+    {"kuerzel": "420", "nr": 50002442, "name": "Interne Revision"},
+    
+    # Markt
+    {"kuerzel": "FK", "nr": 50002418, "name": "Firmenkunden"},
+    {"kuerzel": "Immo", "nr": 50002422, "name": "Immobilienfinanzierung"},
+    {"kuerzel": "RegN", "nr": 50002417, "name": "Privatkunden Region Nord"},
+    {"kuerzel": "RegS", "nr": 50002418, "name": "Privatkunden Region Süd"},
+    {"kuerzel": "RegW", "nr": 50002419, "name": "Privatkunden Region West"},
+    {"kuerzel": "RegO", "nr": 50002420, "name": "Privatkunden Region Ost"},
+    
+    # Marktfolge / Betrieb
+    {"kuerzel": "MFK", "nr": 50002413, "name": "Marktfolge Kredit"},
+    {"kuerzel": "MFP", "nr": 50002444, "name": "Marktfolge Passiv"},
+    {"kuerzel": "ZV", "nr": 50002446, "name": "Zahlungsverkehr"},
+    {"kuerzel": "Serv", "nr": 50002438, "name": "Kundenservice"},
+    
+    # Führung
     {"kuerzel": "100", "nr": 50002424, "name": "Vorstand"},
     {"kuerzel": "110", "nr": 50002425, "name": "Vorstandsstab"},
-    {"kuerzel": "191", "nr": 50002426, "name": "Vertriebssteuerung"},
-    {"kuerzel": "192", "nr": 50002427, "name": "Vertriebsmanagement"},
-    {"kuerzel": "200", "nr": 50002428, "name": "Filiale Hauptstelle"},
-    {"kuerzel": "201", "nr": 50002429, "name": "Filiale Nord"},
-    {"kuerzel": "202", "nr": 50002430, "name": "Filiale Süd"},
-    {"kuerzel": "203", "nr": 50002431, "name": "Filiale West"},
-    {"kuerzel": "204", "nr": 50002432, "name": "Filiale Ost"},
-    {"kuerzel": "205", "nr": 50002433, "name": "SB-Center 1"},
-    {"kuerzel": "206", "nr": 50002434, "name": "SB-Center 2"},
-    {"kuerzel": "300", "nr": 50002435, "name": "Personal und Organisation"},
-    {"kuerzel": "330", "nr": 50002436, "name": "Personalmanagement"},
-    {"kuerzel": "331", "nr": 50002437, "name": "Personalentwicklung"},
-    {"kuerzel": "332", "nr": 50002438, "name": "Personalservice"},
-    {"kuerzel": "400", "nr": 50002439, "name": "IT"},
-    {"kuerzel": "411", "nr": 50002440, "name": "IT Anwendungen"},
-    {"kuerzel": "412", "nr": 50002441, "name": "IT Infrastruktur"},
-    {"kuerzel": "420", "nr": 50002442, "name": "Revision"},
-    {"kuerzel": "500", "nr": 50002443, "name": "Kreditmanagement"},
-    {"kuerzel": "510", "nr": 50002444, "name": "Kreditbearbeitung"},
-    {"kuerzel": "520", "nr": 50002445, "name": "Kreditcontrolling"},
-    {"kuerzel": "600", "nr": 50002446, "name": "Zahlungsverkehr"},
-    {"kuerzel": "610", "nr": 50002447, "name": "Zahlungsverkehr Inland"},
-    {"kuerzel": "620", "nr": 50002448, "name": "Zahlungsverkehr Ausland"},
-    {"kuerzel": "700", "nr": 50002449, "name": "Wertpapiere"},
-    {"kuerzel": "710", "nr": 50002450, "name": "Wertpapierservice"},
-    {"kuerzel": "720", "nr": 50002451, "name": "Vermögensberatung"},
     {"kuerzel": "900", "nr": 50002452, "name": "Sonstige"},
-    {"kuerzel": "9910", "nr": 50031255, "name": "Auszubildende"},  # Azubi-OrgEinheit
+    {"kuerzel": "9910", "nr": 50031255, "name": "Auszubildende"},
 ]
 
 # Altersverteilung
@@ -147,9 +128,9 @@ CONTRACT_TYPES = {
 # Ausbildungsgruppen (basierend auf Original)
 EDUCATION_GROUPS = {
     930: ("kfm Berufsabschluss", 99560, 0.19),
-    931: ("Sparkassen/Bankfachwirt", 99561, 0.17),
+    931: ("Bankfachwirt", 99561, 0.17),
     932: ("Bankberufsabschluss", 99562, 0.17),
-    933: ("SPK/Bankbetriebswirt", 99563, 0.21),
+    933: ("Bankbetriebswirt", 99563, 0.21),
     934: ("Studium Lehrinstitut", 99564, 0.01),
     935: ("Bachelor FH", 99565, 0.08),
     936: ("Bachelor Universität", 99566, 0.01),
