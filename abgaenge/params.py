@@ -15,7 +15,7 @@ def default_params() -> Dict[str, Any]:
             "ruhend": True,
         },
         "atz": {
-            "new_atz_cases_per_year": 0,
+            "new_atz_rate": 0.05, # was new_atz_cases_per_year
             "atz_eligible_age_min": 55,
             "atz_eligible_age_max": 60,  # F02: Upper bound for ATZ eligibility
             "atz_duration_ar_years": 2.5,
@@ -28,10 +28,15 @@ def default_params() -> Dict[str, Any]:
         "quit": {
             "quit_rate_base": 0.05,
             "use_quit_matrix": True,
-            "quit_rate_matrix": {
-                "alter_unter_30": {"tenure_unter_2": 0.12, "tenure_2_5": 0.08, "tenure_ueber_5": 0.05},
-                "alter_30_45": {"tenure_unter_2": 0.08, "tenure_2_5": 0.05, "tenure_ueber_5": 0.03},
-                "alter_ueber_45": {"tenure_unter_2": 0.05, "tenure_2_5": 0.03, "tenure_ueber_5": 0.02},
+            # New Matrix params
+            "quit_dimension": "JobFamily",  # or "OrgUnit"
+            "quit_matrix": {
+                # Default Matrix: Age Group x JobFamily (will be dynamic in UI)
+                # But we provide a minimal structure here to avoid errors
+                "alter_unter_30": {"Default": 0.12},
+                "alter_30_45": {"Default": 0.08},
+                "alter_45_55": {"Default": 0.05},
+                "alter_55_plus": {"Default": 0.02},
             },
         },
         "ruhend": {
@@ -57,12 +62,12 @@ def build_params_from_ui(ui_state: Dict[str, Any]) -> Dict[str, Any]:
                 params[key] = value
 
     # Optional quit matrix JSON from UI
-    if "quit_matrix_json" in ui_state:
-        try:
-            params["quit"]["quit_rate_matrix"] = json.loads(ui_state["quit_matrix_json"])
-            params["quit"]["use_quit_matrix"] = True
-        except Exception:
-            # Keep defaults if parsing fails
-            pass
+    # Quit Matrix update
+    if "quit_matrix" in ui_state:
+        params["quit"]["quit_matrix"] = ui_state["quit_matrix"]
+        params["quit"]["use_quit_matrix"] = True
+    
+    if "quit_dimension" in ui_state:
+        params["quit"]["quit_dimension"] = ui_state["quit_dimension"]
 
     return params

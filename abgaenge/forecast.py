@@ -114,6 +114,7 @@ def _get_atz_events_from_schedule(
     if atz_pivot.empty:
         return [], []
 
+    atz_pivot = atz_pivot.copy()  # P07: Prevent input mutation
     # Ensure robust datetime comparison
     if "fr_begin" in atz_pivot.columns:
         atz_pivot["fr_begin"] = pd.to_datetime(atz_pivot["fr_begin"], errors="coerce")
@@ -133,29 +134,47 @@ def _get_atz_events_from_schedule(
     return ar_to_fr, atz_end
 
 
-def _select_quit_prob(age: float, tenure: float, params: Dict[str, Any]) -> float:
+def _select_quit_prob(row: pd.Series, params: Dict[str, Any]) -> float:
     quit_params = params.get("quit", {})
     base = float(quit_params.get("quit_rate_base", 0.05))
     if not quit_params.get("use_quit_matrix", True):
         return base
 
-    matrix = quit_params.get("quit_rate_matrix", {})
+    matrix = quit_params.get("quit_matrix", {})
+    dimension = quit_params.get("quit_dimension", "JobFamily") # Default
 
+    age = float(row["age"])
+    
+    # Analyze Age Group
     if age < 30:
         age_key = "alter_unter_30"
     elif age < 45:
         age_key = "alter_30_45"
+    elif age < 55:
+        age_key = "alter_45_55"
     else:
-        age_key = "alter_ueber_45"
+        age_key = "alter_55_plus"
 
-    if tenure < 2:
-        ten_key = "tenure_unter_2"
-    elif tenure < 5:
-        ten_key = "tenure_2_5"
+    # Analyze Dimension
+    if dimension == "OrgUnit":
+        # Ensure column exists; fallback to "Default" if missing or value not in matrix
+        dim_value = str(row.get("Organisationseinheit", "Default"))
     else:
-        ten_key = "tenure_ueber_5"
+        # JobFamily
+        dim_value = str(row.get("Jobfamily", "Default"))
 
-    return float(matrix.get(age_key, {}).get(ten_key, base))
+    # Lookup
+    # 1. Try exact match
+    # 2. Try "Default"
+    # 3. Fallback to base rate
+    
+    age_row = matrix.get(age_key, {})
+    if dim_value in age_row:
+        return float(age_row[dim_value])
+    elif "Default" in age_row:
+        return float(age_row["Default"])
+    
+    return base
 
 
 def _schedule_new_atz_cases(
@@ -166,19 +185,10 @@ def _schedule_new_atz_cases(
     rng: np.random.RandomState,
 ) -> pd.DataFrame:
     atz_params = params.get("atz", {})
-    expected = float(atz_params.get("new_atz_cases_per_year", 0)) * ((period.end - period.start).days / 365.25)
-    if expected <= 0:
-        return atz_pivot
-
-    count = int(rng.poisson(lam=expected))
-    if count <= 0:
-        return atz_pivot
-
     eligible_age_min = int(atz_params.get("atz_eligible_age_min", 55))
-    eligible_age_max = int(atz_params.get("atz_eligible_age_max", 60))  # F02: Upper bound
+    eligible_age_max = int(atz_params.get("atz_eligible_age_max", 60))
     ar_months = int(round(float(atz_params.get("atz_duration_ar_years", 2.5)) * 12))
     fr_months = int(round(float(atz_params.get("atz_duration_fr_years", 2.5)) * 12))
-
     eligible = df_state[
         (df_state["active"] == True) &
         (~df_state["in_atz"]) &
@@ -187,7 +197,20 @@ def _schedule_new_atz_cases(
         (df_state["age"] <= eligible_age_max)  # F02: Apply upper bound
     ]
 
-    if eligible.empty:
+    # Calculate expected cases based on rate * eligible population
+    rate = float(atz_params.get("new_atz_rate", 0.0))
+    # Adjust annual rate to period length
+    period_fraction = (period.end - period.start).days / 365.25
+    # Probability per person per period = 1 - (1 - annual_rate)^fraction
+    # Or simpler: expected count = len(eligible) * annual_rate * fraction
+    # For Poisson process: lambda = N * rate * t
+    if rate <= 0 or eligible.empty:
+        return atz_pivot
+
+    expected = len(eligible) * rate * period_fraction
+    
+    count = int(rng.poisson(lam=expected))
+    if count <= 0:
         return atz_pivot
 
     chosen = eligible.sample(n=min(count, len(eligible)), random_state=rng).index.tolist()
@@ -321,6 +344,7 @@ def run_forecast_abgaenge(
     # Ruhend return schedule
     ruhend_months = int(params.get("ruhend", {}).get("ruhend_avg_duration_months", 12))
     df_state["ruhend_until"] = pd.NaT
+    df_state["mak_before_ruhend"] = df_state["mak"]  # P01: Snapshot for return
     df_state.loc[df_state["status_ruhend"], "ruhend_until"] = start_date + pd.DateOffset(months=ruhend_months)
 
     atz_pivot = _build_atz_pivot(df_atz)
@@ -334,6 +358,7 @@ def run_forecast_abgaenge(
         period_days = max(1, (period.end - period.start).days)
         headcount_start = int(df_state["active"].sum())
         mak_start = float(df_state.loc[df_state["active"], "mak"].sum())
+        period_deactivated: set = set()  # P02: Track exits within this period
 
         # Refresh ages/tenure each period
         df_state["age"] = _calc_age(df_state[COL_GEB], period.start)
@@ -375,6 +400,7 @@ def run_forecast_abgaenge(
                     mak_change = -float(df_state.loc[persnr, "mak"])
                     df_state.loc[persnr, "mak"] = 0.0
                     df_state.loc[persnr, "active"] = False
+                    period_deactivated.add(persnr)  # P02: Track ATZ exit
                     events.append({
                         "period_label": period.label,
                         "period_start": period.start,
@@ -393,6 +419,9 @@ def run_forecast_abgaenge(
         if params.get("components", {}).get("retirement", True):
             eligible = df_state[(df_state["active"]) & (~df_state["in_atz"])].copy()
             if not eligible.empty:
+                # P02: Exclude already-exited in this period
+                eligible = eligible[~eligible.index.isin(period_deactivated)]
+            if not eligible.empty:
                 ages = eligible["age"]
                 p65 = _annual_to_period_rate(params.get("retirement", {}).get("rent_rate_65", 0.9), period_days)
                 p60 = _annual_to_period_rate(params.get("retirement", {}).get("rent_rate_60_65", 0.1), period_days)
@@ -404,6 +433,7 @@ def run_forecast_abgaenge(
                     mak_change = -float(df_state.loc[persnr, "mak"])
                     df_state.loc[persnr, "mak"] = 0.0
                     df_state.loc[persnr, "active"] = False
+                    period_deactivated.add(persnr)  # P02: Track retirement exit
                     events.append({
                         "period_label": period.label,
                         "period_start": period.start,
@@ -422,9 +452,12 @@ def run_forecast_abgaenge(
         if params.get("components", {}).get("quit", True):
             eligible = df_state[(df_state["active"]) & (~df_state["in_atz"])].copy()
             if not eligible.empty:
+                # P02: Exclude already-exited in this period
+                eligible = eligible[~eligible.index.isin(period_deactivated)]
+            if not eligible.empty:
                 probs = []
                 for _, row in eligible.iterrows():
-                    annual = _select_quit_prob(row["age"], row["tenure"], params)
+                    annual = _select_quit_prob(row, params)
                     probs.append(_annual_to_period_rate(annual, period_days))
                 probs = np.array(probs)
                 draws = rng.random(len(eligible))
@@ -462,7 +495,8 @@ def run_forecast_abgaenge(
 
                     for persnr in return_ids:
                         df_state.loc[persnr, "status_ruhend"] = False
-                        df_state.loc[persnr, "mak"] = float(pd.to_numeric(df_state.loc[persnr, COL_BSGRD], errors="coerce") or 0) / 100.0
+                        # P01: Restore original MAK instead of recalculating
+                        df_state.loc[persnr, "mak"] = float(df_state.loc[persnr, "mak_before_ruhend"])
                         df_state.loc[persnr, "ruhend_until"] = pd.NaT
                         events.append({
                             "period_label": period.label,
@@ -488,6 +522,7 @@ def run_forecast_abgaenge(
                     if not eligible.empty:
                         chosen = eligible.sample(n=min(count, len(eligible)), random_state=rng).index.tolist()
                         for persnr in chosen:
+                            df_state.loc[persnr, "mak_before_ruhend"] = df_state.loc[persnr, "mak"]  # P01: Save before zeroing
                             mak_change = -float(df_state.loc[persnr, "mak"])
                             df_state.loc[persnr, "status_ruhend"] = True
                             df_state.loc[persnr, "mak"] = 0.0

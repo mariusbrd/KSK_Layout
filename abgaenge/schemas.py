@@ -2,6 +2,8 @@
 Schemas and constants for Abgaenge.
 """
 
+import pandas as pd
+
 # Column names
 COL_PERSNR = "PersNr"
 COL_GEB = "GebDatum"
@@ -32,3 +34,17 @@ REASON_LABELS = {
     REASON_RUHEND_START: "Ruhend (Start)",
     REASON_RUHEND_RETURN: "Ruhend (Rückkehr)",
 }
+
+# Event mak_change convention:
+#   mak_change < 0  → Kapazitätsverlust (Abgang, AR→FR, Ruhend-Start)
+#   mak_change > 0  → Kapazitätsgewinn (Ruhend-Rückkehr)
+#   mak_change == 0  → Kein Kapazitätseffekt
+
+ID_PAD_LENGTH = 6
+
+
+def normalize_persnr(series: pd.Series) -> pd.Series:
+    """P05: Central PersNr normalization – zero-padded 6-digit string."""
+    return series.apply(
+        lambda x: str(int(x)).zfill(ID_PAD_LENGTH) if pd.notna(x) else pd.NA
+    )

@@ -5,6 +5,7 @@ Konfigurationsseite für Loader-spezifische Parameter wie
 Sonderfall-Gehälter (Azubis, Vorstand) und Arbeitgeber-Kostenfaktor.
 """
 
+import io
 import streamlit as st
 import pandas as pd
 import sys
@@ -24,6 +25,51 @@ from kpi_reference import STICHTAG_DEFAULT
 def render_settings_page():
     st.header("Einstellungen")
     st.caption("Loader-spezifische Parameter für Kostenberechnung")
+
+    st.divider()
+
+    # --- Datenmanagement ---
+    st.subheader("Datenmanagement")
+    st.caption("Eigene Excel-Dateien hochladen (überschreibt Original-Daten für die Sitzung).")
+    
+    with st.expander("📁 Dateien hochladen"):
+        if "global_uploads" not in st.session_state:
+            st.session_state["global_uploads"] = {}
+            
+        col_up1, col_up2 = st.columns(2)
+        with col_up1:
+            up_ma = st.file_uploader("Mitarbeiter.xlsx", type=["xlsx"], key="set_up_ma")
+            if up_ma:
+                # Store as BytesIO for persistence
+                st.session_state["global_uploads"]["Mitarbeiter"] = io.BytesIO(up_ma.getvalue())
+            elif "Mitarbeiter" in st.session_state["global_uploads"] and not up_ma:
+                # If widget cleared, keep old? Or clear? 
+                # Standard behavior: clear. But we want persistence across pages.
+                # If user clears widget manually, we remove.
+                # But looking at widget key: if page reloads, key is gone?
+                pass
+
+        with col_up2:
+            up_pl = st.file_uploader("Planstellen.xlsx", type=["xlsx"], key="set_up_pl")
+            if up_pl:
+                st.session_state["global_uploads"]["Planstellen"] = io.BytesIO(up_pl.getvalue())
+
+        col_up3, col_up4 = st.columns(2)
+        with col_up3:
+            up_atz = st.file_uploader("ATZ.xlsx", type=["xlsx"], key="set_up_atz")
+            if up_atz:
+                st.session_state["global_uploads"]["ATZ"] = io.BytesIO(up_atz.getvalue())
+
+        with col_up4:
+            up_edu = st.file_uploader("Ausbildung.xlsx", type=["xlsx"], key="set_up_edu")
+            if up_edu:
+                st.session_state["global_uploads"]["Ausbildung"] = io.BytesIO(up_edu.getvalue())
+
+        if st.session_state["global_uploads"]:
+            st.success(f"✅ {len(st.session_state['global_uploads'])} Dateien aktiv.")
+            if st.button("Alle Uploads löschen"):
+                 st.session_state["global_uploads"] = {}
+                 st.rerun()
 
     st.divider()
 

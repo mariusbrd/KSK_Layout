@@ -3,7 +3,6 @@ Abgaenge package public API.
 """
 
 from .io import load_inputs
-from .preprocess import preprocess_inputs
 from .params import default_params, build_params_from_ui
 from .forecast import run_forecast_abgaenge
 from .validation import validate_outputs
@@ -12,7 +11,6 @@ from .exports import to_csv_bytes
 
 __all__ = [
     "load_inputs",
-    "preprocess_inputs",
     "default_params",
     "build_params_from_ui",
     "run_forecast_abgaenge",

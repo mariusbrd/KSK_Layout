@@ -5,11 +5,14 @@ Streamlit page: Abgänge Prognose.
 from __future__ import annotations
 
 import json
+from typing import Any, Optional, Dict
 import sys
 from pathlib import Path
 from datetime import date
 
+import numpy as np
 import pandas as pd
+import plotly.express as px
 import streamlit as st
 
 # Add project root or src to path
@@ -24,7 +27,6 @@ from kpi_reference import get_current_stichtag  # Import dynamic Stichtag
 
 from abgaenge import (
     load_inputs,
-    # preprocess_inputs, # Removed, done by loader
     default_params,
     build_params_from_ui,
     run_forecast_abgaenge,
@@ -39,9 +41,10 @@ from components.sidebar import render_global_filters, apply_filters
 
 
 @st.cache_data
-def _load_atz_cached(base_path_str: str):
+@st.cache_data
+def _load_atz_cached(base_path_str: str, uploaded_ma: Any = None, uploaded_atz: Any = None, uploaded_pl: Any = None):
     """Loads only ATZ data needed for forecast engine details."""
-    _, df_atz = load_inputs(Path(base_path_str))
+    _, df_atz = load_inputs(Path(base_path_str), uploaded_ma, uploaded_atz, uploaded_pl)
     return df_atz
 
 
@@ -51,6 +54,7 @@ def main():
 
     try:
         # 1. Load Central Data (Consistent with Kompakt)
+        # Loader automatically picks up 'global_uploads' from session_state (see loader.py)
         snapshot_df, history_df, _, _ = load_and_prepare_data()
 
         # 2. Render Sidebar Filters (Standard Dashboard Logic)
@@ -60,7 +64,18 @@ def main():
         df_ma_filtered = apply_filters(snapshot_df)
         
         # 4. Load ATZ Details (needed for engine phases)
-        df_atz = _load_atz_cached(str(BASE_PATH))
+        # Get uploads from session_state for specific loading
+        global_uploads = st.session_state.get("global_uploads", {})
+        up_ma_arg = global_uploads.get("Mitarbeiter")
+        up_atz_arg = global_uploads.get("ATZ")
+        up_pl_arg = global_uploads.get("Planstellen")
+        
+        # Reset buffer positions
+        if up_ma_arg: up_ma_arg.seek(0)
+        if up_atz_arg: up_atz_arg.seek(0)
+        if up_pl_arg: up_pl_arg.seek(0)
+        
+        df_atz = _load_atz_cached(str(BASE_PATH), up_ma_arg, up_atz_arg, up_pl_arg)
         
         # 5. Preprocessing for Forecast Engine (CRITICAL fix)
         # The snapshot_df is position-level data. Employees with multiple positions
@@ -106,7 +121,7 @@ def main():
         }
         
         # Optional: include other columns if they exist
-        for col in ["Geschlecht", "Organisationseinheit", "Planstelle"]:
+        for col in ["Geschlecht", "Planstelle"]:  # P08: Organisationseinheit already in agg_dict
             if col in df_ma_filtered.columns:
                 agg_dict[col] = "first"
         
@@ -116,7 +131,6 @@ def main():
         # Forecast Engine Logic: MAK = (BsGrd/100) * (Soll/39)
         # We want: MAK = MAK_Calculated
         # So we set Soll = 39.0 (Factor=1) and BsGrd = MAK_Calculated * 100
-        import numpy as np
         
         # 1. Neutralize Soll-Factor in Engine
         df_employee_agg["Sollarbeitszeit"] = 39.0
@@ -143,48 +157,155 @@ def main():
     default_start = get_current_stichtag().date()
     default_end = date(default_start.year + 2, default_start.month, default_start.day)
 
-    with st.sidebar.form("abgaenge_form"):
-        st.markdown("### Basis")
-        ist_stichtag = st.date_input("Ist-Stichtag", value=default_start)
-        forecast_end_date = st.date_input("Prognose-Ende", value=default_end)
-        freq_label = st.selectbox("Frequenz", options=["Monat", "Quartal"], index=0)
-        random_seed = st.number_input("Random Seed", value=int(params["random_seed"]), step=1)
+    # ── Settings Accordion ──────────────────────────────────────────
+    with st.expander("⚙️ Prognose-Einstellungen", expanded=True):
+        with st.form("abgaenge_form"):
 
-        st.markdown("### Komponenten")
-        comp_atz = st.checkbox("ATZ", value=params["components"]["atz"])
-        comp_ret = st.checkbox("Rente", value=params["components"]["retirement"])
-        comp_quit = st.checkbox("Kündigung", value=params["components"]["quit"])
-        comp_ruhend = st.checkbox("Ruhend", value=params["components"]["ruhend"])
+            # ── Row 1: Base Settings (horizontal) ──
+            st.markdown("##### 📅 Zeitraum & Basis")
+            bc1, bc2, bc3, bc4 = st.columns(4)
+            with bc1:
+                ist_stichtag = st.date_input("Ist-Stichtag", value=default_start)
+            with bc2:
+                forecast_end_date = st.date_input("Prognose-Ende", value=default_end)
+            with bc3:
+                freq_label = st.selectbox("Frequenz", options=["Monat", "Quartal"], index=0)
+            with bc4:
+                random_seed = st.number_input("Random Seed", value=int(params["random_seed"]), step=1)
 
-        with st.expander("ATZ-Parameter"):
-            new_atz = st.number_input("Neue ATZ-Fälle pro Jahr", value=int(params["atz"]["new_atz_cases_per_year"]), step=1)
-            eligible_age = st.number_input("ATZ-Mindestalter", value=int(params["atz"]["atz_eligible_age_min"]), step=1)
-            eligible_age_max = st.number_input("ATZ-Höchstalter", value=int(params["atz"]["atz_eligible_age_max"]), step=1)
-            ar_years = st.number_input("AR-Dauer (Jahre)", value=float(params["atz"]["atz_duration_ar_years"]), step=0.5)
-            fr_years = st.number_input("FR-Dauer (Jahre)", value=float(params["atz"]["atz_duration_fr_years"]), step=0.5)
+            st.markdown("---")
 
-        with st.expander("Renten-Parameter"):
-            rent65 = st.slider("Renteneintritt 65+", min_value=0.0, max_value=1.0, value=float(params["retirement"]["rent_rate_65"]), step=0.05)
-            rent60 = st.slider("Frühverrentung 60-64", min_value=0.0, max_value=1.0, value=float(params["retirement"]["rent_rate_60_65"]), step=0.05)
+            # ── Row 2: Component Toggles (horizontal) ──
+            st.markdown("##### 🧩 Aktive Komponenten")
+            cc1, cc2, cc3, cc4 = st.columns(4)
+            with cc1:
+                comp_atz = st.checkbox("ATZ", value=params["components"]["atz"])
+            with cc2:
+                comp_ret = st.checkbox("Rente", value=params["components"]["retirement"])
+            with cc3:
+                comp_quit = st.checkbox("Kündigung", value=params["components"]["quit"])
+            with cc4:
+                comp_ruhend = st.checkbox("Ruhend", value=params["components"]["ruhend"])
 
-        with st.expander("Kündigungs-Parameter"):
-            quit_base = st.slider("Basisrate p.a.", min_value=0.0, max_value=0.5, value=float(params["quit"]["quit_rate_base"]), step=0.01)
-            use_matrix = st.checkbox("Matrix Alter x Tenure verwenden", value=params["quit"]["use_quit_matrix"])
-            matrix_json = st.text_area(
-                "Optional: Matrix als JSON (überschreibt Defaults)",
-                value=json.dumps(params["quit"]["quit_rate_matrix"], ensure_ascii=False, indent=2),
-                height=200,
-            )
+            st.markdown("---")
 
-        with st.expander("Ruhend-Parameter"):
-            ruhend_new = st.number_input("Neue Ruhend-Fälle pro Jahr", value=int(params["ruhend"]["ruhend_new_cases_per_year"]), step=1)
-            ruhend_return = st.slider("Rückkehrquote p.a.", min_value=0.0, max_value=1.0, value=float(params["ruhend"]["ruhend_return_rate"]), step=0.05)
-            ruhend_duration = st.number_input("Ø Dauer (Monate)", value=int(params["ruhend"]["ruhend_avg_duration_months"]), step=1)
+            # ── Row 3: Detail Parameters (sub-expanders) ──
+            st.markdown("##### 🔧 Detail-Parameter")
 
-        submit = st.form_submit_button("Prognose berechnen")
+            with st.expander("ATZ-Parameter"):
+                ac1, ac2, ac3 = st.columns(3)
+                with ac1:
+                    new_atz = st.slider("Neue Fälle (Rate)", min_value=0.0, max_value=0.5, value=float(params["atz"].get("new_atz_rate", 0.05)), step=0.005, format="%.3f", help="Anteil der berechtigten Mitarbeiter, die pro Jahr in ATZ gehen.")
+                with ac2:
+                    eligible_age = st.number_input("Mindestalter", value=int(params["atz"]["atz_eligible_age_min"]), step=1)
+                with ac3:
+                    eligible_age_max = st.number_input("Höchstalter", value=int(params["atz"]["atz_eligible_age_max"]), step=1)
+                dc1, dc2 = st.columns(2)
+                with dc1:
+                    ar_years = st.number_input("AR-Dauer (Jahre)", value=float(params["atz"]["atz_duration_ar_years"]), step=0.5)
+                with dc2:
+                    fr_years = st.number_input("FR-Dauer (Jahre)", value=float(params["atz"]["atz_duration_fr_years"]), step=0.5)
+
+            with st.expander("Renten-Parameter"):
+                rc1, rc2 = st.columns(2)
+                with rc1:
+                    rent65 = st.slider("Renteneintritt 65+", min_value=0.0, max_value=1.0, value=float(params["retirement"]["rent_rate_65"]), step=0.05)
+                with rc2:
+                    rent60 = st.slider("Frühverrentung 60-64", min_value=0.0, max_value=1.0, value=float(params["retirement"]["rent_rate_60_65"]), step=0.05)
+
+            with st.expander("Kündigungs-Parameter (Matrix)", expanded=False):
+                qc1, qc2 = st.columns([1, 2])
+                with qc1:
+                    quit_base = st.slider("Basisrate p.a.", min_value=0.0, max_value=0.5, value=float(params["quit"]["quit_rate_base"]), step=0.01, help="Fallback-Wert, wenn keine spezifische Rate gefunden wird.")
+                    
+                    # Dimension Selector
+                    quit_dim = st.radio(
+                        "Dimension für Matrix",
+                        options=["JobFamily", "OrgUnit"],
+                        index=0 if params["quit"].get("quit_dimension", "JobFamily") == "JobFamily" else 1,
+                        help="Wählen Sie die Dimension für die Kündigungswahrscheinlichkeiten."
+                    )
+                    
+                    # Update params immediately for UI state
+                    params["quit"]["quit_dimension"] = quit_dim
+
+                with qc2:
+                    st.caption(f"Matrix: Alter × {quit_dim}")
+                    
+                    # 1. Determine Columns based on data
+                    if quit_dim == "OrgUnit":
+                        col_name = "Organisationseinheit"
+                    else:
+                        col_name = "Jobfamily"
+                        
+                    # Get unique values from snapshot (sorted)
+                    unique_vals = []
+                    if col_name in snapshot_df.columns:
+                        unique_vals = sorted([str(x) for x in snapshot_df[col_name].dropna().unique()])
+                    
+                    # Define Matrix Structure
+                    age_cohorts = ["alter_unter_30", "alter_30_45", "alter_45_55", "alter_55_plus"]
+                    matrix_cols = ["Default"] + unique_vals
+                    
+                    # 2. Build DataFrame for Editor
+                    # Load existing matrix from params if available
+                    current_matrix = params["quit"].get("quit_matrix", {})
+                    
+                    editor_data = []
+                    for cohort in age_cohorts:
+                        row_data = {"Altersgruppe": cohort}
+                        cohort_dict = current_matrix.get(cohort, {})
+                        
+                        # Fill columns
+                        for col in matrix_cols:
+                            val = cohort_dict.get(col)
+                            if val is None:
+                                val = cohort_dict.get("Default", quit_base) # Fallback to row default or global base
+                            row_data[col] = float(val)
+                        editor_data.append(row_data)
+                    
+                    df_matrix = pd.DataFrame(editor_data)
+                    df_matrix = df_matrix.set_index("Altersgruppe")
+                    
+                    # 3. Render Editor
+                    edited_df = st.data_editor(
+                        df_matrix,
+                        use_container_width=True,
+                        height=200,
+                        column_config={
+                            "Default": st.column_config.NumberColumn(
+                                "Standard",
+                                help="Standardwert für diese Altersgruppe",
+                                min_value=0.0,
+                                max_value=1.0,
+                                step=0.01,
+                                format="%.2f"
+                            )
+                        }
+                    )
+                    
+                    # 4. Save back to params
+                    # Convert DataFrame back to nested dict
+                    new_matrix = {}
+                    for cohort, row in edited_df.iterrows():
+                        new_matrix[cohort] = row.to_dict()
+                    
+                    params["quit"]["quit_matrix"] = new_matrix
+
+            with st.expander("Ruhend-Parameter"):
+                hc1, hc2, hc3 = st.columns(3)
+                with hc1:
+                    ruhend_new = st.number_input("Neue Fälle / Jahr", value=int(params["ruhend"]["ruhend_new_cases_per_year"]), step=1, key="ruhend_new")
+                with hc2:
+                    ruhend_return = st.slider("Rückkehrquote p.a.", min_value=0.0, max_value=1.0, value=float(params["ruhend"]["ruhend_return_rate"]), step=0.05)
+                with hc3:
+                    ruhend_duration = st.number_input("Ø Dauer (Monate)", value=int(params["ruhend"]["ruhend_avg_duration_months"]), step=1)
+
+            # ── Submit Button ──
+            submit = st.form_submit_button("🚀 Prognose berechnen", use_container_width=True)
 
     if not submit:
-        st.info("Parameter wählen und Prognose berechnen.")
+        st.info("⬆️ Parameter oben einstellen und Prognose berechnen.")
         return
 
     if forecast_end_date <= ist_stichtag:
@@ -199,7 +320,7 @@ def main():
             "ruhend": comp_ruhend,
         },
         "atz": {
-            "new_atz_cases_per_year": new_atz,
+            "new_atz_rate": new_atz, # was new_atz_cases_per_year
             "atz_eligible_age_min": eligible_age,
             "atz_eligible_age_max": eligible_age_max,  # F02: Pass upper bound
             "atz_duration_ar_years": ar_years,
@@ -211,7 +332,9 @@ def main():
         },
         "quit": {
             "quit_rate_base": quit_base,
-            "use_quit_matrix": use_matrix,
+            # "use_quit_matrix": use_matrix, # Removed in UI, implied by matrix existence?
+            # Actually I removed the checkbox in UI replacement. So assume True?
+            "use_quit_matrix": True, 
         },
         "ruhend": {
             "ruhend_new_cases_per_year": ruhend_new,
@@ -219,7 +342,8 @@ def main():
             "ruhend_avg_duration_months": ruhend_duration,
         },
         "random_seed": random_seed,
-        "quit_matrix_json": matrix_json,
+        "quit_dimension": quit_dim,
+        "quit_matrix": new_matrix,
     }
 
     params = build_params_from_ui(ui_state)
@@ -257,6 +381,10 @@ def main():
         events["Organisationseinheit"] = events["Organisationseinheit"].fillna("Unbekannt")
         # Cleanup temp cols
         events.drop(columns=["persnr_str", "PersNr_str"], inplace=True)
+        df_ma.drop(columns=["PersNr_str"], inplace=True, errors="ignore")  # P10: Clean df_ma too
+
+    # ── Ergebnisse ──────────────────────────────────────────────────
+    st.divider()
 
     # KPI Metrics
     if not forecast_kpis.empty:
@@ -299,7 +427,6 @@ def main():
                 # Top 10 desc
                 org_stats = org_stats.sort_values("Abgänge", ascending=True).tail(15) 
                 
-                import plotly.express as px
                 fig_org = px.bar(
                     org_stats, 
                     x="Abgänge", 

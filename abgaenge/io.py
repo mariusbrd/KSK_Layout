@@ -3,7 +3,7 @@ I/O helpers for Abgaenge forecast.
 """
 
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, Optional, Any
 
 import pandas as pd
 
@@ -14,10 +14,32 @@ from .schemas import (
     COL_AUSTRITT,
     COL_ATZ_BEGINN,
     COL_ATZ_ENDE,
-    COL_ATZ_ENDE,
     COL_ATZ_VERTRAG_ENDE,
     COL_SOLL,
+    normalize_persnr,
 )
+
+import logging
+logger = logging.getLogger(__name__)
+
+
+def _safe_parse_date(series: pd.Series) -> pd.Series:
+    """Parse dates robustly: 9999-12-31 and other out-of-bounds values → NaT."""
+    def _clean(val):
+        if pd.isna(val):
+            return pd.NaT
+        try:
+            year = getattr(val, "year", None)
+            if year is not None and (year >= 9999 or year > 2262):
+                return pd.NaT
+        except Exception:
+            pass
+        s = str(val).strip()
+        if s.startswith("9999"):
+            return pd.NaT
+        return val
+
+    return pd.to_datetime(series.map(_clean), errors="coerce")
 
 
 def _resolve_input_paths(base_path: Path) -> Tuple[Path, Path, Path]:
@@ -60,51 +82,67 @@ def _resolve_input_paths(base_path: Path) -> Tuple[Path, Path, Path]:
     )
 
 
-def load_inputs(base_path: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def load_inputs(
+    base_path: Path,
+    uploaded_ma: Any = None,
+    uploaded_atz: Any = None,
+    uploaded_pl: Any = None
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Load Mitarbeiter.xlsx and ATZ.xlsx.
+    Load Mitarbeiter.xlsx and ATZ.xlsx (optionally from uploads).
     Also merges Sollarbeitszeit from Planstellen.xlsx if available.
 
     Args:
         base_path: Project root (e.g., KSK_Layout).
+        uploaded_*: Optional file-like objects (BytesIO) from Streamlit uploader.
 
     Returns:
         Tuple of (df_ma, df_atz)
     """
-    ma_path, atz_path, pl_path = _resolve_input_paths(base_path)
+    # 1. Determine Sources
+    if uploaded_ma and uploaded_atz:
+        # Use Uploads
+        ma_source = uploaded_ma
+        atz_source = uploaded_atz
+        pl_source = uploaded_pl  # Can be None
+    else:
+        # Resolve Paths
+        ma_path, atz_path, pl_path = _resolve_input_paths(base_path)
+        ma_source = ma_path
+        atz_source = atz_path
+        pl_source = pl_path
 
-    df_ma = pd.read_excel(
-        ma_path,
-        parse_dates=[COL_GEB, COL_EINTRITT, COL_AUSTRITT],
-    )
+    # 2. Read Data
+    df_ma = pd.read_excel(ma_source)  # No parse_dates – 9999-12-31 causes OutOfBounds
     
-    # Normalize PersNr immediately for mapping
-    # Note: IO usually shouldn't modify data too much, but we need keys for merging
+    # P05: Centralized PersNr normalization
     if COL_PERSNR in df_ma.columns:
-         df_ma[COL_PERSNR] = df_ma[COL_PERSNR].apply(
-            lambda x: str(int(x)).zfill(6) if pd.notna(x) else pd.NA
-        )
+         df_ma[COL_PERSNR] = normalize_persnr(df_ma[COL_PERSNR])
 
-    df_atz = pd.read_excel(
-        atz_path,
-        parse_dates=[COL_ATZ_BEGINN, COL_ATZ_ENDE, COL_ATZ_VERTRAG_ENDE],
-    )
+    # Safe date parsing: handle 9999-12-31 → NaT before pd.to_datetime
+    for col in [COL_GEB, COL_EINTRITT, COL_AUSTRITT]:
+        if col in df_ma.columns:
+            df_ma[col] = _safe_parse_date(df_ma[col])
+
+    df_atz = pd.read_excel(atz_source)  # No parse_dates – same 9999 risk
     
     if COL_PERSNR in df_atz.columns:
-         df_atz[COL_PERSNR] = df_atz[COL_PERSNR].apply(
-            lambda x: str(int(x)).zfill(6) if pd.notna(x) else pd.NA
-        )
+         df_atz[COL_PERSNR] = normalize_persnr(df_atz[COL_PERSNR])
+
+    # Safe date parsing for ATZ columns
+    for col in [COL_ATZ_BEGINN, COL_ATZ_ENDE, COL_ATZ_VERTRAG_ENDE]:
+        if col in df_atz.columns:
+            df_atz[col] = _safe_parse_date(df_atz[col])
     
     # Merge Sollarbeitszeit from Planstellen if available
-    if pl_path:
+    # Merge Sollarbeitszeit from Planstellen if available
+    if pl_source:
         try:
-            df_pl = pd.read_excel(pl_path)
+            df_pl = pd.read_excel(pl_source)
             # Minimal cleaning for Planstellen
             if "Personalnummer" in df_pl.columns and "Sollarbeitszeit" in df_pl.columns:
-                 # Clean ID
-                 df_pl["Personalnummer"] = df_pl["Personalnummer"].apply(
-                    lambda x: str(int(x)).zfill(6) if pd.notna(x) else pd.NA
-                 )
+                 # P05: Centralized PersNr normalization
+                 df_pl["Personalnummer"] = normalize_persnr(df_pl["Personalnummer"])
                  # Clean Soll (handle Azubis 0.01 -> 39.0 logic if needed, or simple merge)
                  # Loader logic: Azubi 9910 & 0.01 -> 39.0.
                  # For simplicity, we just take the column. Forecast handles normalization.
@@ -122,8 +160,8 @@ def load_inputs(base_path: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
                      how="left"
                  )
                  # Renaming handled or keep as Sollarbeitszeit (COL_SOLL string is "Sollarbeitszeit")
-        except Exception:
-            # Ignore errors in Planstellen merge to ensure stability
-            pass
+        except Exception as e:
+            # P12: Log instead of silently ignoring
+            logger.warning(f"Planstellen-Merge fehlgeschlagen: {e}")
 
     return df_ma, df_atz

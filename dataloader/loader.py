@@ -13,13 +13,15 @@ import pandas as pd
 import streamlit as st
 import numpy as np
 from datetime import datetime
-from typing import Dict, Tuple, Optional, Set
+from typing import Dict, Tuple, Optional, Set, Any
 import sys
 import os
 
 # Import settings
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config.settings import DATA_PATH, DEFAULT_COHORTS
+from config.settings import (
+    DATA_PATH, DEFAULT_COHORTS, BASE_SALARY, STEP_MULTIPLIER, EMPLOYER_COST_FACTOR
+)
 from utils.settings_loader import get_setting
 from kpi_reference import get_current_stichtag
 
@@ -329,16 +331,56 @@ def get_data_summary(snapshot_df: pd.DataFrame) -> Dict:
     return summary
 
 
-def load_and_prepare_data(use_original: bool = True) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict]:
+def load_and_prepare_data(
+    use_original: bool = True,
+    uploaded_files: Optional[Dict[str, Any]] = None
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict]:
     """
     Kompletter Daten-Lade- und Aufbereitungsprozess.
 
     Args:
         use_original: Wenn True, versucht Original-Daten zu laden (default: True)
+        uploaded_files: Optionales Dict mit Upload-Files (Mitarbeiter, Planstellen, etc.)
 
     Returns:
         Tuple aus (snapshot_df, history_df, org_df, summary)
     """
+
+
+
+    # 0. Check global uploads (from session_state)
+    if uploaded_files is None and "global_uploads" in st.session_state:
+        uploaded_files = st.session_state["global_uploads"]
+
+    # 1. Uploads haben Vorrang
+    if uploaded_files:
+        try:
+            data = process_uploaded_data(uploaded_files)
+            # data enthält bereits snapshot_detail, history_cube, org_structure
+            snapshot_df = data["snapshot_detail"]
+            history_df = data["history_cube"]
+            org_df = data["org_structure"]
+            
+            # Anreicherung
+            snapshot_df = enrich_snapshot_data(snapshot_df, stichtag=get_current_stichtag())
+            
+            # Jobfamily
+            from dataloader.jobfamily_matcher import assign_jobfamilies, load_jobfamily_definitions
+            try:
+                definitions = load_jobfamily_definitions()
+                snapshot_df = assign_jobfamilies(snapshot_df, definitions)
+            except Exception:
+                if "Jobfamily" not in snapshot_df.columns:
+                    snapshot_df["Jobfamily"] = "UNMAPPED"
+            
+            summary = get_data_summary(snapshot_df)
+            return snapshot_df, history_df, org_df, summary
+            
+        except Exception as e:
+            st.error(f"Fehler bei der Verarbeitung der hochgeladenen Dateien: {str(e)}")
+            # Fallback auf Standard-Logik unten
+            pass
+
     # Versuche Original-Daten zu laden (wenn use_original=True)
     if use_original:
         try:
@@ -847,6 +889,247 @@ def combine_to_snapshot(mitarbeiter, planstellen, atz, ausbildung, stichtag=None
     df = calculate_mak_vectorized(df, atz_fr_persnr)
 
     return df
+
+
+
+def calculate_cost_row(row) -> float:
+    """Berechnet Jahreskosten für eine Zeile (aus synthetic.py übernommen)."""
+    if row.get("Is_Vacant", True):
+        return 0.0
+
+    tariff = row.get("TrfGr", "E9A")
+    step = row.get("St", 4)
+    fte = row.get("FTE_person", 1.0)
+
+    if pd.isna(tariff):
+        tariff = "E9A"
+    if pd.isna(step):
+        step = 4
+    if pd.isna(fte):
+        fte = 1.0
+
+    # Stufe bereinigen
+    step_str = str(step).strip().replace("+", "").replace("-", "")
+    try:
+        step_int = int(step_str)
+    except (ValueError, TypeError):
+        step_int = 4
+
+    # Globale Konstanten nutzen (oben importiert)
+    base = BASE_SALARY.get(str(tariff), 50000)
+    step_factor = STEP_MULTIPLIER.get(step_int, 1.0)
+
+    return base * step_factor * fte * EMPLOYER_COST_FACTOR
+
+
+def create_combined_snapshot(
+    mitarbeiter: pd.DataFrame,
+    planstellen: pd.DataFrame,
+    atz: pd.DataFrame,
+    ausbildung: pd.DataFrame,
+    stichtag: Optional[pd.Timestamp] = None
+) -> pd.DataFrame:
+    """
+    Kombiniert die 4 Dateien zu einem Snapshot (ETL-Logik).
+    """
+    if stichtag is None:
+        stichtag = pd.Timestamp.today()
+    
+    df = planstellen.copy()
+    
+    # Rename & Normalize
+    if "Personalnummer" in df.columns:
+        df = df.rename(columns={"Personalnummer": "PersNr_Plan"})
+    
+    if "PersNr_Plan" in df.columns:
+        df["PersNr_Plan"] = normalize_persnr(df["PersNr_Plan"])
+
+    mitarbeiter = mitarbeiter.copy()
+    if "PersNr" in mitarbeiter.columns:
+        mitarbeiter["PersNr"] = normalize_persnr(mitarbeiter["PersNr"])
+
+    ausbildung = ausbildung.copy()
+    if "Personalnummer" in ausbildung.columns:
+        ausbildung["Personalnummer"] = normalize_persnr(ausbildung["Personalnummer"])
+
+    # Merge Mitarbeiter
+    # Ensure join keys are strings
+    if "PersNr_Plan" in df.columns:
+        df["PersNr_Plan"] = df["PersNr_Plan"].astype(str)
+    if "PersNr" in mitarbeiter.columns:
+        mitarbeiter["PersNr"] = mitarbeiter["PersNr"].astype(str)
+    
+    # Left Merge Planstellen -> Mitarbeiter
+    df = df.merge(
+        mitarbeiter,
+        left_on="PersNr_Plan",
+        right_on="PersNr",
+        how="left",
+        suffixes=("", "_ma")
+    )
+    
+    # Safe Parse Austritt (using safe parsing logic if available, or coerce)
+    if "Austritt" in df.columns:
+        # Inline safe logic simplified
+        df["Austritt"] = pd.to_datetime(df["Austritt"], errors="coerce")
+
+    # Merge Ausbildung
+    if "Personalnummer" in ausbildung.columns:
+        ausbildung["Personalnummer"] = ausbildung["Personalnummer"].astype(str)
+        
+    # Check if BV column exists
+    ausb_cols = ["Personalnummer"]
+    if "BV Ausbildungsgruppentext" in ausbildung.columns:
+        ausb_cols.append("BV Ausbildungsgruppentext")
+    elif "Ausbildungsgruppentext" in ausbildung.columns:
+         ausb_cols.append("Ausbildungsgruppentext")
+         
+    if len(ausb_cols) > 1:
+        df = df.merge(
+            ausbildung[ausb_cols],
+            left_on="PersNr",
+            right_on="Personalnummer",
+            how="left",
+            suffixes=("", "_ausb")
+        )
+        # Rename result col to "Ausbildung"
+        target_col = ausb_cols[1]
+        df = df.rename(columns={target_col: "Ausbildung"})
+
+    # Ausbildung-Mapping
+    if "Ausbildung" in df.columns:
+        df["Ausbildung"] = df["Ausbildung"].astype("string")
+        # EDUCATION_MAPPING defined in this file
+        df["Bildungskategorie"] = df["Ausbildung"].map(EDUCATION_MAPPING)
+        df["Bildungsrang"] = df["Ausbildung"].map(EDUCATION_RANKING)
+
+    # Azubi-Flag
+    if "MitarbGruppenbez." in df.columns:
+        df["Ist_Azubi"] = df["MitarbGruppenbez."] == "Auszubildende"
+
+    # ATZ Logic
+    # 1. Filter current ATZ
+    atz_aktuell = atz.copy()
+    if not atz_aktuell.empty:
+        # Ensure dates
+        for col in ["Beginn", "Ende"]:
+            if col in atz_aktuell.columns:
+                atz_aktuell[col] = pd.to_datetime(atz_aktuell[col], errors="coerce")
+        
+        atz_aktuell = atz_aktuell[
+            (atz_aktuell['Beginn'] <= stichtag) & 
+            (atz_aktuell['Ende'] >= stichtag)
+        ]
+    
+    if "PersNr" in df.columns:
+        df["PersNr"] = df["PersNr"].astype(str)
+    if "PersNr" in atz_aktuell.columns:
+        atz_aktuell["PersNr"] = normalize_persnr(atz_aktuell["PersNr"]).astype(str)
+    
+    # Merge ATZ Phase
+    cols_atz = ["PersNr", "Phase", "Beginn", "Ende", "Ende ATZ Vertrag", "Modell"]
+    cols_atz = [c for c in cols_atz if c in atz_aktuell.columns]
+    
+    if not atz_aktuell.empty:
+        df = df.merge(
+            atz_aktuell[cols_atz],
+            on="PersNr",
+            how="left",
+            suffixes=("", "_atz")
+        )
+
+    # Derived Fields
+    df["Is_Vacant"] = df["PersNr"].isna()
+    if "PersNr_Plan" in df.columns:
+        df["Personalnummer"] = df["PersNr_Plan"]
+
+    # FTE
+    # Ensure numeric
+    for col in ["BsGrd", "Sollarbeitszeit"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df["FTE_person"] = df["BsGrd"].fillna(0) / 100.0
+    df["Soll_FTE"] = df["Sollarbeitszeit"].fillna(39.0) / 39.0
+    df["FTE_assigned"] = df["FTE_person"] * df["Soll_FTE"]
+
+    # Clean Step
+    if "St" in df.columns:
+        def clean_step(step):
+            if pd.isna(step): return 4
+            s = str(step).strip().replace("+", "").replace("-", "")
+            try: return int(s)
+            except: return 4
+        df["St"] = df["St"].apply(clean_step)
+        
+    # Derive ATZ fields (function defined in this file)
+    atz_derived = derive_atz_fields(atz)
+    if "PersNr" in atz_derived.columns:
+        atz_derived["PersNr"] = normalize_persnr(atz_derived["PersNr"]).astype(str)
+        
+    df = df.merge(atz_derived, on="PersNr", how="left")
+    
+    # ATZ Flags for MAK
+    atz_fr_persnr = set()
+    if "Phase" in atz_aktuell.columns:
+        atz_fr_persnr = set(atz_aktuell[atz_aktuell['Phase'] == 'FR']['PersNr'])
+    
+    df['ist_atz_fr'] = df['PersNr'].isin(atz_fr_persnr)
+    
+    # Cost
+    df["Total_Cost_Year"] = df.apply(calculate_cost_row, axis=1)
+    
+    # Cleanup (Optional: Keep all necessary columns)
+    
+    return df
+
+
+def process_uploaded_data(uploaded_files: Dict[str, Any]) -> Dict[str, pd.DataFrame]:
+    """
+    Verarbeitet hochgeladene Excel-Dateien und erstellt Snapshot/History.
+    """
+    # 1. Read Raw DFS
+    dfs = {}
+    required = ["Mitarbeiter", "Planstellen", "ATZ", "Ausbildung"]
+    
+    for name in required:
+        if name not in uploaded_files:
+            # Wenn optional, hier handhaben. Aber für Snapshot brauchen wir eigentlich alle.
+            # Werfen wir Fehler, wenn essenzielle fehlen.
+            pass
+            
+        if name in uploaded_files:
+            # Read Excel from BytesIO
+            dfs[name] = pd.read_excel(uploaded_files[name])
+        else:
+            # Create empty DF if missing? Or raise error?
+            # For robustness: use empty DF
+            dfs[name] = pd.DataFrame()
+
+    # 2. Create Snapshot (ETL)
+    # Check if main files are present
+    if dfs["Planstellen"].empty and dfs["Mitarbeiter"].empty:
+        raise ValueError("Mindestens Planstellen.xlsx oder Mitarbeiter.xlsx erforderlich.")
+
+    snapshot_df = create_combined_snapshot(
+        dfs["Mitarbeiter"],
+        dfs["Planstellen"],
+        dfs["ATZ"],
+        dfs["Ausbildung"],
+        stichtag=pd.Timestamp.today()
+    )
+    
+    # 3. Create Org Structure
+    org_df = create_org_structure(dfs["Planstellen"])
+    
+    # 4. Create Dummy History
+    history_df = generate_history_from_snapshot(snapshot_df)
+    
+    return {
+        "snapshot_detail": snapshot_df,
+        "history_cube": history_df,
+        "org_structure": org_df
+    }
 
 
 def generate_history_from_snapshot(snapshot_df: pd.DataFrame, start_date="2024-01-01", end_date="2026-01-18") -> pd.DataFrame:
