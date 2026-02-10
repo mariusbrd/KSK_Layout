@@ -14,27 +14,53 @@ def show_data_source_indicator():
 
     Prüft ob Original-Daten existieren und zeigt entsprechenden Status.
     """
-    # Prüfe ob Original-Daten existieren
+    # Prüfe Datenquelle
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     original_dir = os.path.join(base_dir, "..", "Original-Daten")
     mitarbeiter_path = os.path.join(original_dir, "Mitarbeiter.xlsx")
+    synthetic_marker = os.path.join(original_dir, ".is_synthetic")
 
-    is_original = os.path.exists(mitarbeiter_path)
+    # 1. Uploads (Session)
+    has_uploads = len(st.session_state.get("global_uploads", {})) > 0
+    
+    # 2. Synthetic Marker
+    is_synthetic = os.path.exists(synthetic_marker)
+    
+    # 3. Original Data Exists
+    has_original_files = os.path.exists(mitarbeiter_path)
 
-    # CSS für den Indikator
-    if is_original:
+    
+    if has_uploads:
+        bg_color = "#e0f2fe"  # Hellblau
+        border_color = "#0ea5e9"  # Blau
+        icon = "📂"
+        title = "Eigene Daten (Upload)"
+        description = "Es werden temporär hochgeladene Daten verwendet"
+        return True # Considered valid
+        
+    elif is_synthetic:
+        bg_color = "#fef3c7"  # Hellgelb
+        border_color = "#f59e0b"  # Orange
+        icon = "🧪"
+        title = "Synthetische Testdaten"
+        description = "Generierte Musterdaten (Mitarbeiter.xlsx vorhanden)"
+        return False
+        
+    elif has_original_files:
         bg_color = "#d1fae5"  # Hellgrün
         border_color = "#10b981"  # Grün
         icon = "🔐"
         title = "Original-Daten"
         description = "Es werden die echten HR-Daten verwendet"
+        return True
+        
     else:
-        bg_color = "#fef3c7"  # Hellgelb
-        border_color = "#f59e0b"  # Orange
-        icon = "🧪"
-        title = "Synthetische Testdaten"
-        description = "Es werden generierte Testdaten verwendet"
-
+        bg_color = "#fee2e2"  # Rot
+        border_color = "#ef4444"  # Rot
+        icon = "❌"
+        title = "Keine Daten"
+        description = "Bitte Daten in 'Original-Daten' ablegen"
+        return False
     # Render Indikator
     st.markdown(
         f"""
@@ -64,16 +90,25 @@ def show_data_source_badge():
     """
     Zeigt einen kleinen Badge in der Sidebar für die Datenquelle.
     """
-    # Prüfe ob Original-Daten existieren
+    # Prüfe Datenquelle
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     original_dir = os.path.join(base_dir, "..", "Original-Daten")
     mitarbeiter_path = os.path.join(original_dir, "Mitarbeiter.xlsx")
+    synthetic_marker = os.path.join(original_dir, ".is_synthetic")
 
-    is_original = os.path.exists(mitarbeiter_path)
+    has_uploads = len(st.session_state.get("global_uploads", {})) > 0
+    is_synthetic = os.path.exists(synthetic_marker)
+    has_original_files = os.path.exists(mitarbeiter_path)
 
-    if is_original:
-        st.sidebar.success("🔐 Original-Daten aktiv", icon="✅")
-    else:
+    if has_uploads:
+        st.sidebar.info("📂 Eigene Daten aktiv", icon="ℹ️")
+        return True
+    elif is_synthetic:
         st.sidebar.warning("🧪 Testdaten aktiv", icon="⚠️")
-
-    return is_original
+        return False
+    elif has_original_files:
+        st.sidebar.success("🔐 Original-Daten aktiv", icon="✅")
+        return True
+    
+    st.sidebar.error("❌ Keine Daten", icon="🚨")
+    return False

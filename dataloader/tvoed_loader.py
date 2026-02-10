@@ -33,7 +33,7 @@ def normalize_group_name(raw: str) -> str:
     return s
 
 
-def load_tvoed_table(filepath: str) -> Dict[Tuple[str, int], float]:
+def load_tvoed_table(file_or_path) -> Dict[Tuple[str, int], float]:
     """
     Parst TVÖD.xlsx in ein Lookup-Dict {(Gruppe, Stufe): Jahresgehalt}.
 
@@ -43,18 +43,20 @@ def load_tvoed_table(filepath: str) -> Dict[Tuple[str, int], float]:
         Zeile 3+: Datenzeilen mit Monatsgehältern
 
     Args:
-        filepath: Pfad zur TVÖD.xlsx
+        file_or_path: Pfad zur TVÖD.xlsx (str/Path) oder file-like Object (BytesIO).
 
     Returns:
         Dict mit (Gruppe, Stufe) → Jahresgehalt (Monat × 12).
         Leeres Dict bei Fehler oder fehlender Datei.
     """
-    if not os.path.exists(filepath):
-        return {}
+    # Check only if string/path
+    if isinstance(file_or_path, (str, os.PathLike)):
+        if not os.path.exists(file_or_path):
+            return {}
 
     try:
         # Zeile 2 (index 1) enthält die Spaltenköpfe
-        df = pd.read_excel(filepath, header=1)
+        df = pd.read_excel(file_or_path, header=1)
 
         # Erste Spalte = Gruppenbezeichnung (Header ist "€" o.ä.)
         group_col = df.columns[0]

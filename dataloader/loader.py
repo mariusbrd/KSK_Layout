@@ -376,6 +376,19 @@ def load_and_prepare_data(
             history_df = data["history_cube"]
             org_df = data["org_structure"]
             
+            
+            # TVOED Loading for Upload Path
+            from dataloader.tvoed_loader import load_tvoed_table
+            tvoed_lookup = {}
+            if "TVÖD" in uploaded_files:
+                 # Load from BytesIO
+                 tvoed_lookup = load_tvoed_table(uploaded_files["TVÖD"])
+            elif os.path.exists(TVOED_FILE):
+                 tvoed_lookup = load_tvoed_table(TVOED_FILE)
+            
+            st.session_state["tvoed_lookup"] = tvoed_lookup
+            st.session_state["tvoed_available"] = len(tvoed_lookup) > 0
+
             # Anreicherung
             snapshot_df = enrich_snapshot_data(snapshot_df, stichtag=get_current_stichtag())
             
@@ -389,6 +402,7 @@ def load_and_prepare_data(
                     snapshot_df["Jobfamily"] = "UNMAPPED"
             
             summary = get_data_summary(snapshot_df)
+            summary["data_source_type"] = "Eigene Daten (Upload)"
             return snapshot_df, history_df, org_df, summary
             
         except Exception as e:
@@ -409,7 +423,9 @@ def load_and_prepare_data(
                 # 2. Lade TVÖD-Entgelttabelle (optional)
                 from dataloader.tvoed_loader import load_tvoed_table
                 tvoed_lookup = {}
-                if os.path.exists(TVOED_FILE):
+                if "TVÖD" in (uploaded_files or {}):
+                     tvoed_lookup = load_tvoed_table(uploaded_files["TVÖD"])
+                elif os.path.exists(TVOED_FILE):
                      tvoed_lookup = load_tvoed_table(TVOED_FILE)
                 
                 st.session_state["tvoed_lookup"] = tvoed_lookup
@@ -446,6 +462,7 @@ def load_and_prepare_data(
 
                 # 8. Berechne Summary
                 summary = get_data_summary(snapshot_df)
+                summary["data_source_type"] = "Original-Daten"
 
                 return snapshot_df, history_df, org_df, summary
 
@@ -480,6 +497,7 @@ def load_and_prepare_data(
 
     # Berechne Summary
     summary = get_data_summary(snapshot_df)
+    summary["data_source_type"] = "Synthetische Testdaten"
 
     return (
         snapshot_df,

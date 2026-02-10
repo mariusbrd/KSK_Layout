@@ -508,6 +508,12 @@ def generate_all_files(
             filepath = os.path.join(output_dir, f"{name}.xlsx")
             df.to_excel(filepath, index=False)
             print(f"  Gespeichert: {filepath}")
+            
+        # Create marker file for synthetic data
+        marker_path = os.path.join(output_dir, ".is_synthetic")
+        with open(marker_path, "w") as f:
+            f.write("This directory contains synthetic data.")
+
     
     return files
 

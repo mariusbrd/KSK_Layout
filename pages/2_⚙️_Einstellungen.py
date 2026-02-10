@@ -61,9 +61,14 @@ def render_settings_page():
                 st.session_state["global_uploads"]["ATZ"] = io.BytesIO(up_atz.getvalue())
 
         with col_up4:
-            up_edu = st.file_uploader("Ausbildung.xlsx", type=["xlsx"], key="set_up_edu")
             if up_edu:
                 st.session_state["global_uploads"]["Ausbildung"] = io.BytesIO(up_edu.getvalue())
+
+        col_up5, col_up6 = st.columns(2)
+        with col_up5:
+            up_tvoed = st.file_uploader("TVÖD.xlsx (optional)", type=["xlsx"], key="set_up_tvoed")
+            if up_tvoed:
+                st.session_state["global_uploads"]["TVÖD"] = io.BytesIO(up_tvoed.getvalue())
 
         if st.session_state["global_uploads"]:
             st.success(f"✅ {len(st.session_state['global_uploads'])} Dateien aktiv.")
