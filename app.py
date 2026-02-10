@@ -1,7 +1,7 @@
 """
 HR Pulse Dashboard - Haupteinstiegspunkt
 
-Streamlit-basiertes HR-Analytics-Dashboard für Banken und Finanzdienstleister.
+Streamlit-basiertes HR-Analytics-Dashboard für eine süddeutsche Sparkasse/Bank.
 """
 
 import streamlit as st

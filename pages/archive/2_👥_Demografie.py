@@ -332,7 +332,7 @@ def render_gender_tab(df: pd.DataFrame, view_mode: str):
         )
 
     with col3:
-        # Benchmark Banken (63% weiblich ist typisch)
+        # Benchmark Sparkasse (63% weiblich ist typisch)
         benchmark = 0.63
         diff = female_rate - benchmark
         kpi_card(

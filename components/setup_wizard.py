@@ -67,9 +67,9 @@ WIZARD_STEPS = [
 
 # Basis-Templates (werden in Phase 2 erweitert)
 BASE_TEMPLATES = {
-    "banken": {
-        "name": "Banken & Finanzdienstleister",
-        "description": "Vorgefertigte Job Families fuer Banken und Kreditinstitute",
+    "sparkassen": {
+        "name": "Sparkassen & Banken",
+        "description": "Vorgefertigte Job Families fuer Sparkassen und Genossenschaftsbanken",
         "icon": "🏦",
         "family_count": 10,
         "jobfamilies": {
@@ -312,7 +312,7 @@ def render_source_selection_step():
             st.markdown("### 📋 Branchen-Template")
             st.markdown("""
             Vorgefertigte Job Families für:
-            - Banken & Finanzdienstleister
+            - Sparkassen & Banken
             - Versicherungen
             - Universal (branchenübergreifend)
 

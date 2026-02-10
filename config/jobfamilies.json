@@ -172,8 +172,8 @@
   "metadata": {
     "version": "2.0",
     "source": "standard_set",
-    "template_id": "banken",
-    "template_name": "Banken & Finanzdienstleister",
+    "template_id": "sparkassen",
+    "template_name": "Sparkassen & Banken",
     "loaded_at": "2026-01-28T16:16:30.726263",
     "last_modified": "2026-01-28T16:16:30.727266"
   }
