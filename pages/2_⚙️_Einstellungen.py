@@ -61,6 +61,7 @@ def render_settings_page():
                 st.session_state["global_uploads"]["ATZ"] = io.BytesIO(up_atz.getvalue())
 
         with col_up4:
+            up_edu = st.file_uploader("Ausbildung.xlsx", type=["xlsx"], key="set_up_edu")
             if up_edu:
                 st.session_state["global_uploads"]["Ausbildung"] = io.BytesIO(up_edu.getvalue())
 
