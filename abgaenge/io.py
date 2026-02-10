@@ -93,7 +93,7 @@ def load_inputs(
     Also merges Sollarbeitszeit from Planstellen.xlsx if available.
 
     Args:
-        base_path: Project root (e.g., KSK_Layout).
+        base_path: Project root (e.g., Data_Layout).
         uploaded_*: Optional file-like objects (BytesIO) from Streamlit uploader.
 
     Returns:

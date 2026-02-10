@@ -1,8 +1,8 @@
 {
   "template_info": {
-    "id": "sparkassen",
-    "name": "Sparkassen & Banken",
-    "description": "Vorgefertigte Job Families für Sparkassen, Genossenschaftsbanken und regionale Kreditinstitute",
+    "id": "banken",
+    "name": "Banken & Finanzdienstleister",
+    "description": "Vorgefertigte Job Families für Banken, Genossenschaftsbanken und Kreditinstitute",
     "version": "1.0",
     "industry": "banking",
     "icon": "🏦",
