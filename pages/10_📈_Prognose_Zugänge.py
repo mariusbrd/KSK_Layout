@@ -180,43 +180,38 @@ def main():
             "random_seed": 42
         }
         
+        # ── 1. Abgangs-Prognose (Basis für Netto-Betrachtung) ──
+        # Wir berechnen IMMER die Abgänge, um den Netto-Headcount zeigen zu können.
+        abg_kpis = pd.DataFrame()
         vacancies = []
-        if hire_strat == "Fill Vacancies":
-            with st.spinner("Berechne Abgangsprognose für Lückenfüllung..."):
-                try:
-                    # df_atz is already loaded at start of main
-                    
-                    abg_res = run_forecast_abgaenge(
-                        df_ma=snapshot_df, # Use aggregated DF!
-                        df_atz=df_atz,
-                        start_date=pd.Timestamp(start_date),
-                        end_date=pd.Timestamp(end_date),
-                        freq="M",
-                        params=st.session_state.get("abgaenge_params", default_abgaenge_params())
-                    )
-                    
-                    # Extract Vacancies
+        
+        with st.spinner("Berechne Basisszenario (Abgänge)..."):
+            try:
+                abg_res = run_forecast_abgaenge(
+                    df_ma=snapshot_df, # Use aggregated DF!
+                    df_atz=df_atz,
+                    start_date=pd.Timestamp(start_date),
+                    end_date=pd.Timestamp(end_date),
+                    freq="M",
+                    params=st.session_state.get("abgaenge_params", default_abgaenge_params())
+                )
+                abg_kpis = abg_res["forecast_kpis"]
+                
+                # Extract Vacancies if needed
+                if hire_strat == "Fill Vacancies":
                     events = abg_res["events_person_level"]
                     exits = events[events["headcount_change"] < 0]
-                    # Convert to vacancy list
                     for _, row in exits.iterrows():
                         vacancies.append({
                             "date": row["event_date"],
                             "org_unit": row.get("Organisationseinheit", "Unbekannt"),
                             "persnr": row["persnr"]
                         })
-                    
-                    # Enrich vacancies
-                    vac_df = pd.DataFrame(vacancies)
-                    if not vac_df.empty:
-                        # Join not strictly needed if OrgUnit is in events
-                        pass
 
-                except Exception as e:
-                    st.warning(f"Konnte Abgänge nicht berechnen ({e}). Nutze Zufallsverteilung.")
-                    vacancies = []
-
-        # Run Zugänge Forecast
+            except Exception as e:
+                st.error(f"Fehler bei Abgangs-Berechnung: {e}")
+                
+        # ── 2. Zugangs-Prognose ──
         res = run_forecast_zugaenge(
             df_snapshot=snapshot_df,
             start_date=pd.Timestamp(start_date),
@@ -226,22 +221,32 @@ def main():
         )
         
         events_df = res["events"]
-        forecast_kpis = res["forecast_kpis"]
+        zug_kpis = res["forecast_kpis"]
         
-        if events_df.empty:
-            st.warning("Keine Zugänge prognostiziert.")
-        else:
-            # ── Ergebnisse ──────────────────────────────────────────────────
-            st.divider()
+        # ── 3. Ergebnis-Aufbereitung ──
+        # Wir zeigen HIER nur die Zugänge (Brutto), keine Verrechnung mit Abgängen.
+        # Die Abgänge wurden nur genutzt, um die "Lücken" (OrgUnits) zu finden.
+        
+        forecast_kpis = zug_kpis
+        
+        if events_df.empty and (hire_count > 0 or not vacancies):
+             # Just a warning if expected something but got nothing
+             if hire_count > 0: st.warning("Keine Zugänge generiert.")
 
-            # KPI Metrics (Aligned with Abgänge)
-            if not forecast_kpis.empty:
-                first = forecast_kpis.iloc[0]
-                last = forecast_kpis.iloc[-1]
-                
-                start_hc = int(first["headcount_start"])
-                end_hc = int(last["headcount_end"])
-                total_entries = int(forecast_kpis["entry_count"].sum())
+        # ── Ergebnisse ──────────────────────────────────────────────────
+        st.divider()
+
+        # KPI Metrics
+        if not forecast_kpis.empty:
+            first = forecast_kpis.iloc[0]
+            last = forecast_kpis.iloc[-1]
+            
+            # Start is strictly from Snapshot
+            start_hc = int(snapshot_df["active"].sum() if "active" in snapshot_df.columns else len(snapshot_df))
+            
+            # End HC in zug_kpis is (Start + Entries)
+            end_hc = int(last["headcount_end"])
+            total_entries = int(events_df["count"].sum()) if not events_df.empty else 0
                 
                 # Cost Calculation
                 # Recalculate cost vector for events
@@ -275,7 +280,7 @@ def main():
                     forecast_kpis, 
                     x="date", 
                     y=["headcount_end", "mak_end"],
-                    title="Entwicklung Headcount & MAK (inkl. Zugänge)",
+                    title="Entwicklung Headcount & MAK (Prognose Zugänge)",
                     labels={"value": "Anzahl", "date": "Datum", "variable": "Metrik"},
                     color_discrete_map={
                         "headcount_end": COLORS["accent_blue"],
