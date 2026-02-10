@@ -78,9 +78,10 @@ def main():
     # Navigation Setup mit st.navigation
     pages = {
         "Navigation": [
-            st.Page("pages/7_⚡_Kompakt.py", title="Kompakt"),
-            st.Page("pages/9_📉_Prognose_Abgänge.py", title="Prognose: Abgaenge"),
-            st.Page("pages/8_⚙️_Einstellungen.py", title="Einstellungen"),
+            st.Page("pages/1_⚡_Kompakt.py", title="Kompakt"),
+            st.Page("pages/3_📉_Prognose_Abgänge.py", title="Prognose: Abgänge"),
+            st.Page("pages/4_📈_Prognose_Zugänge.py", title="Prognose: Zugänge"),
+            st.Page("pages/2_⚙️_Einstellungen.py", title="Einstellungen"),
         ],
     }
     pg = st.navigation(pages)
