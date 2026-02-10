@@ -29,10 +29,25 @@ ID_PAD_LENGTH = 6
 
 
 def normalize_persnr(series: pd.Series) -> pd.Series:
-    """Normalisiert Personalnummern zu String mit führenden Nullen."""
-    return series.apply(
-        lambda x: str(int(x)).zfill(ID_PAD_LENGTH) if pd.notna(x) else pd.NA
-    )
+    """Normalisiert Personalnummern zu String mit führenden Nullen. Robust gegen 'nan'."""
+    def _safe_convert(x):
+        if pd.isna(x):
+            return pd.NA
+        try:
+            # Handle string 'nan' explizit oder via float conversion error
+            s = str(x).strip().lower()
+            if s == "nan" or s == "" or s == "none":
+                return pd.NA
+            
+            # Erst float, dann int (fängt "123.0" strings und floats ab)
+            # int(float("nan")) wirft ValueError, wird gefangen
+            val = int(float(x)) 
+            return str(val).zfill(ID_PAD_LENGTH)
+        except (ValueError, TypeError):
+            # Fallback bei echten Strings (z.B. "A123")
+            return str(x).strip().zfill(ID_PAD_LENGTH)
+
+    return series.apply(_safe_convert)
 
 
 @st.cache_data
