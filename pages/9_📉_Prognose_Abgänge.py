@@ -347,6 +347,8 @@ def main():
     }
 
     params = build_params_from_ui(ui_state)
+    # Save params for other pages (e.g. Zugänge: Fill Vacancies)
+    st.session_state["abgaenge_params"] = params
     freq = "M" if freq_label == "Monat" else "Q"
 
     try:

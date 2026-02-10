@@ -413,6 +413,11 @@ def run_forecast_abgaenge(
                         "mak_change": mak_change,
                         "age": float(df_state.loc[persnr, "age"]),
                         "tenure": float(df_state.loc[persnr, "tenure"]),
+                        # Add Metadata for subsequent processing (e.g. Zugänge Forecast)
+                        "Organisationseinheit": str(df_state.loc[persnr, "Organisationseinheit"]) if "Organisationseinheit" in df_state.columns else "Unbekannt",
+                        "Jobfamily": str(df_state.loc[persnr, "Jobfamily"]) if "Jobfamily" in df_state.columns else "Unbekannt",
+                        "TrfGr": str(df_state.loc[persnr, "TrfGr"]) if "TrfGr" in df_state.columns else "Unbekannt",
+                        "St": str(df_state.loc[persnr, "St"]) if "St" in df_state.columns else "Unbekannt",
                     })
 
         # Retirement events (non-ATZ only)
@@ -446,6 +451,10 @@ def run_forecast_abgaenge(
                         "mak_change": mak_change,
                         "age": float(df_state.loc[persnr, "age"]),
                         "tenure": float(df_state.loc[persnr, "tenure"]),
+                        "Organisationseinheit": str(df_state.loc[persnr, "Organisationseinheit"]) if "Organisationseinheit" in df_state.columns else "Unbekannt",
+                        "Jobfamily": str(df_state.loc[persnr, "Jobfamily"]) if "Jobfamily" in df_state.columns else "Unbekannt",
+                        "TrfGr": str(df_state.loc[persnr, "TrfGr"]) if "TrfGr" in df_state.columns else "Unbekannt",
+                        "St": str(df_state.loc[persnr, "St"]) if "St" in df_state.columns else "Unbekannt",
                     })
 
         # Quit events (non-ATZ only)
@@ -480,6 +489,10 @@ def run_forecast_abgaenge(
                             "mak_change": mak_change,
                             "age": float(df_state.loc[persnr, "age"]),
                             "tenure": float(df_state.loc[persnr, "tenure"]),
+                            "Organisationseinheit": str(df_state.loc[persnr, "Organisationseinheit"]) if "Organisationseinheit" in df_state.columns else "Unbekannt",
+                            "Jobfamily": str(df_state.loc[persnr, "Jobfamily"]) if "Jobfamily" in df_state.columns else "Unbekannt",
+                            "TrfGr": str(df_state.loc[persnr, "TrfGr"]) if "TrfGr" in df_state.columns else "Unbekannt",
+                            "St": str(df_state.loc[persnr, "St"]) if "St" in df_state.columns else "Unbekannt",
                         })
 
         # Ruhend return events

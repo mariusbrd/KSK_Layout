@@ -192,7 +192,7 @@ def main():
                         start_date=pd.Timestamp(start_date),
                         end_date=pd.Timestamp(end_date),
                         freq="M",
-                        params=default_abgaenge_params()
+                        params=st.session_state.get("abgaenge_params", default_abgaenge_params())
                     )
                     
                     # Extract Vacancies
