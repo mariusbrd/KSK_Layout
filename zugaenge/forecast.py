@@ -356,7 +356,7 @@ def run_forecast_zugaenge(
         events_by_month = {}
         
     for p in period_range:
-        m = p.to_period("M")
+        m = p
         month_str = str(m)
         
         # Events in this month
