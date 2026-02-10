@@ -27,8 +27,17 @@ def main():
         snapshot_df_raw, history_df, _, _ = load_and_prepare_data()
         
         # Load ATZ for correct MAK calculation (Start Stats consistency)
-        raw_data = load_original_data()
-        df_atz = raw_data.get("atz", pd.DataFrame())
+        # Check uploads first, then fall back to disk
+        uploaded_files = st.session_state.get("global_uploads", {})
+        if "ATZ" in uploaded_files:
+            df_atz = pd.read_excel(uploaded_files["ATZ"])
+            uploaded_files["ATZ"].seek(0)  # Reset BytesIO for potential re-reads
+        else:
+            try:
+                raw_data = load_original_data()
+                df_atz = raw_data.get("atz", pd.DataFrame())
+            except Exception:
+                df_atz = pd.DataFrame()
         
         # 2. Render Sidebar Filters
         from components.sidebar import render_global_filters, apply_filters
