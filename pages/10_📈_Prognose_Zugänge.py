@@ -184,9 +184,7 @@ def main():
         if hire_strat == "Fill Vacancies":
             with st.spinner("Berechne Abgangsprognose für Lückenfüllung..."):
                 try:
-                    from dataloader.loader import load_original_data
-                    raw_data = load_original_data()
-                    df_atz = raw_data["atz"]
+                    # df_atz is already loaded at start of main
                     
                     abg_res = run_forecast_abgaenge(
                         df_ma=snapshot_df, # Use aggregated DF!
