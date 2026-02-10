@@ -248,8 +248,9 @@ def main():
             end_hc = int(last["headcount_end"])
             total_entries = int(events_df["count"].sum()) if not events_df.empty else 0
                 
-                # Cost Calculation
-                # Recalculate cost vector for events
+            # Cost Calculation
+            # Recalculate cost vector for events
+            if not events_df.empty:
                 cost_df = events_df.copy()
                 cost_df["FTE_person"] = 1.0 
                 cost_df = calculate_cost_vectorized(cost_df, tvoed_lookup=None)
@@ -259,12 +260,14 @@ def main():
                      cost_df["Cost_Impact"] = cost_df["Total_Cost_Year"]
                 
                 total_added_cost = cost_df["Cost_Impact"].sum()
+            else:
+                total_added_cost = 0
 
-                col1, col2, col3, col4 = st.columns(4)
-                col1.metric("Headcount Start", f"{start_hc}")
-                col2.metric("Headcount Ende", f"{end_hc}", delta=f"+{total_entries}")
-                col3.metric("Gesamt Zugänge", f"{total_entries}")
-                col4.metric("Δ Personalkosten (Jahr)", f"{total_added_cost:,.0f} €", help="Summe Jahresgehälter neuer Stellen")
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Headcount Start", f"{start_hc}")
+            col2.metric("Headcount Ende", f"{end_hc}", delta=f"+{total_entries}")
+            col3.metric("Gesamt Zugänge", f"{total_entries}")
+            col4.metric("Δ Personalkosten (Jahr)", f"{total_added_cost:,.0f} €", help="Summe Jahresgehälter neuer Stellen")
             
             # Tabs (Aligned)
             tab_overview, tab_details, tab_cost = st.tabs(["📊 Überblick", "📋 Details (Tabelle)", "💰 Kosten"])
@@ -306,7 +309,7 @@ def main():
                 st.plotly_chart(fig_hist, use_container_width=True)
 
             with tab_details:
-                st.dataframe(events_df, use_container_width=True)
+                st.dataframe(events_df, width="stretch")
                 
             with tab_cost:
                 # Cost Chart from old implementation

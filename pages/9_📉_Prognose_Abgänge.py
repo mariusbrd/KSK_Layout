@@ -368,22 +368,31 @@ def main():
     events = result["events_person_level"]
     
     # Feature: Enrich events with Organisationseinheit (Last Known)
+    # Feature: Enrich events with Organisationseinheit (Last Known)
     # df_ma has aggregated info per employee, including OrgUnit (added to agg_dict)
-    if not events.empty and "Organisationseinheit" in df_ma.columns:
-        # Ensure join keys are compatible (str)
-        events["persnr_str"] = events["persnr"].astype(str)
-        df_ma["PersNr_str"] = df_ma["PersNr"].astype(str)
-        
-        events = events.merge(
-            df_ma[["PersNr_str", "Organisationseinheit"]],
-            left_on="persnr_str",
-            right_on="PersNr_str",
-            how="left"
-        )
-        events["Organisationseinheit"] = events["Organisationseinheit"].fillna("Unbekannt")
-        # Cleanup temp cols
-        events.drop(columns=["persnr_str", "PersNr_str"], inplace=True)
-        df_ma.drop(columns=["PersNr_str"], inplace=True, errors="ignore")  # P10: Clean df_ma too
+    if not events.empty:
+        # Check if already present (from forecast)
+        if "Organisationseinheit" not in events.columns and "Organisationseinheit" in df_ma.columns:
+            # Join from Snapshot if missing
+            events["persnr_str"] = events["persnr"].astype(str)
+            df_ma["PersNr_str"] = df_ma["PersNr"].astype(str)
+            
+            events = events.merge(
+                df_ma[["PersNr_str", "Organisationseinheit"]],
+                left_on="persnr_str",
+                right_on="PersNr_str",
+                how="left"
+            )
+            # Cleanup temp cols
+            events.drop(columns=["persnr_str", "PersNr_str"], inplace=True)
+            df_ma.drop(columns=["PersNr_str"], inplace=True, errors="ignore")
+
+        if "Organisationseinheit" in events.columns:
+            events["Organisationseinheit"] = events["Organisationseinheit"].fillna("Unbekannt")
+            
+        # Fix Arrow Error: Mixed types in persnr
+        if "persnr" in events.columns:
+            events["persnr"] = events["persnr"].astype(str)
 
     # ── Ergebnisse ──────────────────────────────────────────────────
     st.divider()
@@ -442,7 +451,8 @@ def main():
                 fig_org.update_layout(yaxis_title=None, showlegend=False)
                 st.plotly_chart(fig_org, use_container_width=True)
 
-        st.dataframe(forecast_kpis, use_container_width=True)
+        # KPI Dataframe
+        st.dataframe(forecast_kpis, width="stretch")
 
     with tab2:
         for key, fig in charts.items():
@@ -457,7 +467,7 @@ def main():
                 if df is None or df.empty:
                     continue
                 st.markdown(f"**{name.capitalize()}**")
-                st.dataframe(df, use_container_width=True)
+                st.dataframe(df, width="stretch")
 
     with tab3:
         if events.empty:
@@ -467,7 +477,7 @@ def main():
                 reason_df = events[events["reason_label"] == reason]
                 safe_reason = "".join([c if c.isalnum() else "_" for c in reason]).strip("_").lower()
                 with st.expander(f"{reason} ({len(reason_df)})", expanded=False):
-                    st.dataframe(reason_df, use_container_width=True)
+                    st.dataframe(reason_df, width="stretch")
                     st.download_button(
                         label=f"CSV Export {reason}",
                         data=to_csv_bytes(reason_df),
