@@ -110,9 +110,9 @@ def main():
             "Sollarbeitszeit": "sum",  # Sum work hours across positions
             "Organisationseinheit": "first", # Preserve OrgUnit for Analytics
         }
-        
+
         # Optional: include other columns if they exist
-        for col in ["Geschlecht", "Planstelle"]:  # P08: Organisationseinheit already in agg_dict
+        for col in ["Geschlecht", "Planstelle", "Kürzel OrgEinheit"]:  # OE-Code for Sonder-OE filter
             if col in df_ma_filtered.columns:
                 agg_dict[col] = "first"
         

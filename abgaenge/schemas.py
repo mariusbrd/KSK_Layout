@@ -12,6 +12,22 @@ COL_AUSTRITT = "Austritt"
 COL_BSGRD = "BsGrd"
 COL_STATUS = "Status kundenindividuell"
 COL_SOLL = "Sollarbeitszeit"
+COL_OE_CODE = "Kürzel OrgEinheit"
+
+# Sonder-OEs: Personen sind faktisch nicht im aktiven Dienst und dürfen
+# nicht in den ATZ-Kandidatenpool gezogen werden.
+EXCLUDED_OE_CODES = frozenset({
+    "9940",   # PA Dauerkranke
+    "9941",   # PA Rente auf Zeit
+    "9945",   # PA Beurlaubt Par. 3 Pflegezeit
+    "9960",   # PA Bundeswehr/Zivildienst
+    "9970",   # PA Mutterschutz
+    "9971",   # PA Elternzeit
+    "9972",   # PA SU Par. 28 TVöD
+    "9973",   # PA Beschäftigungsverbot
+    "9975",   # PA Erziehungszeit
+    "9990",   # PA Freistellung (ATZ-FR, Beurlaubung, Turbo-TZ)
+})
 
 COL_ATZ_PHASE = "Phase"
 COL_ATZ_BEGINN = "Beginn"

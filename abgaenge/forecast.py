@@ -18,6 +18,8 @@ from .schemas import (
     COL_BSGRD,
     COL_STATUS,
     COL_SOLL,
+    COL_OE_CODE,
+    EXCLUDED_OE_CODES,
     COL_ATZ_PHASE,
     COL_ATZ_BEGINN,
     COL_ATZ_ENDE,
@@ -106,6 +108,51 @@ def _build_atz_pivot(df_atz: pd.DataFrame) -> pd.DataFrame:
         merged["contract_end"] = merged["fr_end"]
 
     return merged[[COL_PERSNR, "ar_begin", "ar_end", "fr_begin", "fr_end", "contract_end"]]
+
+
+def _enforce_min_ar_duration(
+    atz_pivot: pd.DataFrame, min_ar_months: int, min_fr_months: int
+) -> pd.DataFrame:
+    """Enforce minimum AR duration on existing ATZ cases.
+
+    If an existing case has fr_begin - ar_begin < min_ar_months, shift
+    fr_begin (and fr_end / contract_end) so that the AR phase meets the
+    configured minimum.  New cases created by _schedule_new_atz_cases
+    already respect this, so this only corrects legacy data.
+    """
+    if atz_pivot.empty:
+        return atz_pivot
+
+    pivot = atz_pivot.copy()
+
+    for col in ["ar_begin", "fr_begin", "fr_end", "contract_end"]:
+        if col in pivot.columns:
+            pivot[col] = pd.to_datetime(pivot[col], errors="coerce")
+
+    mask_valid = pivot["ar_begin"].notna() & pivot["fr_begin"].notna()
+    if not mask_valid.any():
+        return pivot
+
+    for idx in pivot.index[mask_valid]:
+        ar_begin = pivot.loc[idx, "ar_begin"]
+        fr_begin_orig = pivot.loc[idx, "fr_begin"]
+
+        min_fr_begin = ar_begin + pd.DateOffset(months=min_ar_months)
+
+        if fr_begin_orig < min_fr_begin:
+            shift = min_fr_begin - fr_begin_orig
+            pivot.loc[idx, "fr_begin"] = min_fr_begin
+            # Shift fr_end and contract_end by the same delta
+            if pd.notna(pivot.loc[idx, "fr_end"]):
+                pivot.loc[idx, "fr_end"] = pivot.loc[idx, "fr_end"] + shift
+            else:
+                pivot.loc[idx, "fr_end"] = min_fr_begin + pd.DateOffset(months=min_fr_months)
+            if pd.notna(pivot.loc[idx, "contract_end"]):
+                pivot.loc[idx, "contract_end"] = pivot.loc[idx, "contract_end"] + shift
+            else:
+                pivot.loc[idx, "contract_end"] = pivot.loc[idx, "fr_end"]
+
+    return pivot
 
 
 def _get_atz_events_from_schedule(
@@ -212,13 +259,20 @@ def _schedule_new_atz_cases(
     eligible_age_max = int(atz_params.get("atz_eligible_age_max", 60))
     ar_months = int(round(float(atz_params.get("atz_duration_ar_years", 2.5)) * 12))
     fr_months = int(round(float(atz_params.get("atz_duration_fr_years", 2.5)) * 12))
-    eligible = df_state[
+    # Build base eligibility mask
+    mask = (
         (df_state["active"] == True) &
         (~df_state["in_atz"]) &
         (~df_state["status_ruhend"]) &
         (df_state["age"] >= eligible_age_min) &
         (df_state["age"] <= eligible_age_max)  # F02: Apply upper bound
-    ]
+    )
+
+    # Exclude special OEs (Freistellung, Dauerkranke, Elternzeit, etc.)
+    if COL_OE_CODE in df_state.columns:
+        mask = mask & (~df_state[COL_OE_CODE].astype(str).isin(EXCLUDED_OE_CODES))
+
+    eligible = df_state[mask]
 
     if eligible.empty:
         return atz_pivot
@@ -380,6 +434,12 @@ def run_forecast_abgaenge(
     df_state.loc[df_state["status_ruhend"], "ruhend_until"] = start_date + pd.DateOffset(months=ruhend_months)
 
     atz_pivot = _build_atz_pivot(df_atz)
+
+    # Enforce minimum AR duration on existing cases from ATZ.xlsx
+    atz_params = params.get("atz", {})
+    min_ar_months = int(round(float(atz_params.get("atz_duration_ar_years", 2.5)) * 12))
+    min_fr_months = int(round(float(atz_params.get("atz_duration_fr_years", 2.5)) * 12))
+    atz_pivot = _enforce_min_ar_duration(atz_pivot, min_ar_months, min_fr_months)
 
     periods = _periods(start_date, end_date, freq)
 
