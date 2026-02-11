@@ -26,7 +26,6 @@ else:
 from kpi_reference import get_current_stichtag  # Import dynamic Stichtag
 
 from abgaenge import (
-    load_inputs,
     default_params,
     build_params_from_ui,
     run_forecast_abgaenge,
@@ -36,16 +35,8 @@ from abgaenge import (
 )
 
 # Shared Components
-from dataloader.loader import load_and_prepare_data
+from dataloader.loader import load_and_prepare_data, load_atz_data_cached
 from components.sidebar import render_global_filters, apply_filters
-
-
-@st.cache_data
-@st.cache_data
-def _load_atz_cached(base_path_str: str, uploaded_ma: Any = None, uploaded_atz: Any = None, uploaded_pl: Any = None):
-    """Loads only ATZ data needed for forecast engine details."""
-    _, df_atz = load_inputs(Path(base_path_str), uploaded_ma, uploaded_atz, uploaded_pl)
-    return df_atz
 
 
 def main():
@@ -75,7 +66,7 @@ def main():
         if up_atz_arg: up_atz_arg.seek(0)
         if up_pl_arg: up_pl_arg.seek(0)
         
-        df_atz = _load_atz_cached(str(BASE_PATH), up_ma_arg, up_atz_arg, up_pl_arg)
+        df_atz = load_atz_data_cached(str(BASE_PATH), up_ma_arg, up_atz_arg, up_pl_arg)
         
         # 5. Preprocessing for Forecast Engine (CRITICAL fix)
         # The snapshot_df is position-level data. Employees with multiple positions

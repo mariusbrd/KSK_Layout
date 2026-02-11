@@ -127,7 +127,29 @@ def load_hr_data(filepath: Optional[str] = None, auto_generate: bool = True) -> 
     except Exception as e:
         raise Exception(f"Fehler beim Laden der Daten: {str(e)}")
 
+    # P05: Explicit normalization for robustness
+    if "snapshot_detail" in data and "PersNr" in data["snapshot_detail"].columns:
+        data["snapshot_detail"]["PersNr"] = normalize_persnr(data["snapshot_detail"]["PersNr"])
+
     return data
+
+
+@st.cache_data
+def load_atz_data_cached(base_path_str: str, uploaded_ma: Any = None, uploaded_atz: Any = None, uploaded_pl: Any = None) -> pd.DataFrame:
+    """
+    Loads only ATZ data needed for forecast engine details.
+    Cached wrapper around abgaenge.io.load_inputs.
+    """
+    # Deferred import to avoid circular dependency risks if any exist
+    from abgaenge.io import load_inputs
+    from pathlib import Path
+    
+    try:
+        _, df_atz = load_inputs(Path(base_path_str), uploaded_ma, uploaded_atz, uploaded_pl)
+        return df_atz
+    except Exception as e:
+        # Return empty DataFrame on failure to allow UI to proceed with warning
+        return pd.DataFrame()
 
 
 def assign_age_cohort(age: int, cohorts: Dict[str, Tuple[int, int]]) -> str:

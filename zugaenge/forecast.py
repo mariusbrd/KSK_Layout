@@ -64,6 +64,8 @@ def _simulate_azubis(
     duration_years = float(azubi_params.get("duration_years", 3.0))
     strategy = azubi_params.get("strategy", "Random")
     target_unit = azubi_params.get("target_org_unit", None)
+    entry_tariff = azubi_params.get("entry_tariff_group", "E5")
+    entry_step = int(azubi_params.get("entry_step", 1))
 
     # Identify Azubis: TrfGr starts with "TVA" (TVAöD) or Jobfamily="Azubi"
     # We use a robust check
@@ -106,9 +108,9 @@ def _simulate_azubis(
                 # Update State
                 df_state.loc[persnr, "Jobfamily"] = "Angestellte" # Graduate
                 df_state.loc[persnr, "Organisationseinheit"] = new_unit
-                # Reset Salary to E5 St 1 (Assumption for ex-Azubi)
-                df_state.loc[persnr, "TrfGr"] = "E5" 
-                df_state.loc[persnr, "St"] = 1
+                # Reset Salary to Configured Entry (Assumption for ex-Azubi)
+                df_state.loc[persnr, "TrfGr"] = entry_tariff
+                df_state.loc[persnr, "St"] = entry_step
                 
                 events.append({
                     "date": graduation_date,
@@ -117,8 +119,8 @@ def _simulate_azubis(
                     "persnr": persnr,
                     "org_unit": new_unit,
                     "source": "Azubi",
-                    "TrfGr": "E5",
-                    "St": 1,
+                    "TrfGr": entry_tariff,
+                    "St": entry_step,
                     "Jobfamily": "Angestellte"
                 })
             else:

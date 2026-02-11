@@ -90,7 +90,8 @@ def load_tvoed_table(file_or_path) -> Dict[Tuple[str, int], float]:
                         pass
 
         return lookup
-    except Exception:
+    except Exception as e:
+        st.warning(f"⚠️ Fehler beim Laden der TVÖD-Tabelle: {e}. Verwende Fallback-Werte.")
         return {}
 
 

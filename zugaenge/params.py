@@ -11,6 +11,8 @@ def default_params() -> Dict[str, Any]:
             "duration_years": 3.0,
             "strategy": "Random",  # "Random" or "OrgUnit"
             "target_org_unit": None, # If strategy is OrgUnit
+            "entry_tariff_group": "E5",
+            "entry_step": 1,
         },
         "trainee": {
             "new_cases_per_year": 5,

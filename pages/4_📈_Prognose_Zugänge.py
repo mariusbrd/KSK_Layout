@@ -15,23 +15,13 @@ if SRC_PATH.exists():
 else:
     sys.path.append(str(BASE_PATH))
 
-from dataloader.loader import load_and_prepare_data, calculate_cost_vectorized, load_original_data
+from dataloader.loader import load_and_prepare_data, calculate_cost_vectorized, load_original_data, load_atz_data_cached
 from kpi_reference import get_current_stichtag
 from config.settings import COLORS, TARIFF_GROUPS
 from abgaenge.forecast import run_forecast_abgaenge
 from abgaenge.params import default_params as default_abgaenge_params, build_params_from_ui as build_abgaenge_params_from_ui
 from zugaenge.params import default_params as default_zugaenge_params, get_strategies
 from zugaenge.forecast import run_forecast_zugaenge
-from abgaenge import load_inputs # Needed for cached loader
-
-st.set_page_config(page_title="Prognose: Zugänge", page_icon="📈", layout="wide")
-
-
-@st.cache_data
-def _load_atz_cached(base_path_str: str, uploaded_ma: Any = None, uploaded_atz: Any = None, uploaded_pl: Any = None):
-    """Loads only ATZ data needed for forecast engine details."""
-    _, df_atz = load_inputs(Path(base_path_str), uploaded_ma, uploaded_atz, uploaded_pl)
-    return df_atz
 
 def main():
     st.title("📈 Prognose: Zugänge")
@@ -59,7 +49,7 @@ def main():
         if up_atz_arg: up_atz_arg.seek(0)
         if up_pl_arg: up_pl_arg.seek(0)
         
-        df_atz = _load_atz_cached(str(BASE_PATH), up_ma_arg, up_atz_arg, up_pl_arg)
+        df_atz = load_atz_data_cached(str(BASE_PATH), up_ma_arg, up_atz_arg, up_pl_arg)
         
         # 5. Preprocessing (Align with Abgänge/Kompakt)
         # Remove Vacancies
@@ -142,6 +132,11 @@ def main():
             units = sorted(snapshot_df["Organisationseinheit"].dropna().astype(str).unique())
             azubi_target = st.selectbox("Ziel-Einheit (Azubi)", units, key="az_unit")
             
+        # Optional: Salary Config
+        c4, c5 = st.columns(2)
+        az_tarif = c4.selectbox("Übernahme-Tarif", TARIFF_GROUPS, index=TARIFF_GROUPS.index(params["azubi"]["entry_tariff_group"]) if params["azubi"]["entry_tariff_group"] in TARIFF_GROUPS else 5, key="az_tarif")
+        az_step = c5.number_input("Übernahme-Stufe", 1, 6, params["azubi"]["entry_step"], key="az_step")
+            
         st.divider()
         
         # Trainees
@@ -185,7 +180,9 @@ def main():
                 "retention_rate": retention,
                 "duration_years": duration,
                 "strategy": az_strat,
-                "target_org_unit": azubi_target
+                "target_org_unit": azubi_target,
+                "entry_tariff_group": az_tarif,
+                "entry_step": az_step,
             },
             "trainee": {
                 "new_cases_per_year": trainee_count,
