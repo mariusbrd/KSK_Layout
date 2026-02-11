@@ -177,7 +177,7 @@ def weighted_choice(choices: Dict, size: int = 1):
 
 def generate_mitarbeiter(
     n_employees: int = 1222,
-    reference_date: str = "2026-01-01"
+    reference_date: str = "2025-12-31"
 ) -> pd.DataFrame:
     """
     Generiert Mitarbeiter.xlsx mit exakt der Original-Struktur.
@@ -361,7 +361,7 @@ def generate_planstellen(
     return pd.DataFrame(data)
 
 
-def generate_atz(mitarbeiter_df: pd.DataFrame, reference_date: str = "2026-01-01") -> pd.DataFrame:
+def generate_atz(mitarbeiter_df: pd.DataFrame, reference_date: str = "2025-12-31") -> pd.DataFrame:
     """
     Generiert ATZ.xlsx mit AR und FR Phasen.
     
@@ -442,7 +442,7 @@ def generate_ausbildung(mitarbeiter_df: pd.DataFrame) -> pd.DataFrame:
 def generate_history_cube(
     snapshot_df: pd.DataFrame,
     start_date: str = "2024-01-01",
-    end_date: str = "2026-01-18"
+    end_date: str = "2025-12-31"
 ) -> pd.DataFrame:
     """Generiert History_Cube (monatliche Zeitreihen)."""
     start = pd.to_datetime(start_date)
@@ -522,7 +522,7 @@ def generate_synthetic_data(
     n_employees: int = 1222,
     n_planstellen: int = 1728,
     start_date: str = "2024-01-01",
-    end_date: str = "2026-01-18"
+    end_date: str = "2025-12-31"
 ) -> Dict[str, pd.DataFrame]:
     """Generiert alle Daten für das Dashboard."""
     

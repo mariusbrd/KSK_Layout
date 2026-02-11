@@ -21,7 +21,7 @@ from utils.settings_loader import get_setting
 
 # Einziger hardcoded Stichtag-Default im gesamten Projekt.
 # Alle anderen Module sollen get_current_stichtag() verwenden.
-STICHTAG_DEFAULT = "2025-01-30"
+STICHTAG_DEFAULT = "2025-12-31"
 
 
 def get_current_stichtag() -> pd.Timestamp:
