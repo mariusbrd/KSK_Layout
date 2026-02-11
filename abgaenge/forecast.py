@@ -177,6 +177,29 @@ def _select_quit_prob(row: pd.Series, params: Dict[str, Any]) -> float:
     return base
 
 
+def _select_atz_prob(row: pd.Series, params: Dict[str, Any]) -> float:
+    atz_params = params.get("atz", {})
+    base = float(atz_params.get("new_atz_rate", 0.05))
+    if not atz_params.get("use_atz_matrix", False):
+        return base
+
+    matrix = atz_params.get("atz_matrix", {})
+    dimension = atz_params.get("atz_dimension", "JobFamily")
+
+    if dimension == "OrgUnit":
+        dim_value = str(row.get("Organisationseinheit", "Default"))
+    else:
+        dim_value = str(row.get("Jobfamily", "Default"))
+
+    # Flat lookup (no age cohorts)
+    if dim_value in matrix:
+        return float(matrix[dim_value])
+    elif "Default" in matrix:
+        return float(matrix["Default"])
+    
+    return base
+
+
 def _schedule_new_atz_cases(
     df_state: pd.DataFrame,
     atz_pivot: pd.DataFrame,
@@ -197,23 +220,32 @@ def _schedule_new_atz_cases(
         (df_state["age"] <= eligible_age_max)  # F02: Apply upper bound
     ]
 
-    # Calculate expected cases based on rate * eligible population
-    rate = float(atz_params.get("new_atz_rate", 0.0))
-    # Adjust annual rate to period length
-    period_fraction = (period.end - period.start).days / 365.25
-    # Probability per person per period = 1 - (1 - annual_rate)^fraction
-    # Or simpler: expected count = len(eligible) * annual_rate * fraction
-    # For Poisson process: lambda = N * rate * t
-    if rate <= 0 or eligible.empty:
+    if eligible.empty:
         return atz_pivot
 
-    expected = len(eligible) * rate * period_fraction
+    # Adjust annual rate to period length
+    period_fraction = (period.end - period.start).days / 365.25
+
+    # Determine individual probabilities and aggregate expected value
+    probs = []
+    for _, row in eligible.iterrows():
+        annual_rate = _select_atz_prob(row, params)
+        probs.append(annual_rate * period_fraction)
+    
+    probs = np.array(probs)
+    expected = float(np.sum(probs))
+    
+    if expected <= 0:
+        return atz_pivot
     
     count = int(rng.poisson(lam=expected))
     if count <= 0:
         return atz_pivot
 
-    chosen = eligible.sample(n=min(count, len(eligible)), random_state=rng).index.tolist()
+    # Sample individuals based on their relative weights (probabilities)
+    # p = probs / sum(probs)
+    p_normalized = probs / expected
+    chosen = eligible.sample(n=min(count, len(eligible)), replace=False, weights=p_normalized, random_state=rng).index.tolist()
 
     new_rows = []
     for persnr in chosen:

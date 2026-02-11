@@ -70,7 +70,36 @@ def build_charts(forecast_kpis: pd.DataFrame, events_person_level: pd.DataFrame)
                 xaxis_title="Periode",
                 yaxis_title="Anzahl",
             )
+            fig_bar.update_layout(
+                barmode="stack",
+                title="Abgänge nach Grund (zeitlich)",
+                xaxis_title="Periode",
+                yaxis_title="Anzahl",
+            )
             charts["bar_abgaenge_reasons"] = fig_bar
+
+            # ── NEW: Total Reasons Bar Chart (Horizontal) ──
+            total_stats = df.groupby("reason_code").size().reset_index(name="count")
+            total_stats["reason_label"] = total_stats["reason_code"].map(REASON_LABELS)
+            total_stats = total_stats.sort_values("count", ascending=True)
+            
+            fig_total = go.Figure()
+            fig_total.add_trace(go.Bar(
+                x=total_stats["count"],
+                y=total_stats["reason_label"],
+                orientation="h",
+                text=total_stats["count"],
+                textposition="auto",
+                marker_color="rgb(55, 83, 109)"
+            ))
+            fig_total.update_layout(
+                title="Gesamtverteilung der Abgänge nach Grund",
+                xaxis_title="Anzahl Personen",
+                yaxis_title=None,
+                height=400,
+                margin=dict(l=0, r=0, t=30, b=0)
+            )
+            charts["bar_reasons_total"] = fig_total
 
     # Driver details charts (simple counts per period)
     if events_person_level is not None and not events_person_level.empty:

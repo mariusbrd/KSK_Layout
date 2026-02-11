@@ -325,7 +325,7 @@ def calculate_soll_cost(row) -> float:
         employer_factor = st.session_state.get("employer_cost_factor", EMPLOYER_COST_FACTOR)
 
         # Sonderfälle (Azubi, Vorstand)
-        special = get_special_salary(tarif)
+        special = get_special_salary(tarif, step=step)
         if special is not None:
             return special * soll_fte * employer_factor
 

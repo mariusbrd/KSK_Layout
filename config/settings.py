@@ -145,6 +145,13 @@ EMPLOYER_COST_FACTOR = 1.25
 
 # Sonderfall-Defaults (konfigurierbar über Einstellungen-Seite)
 DEFAULT_AZUBI_JAHRESGEHALT = 14400.0
+# Progressiv (Jahr 1, 2, 3, 4)
+DEFAULT_AZUBI_SALARIES = {
+    1: 8400.0,
+    2: 9600.0,
+    3: 11724.0,
+    4: 12168.0
+}
 DEFAULT_VORSTAND_JAHRESGEHALT = 200000.0
 
 # =============================================================================
@@ -265,6 +272,31 @@ THRESHOLDS = {
         "warning": 0.35,   # <= 35% ist Warnung
         # > 35% ist kritisch (Demografie-Risiko)
     },
+}
+
+# =============================================================================
+# AUSSCHLUSS-GRUPPEN (Ausschluss von Ist-Zählung, Erhalt von Soll-Kapa)
+# =============================================================================
+
+EXCLUSION_ORG_UNITS = {
+    "9920": "PE bereichsübergreifend / Trainee-Planstellen",
+    "9999": "Personalrat",
+    "9975": "PA Erziehungszeit",
+    "9980": "PA Rückkehrer",
+    "9990": "PA Freistellung (ATZ-FR, Beurlaubung, Turbo-TZ)",
+    "9940": "PA Dauerkranke",
+    "9900": "PA Ruhendes Beschäftigungsverhältnis",
+    "9941": "PA Rente auf Zeit",
+    "9945": "PA Beurlaubt Pflegezeit",
+    "9960": "PA Bundeswehr/Zivildienst",
+    "9970": "PA Mutterschutz",
+    "9971": "PA Elternzeit",
+    "9972": "PA Sonderurlaub § 28 TVöD",
+    "9973": "PA Beschäftigungsverbot",
+    "9981": "Aushilfen",
+    "99XX": "Sonstige, z. B. Dummy/Versorgungsbezüge",
+    "9910": "PA Auszubildende",
+    "9921": "PA Praktikum",
 }
 
 # =============================================================================

@@ -128,7 +128,7 @@ def get_annual_salary(
     return base * multiplier
 
 
-def get_special_salary(tariff: str) -> float:
+def get_special_salary(tariff: str, step: int = 1) -> float:
     """
     Gibt das konfigurierte Jahresgehalt für Sonderfälle zurück.
 
@@ -136,12 +136,15 @@ def get_special_salary(tariff: str) -> float:
 
     Args:
         tariff: Normalisierter Tarifgruppen-String
+        step: Lehrjahr (1-4) für Auszubildende
 
     Returns:
         Jahresgehalt oder None wenn kein Sonderfall
     """
     if tariff in ("TVAÖD", "TVÖAD", "TVAOD"):
-        return st.session_state.get("azubi_jahresgehalt", 14400.0)
+        from config.settings import DEFAULT_AZUBI_SALARIES
+        salaries = st.session_state.get("azubi_salaries", DEFAULT_AZUBI_SALARIES)
+        return salaries.get(step, salaries.get(1, 14400.0))
     if tariff == "1":
         return st.session_state.get("vorstand_jahresgehalt", 200000.0)
     return None

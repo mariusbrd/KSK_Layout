@@ -159,150 +159,246 @@ def main():
 
     # ── Settings Accordion ──────────────────────────────────────────
     with st.expander("⚙️ Prognose-Einstellungen", expanded=True):
-        with st.form("abgaenge_form"):
+        # ── Row 1: Base Settings (horizontal) ──
+        st.markdown("##### 📅 Zeitraum & Basis")
+        submit = False
+        bc1, bc2, bc3, bc4 = st.columns(4)
+        with bc1:
+            ist_stichtag = st.date_input("Ist-Stichtag", value=default_start)
+        with bc2:
+            forecast_end_date = st.date_input("Prognose-Ende", value=default_end)
+        with bc3:
+            freq_label = st.selectbox("Frequenz", options=["Monat", "Quartal"], index=0)
+        with bc4:
+            random_seed = st.number_input("Random Seed", value=int(params["random_seed"]), step=1)
 
-            # ── Row 1: Base Settings (horizontal) ──
-            st.markdown("##### 📅 Zeitraum & Basis")
-            bc1, bc2, bc3, bc4 = st.columns(4)
+        st.markdown("---")
+
+        # ── Row 2: Component Toggles (horizontal) ──
+        st.markdown("##### 🧩 Aktive Komponenten")
+        cc1, cc2, cc3, cc4 = st.columns(4)
+        with cc1:
+            comp_atz = st.checkbox("ATZ", value=params["components"]["atz"])
+        with cc2:
+            comp_ret = st.checkbox("Rente", value=params["components"]["retirement"])
+        with cc3:
+            comp_quit = st.checkbox("Kündigung", value=params["components"]["quit"])
+        with cc4: # Corrected col index
+            comp_ruhend = st.checkbox("Ruhend", value=params["components"]["ruhend"])
+
+        st.markdown("---")
+
+        # ── Row 3: Detail Parameters (sub-expanders) - OUTSIDE FORM for interactivity ──
+        st.markdown("##### 🔧 Detail-Parameter")
+
+        with st.expander("ATZ-Parameter"):
+            # ── ATZ Row 1: General Constraints ──
+            ac1, ac2, ac3, ac4, ac5 = st.columns(5)
+            with ac1:
+                new_atz_base = st.slider("Neue Fälle (Basis)", min_value=0.0, max_value=0.5, value=float(params["atz"].get("new_atz_rate", 0.05)), step=0.005, format="%.3f", help="Basis-Anteil der berechtigten Mitarbeiter, die pro Jahr in ATZ gehen.", key="slide_atz_base")
+                params["atz"]["new_atz_rate"] = new_atz_base
+            with ac2:
+                eligible_age = st.number_input("Mindestalter", value=int(params["atz"]["atz_eligible_age_min"]), step=1, key="num_atz_age_min")
+                params["atz"]["atz_eligible_age_min"] = eligible_age
+            with ac3:
+                eligible_age_max = st.number_input("Höchstalter", value=int(params["atz"]["atz_eligible_age_max"]), step=1, key="num_atz_age_max")
+                params["atz"]["atz_eligible_age_max"] = eligible_age_max
+            with ac4:
+                ar_years = st.number_input("AR-Dauer (Jahre)", value=float(params["atz"]["atz_duration_ar_years"]), step=0.5, key="num_atz_ar_years")
+                params["atz"]["atz_duration_ar_years"] = ar_years
+            with ac5:
+                fr_years = st.number_input("FR-Dauer (Jahre)", value=float(params["atz"]["atz_duration_fr_years"]), step=0.5, key="num_atz_fr_years")
+                params["atz"]["atz_duration_fr_years"] = fr_years
+
+            st.divider()
+
+            # ── ATZ Row 2: Matrix Controls ──
+            bc1, bc2 = st.columns([1, 1])
             with bc1:
-                ist_stichtag = st.date_input("Ist-Stichtag", value=default_start)
+                use_atz_matrix = st.checkbox(
+                    "Detaillierte ATZ-Matrix verwenden", 
+                    value=params["atz"].get("use_atz_matrix", False),
+                    help="Wenn aktiviert, wird die nachfolgende Matrix für die Eintrittswahrscheinlichkeiten genutzt.",
+                    key="chk_use_atz_matrix_live"
+                )
+                params["atz"]["use_atz_matrix"] = use_atz_matrix
             with bc2:
-                forecast_end_date = st.date_input("Prognose-Ende", value=default_end)
-            with bc3:
-                freq_label = st.selectbox("Frequenz", options=["Monat", "Quartal"], index=0)
-            with bc4:
-                random_seed = st.number_input("Random Seed", value=int(params["random_seed"]), step=1)
+                atz_dim = st.radio(
+                    "Dimension für ATZ",
+                    options=["JobFamily", "OrgUnit"],
+                    index=0 if params["atz"].get("atz_dimension", "JobFamily") == "JobFamily" else 1,
+                    help="Wählen Sie die Dimension für die ATZ-Eintrittswahrscheinlichkeiten.",
+                    disabled=not use_atz_matrix,
+                    horizontal=True,
+                    key="rad_atz_dim_live"
+                )
+                params["atz"]["atz_dimension"] = atz_dim
 
-            st.markdown("---")
+            # ── ATZ Row 3: Matrix Editor ──
+            st.caption(f"Matrix: {atz_dim} (Eintrittswahrscheinlichkeit für berechtigte MA)")
+            
+            if atz_dim == "OrgUnit":
+                atz_col_name = "Organisationseinheit"
+            else:
+                atz_col_name = "Jobfamily"
+            
+            atz_unique_vals = []
+            if atz_col_name in snapshot_df.columns:
+                atz_unique_vals = sorted([str(x) for x in snapshot_df[atz_col_name].dropna().unique()])
+            
+            current_atz_matrix = params["atz"].get("atz_matrix", {})
+            atz_dim_items = ["Default"] + atz_unique_vals
+            atz_editor_data = []
 
-            # ── Row 2: Component Toggles (horizontal) ──
-            st.markdown("##### 🧩 Aktive Komponenten")
-            cc1, cc2, cc3, cc4 = st.columns(4)
-            with cc1:
-                comp_atz = st.checkbox("ATZ", value=params["components"]["atz"])
-            with cc2:
-                comp_ret = st.checkbox("Rente", value=params["components"]["retirement"])
-            with cc3:
-                comp_quit = st.checkbox("Kündigung", value=params["components"]["quit"])
-            with cc4:
-                comp_ruhend = st.checkbox("Ruhend", value=params["components"]["ruhend"])
-
-            st.markdown("---")
-
-            # ── Row 3: Detail Parameters (sub-expanders) ──
-            st.markdown("##### 🔧 Detail-Parameter")
-
-            with st.expander("ATZ-Parameter"):
-                ac1, ac2, ac3 = st.columns(3)
-                with ac1:
-                    new_atz = st.slider("Neue Fälle (Rate)", min_value=0.0, max_value=0.5, value=float(params["atz"].get("new_atz_rate", 0.05)), step=0.005, format="%.3f", help="Anteil der berechtigten Mitarbeiter, die pro Jahr in ATZ gehen.")
-                with ac2:
-                    eligible_age = st.number_input("Mindestalter", value=int(params["atz"]["atz_eligible_age_min"]), step=1)
-                with ac3:
-                    eligible_age_max = st.number_input("Höchstalter", value=int(params["atz"]["atz_eligible_age_max"]), step=1)
-                dc1, dc2 = st.columns(2)
-                with dc1:
-                    ar_years = st.number_input("AR-Dauer (Jahre)", value=float(params["atz"]["atz_duration_ar_years"]), step=0.5)
-                with dc2:
-                    fr_years = st.number_input("FR-Dauer (Jahre)", value=float(params["atz"]["atz_duration_fr_years"]), step=0.5)
-
-            with st.expander("Renten-Parameter"):
-                rc1, rc2 = st.columns(2)
-                with rc1:
-                    rent65 = st.slider("Renteneintritt 65+", min_value=0.0, max_value=1.0, value=float(params["retirement"]["rent_rate_65"]), step=0.05)
-                with rc2:
-                    rent60 = st.slider("Frühverrentung 60-64", min_value=0.0, max_value=1.0, value=float(params["retirement"]["rent_rate_60_65"]), step=0.05)
-
-            with st.expander("Kündigungs-Parameter (Matrix)", expanded=False):
-                qc1, qc2 = st.columns([1, 2])
-                with qc1:
-                    quit_base = st.slider("Basisrate p.a.", min_value=0.0, max_value=0.5, value=float(params["quit"]["quit_rate_base"]), step=0.01, help="Fallback-Wert, wenn keine spezifische Rate gefunden wird.")
-                    
-                    # Dimension Selector
-                    quit_dim = st.radio(
-                        "Dimension für Matrix",
-                        options=["JobFamily", "OrgUnit"],
-                        index=0 if params["quit"].get("quit_dimension", "JobFamily") == "JobFamily" else 1,
-                        help="Wählen Sie die Dimension für die Kündigungswahrscheinlichkeiten."
+            for val in atz_dim_items:
+                # Try to get value from old cohort-based structure or new flat structure
+                rate = current_atz_matrix.get(str(val))
+                if rate is None:
+                    # Fallback to "alter_55_plus" if it was old matrix
+                    rate = current_atz_matrix.get("alter_55_plus", {}).get(str(val))
+                if rate is None:
+                    rate = current_atz_matrix.get("Default", new_atz_base)
+                
+                atz_editor_data.append({
+                    atz_dim: val,
+                    "Wahrscheinlichkeit": float(rate)
+                })
+            
+            df_atz_matrix = pd.DataFrame(atz_editor_data).set_index(atz_dim)
+            
+            edited_atz_df = st.data_editor(
+                df_atz_matrix,
+                use_container_width=True,
+                height=min(400, 50 + len(atz_dim_items) * 35),
+                key="atz_matrix_editor_live",
+                disabled=not use_atz_matrix,
+                column_config={
+                    "Wahrscheinlichkeit": st.column_config.NumberColumn(
+                        "Wahrscheinlichkeit",
+                        min_value=0.0, max_value=1.0, step=0.01, format="%.2f"
                     )
-                    
-                    # Update params immediately for UI state
-                    params["quit"]["quit_dimension"] = quit_dim
+                }
+            )
+            
+            new_atz_matrix = {}
+            for dim_val, row in edited_atz_df.iterrows():
+                new_atz_matrix[str(dim_val)] = float(row["Wahrscheinlichkeit"])
+            params["atz"]["atz_matrix"] = new_atz_matrix
 
-                with qc2:
-                    st.caption(f"Matrix: Alter × {quit_dim}")
-                    
-                    # 1. Determine Columns based on data
-                    if quit_dim == "OrgUnit":
-                        col_name = "Organisationseinheit"
-                    else:
-                        col_name = "Jobfamily"
-                        
-                    # Get unique values from snapshot (sorted)
-                    unique_vals = []
-                    if col_name in snapshot_df.columns:
-                        unique_vals = sorted([str(x) for x in snapshot_df[col_name].dropna().unique()])
-                    
-                    # Define Matrix Structure
-                    age_cohorts = ["alter_unter_30", "alter_30_45", "alter_45_55", "alter_55_plus"]
-                    matrix_cols = ["Default"] + unique_vals
-                    
-                    # 2. Build DataFrame for Editor
-                    # Load existing matrix from params if available
-                    current_matrix = params["quit"].get("quit_matrix", {})
-                    
-                    editor_data = []
-                    for cohort in age_cohorts:
-                        row_data = {"Altersgruppe": cohort}
-                        cohort_dict = current_matrix.get(cohort, {})
-                        
-                        # Fill columns
-                        for col in matrix_cols:
-                            val = cohort_dict.get(col)
-                            if val is None:
-                                val = cohort_dict.get("Default", quit_base) # Fallback to row default or global base
-                            row_data[col] = float(val)
-                        editor_data.append(row_data)
-                    
-                    df_matrix = pd.DataFrame(editor_data)
-                    df_matrix = df_matrix.set_index("Altersgruppe")
-                    
-                    # 3. Render Editor
-                    edited_df = st.data_editor(
-                        df_matrix,
-                        use_container_width=True,
-                        height=200,
-                        column_config={
-                            "Default": st.column_config.NumberColumn(
-                                "Standard",
-                                help="Standardwert für diese Altersgruppe",
-                                min_value=0.0,
-                                max_value=1.0,
-                                step=0.01,
-                                format="%.2f"
-                            )
-                        }
-                    )
-                    
-                    # 4. Save back to params
-                    # Convert DataFrame back to nested dict
-                    new_matrix = {}
-                    for cohort, row in edited_df.iterrows():
-                        new_matrix[cohort] = row.to_dict()
-                    
-                    params["quit"]["quit_matrix"] = new_matrix
+        with st.expander("Renten-Parameter"):
+            rc1, rc2 = st.columns(2)
+            with rc1:
+                rent65 = st.slider("Renteneintritt 65+", min_value=0.0, max_value=1.0, value=float(params["retirement"]["rent_rate_65"]), step=0.05, key="slide_rent_65")
+                params["retirement"]["rent_rate_65"] = rent65
+            with rc2:
+                rent60 = st.slider("Frühverrentung 60-64", min_value=0.0, max_value=1.0, value=float(params["retirement"]["rent_rate_60_65"]), step=0.05, key="slide_rent_60")
+                params["retirement"]["rent_rate_60_65"] = rent60
 
-            with st.expander("Ruhend-Parameter"):
-                hc1, hc2, hc3 = st.columns(3)
-                with hc1:
-                    ruhend_new = st.number_input("Neue Fälle / Jahr", value=int(params["ruhend"]["ruhend_new_cases_per_year"]), step=1, key="ruhend_new")
-                with hc2:
-                    ruhend_return = st.slider("Rückkehrquote p.a.", min_value=0.0, max_value=1.0, value=float(params["ruhend"]["ruhend_return_rate"]), step=0.05)
-                with hc3:
-                    ruhend_duration = st.number_input("Ø Dauer (Monate)", value=int(params["ruhend"]["ruhend_avg_duration_months"]), step=1)
+        with st.expander("Kündigungs-Parameter", expanded=False):
+            # ── Controls Row ──
+            c1, c2, c3 = st.columns([3, 3, 2])
+            
+            with c1:
+                quit_base = st.slider(
+                    "Basisrate p.a.", 
+                    min_value=0.0, max_value=0.5, 
+                    value=float(params["quit"]["quit_rate_base"]), 
+                    step=0.01, 
+                    help="Globale Kündigungsrate pro Jahr.",
+                    key="slide_quit_base_live"
+                )
+                params["quit"]["quit_rate_base"] = quit_base
+            with c2:
+                st.write("") # Alignment
+                use_quit_matrix = st.checkbox(
+                    "Detaillierte Kündigungsmatrix verwenden", 
+                    value=params["quit"].get("use_quit_matrix", True),
+                    help="Wenn aktiviert, wird die nachfolgende Matrix für die Kündigungswahrscheinlichkeiten genutzt.",
+                    key="chk_use_quit_matrix_live"
+                )
+                params["quit"]["use_quit_matrix"] = use_quit_matrix
+            with c3:
+                quit_dim = st.radio(
+                    "Dimension",
+                    options=["JobFamily", "OrgUnit"],
+                    index=0 if params["quit"].get("quit_dimension", "JobFamily") == "JobFamily" else 1,
+                    help="Wählen Sie die Dimension für die Kündigungswahrscheinlichkeiten.",
+                    disabled=not use_quit_matrix,
+                    horizontal=True,
+                    key="rad_quit_dim_live"
+                )
+                params["quit"]["quit_dimension"] = quit_dim
 
-            # ── Submit Button ──
-            submit = st.form_submit_button("🚀 Prognose berechnen", use_container_width=True)
+            st.divider()
+
+            # ── Matrix Row ──
+            st.caption(f"Matrix: {quit_dim} × Alter")
+            
+            # 1. Determine dimension values
+            if quit_dim == "OrgUnit":
+                col_name = "Organisationseinheit"
+            else:
+                col_name = "Jobfamily"
+            
+            unique_vals = []
+            if col_name in snapshot_df.columns:
+                unique_vals = sorted([str(x) for x in snapshot_df[col_name].dropna().unique()])
+            
+            age_cohorts = ["alter_unter_30", "alter_30_45", "alter_45_55", "alter_55_plus"]
+            age_labels = {"alter_unter_30": "u30", "alter_30_45": "30-45", "alter_45_55": "45-55", "alter_55_plus": "ü55"}
+
+            # 2. Build DataFrame
+            current_quit_matrix = params["quit"].get("quit_matrix", {})
+            dim_items = ["Default"] + unique_vals
+            editor_data = []
+
+            for val in dim_items:
+                row_data = {quit_dim: val}
+                for cohort in age_cohorts:
+                    row_data[cohort] = float(current_quit_matrix.get(cohort, {}).get(str(val), current_quit_matrix.get(cohort, {}).get("Default", quit_base)))
+                editor_data.append(row_data)
+            
+            df_matrix = pd.DataFrame(editor_data).set_index(quit_dim)
+            
+            # 3. Render Editor
+            edited_df = st.data_editor(
+                df_matrix,
+                use_container_width=True,
+                height=min(400, 50 + len(dim_items) * 35),
+                disabled=not use_quit_matrix,
+                key="quit_matrix_editor_live_fixed",
+                column_config={
+                    c: st.column_config.NumberColumn(
+                        age_labels.get(c, c),
+                        min_value=0.0, max_value=1.0, step=0.01, format="%.2f"
+                    ) for c in age_cohorts
+                }
+            )
+            
+            # 4. Save back
+            new_quit_matrix = {c: {} for c in age_cohorts}
+            for dim_val, row in edited_df.iterrows():
+                for c in age_cohorts:
+                    new_quit_matrix[c][str(dim_val)] = float(row[c])
+            params["quit"]["quit_matrix"] = new_quit_matrix
+
+        with st.expander("Ruhend-Parameter"):
+            hc1, hc2, hc3 = st.columns(3)
+            with hc1:
+                ruhend_new = st.number_input("Neue Fälle / Jahr", value=int(params["ruhend"]["ruhend_new_cases_per_year"]), step=1, key="num_ruhend_new")
+                params["ruhend"]["ruhend_new_cases_per_year"] = ruhend_new
+            with hc2:
+                ruhend_return = st.slider("Rückkehrquote p.a.", min_value=0.0, max_value=1.0, value=float(params["ruhend"]["ruhend_return_rate"]), step=0.05, key="slide_ruhend_ret_live")
+                params["ruhend"]["ruhend_return_rate"] = ruhend_return
+            with hc3:
+                ruhend_duration = st.number_input("Ø Dauer (Monate)", value=int(params["ruhend"]["ruhend_avg_duration_months"]), step=1, key="num_ruhend_dur_live")
+                params["ruhend"]["ruhend_avg_duration_months"] = ruhend_duration
+
+        # ── Lower Action Button ──
+        st.write("")
+        if st.button("🚀 Prognose mit diesen Parametern berechnen", use_container_width=True, key="btn_run_bottom"):
+            submit = True # Override submit for this run
+
 
     if not submit:
         st.info("⬆️ Parameter oben einstellen und Prognose berechnen.")
@@ -320,11 +416,14 @@ def main():
             "ruhend": comp_ruhend,
         },
         "atz": {
-            "new_atz_rate": new_atz, # was new_atz_cases_per_year
+            "new_atz_rate": new_atz_base,
             "atz_eligible_age_min": eligible_age,
-            "atz_eligible_age_max": eligible_age_max,  # F02: Pass upper bound
+            "atz_eligible_age_max": eligible_age_max,
             "atz_duration_ar_years": ar_years,
             "atz_duration_fr_years": fr_years,
+            "use_atz_matrix": use_atz_matrix,
+            "atz_dimension": atz_dim,
+            "atz_matrix": new_atz_matrix,
         },
         "retirement": {
             "rent_rate_65": rent65,
@@ -332,9 +431,9 @@ def main():
         },
         "quit": {
             "quit_rate_base": quit_base,
-            # "use_quit_matrix": use_matrix, # Removed in UI, implied by matrix existence?
-            # Actually I removed the checkbox in UI replacement. So assume True?
-            "use_quit_matrix": True, 
+            "use_quit_matrix": use_quit_matrix,
+            "quit_dimension": quit_dim,
+            "quit_matrix": new_quit_matrix,
         },
         "ruhend": {
             "ruhend_new_cases_per_year": ruhend_new,
@@ -342,8 +441,6 @@ def main():
             "ruhend_avg_duration_months": ruhend_duration,
         },
         "random_seed": random_seed,
-        "quit_dimension": quit_dim,
-        "quit_matrix": new_matrix,
     }
 
     params = build_params_from_ui(ui_state)
@@ -397,7 +494,7 @@ def main():
     # ── Ergebnisse ──────────────────────────────────────────────────
     st.divider()
 
-    # KPI Metrics
+    # KPI Metrics Header
     if not forecast_kpis.empty:
         first = forecast_kpis.iloc[0]
         last = forecast_kpis.iloc[-1]
@@ -407,35 +504,52 @@ def main():
         avg_headcount = float(forecast_kpis[["headcount_start", "headcount_end"]].mean(axis=1).mean())
         abgangsquote = (exits_total / avg_headcount) if avg_headcount > 0 else 0.0
 
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Headcount Start", f"{int(first['headcount_start'])}")
-        col2.metric("Headcount Ende", f"{int(last['headcount_end'])}", delta=int(last["headcount_delta"]))
-        col3.metric("MAK Start", f"{first['mak_start']:.1f}")
-        col4.metric("MAK Ende", f"{last['mak_end']:.1f}", delta=f"{last['mak_delta']:.1f}")
-
-        col5, col6, col7 = st.columns(3)
-        col5.metric("Abgänge gesamt", f"{exits_total}")
-        col6.metric("MAK Verlust gesamt", f"{mak_loss_total:.1f}")
-        col7.metric("Abgangsquote", f"{abgangsquote*100:.1f}%")
+        st.markdown("### 🏆 Kennzahlen (Management-Summary)")
+        m1, m2, m3 = st.columns([1, 1, 1])
+        with m1:
+            st.metric("Abgänge gesamt (Köpfe)", f"{exits_total}")
+        with m2:
+            st.metric("Kapazitätsverlust (MAK)", f"{mak_loss_total:.1f}")
+        with m3:
+            st.metric("Prognostizierte Fluktuation", f"{abgangsquote*100:.1f}%")
+        
+        with st.expander("🔍 Details: Bestandsentwicklung (Start vs. Ende)", expanded=False):
+            d1, d2, d3, d4 = st.columns(4)
+            d1.metric("Headcount Start", f"{int(first['headcount_start'])}")
+            d2.metric("Headcount Ende", f"{int(last['headcount_end'])}", delta=int(last["headcount_delta"]))
+            d3.metric("MAK Start", f"{first['mak_start']:.1f}")
+            d4.metric("MAK Ende", f"{last['mak_end']:.1f}", delta=f"{last['mak_delta']:.1f}")
 
     charts = build_charts(forecast_kpis, events)
 
-    tab1, tab2, tab3 = st.tabs(["Überblick", "Treiber Details", "Personenlisten Export"])
+    tab1, tab2, tab3 = st.tabs(["📊 Überblick & Trends", "🎯 Treiber Details", "📋 Personenlisten / Export"])
 
     with tab1:
+        # ── Section 1: zeitliche Entwicklung & Gesamt-Struktur ──
+        st.markdown("### 📈 Bestandsentwicklung (Trend)")
         st.plotly_chart(charts.get("line_headcount_mak"), use_container_width=True)
+        st.caption("Die obige Grafik zeigt die Entwicklung von Headcount (Anzahl Personen) und MAK (Kapazität) über den Prognosezeitraum.")
+
+        st.plotly_chart(charts.get("bar_reasons_total"), use_container_width=True)
+        st.caption("Gesamtanzahl der prognostizierten Abgänge nach Grund für den gesamten Zeitraum.")
+
+        st.divider()
+
+        # ── Section 2: Struktur der Abgänge ──
+        st.markdown("### 🧬 Abgangsgründe")
         st.plotly_chart(charts.get("bar_abgaenge_reasons"), use_container_width=True)
-        
-        # New OrgUnit Chart
+        st.caption("Verteilung der Abgänge nach Ursache (Kündigung, Rente, ATZ etc.).")
+
+        st.divider()
+
         if "Organisationseinheit" in events.columns:
-            st.markdown("### 🏢 Prognostizierte Abgänge nach Organisationseinheit")
+            st.markdown("### 🏢 Top 15 Organisationseinheiten")
             
             # Aggregate
             exclude_units = ["Unbekannt", None]
             org_events = events[~events["Organisationseinheit"].isin(exclude_units)]
             if not org_events.empty:
                 org_stats = org_events.groupby("Organisationseinheit").size().reset_index(name="Abgänge")
-                # Top 10 desc
                 org_stats = org_stats.sort_values("Abgänge", ascending=True).tail(15) 
                 
                 fig_org = px.bar(
@@ -443,31 +557,84 @@ def main():
                     x="Abgänge", 
                     y="Organisationseinheit", 
                     orientation="h",
-                    title="Top 15 Organisationseinheiten nach Abgängen",
+                    title="Abgänge nach Organisationseinheit (Top 15)",
                     text="Abgänge",
                     color="Abgänge",
                     color_continuous_scale="Reds"
                 )
-                fig_org.update_layout(yaxis_title=None, showlegend=False)
+                fig_org.update_layout(yaxis_title=None, showlegend=False, height=600)
                 st.plotly_chart(fig_org, use_container_width=True)
 
-        # KPI Dataframe
-        st.dataframe(forecast_kpis, width="stretch")
+        st.divider()
+
+        # ── Section 3: Datengrundlage ──
+        with st.expander("📄 Detaillierte Kennzahlentabelle (Rohdaten)", expanded=False):
+            st.dataframe(forecast_kpis, use_container_width=True)
 
     with tab2:
-        for key, fig in charts.items():
-            if key.startswith("driver_"):
-                st.plotly_chart(fig, use_container_width=True)
-
-        tables = result.get("tables", {})
-        if events.empty or not tables:
+        if events.empty:
             st.info("Keine Treiber-Events vorhanden.")
         else:
-            for name, df in tables.items():
-                if df is None or df.empty:
-                    continue
-                st.markdown(f"**{name.capitalize()}**")
-                st.dataframe(df, width="stretch")
+            # ── Section 1: Management Summary ──
+            st.markdown("### 📊 Zusammenfassung der Abgangs-Treiber")
+            
+            st.info("""
+            **💡 Interpretationshilfe: Headcount vs. Kapazität**
+            
+            **A) Headcount-Abgänge:** Zählen Personen, die die Bank verlassen (z.B. Kündigung, Rente). 
+            Ein Wechsel in die ATZ-Freistellung ist *kein* Headcount-Abgang.
+            
+            **B) Kapazitäts-Abgänge (MAK):** Messen den Verlust an Arbeitskraft in FTE. 
+            Hier zählen auch ATZ-Wechsel (AR→FR) und Ruhens-Starts, da diese die verfügbare Kapazität sofort reduzieren.
+            """)
+
+            # Data Prep
+            summary_df = events.copy()
+            summary_df["event_date"] = pd.to_datetime(summary_df["event_date"])
+            summary_df["Jahr"] = summary_df["event_date"].dt.to_period("Y").astype(str)
+            
+            # --- Table A: Headcount ---
+            st.markdown("##### A) Headcount-Abgänge (Personen)")
+            hc_exits = summary_df[summary_df["headcount_change"] < 0]
+            if not hc_exits.empty:
+                hc_pivot = hc_exits.pivot_table(index="Jahr", columns="reason_label", values="persnr", aggfunc="count", fill_value=0)
+                hc_pivot["Gesamt"] = hc_pivot.sum(axis=1)
+                st.dataframe(hc_pivot, use_container_width=True)
+            else:
+                st.info("Keine Headcount-Abgänge.")
+
+            # --- Table B: MAK ---
+            st.markdown("##### B) Kapazitäts-Abgänge (FTE-Volumen)")
+            mak_exits = summary_df[summary_df["mak_change"] < -0.001].copy()
+            if not mak_exits.empty:
+                mak_exits["MAK_Verlust"] = mak_exits["mak_change"].abs()
+                mak_pivot = mak_exits.pivot_table(index="Jahr", columns="reason_label", values="MAK_Verlust", aggfunc="sum", fill_value=0.0)
+                mak_pivot["Gesamt"] = mak_pivot.sum(axis=1)
+                st.dataframe(mak_pivot.round(2), use_container_width=True)
+            else:
+                st.info("Keine Kapazitäts-Abgänge.")
+
+            st.divider()
+
+            # ── Section 2: Visual Analysis ──
+            st.markdown("### 📈 Grafische Analyse")
+            for key, fig in charts.items():
+                if key.startswith("driver_"):
+                    st.plotly_chart(fig, use_container_width=True)
+
+            st.divider()
+
+            # ── Section 3: Detailed Data Tables ──
+            st.markdown("### 📋 Detail-Tabellen nach Treiber")
+            tables = result.get("tables", {})
+            if not tables:
+                st.info("Keine detaillierten Tabellen verfügbar.")
+            else:
+                for name, df in tables.items():
+                    if df is None or df.empty:
+                        continue
+                    with st.expander(f"Details: {name.capitalize()}", expanded=False):
+                        st.dataframe(df, width="stretch")
 
     with tab3:
         if events.empty:

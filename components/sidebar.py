@@ -482,24 +482,46 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
             filtered = filtered.loc[mask]
 
     # --- Gruppen-Ausschlüsse (konfiguriert in Einstellungen) ---
+    from utils.settings_loader import get_setting
+    ex_config = get_setting("exclusions", {})
+    
     exclusion_mask = pd.Series(False, index=filtered.index)
+    
+    # 1. Status-basierte Ausschlüsse
+    if ex_config.get("vorstand"):
+        if "MitarbGruppenbez." in filtered.columns:
+            exclusion_mask |= (filtered["MitarbGruppenbez."] == "Vorstand")
+            
+    if ex_config.get("ruhend_bv"):
+        if "Status kundenindividuell" in filtered.columns:
+            exclusion_mask |= (filtered["Status kundenindividuell"] == "Ruhendes Beschäftigungsverhältnis")
+            
+    # 2. Bereichs-basierte Ausschlüsse (99XX)
+    ex_org_units = ex_config.get("org_units", [])
+    if ex_org_units and "Kürzel OrgEinheit" in filtered.columns:
+        exclusion_mask |= (filtered["Kürzel OrgEinheit"].astype(str).isin(ex_org_units))
 
-    if st.session_state.get("exclude_auszubildende", False):
-        if "Ist_Azubi" in filtered.columns:
-            exclusion_mask = exclusion_mask | (filtered["Ist_Azubi"] == True)
-        if "Kürzel OrgEinheit" in filtered.columns:
-            exclusion_mask = exclusion_mask | (filtered["Kürzel OrgEinheit"].astype(str) == "9910")
-
-    if st.session_state.get("exclude_elternzeit", False):
-        if "Kürzel OrgEinheit" in filtered.columns:
-            exclusion_mask = exclusion_mask | (filtered["Kürzel OrgEinheit"].astype(str) == "9971")
-
-    if st.session_state.get("exclude_erziehungszeit", False):
-        if "Kürzel OrgEinheit" in filtered.columns:
-            exclusion_mask = exclusion_mask | (filtered["Kürzel OrgEinheit"].astype(str) == "9975")
-
+    # 3. "Treat as Vacant" Logik
+    # Wir löschen die Zeilen nicht, sondern "entfernen" die Person von der Planstelle.
+    # Dadurch bleibt die Soll-Kapa (Planstelle) erhalten, aber das Ist (Person) verschwindet.
     if exclusion_mask.any():
-        filtered = filtered[~exclusion_mask]
+        person_fields = [
+            "Personalnummer", "PersNr", "Personalnachname", "Personalvorname", 
+            "Name", "Vorname", "Nachname", "GebDatum", "Eintritt", "Austritt", 
+            "Alter", "BsGrd", "Alter_Jahre", "Ist_Azubi"
+        ]
+        
+        # Vorhandene Spalten identifizieren
+        existing_fields = [f for f in person_fields if f in filtered.columns]
+        
+        # Auf Maske anwenden
+        filtered.loc[exclusion_mask, "Is_Vacant"] = True
+        filtered.loc[exclusion_mask, existing_fields] = pd.NA
+        
+        # Kennzahlen auf 0 setzen
+        for num_col in ["MAK", "FTE_person", "FTE_assigned", "Total_Cost_Year"]:
+            if num_col in filtered.columns:
+                filtered.loc[exclusion_mask, num_col] = 0.0
 
     return filtered
 
@@ -514,9 +536,11 @@ def reset_filters():
     st.session_state["selected_education"] = []
     st.session_state["selected_atz_status"] = ["Kein ATZ", "Arbeitsphase", "Freistellungsphase"]
     st.session_state["cohort_definitions"] = DEFAULT_COHORTS.copy()
-    st.session_state["exclude_auszubildende"] = False
-    st.session_state["exclude_elternzeit"] = False
-    st.session_state["exclude_erziehungszeit"] = False
+    
+    # Reset advanced exclusions in session state
+    st.session_state["exclude_vorstand"] = False
+    st.session_state["exclude_ruhend"] = False
+    st.session_state["exclude_org_units"] = []
 
 
 def get_filter_summary() -> str:
@@ -526,6 +550,9 @@ def get_filter_summary() -> str:
     Returns:
         String mit Filter-Zusammenfassung
     """
+    from utils.settings_loader import get_setting
+    ex_config = get_setting("exclusions", {})
+    
     active_filters = []
 
     if st.session_state.get("selected_org_units"):
@@ -549,14 +576,17 @@ def get_filter_summary() -> str:
     if len(st.session_state.get("selected_atz_status", [])) < 3:
         active_filters.append("ATZ-Status")
 
-    # Gruppen-Ausschlüsse
+    # Gruppen-Ausschlüsse (Neu: Aus JSON-Config)
     exclusion_labels = []
-    if st.session_state.get("exclude_auszubildende", False):
-        exclusion_labels.append("Azubis")
-    if st.session_state.get("exclude_elternzeit", False):
-        exclusion_labels.append("Elternzeit")
-    if st.session_state.get("exclude_erziehungszeit", False):
-        exclusion_labels.append("Erziehungszeit")
+    if ex_config.get("vorstand"):
+        exclusion_labels.append("Vorstand")
+    if ex_config.get("ruhend_bv"):
+        exclusion_labels.append("Ruhend")
+    
+    ex_units = ex_config.get("org_units", [])
+    if ex_units:
+        exclusion_labels.append(f"{len(ex_units)} Bereiche")
+        
     if exclusion_labels:
         active_filters.append(f"Ausschl.: {', '.join(exclusion_labels)}")
 

@@ -28,8 +28,8 @@ REASON_RUHEND_RETURN = "RUHEND_RETURN"
 
 REASON_LABELS = {
     REASON_ATZ_AR_TO_FR: "ATZ: AR → FR",
-    REASON_ATZ_END: "ATZ: Ende",
-    REASON_RETIREMENT: "Rente",
+    REASON_ATZ_END: "Rente (nach ATZ)", 
+    REASON_RETIREMENT: "Rente (direkt)", 
     REASON_QUIT: "Kündigung",
     REASON_RUHEND_START: "Ruhend (Start)",
     REASON_RUHEND_RETURN: "Ruhend (Rückkehr)",

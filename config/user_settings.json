@@ -3,5 +3,29 @@
     "simulation": {
         "horizon_months": 99
     },
-    "include_future_hires": true
+    "include_future_hires": true,
+    "exclusions": {
+        "vorstand": true,
+        "ruhend_bv": true,
+        "org_units": [
+            "9920",
+            "9999",
+            "9975",
+            "9980",
+            "9990",
+            "9940",
+            "9900",
+            "9941",
+            "9945",
+            "9960",
+            "9970",
+            "9971",
+            "9972",
+            "9973",
+            "9981",
+            "99XX",
+            "9910",
+            "9921"
+        ]
+    }
 }

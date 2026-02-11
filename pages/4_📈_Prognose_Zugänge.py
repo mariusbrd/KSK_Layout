@@ -2,43 +2,45 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from datetime import date
+from typing import Any
+from pathlib import Path
 import sys
 import os
 
-# Add parent dir to path if needed
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add project root or src to path
+BASE_PATH = Path(__file__).resolve().parents[1]
+SRC_PATH = BASE_PATH / "src"
+if SRC_PATH.exists():
+    sys.path.append(str(SRC_PATH))
+else:
+    sys.path.append(str(BASE_PATH))
 
 from dataloader.loader import load_and_prepare_data, calculate_cost_vectorized, load_original_data
 from kpi_reference import get_current_stichtag
 from config.settings import COLORS, TARIFF_GROUPS
 from abgaenge.forecast import run_forecast_abgaenge
-from abgaenge.params import default_params as default_abgaenge_params
+from abgaenge.params import default_params as default_abgaenge_params, build_params_from_ui as build_abgaenge_params_from_ui
 from zugaenge.params import default_params as default_zugaenge_params, get_strategies
 from zugaenge.forecast import run_forecast_zugaenge
+from abgaenge import load_inputs # Needed for cached loader
 
 st.set_page_config(page_title="Prognose: Zugänge", page_icon="📈", layout="wide")
+
+
+@st.cache_data
+def _load_atz_cached(base_path_str: str, uploaded_ma: Any = None, uploaded_atz: Any = None, uploaded_pl: Any = None):
+    """Loads only ATZ data needed for forecast engine details."""
+    _, df_atz = load_inputs(Path(base_path_str), uploaded_ma, uploaded_atz, uploaded_pl)
+    return df_atz
 
 def main():
     st.title("📈 Prognose: Zugänge")
     st.write("Prognose von Neueinstellungen (Azubis, Trainees, Externe) und deren Auswirkung auf Headcount/MAK.")
 
     try:
-        # 1. Load Central Data
+        # 1. Load Central Data (Consistent with Abgänge/Kompakt)
         snapshot_df_raw, history_df, _, _ = load_and_prepare_data()
-        
-        # Load ATZ for correct MAK calculation (Start Stats consistency)
-        # Check uploads first, then fall back to disk
-        uploaded_files = st.session_state.get("global_uploads", {})
-        if "ATZ" in uploaded_files:
-            df_atz = pd.read_excel(uploaded_files["ATZ"])
-            uploaded_files["ATZ"].seek(0)  # Reset BytesIO for potential re-reads
-        else:
-            try:
-                raw_data = load_original_data()
-                df_atz = raw_data.get("atz", pd.DataFrame())
-            except Exception:
-                df_atz = pd.DataFrame()
-        
+
         # 2. Render Sidebar Filters
         from components.sidebar import render_global_filters, apply_filters
         render_global_filters(snapshot_df_raw, history_df)
@@ -46,57 +48,68 @@ def main():
         # 3. Apply Filters
         df_ma_filtered = apply_filters(snapshot_df_raw)
         
-        # 4. Preprocessing (Align with Abgänge/Kompakt)
+        # 4. Load ATZ Details (needed for engine phases)
+        global_uploads = st.session_state.get("global_uploads", {})
+        up_ma_arg = global_uploads.get("Mitarbeiter")
+        up_atz_arg = global_uploads.get("ATZ")
+        up_pl_arg = global_uploads.get("Planstellen")
         
-        # Determine ATZ FR set for MAK calc
+        # Reset buffer positions
+        if up_ma_arg: up_ma_arg.seek(0)
+        if up_atz_arg: up_atz_arg.seek(0)
+        if up_pl_arg: up_pl_arg.seek(0)
+        
+        df_atz = _load_atz_cached(str(BASE_PATH), up_ma_arg, up_atz_arg, up_pl_arg)
+        
+        # 5. Preprocessing (Align with Abgänge/Kompakt)
+        # Remove Vacancies
+        df_ma_filtered = df_ma_filtered.dropna(subset=["PersNr"])
+        
+        # Get ATZ FR employees if available (for MAK calculation)
         atz_fr_persnr_set = set()
-        if not df_atz.empty and "Phase" in df_atz.columns:
-            stichtag_ts = pd.Timestamp(get_current_stichtag())
-            atz_fr = df_atz[
-                (df_atz["Phase"] == "FR") & 
-                (df_atz["Beginn"] <= stichtag_ts) & 
-                (df_atz["Ende"] >= stichtag_ts)
-            ]
-            if not atz_fr.empty:
-                atz_fr_persnr_set = set(atz_fr["PersNr"].astype(str).unique())
-
+        if not df_atz.empty:
+            if "PersNr" in df_atz.columns and "Phase" in df_atz.columns:
+                stichtag_ts = pd.Timestamp(get_current_stichtag())
+                atz_fr = df_atz[
+                    (df_atz["Phase"] == "FR") &
+                    (df_atz["Beginn"] <= stichtag_ts) &
+                    (df_atz["Ende"] >= stichtag_ts)
+                ]
+                if not atz_fr.empty:
+                    atz_fr_persnr_set = set(atz_fr["PersNr"].dropna().astype(str).unique())
+        
         # Calculate MAK Vectorized
         from dataloader.loader import calculate_mak_vectorized
-        df_ma_filtered = calculate_mak_vectorized(df_ma_filtered, atz_fr_persnr_set=atz_fr_persnr_set)
+        df_ma_filtered = calculate_mak_vectorized(df_ma_filtered, atz_fr_persnr_set)
         
-        # Aggregate by Employee
+        # Aggregate by employee: sum MAK, keep first occurrence of other attributes
         agg_dict = {
             "MAK_Calculated": "sum",
             "GebDatum": "first",
             "Eintritt": "first",
             "Austritt": "first",
             "Status kundenindividuell": "first",
+            "Sollarbeitszeit": "sum",
             "Organisationseinheit": "first",
             "Jobfamily": "first",
             "TrfGr": "first",
             "St": "first",
-            "active": "first" # calculated?
         }
-        # Include active check
-        if "active" not in df_ma_filtered.columns:
-             # Logic from loader: active if no exit or exit > now? 
-             # Loader doesn't explicitly set 'active'. Abgänge uses snapshot logic.
-             # We assume filtered data is the base.
-             pass
-
-        # Group
-        # available cols only
-        valid_agg = {k: v for k, v in agg_dict.items() if k in df_ma_filtered.columns}
         
-        df_employee_agg = df_ma_filtered.groupby("PersNr", as_index=False).agg(valid_agg)
+        # Include Geschlecht/Planstelle if present
+        for col in ["Geschlecht", "Planstelle", "active"]:
+            if col in df_ma_filtered.columns:
+                agg_dict[col] = "first"
         
-        # Set bsgrd/mak for engine
+        df_employee_agg = df_ma_filtered.groupby("PersNr", as_index=False).agg(agg_dict)
+        
+        # Backcalculate BsGrd for engine compatibility
         df_employee_agg["Sollarbeitszeit"] = 39.0
-        df_employee_agg["BsGrd"] = df_employee_agg.get("MAK_Calculated", 1.0) * 100.0
-        df_employee_agg["mak"] = df_employee_agg.get("MAK_Calculated", 1.0)
-        df_employee_agg["active"] = True # Assumption for snapshot
+        df_employee_agg["BsGrd"] = df_employee_agg["MAK_Calculated"] * 100.0
+        df_employee_agg["mak"] = df_employee_agg["MAK_Calculated"]
+        df_employee_agg["active"] = True  # Snapshot assumption
         
-        snapshot_df = df_employee_agg.copy()
+        snapshot_df = df_employee_agg
 
     except Exception as e:
         st.error(f"Fehler beim Laden der Daten: {e}")
@@ -245,100 +258,96 @@ def main():
         # ── Ergebnisse ──────────────────────────────────────────────────
         st.divider()
 
-        # KPI Metrics
+        # KPI Metrics Header
         if not forecast_kpis.empty:
             first = forecast_kpis.iloc[0]
             last = forecast_kpis.iloc[-1]
             
-            # Start is strictly from Snapshot
             start_hc = int(snapshot_df["active"].sum() if "active" in snapshot_df.columns else len(snapshot_df))
-            
-            # End HC in zug_kpis is (Start + Entries)
             end_hc = int(last["headcount_end"])
             total_entries = int(events_df["count"].sum()) if not events_df.empty else 0
                 
-            # Cost Calculation
-            # Recalculate cost vector for events
+            # Cost Impact
             if not events_df.empty:
                 cost_df = events_df.copy()
                 cost_df["FTE_person"] = 1.0 
                 cost_df = calculate_cost_vectorized(cost_df, tvoed_lookup=None)
-                if "count" in cost_df.columns:
-                     cost_df["Cost_Impact"] = cost_df["Total_Cost_Year"] * cost_df["count"]
-                else:
-                     cost_df["Cost_Impact"] = cost_df["Total_Cost_Year"]
-                
+                cost_df["Cost_Impact"] = cost_df["Total_Cost_Year"] * cost_df.get("count", 1)
                 total_added_cost = cost_df["Cost_Impact"].sum()
             else:
                 total_added_cost = 0
 
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Headcount Start", f"{start_hc}")
-            col2.metric("Headcount Ende", f"{end_hc}", delta=f"+{total_entries}")
-            col3.metric("Gesamt Zugänge", f"{total_entries}")
-            col4.metric("Δ Personalkosten (Jahr)", f"{total_added_cost:,.0f} €", help="Summe Jahresgehälter neuer Stellen")
+            st.markdown("### 🏆 Kennzahlen (Management-Summary)")
+            m1, m2, m3 = st.columns(3)
+            with m1:
+                st.metric("Gesamt Zugänge (Köpfe)", f"{total_entries}")
+            with m2:
+                st.metric("Δ Personalvolumen (Ende)", f"{last['mak_end'] - first['mak_start']:+.1f} FTE")
+            with m3:
+                st.metric("Δ Personalkosten (Jahr)", f"{total_added_cost:,.0f} €")
             
-            # Tabs (Aligned)
-            tab_overview, tab_details, tab_cost = st.tabs(["📊 Überblick", "📋 Details (Tabelle)", "💰 Kosten"])
+            with st.expander("🔍 Details: Bestandsentwicklung (Brutto-Zuwachs)", expanded=False):
+                d1, d2, d3, d4 = st.columns(4)
+                d1.metric("Headcount Start", f"{start_hc}")
+                d2.metric("Headcount Ende", f"{end_hc}", delta=f"+{total_entries}")
+                d3.metric("MAK Start", f"{first['mak_start']:.1f}")
+                d4.metric("MAK Ende", f"{last['mak_end']:.1f}", delta=f"{last['mak_end'] - first['mak_start']:.1f}")
+            
+            # ── Tabs ───────────────────────────────────────────────────────
+            tab_overview, tab_details, tab_cost = st.tabs(["📊 Überblick & Trends", "📋 Personenliste / Details", "💰 Kostenanalyse"])
             
             with tab_overview:
-                # 1. Headcount Evolution Chart
-                st.markdown("##### 📈 Entwicklung Headcount & MAK")
-                
-                # Melting for dual line chart? Or two charts? Abgänge uses Facets or Multi-Line.
-                # Let's use simple line chart.
-                
+                # Section 1: Entwicklung
+                st.markdown("### 📈 Entwicklung Headcount & MAK")
                 fig_evo = px.line(
                     forecast_kpis, 
                     x="date", 
                     y=["headcount_end", "mak_end"],
-                    title="Entwicklung Headcount & MAK (Prognose Zugänge)",
                     labels={"value": "Anzahl", "date": "Datum", "variable": "Metrik"},
-                    color_discrete_map={
-                        "headcount_end": COLORS["accent_blue"],
-                        "mak_end": COLORS["accent_green"]
-                    }
+                    color_discrete_map={"headcount_end": COLORS["accent_blue"], "mak_end": COLORS["accent_green"]}
                 )
+                fig_evo.update_layout(title=None)
                 st.plotly_chart(fig_evo, use_container_width=True)
+                st.caption("Brutto-Entwicklung durch Neueinstellungen (ohne Berücksichtigung von Abgängen).")
                 
-                # 2. Histogram inputs over time
-                st.markdown("##### 📥 Zugänge pro Monat")
-                fig_hist = px.histogram(
+                st.divider()
+                
+                # Section 2: Struktur
+                st.markdown("### 📥 Zugänge nach Quelle")
+                if not events_df.empty:
+                    fig_hist = px.histogram(
                         events_df, 
                         x="date", 
                         color="source", 
-                        title="Zugänge pro Monat nach Quelle",
                         text_auto=True,
-                        color_discrete_map={
-                            "Azubi": COLORS["accent_blue"], 
-                            "Trainee": COLORS["accent_green"], 
-                            "NewHire": COLORS["accent_red"]
-                        }
+                        color_discrete_map={"Azubi": COLORS["accent_blue"], "Trainee": COLORS["accent_green"], "NewHire": COLORS["accent_red"]}
                     )
-                st.plotly_chart(fig_hist, use_container_width=True)
+                    fig_hist.update_layout(title=None)
+                    st.plotly_chart(fig_hist, use_container_width=True)
+                else:
+                    st.info("Keine Zugangs-Events vorhanden.")
 
             with tab_details:
-                st.dataframe(events_df, width="stretch")
+                st.markdown("### 📋 Detaillierte Liste der Zugänge")
+                st.dataframe(events_df, use_container_width=True)
                 
             with tab_cost:
-                # Cost Chart from old implementation
-                cost_df["Month"] = cost_df["date"].dt.to_period("M").astype(str)
-                cost_agg = cost_df.groupby(["Month", "source"])["Cost_Impact"].sum().reset_index()
-                     
-                fig_cost = px.bar(
-                    cost_agg,
-                    x="Month",
-                    y="Cost_Impact",
-                    color="source",
-                    title="Zusätzliche Personalkosten (Jahreswert) pro Monat",
-                    color_discrete_map={
-                        "Azubi": COLORS["accent_blue"], 
-                        "Trainee": COLORS["accent_green"], 
-                        "NewHire": COLORS["accent_red"]
-                    }
-                )
-                st.plotly_chart(fig_cost, use_container_width=True)
-                st.dataframe(cost_df[["date", "source", "TrfGr", "St", "Total_Cost_Year", "Cost_Impact"]], use_container_width=True)
+                st.markdown("### 💰 Kosten-Impact")
+                if not events_df.empty:
+                    cost_df["Month"] = cost_df["date"].dt.to_period("M").astype(str)
+                    cost_agg = cost_df.groupby(["Month", "source"])["Cost_Impact"].sum().reset_index()
+                         
+                    fig_cost = px.bar(
+                        cost_agg, x="Month", y="Cost_Impact", color="source",
+                        color_discrete_map={"Azubi": COLORS["accent_blue"], "Trainee": COLORS["accent_green"], "NewHire": COLORS["accent_red"]}
+                    )
+                    fig_cost.update_layout(title=None, yaxis_title="Kosten-Impact (Jahr) in €")
+                    st.plotly_chart(fig_cost, use_container_width=True)
+                    
+                    st.markdown("#### Detail-Tabelle Kosten")
+                    st.dataframe(cost_df[["date", "source", "TrfGr", "St", "Total_Cost_Year", "Cost_Impact"]], use_container_width=True)
+                else:
+                    st.info("Keine Kostendaten verfügbar (da keine Zugänge).")
 
 if __name__ == "__main__":
     main()

@@ -686,7 +686,7 @@ def calculate_cost_row(row, tvoed_lookup=None) -> float:
     tariff = str(tariff).strip().upper().replace(" ", "")
     step_int = clean_step(step)
 
-    special = get_special_salary(tariff)
+    special = get_special_salary(tariff, step=step_int)
     employer_factor = st.session_state.get("employer_cost_factor", EMPLOYER_COST_FACTOR)
 
     if special is not None:
@@ -766,11 +766,18 @@ def calculate_cost_vectorized(df: pd.DataFrame, tvoed_lookup: Dict) -> pd.DataFr
     df_out["Annual_Final"] = df_out["Annual_L"].fillna(fallback_annual)
     
     # 5. Helper: Special Salaries
-    # Azubi
-    azubi_salary = st.session_state.get("azubi_jahresgehalt", 14400.0)
-    # Ensure TrfGr_Join is string (it is)
-    mask_azubi = df_out["TrfGr_Join"].isin(["TVAÖD", "TVÖAD", "TVAOD"])
-    df_out.loc[mask_azubi, "Annual_Final"] = azubi_salary
+    # Azubi (Progressiv)
+    from config.settings import DEFAULT_AZUBI_SALARIES
+    azubi_salaries = st.session_state.get("azubi_salaries", DEFAULT_AZUBI_SALARIES)
+    
+    mask_azubi_base = df_out["TrfGr_Join"].isin(["TVAÖD", "TVÖAD", "TVAOD"])
+    for year, salary in azubi_salaries.items():
+        mask_year = mask_azubi_base & (df_out["St_Join"] == year)
+        df_out.loc[mask_year, "Annual_Final"] = salary
+    
+    # Fallback for Azubis without valid year (St)
+    mask_azubi_fallback = mask_azubi_base & (~df_out["St_Join"].isin(azubi_salaries.keys()))
+    df_out.loc[mask_azubi_fallback, "Annual_Final"] = azubi_salaries.get(1, 14400.0)
     
     # Vorstand
     vorstand_salary = st.session_state.get("vorstand_jahresgehalt", 200000.0)

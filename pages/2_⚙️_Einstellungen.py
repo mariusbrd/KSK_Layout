@@ -163,63 +163,84 @@ def render_settings_page():
     # --- Gruppen-Ausschlüsse ---
     st.subheader("Gruppen-Ausschlüsse")
     st.caption(
-        "Bestimmte Personengruppen können global aus allen Auswertungen "
-        "und Kennzahlen ausgeschlossen werden. Die Ausschlüsse wirken auf allen Seiten."
+        "Bestimmte Personengruppen können ausgeklammert werden. "
+        "WICHTIG: Ausgeschlossene Personen zählen nicht zum Headcount (Ist), "
+        "die Soll-Kapa der Planstelle bleibt aber als Bedarf erhalten (Vakanz)."
     )
 
-    # Zählung aus ungefiltertem Snapshot
-    try:
-        from dataloader.loader import load_and_prepare_data
-        snapshot_df, _, _, _ = load_and_prepare_data()
+    from config.settings import EXCLUSION_ORG_UNITS
+    
+    # Persistierte Exclusions laden
+    current_ex = get_setting("exclusions", {
+        "vorstand": False,
+        "ruhend_bv": False,
+        "org_units": []
+    })
 
-        kuerzel_col = "Kürzel OrgEinheit"
-        kuerzel_str = (
-            snapshot_df[kuerzel_col].astype(str)
-            if kuerzel_col in snapshot_df.columns
-            else pd.Series(dtype=str)
+    col_ex1, col_ex2 = st.columns(2)
+    with col_ex1:
+        new_ex_vorstand = st.checkbox(
+            "Vorstandsmitglieder ausschließen", 
+            value=current_ex.get("vorstand", False),
+            help="Basiert auf MitarbGruppenbez. = 'Vorstand'"
+        )
+    with col_ex2:
+        new_ex_ruhend = st.checkbox(
+            "Ruhendes BV ausschließen", 
+            value=current_ex.get("ruhend_bv", False),
+            help="Basiert auf Status = 'Ruhendes Beschäftigungsverhältnis'"
         )
 
-        # Auszubildende: Ist_Azubi OR OrgEinheit 9910
-        azubi_mask = pd.Series(False, index=snapshot_df.index)
-        if "Ist_Azubi" in snapshot_df.columns:
-            azubi_mask = azubi_mask | (snapshot_df["Ist_Azubi"] == True)
-        if kuerzel_col in snapshot_df.columns:
-            azubi_mask = azubi_mask | (kuerzel_str == "9910")
-        n_azubi = int(azubi_mask.sum())
+    with st.expander("📁 Spezifische PA-Bereiche ausschließen (99XX)"):
+        st.info("Markierte Bereiche werden als Vakanzen behandelt (Soll-Kapa bleibt erhalten).")
+        
+        btn_col1, btn_col2, _ = st.columns([1, 1, 2])
+        if btn_col1.button("Alle auswählen", key="btn_select_all_99"):
+            current_ex["org_units"] = list(EXCLUSION_ORG_UNITS.keys())
+            for code in EXCLUSION_ORG_UNITS.keys():
+                st.session_state[f"chk_ex_{code}"] = True
+            set_setting("exclusions", current_ex)
+            st.session_state["exclude_org_units"] = current_ex["org_units"]
+            st.rerun()
+        if btn_col2.button("Alle abwählen", key="btn_deselect_all_99"):
+            current_ex["org_units"] = []
+            for code in EXCLUSION_ORG_UNITS.keys():
+                st.session_state[f"chk_ex_{code}"] = False
+            set_setting("exclusions", current_ex)
+            st.session_state["exclude_org_units"] = []
+            st.rerun()
+            
+        cols_99 = st.columns(2)
+        ex_99_list = current_ex.get("org_units", [])
+        new_ex_99 = []
+        
+        for i, (code, label) in enumerate(EXCLUSION_ORG_UNITS.items()):
+            c_idx = i % 2
+            # Initialisiere session_state key falls nicht vorhanden, um Konsistenz zu wahren
+            key = f"chk_ex_{code}"
+            if key not in st.session_state:
+                st.session_state[key] = code in ex_99_list
+                
+            with cols_99[c_idx]:
+                if st.checkbox(f"{code} ({label})", key=key):
+                    new_ex_99.append(code)
 
-        # Elternzeit: OrgEinheit 9971
-        n_elternzeit = int((kuerzel_str == "9971").sum()) if kuerzel_col in snapshot_df.columns else 0
-
-        # Erziehungszeit: OrgEinheit 9975
-        n_erziehungszeit = int((kuerzel_str == "9975").sum()) if kuerzel_col in snapshot_df.columns else 0
-    except Exception:
-        n_azubi = "?"
-        n_elternzeit = "?"
-        n_erziehungszeit = "?"
-
-    st.checkbox(
-        f"Auszubildende ausschließen (n={n_azubi})",
-        value=st.session_state.get("exclude_auszubildende", False),
-        key="cb_exclude_auszubildende",
-        help="Schließt Auszubildende aus (MitarbGruppenbez. = 'Auszubildende' oder OrgEinheit 9910)",
-    )
-    st.session_state["exclude_auszubildende"] = st.session_state["cb_exclude_auszubildende"]
-
-    st.checkbox(
-        f"Elternzeit ausschließen (n={n_elternzeit})",
-        value=st.session_state.get("exclude_elternzeit", False),
-        key="cb_exclude_elternzeit",
-        help="Schließt Personen in Elternzeit aus (OrgEinheit 9971)",
-    )
-    st.session_state["exclude_elternzeit"] = st.session_state["cb_exclude_elternzeit"]
-
-    st.checkbox(
-        f"Erziehungszeit ausschließen (n={n_erziehungszeit})",
-        value=st.session_state.get("exclude_erziehungszeit", False),
-        key="cb_exclude_erziehungszeit",
-        help="Schließt Personen in Erziehungszeit aus (OrgEinheit 9975)",
-    )
-    st.session_state["exclude_erziehungszeit"] = st.session_state["cb_exclude_erziehungszeit"]
+    # Speichern-Logik für Exclusions
+    if (new_ex_vorstand != current_ex.get("vorstand") or 
+        new_ex_ruhend != current_ex.get("ruhend_bv") or 
+        set(new_ex_99) != set(ex_99_list)):
+        
+        updated_ex = {
+            "vorstand": new_ex_vorstand,
+            "ruhend_bv": new_ex_ruhend,
+            "org_units": new_ex_99
+        }
+        set_setting("exclusions", updated_ex)
+        # Session state für Sidebar-Logik (Sofort-Wirkung ohne Full Reload wenn möglich)
+        st.session_state["exclude_vorstand"] = new_ex_vorstand
+        st.session_state["exclude_ruhend"] = new_ex_ruhend
+        st.session_state["exclude_org_units"] = new_ex_99
+        st.rerun()
 
     st.divider()
 
@@ -246,20 +267,20 @@ def render_settings_page():
             "um exakte Werte zu verwenden."
         )
     
-    st.markdown("##### Arbeitgeber-Kostenfaktor")
+    st.markdown("##### Arbeitgeber-Kostenfaktor (Lohnnebenkosten)")
+    st.caption("Dieser Faktor wird auf das Bruttogehalt aufgeschlagen, um die tatsächlichen Arbeitgeberkosten abzubilden (z. B. 1,25 = +25%).")
     employer_factor = st.number_input(
-        "Kostenfaktor",
+        "Arbeitgeber-Kostenfaktor",
         min_value=1.0,
         max_value=2.0,
         value=st.session_state.get("employer_cost_factor", EMPLOYER_COST_FACTOR),
         step=0.01,
         format="%.2f",
         key="input_employer_factor",
-        help="1.25 bedeutet 25% Aufschlag auf das Bruttogehalt",
+        help="Standardmäßig 1,25 (entspricht ca. 20-25% Sozialabgaben-Aufschlag)",
         label_visibility="collapsed"
     )
     st.session_state["employer_cost_factor"] = employer_factor
-    st.caption("Aufschlag für Sozialabgaben (z.B. 1.25 = +25%)")
 
     st.markdown("##### Sonderfall-Gehälter")
     st.caption("Manuelle Jahresgehälter für nicht-TVöD Gruppen.")
@@ -268,31 +289,47 @@ def render_settings_page():
 
     with col1:
         st.markdown("**Auszubildende** (TrfGr = TVAÖD)")
-        azubi_gehalt = st.number_input(
-            "Azubi-Jahresgehalt (brutto)",
-            min_value=0.0,
-            max_value=100000.0,
-            value=st.session_state.get("azubi_jahresgehalt", DEFAULT_AZUBI_JAHRESGEHALT),
-            step=100.0,
-            format="%.2f",
-            key="input_azubi_gehalt",
-            help="Typisches Azubi-Gehalt im TVöD liegt bei ca. 1.200 EUR/Monat (14.400 EUR/Jahr)",
-        )
-        st.session_state["azubi_jahresgehalt"] = azubi_gehalt
+        st.caption("Lehrjahr-abhängige Jahresgehälter (brutto)")
+        
+        from config.settings import DEFAULT_AZUBI_SALARIES
+        current_azubi_salaries = st.session_state.get("azubi_salaries", DEFAULT_AZUBI_SALARIES)
+        new_azubi_salaries = {}
+        
+        az_cols = st.columns(2)
+        for year in range(1, 5):
+            c_idx = (year - 1) % 2
+            with az_cols[c_idx]:
+                new_val = st.number_input(
+                    f"Gehalt {year}. Lehrjahr",
+                    min_value=0.0,
+                    value=float(current_azubi_salaries.get(str(year), current_azubi_salaries.get(year, DEFAULT_AZUBI_SALARIES[year]))),
+                    step=100.0,
+                    format="%.2f",
+                    key=f"az_sal_{year}",
+                    help=f"Jährliches Bruttogehalt für Auszubildende im {year}. Jahr"
+                )
+                new_azubi_salaries[year] = new_val
+        
+        st.session_state["azubi_salaries"] = new_azubi_salaries
 
     with col2:
         st.markdown("**Vorstand** (TrfGr = 1)")
-        vorstand_gehalt = st.number_input(
+        vorstand_input = st.number_input(
             "Vorstand-Jahresgehalt (brutto)",
             min_value=0.0,
             max_value=1000000.0,
-            value=st.session_state.get("vorstand_jahresgehalt", DEFAULT_VORSTAND_JAHRESGEHALT),
+            value=None,
+            placeholder="Individueller Vertrag...",
             step=1000.0,
-            format="%.2f",
             key="input_vorstand_gehalt",
-            help="Vorstandsvergütung ist nicht im TVöD geregelt",
+            help="Vorstandsvergütung ist nicht im TVöD geregelt. Falls leer, wird mit dem System-Default gerechnet.",
         )
-        st.session_state["vorstand_jahresgehalt"] = vorstand_gehalt
+        if vorstand_input is not None:
+            st.session_state["vorstand_jahresgehalt"] = vorstand_input
+        else:
+            # Wenn leer, Override entfernen -> Loader nutzt Default (200k)
+            if "vorstand_jahresgehalt" in st.session_state:
+                del st.session_state["vorstand_jahresgehalt"]
 
     st.divider()
 
