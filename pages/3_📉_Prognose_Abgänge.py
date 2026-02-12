@@ -924,7 +924,7 @@ def main():
                     if df is None or df.empty:
                         continue
                     with st.expander(f"Details: {name.capitalize()}", expanded=False):
-                        st.dataframe(df, width="stretch")
+                        st.dataframe(df, use_container_width=True)
 
     with tab3:
         if events.empty:
@@ -934,7 +934,7 @@ def main():
                 reason_df = events[events["reason_label"] == reason]
                 safe_reason = "".join([c if c.isalnum() else "_" for c in reason]).strip("_").lower()
                 with st.expander(f"{reason} ({len(reason_df)})", expanded=False):
-                    st.dataframe(reason_df, width="stretch")
+                    st.dataframe(reason_df, use_container_width=True)
                     st.download_button(
                         label=f"CSV Export {reason}",
                         data=to_csv_bytes(reason_df),

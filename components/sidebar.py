@@ -564,6 +564,7 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
         existing_fields = [f for f in person_fields if f in filtered.columns]
         
         # Auf Maske anwenden
+        filtered["Is_Vacant"] = filtered["Is_Vacant"].astype("boolean")
         filtered.loc[exclusion_mask, "Is_Vacant"] = True
         filtered.loc[exclusion_mask, existing_fields] = pd.NA
         
