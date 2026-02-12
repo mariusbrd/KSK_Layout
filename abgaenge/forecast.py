@@ -635,6 +635,7 @@ def run_forecast_abgaenge(
                         "Organisationseinheit": str(df_state.loc[persnr, "Organisationseinheit"]) if "Organisationseinheit" in df_state.columns else "Unbekannt",
                         "Kürzel OrgEinheit": str(df_state.loc[persnr, "Kürzel OrgEinheit"]) if "Kürzel OrgEinheit" in df_state.columns else "Unbekannt",
                         "Jobfamily": str(df_state.loc[persnr, "Jobfamily"]) if "Jobfamily" in df_state.columns else "Unbekannt",
+                        "Planstelle": str(df_state.loc[persnr, "Planstelle"]) if "Planstelle" in df_state.columns else "Unbekannt",
                         "TrfGr": str(df_state.loc[persnr, "TrfGr"]) if "TrfGr" in df_state.columns else "Unbekannt",
                         "St": str(df_state.loc[persnr, "St"]) if "St" in df_state.columns else "Unbekannt",
                     })
@@ -660,6 +661,7 @@ def run_forecast_abgaenge(
                         "Organisationseinheit": str(df_state.loc[persnr, "Organisationseinheit"]) if "Organisationseinheit" in df_state.columns else "Unbekannt",
                         "Kürzel OrgEinheit": str(df_state.loc[persnr, "Kürzel OrgEinheit"]) if "Kürzel OrgEinheit" in df_state.columns else "Unbekannt",
                         "Jobfamily": str(df_state.loc[persnr, "Jobfamily"]) if "Jobfamily" in df_state.columns else "Unbekannt",
+                        "Planstelle": str(df_state.loc[persnr, "Planstelle"]) if "Planstelle" in df_state.columns else "Unbekannt",
                         "TrfGr": str(df_state.loc[persnr, "TrfGr"]) if "TrfGr" in df_state.columns else "Unbekannt",
                         "St": str(df_state.loc[persnr, "St"]) if "St" in df_state.columns else "Unbekannt",
                     })
@@ -697,6 +699,7 @@ def run_forecast_abgaenge(
                         "Organisationseinheit": str(df_state.loc[persnr, "Organisationseinheit"]) if "Organisationseinheit" in df_state.columns else "Unbekannt",
                         "Kürzel OrgEinheit": str(df_state.loc[persnr, "Kürzel OrgEinheit"]) if "Kürzel OrgEinheit" in df_state.columns else "Unbekannt",
                         "Jobfamily": str(df_state.loc[persnr, "Jobfamily"]) if "Jobfamily" in df_state.columns else "Unbekannt",
+                        "Planstelle": str(df_state.loc[persnr, "Planstelle"]) if "Planstelle" in df_state.columns else "Unbekannt",
                         "TrfGr": str(df_state.loc[persnr, "TrfGr"]) if "TrfGr" in df_state.columns else "Unbekannt",
                         "St": str(df_state.loc[persnr, "St"]) if "St" in df_state.columns else "Unbekannt",
                     })
@@ -735,6 +738,7 @@ def run_forecast_abgaenge(
                             "Organisationseinheit": str(df_state.loc[persnr, "Organisationseinheit"]) if "Organisationseinheit" in df_state.columns else "Unbekannt",
                             "Kürzel OrgEinheit": str(df_state.loc[persnr, "Kürzel OrgEinheit"]) if "Kürzel OrgEinheit" in df_state.columns else "Unbekannt",
                             "Jobfamily": str(df_state.loc[persnr, "Jobfamily"]) if "Jobfamily" in df_state.columns else "Unbekannt",
+                            "Planstelle": str(df_state.loc[persnr, "Planstelle"]) if "Planstelle" in df_state.columns else "Unbekannt",
                             "TrfGr": str(df_state.loc[persnr, "TrfGr"]) if "TrfGr" in df_state.columns else "Unbekannt",
                             "St": str(df_state.loc[persnr, "St"]) if "St" in df_state.columns else "Unbekannt",
                         })
@@ -769,6 +773,7 @@ def run_forecast_abgaenge(
                         "Organisationseinheit": str(df_state.loc[persnr, "Organisationseinheit"]) if "Organisationseinheit" in df_state.columns else "Unbekannt",
                         "Kürzel OrgEinheit": str(df_state.loc[persnr, "Kürzel OrgEinheit"]) if "Kürzel OrgEinheit" in df_state.columns else "Unbekannt",
                         "Jobfamily": str(df_state.loc[persnr, "Jobfamily"]) if "Jobfamily" in df_state.columns else "Unbekannt",
+                        "Planstelle": str(df_state.loc[persnr, "Planstelle"]) if "Planstelle" in df_state.columns else "Unbekannt",
                         "TrfGr": str(df_state.loc[persnr, "TrfGr"]) if "TrfGr" in df_state.columns else "Unbekannt",
                         "St": str(df_state.loc[persnr, "St"]) if "St" in df_state.columns else "Unbekannt",
                         })
@@ -803,6 +808,7 @@ def run_forecast_abgaenge(
                                 "Organisationseinheit": str(df_state.loc[persnr, "Organisationseinheit"]) if "Organisationseinheit" in df_state.columns else "Unbekannt",
                                 "Kürzel OrgEinheit": str(df_state.loc[persnr, "Kürzel OrgEinheit"]) if "Kürzel OrgEinheit" in df_state.columns else "Unbekannt",
                                 "Jobfamily": str(df_state.loc[persnr, "Jobfamily"]) if "Jobfamily" in df_state.columns else "Unbekannt",
+                                "Planstelle": str(df_state.loc[persnr, "Planstelle"]) if "Planstelle" in df_state.columns else "Unbekannt",
                                 "TrfGr": str(df_state.loc[persnr, "TrfGr"]) if "TrfGr" in df_state.columns else "Unbekannt",
                                 "St": str(df_state.loc[persnr, "St"]) if "St" in df_state.columns else "Unbekannt",
                             })

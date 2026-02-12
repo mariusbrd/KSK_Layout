@@ -225,6 +225,7 @@ def main():
                         vacancies.append({
                             "date": row["event_date"],
                             "org_unit": row.get("Organisationseinheit", "Unbekannt"),
+                            "planstelle": row.get("Planstelle", "Unbekannt"),
                             "persnr": row["persnr"]
                         })
 

@@ -655,6 +655,40 @@ def main():
             events.drop(columns=["key"], inplace=True)
             events["OE-Cluster"] = events["OE-Cluster"].fillna("Unclustered")
 
+        # Feature: Enrich events with JF-Cluster
+        if "JF-Cluster" not in events.columns and "JF-Cluster" in df_ma.columns:
+            # P12: Robust enrichment with deduplication
+            lookup_cluster_jf = df_ma[["PersNr", "JF-Cluster"]].copy()
+            lookup_cluster_jf["key"] = lookup_cluster_jf["PersNr"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+            lookup_cluster_jf = lookup_cluster_jf.drop_duplicates(subset=["key"])
+            
+            events["key"] = events["persnr"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+            
+            events = events.merge(
+                lookup_cluster_jf[["key", "JF-Cluster"]],
+                on="key",
+                how="left"
+            )
+            events.drop(columns=["key"], inplace=True)
+            events["JF-Cluster"] = events["JF-Cluster"].fillna("Unclustered")
+            
+            # FALLBACK: If PersNr mapping failed, try map via (Org, Pos) or Pos
+            mask_unclustered_jf = events["JF-Cluster"] == "Unclustered"
+            if mask_unclustered_jf.any():
+                from dataloader.cluster_manager import load_cluster_mappings
+                _, jf_map = load_cluster_mappings()
+                if jf_map:
+                    first_key = next(iter(jf_map.keys()), None)
+                    if isinstance(first_key, tuple):
+                         # Combination mapping
+                         if "Organisationseinheit" in events.columns and "Planstelle" in events.columns:
+                             s_org = events.loc[mask_unclustered_jf, "Organisationseinheit"].astype(str).str.strip()
+                             s_pos = events.loc[mask_unclustered_jf, "Planstelle"].astype(str).str.strip()
+                             keys = list(zip(s_org, s_pos))
+                             events.loc[mask_unclustered_jf, "JF-Cluster"] = [jf_map.get(k, "Unclustered") for k in keys]
+                    elif "Planstelle" in events.columns:
+                         events.loc[mask_unclustered_jf, "JF-Cluster"] = events.loc[mask_unclustered_jf, "Planstelle"].map(jf_map).fillna("Unclustered")
+
         # Fix Arrow Error: Mixed types in persnr
         if "persnr" in events.columns:
             events["persnr"] = events["persnr"].astype(str)

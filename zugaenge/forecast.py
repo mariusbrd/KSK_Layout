@@ -122,7 +122,9 @@ def _simulate_azubis(
                     "mak": 1.0,
                     "TrfGr": entry_tariff,
                     "St": entry_step,
-                    "Jobfamily": "Angestellte"
+                    "Jobfamily": "Angestellte",
+                    "Planstelle": str(row.get("Planstelle", "Nachbesetzung")),
+                    "source": "Azubi"
                 })
             else:
                 # Not retained - Exit
@@ -173,6 +175,7 @@ def _simulate_trainees(
             "Organisationseinheit": org_unit,
             "Eintritt": entry_date,
             "GebDatum": entry_date - pd.DateOffset(years=25), # Approx simple age
+            "Planstelle": "Trainee",
             "age": 25.0,
             "tenure": 0.0,
             "mak": 1.0 # Full FTE
@@ -193,6 +196,7 @@ def _simulate_trainees(
             "TrfGr": salary_group,
             "St": 1,
             "Jobfamily": "Trainee",
+            "Planstelle": "Trainee",
             "_new_row": new_row # Marker to add to DF later
         })
 
@@ -217,24 +221,25 @@ def _simulate_hires(
         new_id = f"NH_{rng.randint(10000, 99999)}"
         entry_date = period.start + pd.Timedelta(days=rng.randint(0, period_days))
         
-        # Determine OrgUnit
+        # Determine OrgUnit & Planstelle
         org_unit = "Unbekannt"
+        plan_stelle = "Nachbesetzung" # Default
         
         if strategy == "Fill Vacancies" and vacancies:
             # Find a matching vacancy (e.g. earliest date)
-            # Filter vacancies that happened *before* entry_date to be realistic?
-            # Or just take from the pool.
-            # Vacancies list should be sorted.
             valid_vacancies = [v for v in vacancies if v["date"] <= entry_date]
             if valid_vacancies:
                 vacancy = valid_vacancies.pop(0) # Consume
                 vacancies.remove(vacancy) # Remove from main list too
                 org_unit = vacancy["org_unit"]
+                plan_stelle = vacancy.get("planstelle", "Nachbesetzung")
             else:
                 # No vacancy available yet? Fallback to random
                 org_unit = _get_random_org_unit(all_org_units, rng)
+                plan_stelle = org_unit # Fallback
         else:
             org_unit = _resolve_org_unit(strategy, target_unit, all_org_units, [], rng)
+            plan_stelle = org_unit # Fallback
 
         new_row = {
             "PersNr": new_id,
@@ -245,6 +250,7 @@ def _simulate_hires(
             "Organisationseinheit": org_unit,
             "Eintritt": entry_date,
             "GebDatum": entry_date - pd.DateOffset(years=30),
+            "Planstelle": plan_stelle,
             "age": 30.0,
             "tenure": 0.0,
             "mak": 1.0
@@ -261,6 +267,7 @@ def _simulate_hires(
             "TrfGr": "E9A",
             "St": 3,
             "Jobfamily": "Angestellte",
+            "Planstelle": plan_stelle,
             "_new_row": new_row
         })
 
