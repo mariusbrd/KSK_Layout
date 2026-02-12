@@ -6,7 +6,7 @@
     "include_future_hires": true,
     "exclusions": {
         "vorstand": true,
-        "ruhend_bv": false,
+        "ruhend_bv": true,
         "org_units": [
             "9920",
             "9999",

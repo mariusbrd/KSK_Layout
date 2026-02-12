@@ -92,6 +92,36 @@ Ergänze einen eindeutigen Ausschlussmechanismus, sodass Personen mit Altersteil
 
 Verifiziere die Korrektur mit dem Minimaltest: keine Doppelabgänge, korrekte Reihenfolge in den Kennzahlen und Plots.
 
+---
+
+#### Antwort Testfrage 6 (Code-Review, 2026-02-11)
+
+**Befund:**
+Die Ausführungsreihenfolge in `abgaenge/forecast.py` ist fest kodiert:
+
+1.  **ATZ Planung (Z. 460-463):**
+    *   Neue ATZ-Fälle werden per `_schedule_new_atz_cases` ermittelt.
+    *   **WICHTIG:** Unmittelbar danach wird das Flag `in_atz` im State-DataFrame aktualisiert:
+        `df_state["in_atz"] = df_state.index.isin(...)` (Z. 462).
+    *   Damit sind alle Personen, die *gerade eben* für ATZ ausgewählt wurden (oder schon waren), als `in_atz=True` markiert.
+
+2.  **Rente Berechnung (Z. 516-550):**
+    *   Erst *danach* läuft der Block für "Retirement events".
+    *   Die Filterbedingung lautet explizit:
+        `eligible = df_state[(df_state["active"]) & (~df_state["in_atz"])].copy()` (Z. 517).
+    *   Durch `~df_state["in_atz"]` werden alle Personen ausgeschlossen, die im vorherigen Schritt den ATZ-Status erhalten haben.
+
+**Testergebnis (Reproduktionsskript `User-Tests/test_atz_rent_order.py`):**
+Ein synthetischer Testfall mit einer Person, die sowohl für ATZ (erzwungene Wahrscheinlichkeit) als auch für Rente (100% Wahrscheinlichkeit) in Frage kommt, zeigt:
+- Die Person wird vom ATZ-Algorithmus erfasst (interner State).
+- Die Person taucht **NICHT** als Renten-Abgang auf (0 Events generiert).
+- Wäre die Logik fehlerhaft, müsste ein Renten-Event generiert werden (da Wahrscheinlichkeit 100%).
+
+**Ergebnis:**
+Die Reihenfolge (ATZ vor Rente) und der gegenseitige Ausschluss sind **korrekt implementiert**. Es besteht keine Gefahr von Doppelabgängen in derselben Periode.
+
+---
+
 
 
 
@@ -130,3 +160,37 @@ Erwartung:
 Es ist nachvollziehbar, ob ruhende Beschäftigungsverhältnisse in die Rentenlogik einbezogen werden oder ausgeschlossen sind.
 
 Die Logik ist erklärbar anhand der tatsächlich implementierten Filter, nicht anhand Annahmen.
+
+---
+
+#### Antwort Testfrage 7 (Code-Review, 2026-02-11)
+
+**Befund:**
+Die Renten-Logik (`abgaenge/forecast.py`, Z. 516ff) definiert den Kandidatenpool wie folgt:
+
+```python
+eligible = df_state[(df_state["active"]) & (~df_state["in_atz"])].copy()
+```
+
+Die Spalte `"active"` wird bei Initialisierung (Z. 401) pauschal auf `True` gesetzt für alle Personen, die im Datensatz sind (d.h. noch nicht ausgetreten laut `Austritt`-Datum).
+Es gibt **KEINEN expliziten Filter**, der `status_ruhend` ausschließt (im Gegensatz zur ATZ-Logik, wo `~df_state["status_ruhend"]` geprüft wird).
+
+**Zuordnungstabelle:**
+
+| Statusgruppe | Im Renten-Pool? | Begründung |
+|---|---|---|
+| Aktive Mitarbeitende | **JA** | `active=True` |
+| Ruhendes Beschäftigungsverhältnis | **JA** | `active=True`, kein Ausschlussfilter |
+| Freistellung (ATZ) | **NEIN** | `in_atz=True` (via `df_atz` Check) |
+| Freistellung (Sonstige, falls im Datensatz) | **JA** | Sofern `active=True` und nicht in ATZ-Liste |
+
+**Testergebnis (Testskript `User-Tests/test_rent_pool.py`):**
+Ein Testlauf mit 3 Personen (Aktiv, Ruhend, ATZ) und 100% Rentenwahrscheinlichkeit ergab:
+*   Person Aktiv: **Verrentet**
+*   Person Ruhend: **Verrentet** (Bestätigt: Ruhende sind im Pool)
+*   Person ATZ: **Nicht Verrentet** (Bestätigt: ATZ ist ausgeschlossen)
+
+**Fazit:**
+Die Rentenlogik zieht auch Personen in ruhenden Arbeitsverhältnissen heran.
+
+---

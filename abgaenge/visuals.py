@@ -40,15 +40,17 @@ def build_charts(forecast_kpis: pd.DataFrame, events_person_level: pd.DataFrame)
     fig_line.update_layout(title="Headcount und MAK", xaxis_title="Periode", yaxis_title="Wert")
     charts["line_headcount_mak"] = fig_line
 
-    # Stacked bar: Abgänge nach Grund
-    if events_person_level is None or events_person_level.empty:
-        charts["bar_abgaenge_reasons"] = _empty_fig("Abgänge nach Grund")
-    else:
+    # Stacked bar & Total bar: Abgänge nach Grund
+    # Default to empty figs to ensure keys exist
+    charts["bar_abgaenge_reasons"] = _empty_fig("Abgänge nach Grund")
+    charts["bar_reasons_total"] = _empty_fig("Gesamtverteilung der Abgänge nach Grund")
+    
+    if events_person_level is not None and not events_person_level.empty:
         df = events_person_level.copy()
         df = df[(df["headcount_change"] < 0) | (df["mak_change"] < 0)]
-        if df.empty:
-            charts["bar_abgaenge_reasons"] = _empty_fig("Abgänge nach Grund")
-        else:
+        
+        if not df.empty:
+            # 1. Stacked Bar (Time Series)
             pivot = df.pivot_table(
                 index="period_label",
                 columns="reason_code",
@@ -66,19 +68,13 @@ def build_charts(forecast_kpis: pd.DataFrame, events_person_level: pd.DataFrame)
                 ))
             fig_bar.update_layout(
                 barmode="stack",
-                title="Abgänge nach Grund",
-                xaxis_title="Periode",
-                yaxis_title="Anzahl",
-            )
-            fig_bar.update_layout(
-                barmode="stack",
                 title="Abgänge nach Grund (zeitlich)",
                 xaxis_title="Periode",
                 yaxis_title="Anzahl",
             )
             charts["bar_abgaenge_reasons"] = fig_bar
 
-            # ── NEW: Total Reasons Bar Chart (Horizontal) ──
+            # 2. Total Bar (Aggregated)
             total_stats = df.groupby("reason_code").size().reset_index(name="count")
             total_stats["reason_label"] = total_stats["reason_code"].map(REASON_LABELS)
             total_stats = total_stats.sort_values("count", ascending=True)

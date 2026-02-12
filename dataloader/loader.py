@@ -23,31 +23,13 @@ from config.settings import (
     DATA_PATH, DEFAULT_COHORTS, BASE_SALARY, STEP_MULTIPLIER, EMPLOYER_COST_FACTOR
 )
 from utils.settings_loader import get_setting
+from dataloader.cluster_manager import apply_clusters_to_snapshot
 from kpi_reference import get_current_stichtag
 
 ID_PAD_LENGTH = 6
 
 
-def normalize_persnr(series: pd.Series) -> pd.Series:
-    """Normalisiert Personalnummern zu String mit führenden Nullen. Robust gegen 'nan'."""
-    def _safe_convert(x):
-        if pd.isna(x):
-            return pd.NA
-        try:
-            # Handle string 'nan' explizit oder via float conversion error
-            s = str(x).strip().lower()
-            if s == "nan" or s == "" or s == "none":
-                return pd.NA
-            
-            # Erst float, dann int (fängt "123.0" strings und floats ab)
-            # int(float("nan")) wirft ValueError, wird gefangen
-            val = int(float(x)) 
-            return str(val).zfill(ID_PAD_LENGTH)
-        except (ValueError, TypeError):
-            # Fallback bei echten Strings (z.B. "A123")
-            return str(x).strip().zfill(ID_PAD_LENGTH)
-
-    return series.apply(_safe_convert)
+from abgaenge.schemas import normalize_persnr
 
 
 @st.cache_data
@@ -423,6 +405,9 @@ def load_and_prepare_data(
                 if "Jobfamily" not in snapshot_df.columns:
                     snapshot_df["Jobfamily"] = "UNMAPPED"
             
+            # Custom Clusters
+            snapshot_df = apply_clusters_to_snapshot(snapshot_df)
+
             summary = get_data_summary(snapshot_df)
             summary["data_source_type"] = "Eigene Daten (Upload)"
             return snapshot_df, history_df, org_df, summary
@@ -476,6 +461,9 @@ def load_and_prepare_data(
                     if "Jobfamily" not in snapshot_df.columns:
                         snapshot_df["Jobfamily"] = "UNMAPPED"
 
+                # 5b. Custom Clusters
+                snapshot_df = apply_clusters_to_snapshot(snapshot_df)
+
                 # 6. Generiere History
                 history_df = generate_history_from_snapshot(snapshot_df)
 
@@ -516,6 +504,9 @@ def load_and_prepare_data(
         # Falls Fehler beim Laden, füge leere Spalte hinzu
         if "Jobfamily" not in snapshot_df.columns:
             snapshot_df["Jobfamily"] = "UNMAPPED"
+
+    # Custom Clusters
+    snapshot_df = apply_clusters_to_snapshot(snapshot_df)
 
     # Berechne Summary
     summary = get_data_summary(snapshot_df)

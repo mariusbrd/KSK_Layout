@@ -119,6 +119,7 @@ def _simulate_azubis(
                     "persnr": persnr,
                     "org_unit": new_unit,
                     "source": "Azubi",
+                    "mak": 1.0,
                     "TrfGr": entry_tariff,
                     "St": entry_step,
                     "Jobfamily": "Angestellte"
@@ -132,6 +133,7 @@ def _simulate_azubis(
                     "count": -1,
                     "persnr": persnr,
                     "org_unit": row.get("Organisationseinheit"),
+                    "mak": -float(row.get("mak", 1.0)),
                     "source": "Azubi"
                 })
 
@@ -187,6 +189,7 @@ def _simulate_trainees(
             "persnr": new_id,
             "org_unit": org_unit,
             "source": "Trainee",
+            "mak": 1.0,
             "TrfGr": salary_group,
             "St": 1,
             "Jobfamily": "Trainee",
@@ -254,6 +257,7 @@ def _simulate_hires(
             "persnr": new_id,
             "org_unit": org_unit,
             "source": "NewHire",
+            "mak": 1.0,
             "TrfGr": "E9A",
             "St": 3,
             "Jobfamily": "Angestellte",

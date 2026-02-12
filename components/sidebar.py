@@ -10,6 +10,7 @@ import pandas as pd
 from datetime import datetime
 import sys
 import os
+import re
 
 # Import settings
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -150,6 +151,12 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
     if "selected_jobfamilies" not in st.session_state:
         st.session_state["selected_jobfamilies"] = []
 
+    if "selected_oe_clusters" not in st.session_state:
+        st.session_state["selected_oe_clusters"] = []
+    
+    if "selected_jf_clusters" not in st.session_state:
+        st.session_state["selected_jf_clusters"] = []
+
     if "exclude_auszubildende" not in st.session_state:
         st.session_state["exclude_auszubildende"] = False
     if "exclude_elternzeit" not in st.session_state:
@@ -216,25 +223,27 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
                 st.session_state["date_range"] = (min_date, max_date)
 
         # Organisationseinheiten
+        # FIX: Use Organisationseinheit (full name) as key, since Kürzel OrgEinheit
+        # is NOT unique (e.g. 591 = "Beratungs-Center Herrenberg" AND "Akquisepool Herrenberg").
         st.markdown("**🏢 Organisationseinheiten**")
-        if "Kürzel OrgEinheit" in snapshot_df.columns:
-            org_units = sorted(snapshot_df["Kürzel OrgEinheit"].dropna().unique())
+        if "Organisationseinheit" in snapshot_df.columns:
+            org_units = sorted(snapshot_df["Organisationseinheit"].dropna().unique())
         else:
             org_units = []
 
-        org_unit_options = {}
+        org_unit_display = {}
         if {"Kürzel OrgEinheit", "Organisationseinheit"}.issubset(snapshot_df.columns):
-            org_unit_names = snapshot_df[["Kürzel OrgEinheit", "Organisationseinheit"]].drop_duplicates()
-            org_unit_options = {
-                row["Kürzel OrgEinheit"]: f"{row['Kürzel OrgEinheit']} - {row['Organisationseinheit']}"
-                for _, row in org_unit_names.iterrows()
+            org_unit_pairs = snapshot_df[["Kürzel OrgEinheit", "Organisationseinheit"]].drop_duplicates()
+            org_unit_display = {
+                row["Organisationseinheit"]: f"{row['Kürzel OrgEinheit']} - {row['Organisationseinheit']}"
+                for _, row in org_unit_pairs.iterrows()
             }
 
         selected_orgs = st.multiselect(
             "Einheiten auswählen",
             options=org_units,
             default=st.session_state.get("selected_org_units", []),
-            format_func=lambda x: org_unit_options.get(x, x),
+            format_func=lambda x: org_unit_display.get(x, x),
             key="org_units_select",
             label_visibility="collapsed",
         )
@@ -268,6 +277,31 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
             label_visibility="collapsed",
         )
         st.session_state["selected_jobfamilies"] = selected_jf
+
+        # Custom Clusters (Optional)
+        has_oe_clusters = "OE-Cluster" in snapshot_df.columns and snapshot_df["OE-Cluster"].nunique() > 1
+        has_jf_clusters = "JF-Cluster" in snapshot_df.columns and snapshot_df["JF-Cluster"].nunique() > 1
+        
+        if has_oe_clusters or has_jf_clusters:
+            st.markdown("### 🧩 Cluster-Filter")
+            
+            if has_oe_clusters:
+                oe_clusters = sorted(snapshot_df["OE-Cluster"].dropna().unique())
+                st.session_state["selected_oe_clusters"] = st.multiselect(
+                    "OE-Cluster auswählen",
+                    options=oe_clusters,
+                    default=st.session_state.get("selected_oe_clusters", []),
+                    key="oe_cluster_select"
+                )
+                
+            if has_jf_clusters:
+                jf_clusters = sorted(snapshot_df["JF-Cluster"].dropna().unique())
+                st.session_state["selected_jf_clusters"] = st.multiselect(
+                    "JF-Cluster auswählen",
+                    options=jf_clusters,
+                    default=st.session_state.get("selected_jf_clusters", []),
+                    key="jf_cluster_select"
+                )
 
         # Alterskohorten (Auswahl + Editor in Popover)
         st.markdown("**👥 Alterskohorten**")
@@ -465,20 +499,31 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
     filtered = df.copy()
 
     # Filter-Mapping: session_state key -> DataFrame column
+    # FIX: Use Organisationseinheit (unique per sub-unit) instead of Kürzel OrgEinheit
     filter_mapping = {
-        "selected_org_units": "Kürzel OrgEinheit",
+        "selected_org_units": "Organisationseinheit",
         "selected_jobfamilies": "Jobfamily",
         "selected_cohorts": "Alterskohorte",
         "selected_genders": "Geschlecht",
         "selected_employment": "Arbeitszeit",
         "selected_education": "Ausbildung",
         "selected_atz_status": "ATZ_Status",
+        "selected_oe_clusters": "OE-Cluster",
+        "selected_jf_clusters": "JF-Cluster",
     }
 
     for state_key, column_name in filter_mapping.items():
         filter_values = st.session_state.get(state_key)
         if filter_values and column_name in filtered.columns:
-            mask = filtered[column_name].isin(filter_values)
+            # P07: Robust filtering (handle mixed types and .0 floats)
+            # Create a normalized temporary series for filtering
+            s_norm = filtered[column_name].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+            
+            # Ensure filter values are also normalized (just strings)
+            # P10: Fix for mixed types (612 vs 612.0)
+            filter_vals_norm = [re.sub(r"\.0$", "", str(v).strip()) for v in filter_values]
+            
+            mask = s_norm.isin(filter_vals_norm)
             filtered = filtered.loc[mask]
 
     # --- Gruppen-Ausschlüsse (konfiguriert in Einstellungen) ---
@@ -499,7 +544,11 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
     # 2. Bereichs-basierte Ausschlüsse (99XX)
     ex_org_units = ex_config.get("org_units", [])
     if ex_org_units and "Kürzel OrgEinheit" in filtered.columns:
-        exclusion_mask |= (filtered["Kürzel OrgEinheit"].astype(str).isin(ex_org_units))
+        # P07: Robust normalization (handle 9990.0 -> "9990")
+        s_ou = filtered["Kürzel OrgEinheit"].astype(str).str.strip()
+        # Remove trailing .0 if present (common pandas issue with mixed types)
+        s_ou = s_ou.str.replace(r"\.0$", "", regex=True)
+        exclusion_mask |= (s_ou.isin(ex_org_units))
 
     # 3. "Treat as Vacant" Logik
     # Wir löschen die Zeilen nicht, sondern "entfernen" die Person von der Planstelle.
@@ -535,6 +584,8 @@ def reset_filters():
     st.session_state["selected_employment"] = ["Vollzeit", "Teilzeit", "Inaktiv"]
     st.session_state["selected_education"] = []
     st.session_state["selected_atz_status"] = ["Kein ATZ", "Arbeitsphase", "Freistellungsphase"]
+    st.session_state["selected_oe_clusters"] = []
+    st.session_state["selected_jf_clusters"] = []
     st.session_state["cohort_definitions"] = DEFAULT_COHORTS.copy()
     
     # Reset advanced exclusions in session state
@@ -575,6 +626,12 @@ def get_filter_summary() -> str:
 
     if len(st.session_state.get("selected_atz_status", [])) < 3:
         active_filters.append("ATZ-Status")
+
+    if st.session_state.get("selected_oe_clusters"):
+        active_filters.append(f"{len(st.session_state['selected_oe_clusters'])} OE-Cluster")
+
+    if st.session_state.get("selected_jf_clusters"):
+        active_filters.append(f"{len(st.session_state['selected_jf_clusters'])} JF-Cluster")
 
     # Gruppen-Ausschlüsse (Neu: Aus JSON-Config)
     exclusion_labels = []

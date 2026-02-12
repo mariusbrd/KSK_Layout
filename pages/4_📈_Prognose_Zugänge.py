@@ -16,6 +16,7 @@ else:
     sys.path.append(str(BASE_PATH))
 
 from dataloader.loader import load_and_prepare_data, calculate_cost_vectorized, load_original_data, load_atz_data_cached
+from dataloader.cluster_manager import is_clustering_active
 from kpi_reference import get_current_stichtag
 from config.settings import COLORS, TARIFF_GROUPS
 from abgaenge.forecast import run_forecast_abgaenge
@@ -87,7 +88,7 @@ def main():
         }
         
         # Include Geschlecht/Planstelle if present
-        for col in ["Geschlecht", "Planstelle", "active"]:
+        for col in ["Geschlecht", "Planstelle", "active", "OE-Cluster", "JF-Cluster"]:
             if col in df_ma_filtered.columns:
                 agg_dict[col] = "first"
         
@@ -249,9 +250,60 @@ def main():
         forecast_kpis = zug_kpis
         
         if events_df.empty and (hire_count > 0 or not vacancies):
-             # Just a warning if expected something but got nothing
              if hire_count > 0: st.warning("Keine Zugänge generiert.")
 
+        # --- Feature: Enrich events with OE-Cluster & JF-Cluster ---
+        if not events_df.empty:
+            if "org_unit" in events_df.columns and "Organisationseinheit" not in events_df.columns:
+                events_df = events_df.rename(columns={"org_unit": "Organisationseinheit"})
+
+            # Pre-prep normalization
+            events_df["persnr_str"] = events_df["persnr"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+            snapshot_df["PersNr_str"] = snapshot_df["PersNr"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+            snapshot_unique = snapshot_df.drop_duplicates(subset=["PersNr_str"])
+
+            # 1. OE-Cluster
+            if "OE-Cluster" in snapshot_df.columns:
+                oe_cluster_map = snapshot_unique.set_index("PersNr_str")["OE-Cluster"].to_dict()
+                events_df["OE-Cluster"] = events_df["persnr_str"].map(oe_cluster_map).fillna("Unclustered")
+                
+                # FALLBACK: If PersNr mapping failed (New Hires have fake IDs), try map via OrgUnit
+                org_cluster_map = snapshot_df.set_index("Organisationseinheit")["OE-Cluster"].to_dict()
+                mask_unclustered = events_df["OE-Cluster"] == "Unclustered"
+                if mask_unclustered.any() and "Organisationseinheit" in events_df.columns:
+                    events_df.loc[mask_unclustered, "OE-Cluster"] = events_df.loc[mask_unclustered, "Organisationseinheit"].map(org_cluster_map).fillna("Unclustered")
+            else:
+                events_df["OE-Cluster"] = "Unclustered"
+
+            # 2. JF-Cluster
+            if "JF-Cluster" in snapshot_df.columns:
+                jf_cluster_map = snapshot_unique.set_index("PersNr_str")["JF-Cluster"].to_dict()
+                events_df["JF-Cluster"] = events_df["persnr_str"].map(jf_cluster_map).fillna("Unclustered")
+                
+                # FALLBACK for New Hires: via (OrgUnit, Planstelle) or Planstelle
+                mask_unclustered_jf = events_df["JF-Cluster"] == "Unclustered"
+                if mask_unclustered_jf.any():
+                    from dataloader.cluster_manager import load_cluster_mappings
+                    _, jf_map = load_cluster_mappings()
+                    
+                    if jf_map:
+                        first_key = next(iter(jf_map.keys()), None)
+                        if isinstance(first_key, tuple):
+                             # Combination mapping
+                             if "Organisationseinheit" in events_df.columns and "Planstelle" in events_df.columns:
+                                 s_org = events_df.loc[mask_unclustered_jf, "Organisationseinheit"].astype(str).str.strip()
+                                 s_pos = events_df.loc[mask_unclustered_jf, "Planstelle"].astype(str).str.strip()
+                                 keys = list(zip(s_org, s_pos))
+                                 events_df.loc[mask_unclustered_jf, "JF-Cluster"] = [jf_map.get(k, "Unclustered") for k in keys]
+                        elif "Planstelle" in events_df.columns:
+                             events_df.loc[mask_unclustered_jf, "JF-Cluster"] = events_df.loc[mask_unclustered_jf, "Planstelle"].map(jf_map).fillna("Unclustered")
+            else:
+                events_df["JF-Cluster"] = "Unclustered"
+
+            # Cleanup
+            events_df.drop(columns=["persnr_str"], inplace=True)
+            snapshot_df.drop(columns=["PersNr_str"], inplace=True, errors="ignore")
+        
         # ── Ergebnisse ──────────────────────────────────────────────────
         st.divider()
 
@@ -323,6 +375,109 @@ def main():
                     st.plotly_chart(fig_hist, use_container_width=True)
                 else:
                     st.info("Keine Zugangs-Events vorhanden.")
+                
+                st.divider()
+                
+                # Section 3: Cluster-Struktur (OE)
+                st.markdown("### 🧩 Zugänge nach OE-Clustern")
+                
+                if is_clustering_active():
+                    if "OE-Cluster" in events_df.columns:
+                        # Get full set of clusters for consistent Y-axis
+                        all_clusters = sorted(snapshot_df["OE-Cluster"].unique().tolist())
+                        
+                        # Chart 1: Kopfzugänge
+                        st.markdown("#### 👤 Zugänge nach Personen (OE)")
+                        c_stats_h = events_df.groupby("OE-Cluster").size().reindex(all_clusters, fill_value=0).reset_index(name="Zugänge")
+                        c_stats_h = c_stats_h.sort_values("Zugänge", ascending=True)
+                        
+                        fig_h = px.bar(
+                            c_stats_h,
+                            x="Zugänge",
+                            y="OE-Cluster",
+                            orientation="h",
+                            title="Kopfzugänge (Anzahl Personen)",
+                            text="Zugänge",
+                            color="Zugänge",
+                            color_continuous_scale="Blues"
+                        )
+                        fig_h.update_layout(yaxis_title=None, showlegend=False, height=600)
+                        st.plotly_chart(fig_h, use_container_width=True)
+                        
+                        st.divider()
+
+                        # Chart 2: MAK-Zuwachs
+                        st.markdown("#### 📊 Zugänge nach Kapazität (MAK) (OE)")
+                        if "mak" in events_df.columns:
+                            c_stats_m = events_df.groupby("OE-Cluster")["mak"].sum().reindex(all_clusters, fill_value=0.0).reset_index(name="MAK-Zuwachs")
+                            c_stats_m = c_stats_m.sort_values("MAK-Zuwachs", ascending=True)
+                            
+                            fig_m = px.bar(
+                                c_stats_m,
+                                x="MAK-Zuwachs",
+                                y="OE-Cluster",
+                                orientation="h",
+                                title="Kapazitätszuwachs (MAK)",
+                                text_auto=".1f",
+                                color="MAK-Zuwachs",
+                                color_continuous_scale="Blues"
+                            )
+                            fig_m.update_layout(yaxis_title=None, showlegend=False, height=600)
+                            st.plotly_chart(fig_m, use_container_width=True)
+                        else:
+                            st.info("MAK-Daten für Cluster nicht verfügbar.")
+                    else:
+                        st.warning("OE-Cluster Spalte nicht im Datensatz gefunden.")
+
+                    st.divider()
+
+                    # Section 4: Cluster-Struktur (JF)
+                    st.markdown("### 🧩 Zugänge nach Job-Family-Clustern")
+                    if "JF-Cluster" in events_df.columns:
+                        all_jf_clusters = sorted(snapshot_df["JF-Cluster"].unique().tolist())
+                        
+                        # Chart 1: Kopfzugänge JF
+                        st.markdown("#### 👤 Zugänge nach Personen (JF)")
+                        c_stats_h_jf = events_df.groupby("JF-Cluster").size().reindex(all_jf_clusters, fill_value=0).reset_index(name="Zugänge")
+                        c_stats_h_jf = c_stats_h_jf.sort_values("Zugänge", ascending=True)
+                        
+                        fig_h_jf = px.bar(
+                            c_stats_h_jf,
+                            x="Zugänge",
+                            y="JF-Cluster",
+                            orientation="h",
+                            title="Kopfzugänge Job-Family (Anzahl Personen)",
+                            text="Zugänge",
+                            color="Zugänge",
+                            color_continuous_scale="Blues"
+                        )
+                        fig_h_jf.update_layout(yaxis_title=None, showlegend=False, height=600)
+                        st.plotly_chart(fig_h_jf, use_container_width=True)
+
+                        st.divider()
+
+                        # Chart 2: MAK-Zuwachs JF
+                        st.markdown("#### 📊 Zugänge nach Kapazität (MAK) (JF)")
+                        if "mak" in events_df.columns:
+                            c_stats_m_jf = events_df.groupby("JF-Cluster")["mak"].sum().reindex(all_jf_clusters, fill_value=0.0).reset_index(name="MAK-Zuwachs")
+                            c_stats_m_jf = c_stats_m_jf.sort_values("MAK-Zuwachs", ascending=True)
+                            
+                            fig_m_jf = px.bar(
+                                c_stats_m_jf,
+                                x="MAK-Zuwachs",
+                                y="JF-Cluster",
+                                orientation="h",
+                                title="Kapazitätszuwachs Job-Family (MAK)",
+                                text_auto=".1f",
+                                color="MAK-Zuwachs",
+                                color_continuous_scale="Blues"
+                            )
+                            fig_m_jf.update_layout(yaxis_title=None, showlegend=False, height=600)
+                            st.plotly_chart(fig_m_jf, use_container_width=True)
+                    else:
+                        st.warning("JF-Cluster Spalte nicht im Datensatz gefunden.")
+                else:
+                    st.info("💡 **Hinweis:** Keine benutzerdefinierten Cluster geladen. Sie können diese in den Einstellungen definieren.")
 
             with tab_details:
                 st.markdown("### 📋 Detaillierte Liste der Zugänge")

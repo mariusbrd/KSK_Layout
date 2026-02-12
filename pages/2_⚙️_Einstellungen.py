@@ -20,6 +20,9 @@ from config.settings import (
     format_currency,
 )
 from kpi_reference import STICHTAG_DEFAULT
+from dataloader.loader import load_and_prepare_data
+from dataloader.jobfamily_matcher import load_jobfamily_definitions
+from dataloader.cluster_manager import generate_template_bytes, validate_and_save_clusters, load_cluster_mappings
 
 
 def render_settings_page():
@@ -76,6 +79,53 @@ def render_settings_page():
             if st.button("Alle Uploads löschen"):
                  st.session_state["global_uploads"] = {}
                  st.rerun()
+
+    st.divider()
+
+    # --- Cluster-Management ---
+    st.subheader("Cluster-Management")
+    st.caption("Definition von benutzerdefinierten Gruppen für OE und Job-Families.")
+    
+    with st.expander("🧩 Custom Clusters (Excel-Mapping)"):
+        c_col1, c_col2 = st.columns(2)
+        
+        with c_col1:
+            st.markdown("**1. Template erstellen**")
+            st.caption("Lädt alle aktuellen OEs und JFs in eine Excel-Datei.")
+            if st.button("📥 Template generieren"):
+                # Load current data to get unique names/keys
+                with st.spinner("Lade aktuelle Stammdaten..."):
+                    df_ma, _, _, _ = load_and_prepare_data()
+                    jf_defs = load_jobfamily_definitions()
+                    template_bytes = generate_template_bytes(df_ma, jf_defs)
+                    
+                st.download_button(
+                    label="📂 Cluster-Template.xlsx herunterladen",
+                    data=template_bytes,
+                    file_name="Cluster-Template.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="dl_cluster_template"
+                )
+
+        with c_col2:
+            st.markdown("**2. Definitionen hochladen**")
+            st.caption("Laden Sie das bearbeitete Template hier hoch.")
+            up_cluster = st.file_uploader("Mapping-Datei hochladen (.xlsx)", type=["xlsx"], key="up_cluster_mappings")
+            
+            if up_cluster:
+                success, msg = validate_and_save_clusters(up_cluster)
+                if success:
+                    st.success(msg)
+                    if st.button("Änderungen jetzt anwenden (Cache leeren)"):
+                        st.cache_data.clear()
+                        st.rerun()
+                else:
+                    st.error(msg)
+                    
+        # Check if file exists
+        oe_map, jf_map = load_cluster_mappings()
+        if oe_map or jf_map:
+            st.info(f"✅ Aktive Mappings: {len(oe_map)} OE-Clusters, {len(jf_map)} JF-Clusters.")
 
     st.divider()
 

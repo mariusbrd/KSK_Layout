@@ -83,14 +83,28 @@ def _build_atz_pivot(df_atz: pd.DataFrame) -> pd.DataFrame:
 
     df = df_atz.copy()
     
-    # Harden types
+    # Harden types using central normalization
+    from abgaenge.schemas import normalize_persnr
     if COL_PERSNR in df.columns:
-        df[COL_PERSNR] = df[COL_PERSNR].astype(str)
+        df[COL_PERSNR] = normalize_persnr(df[COL_PERSNR])
         
     date_cols = [COL_ATZ_BEGINN, COL_ATZ_ENDE, COL_ATZ_VERTRAG_ENDE]
     for c in date_cols:
         if c in df.columns:
             df[c] = pd.to_datetime(df[c], errors="coerce")
+
+    # Normalize Phase values to handle "Arbeitsphase"/"Freistellungsphase" variations
+    if COL_ATZ_PHASE in df.columns:
+        df[COL_ATZ_PHASE] = df[COL_ATZ_PHASE].astype(str).str.strip()
+        # Map common German terms to internal codes
+        phase_map = {
+            "Arbeitsphase": "AR",
+            "Freistellungsphase": "FR",
+            "Passivphase": "FR",
+            "arbeitsphase": "AR", 
+            "freistellungsphase": "FR"
+        }
+        df[COL_ATZ_PHASE] = df[COL_ATZ_PHASE].replace(phase_map)
 
     ar = df[df[COL_ATZ_PHASE] == "AR"][[COL_PERSNR, COL_ATZ_BEGINN, COL_ATZ_ENDE, COL_ATZ_VERTRAG_ENDE]].copy()
     fr = df[df[COL_ATZ_PHASE] == "FR"][[COL_PERSNR, COL_ATZ_BEGINN, COL_ATZ_ENDE, COL_ATZ_VERTRAG_ENDE]].copy()
@@ -324,13 +338,162 @@ def _schedule_new_atz_cases(
     return atz_pivot
 
 
+
+
+def aggregate_forecast_results(
+    df_initial: pd.DataFrame,
+    events_df: pd.DataFrame,
+    start_date: pd.Timestamp,
+    end_date: pd.Timestamp,
+    freq: str,
+    params: Dict[str, Any] # For assumptions like Soll/MAK fallback
+) -> pd.DataFrame:
+    """
+    Calculates Headcount/MAK evolution based on an initial state and a log of events.
+    Used for both Global (Full) and Filtered views.
+    """
+    periods = _periods(start_date, end_date, freq)
+    
+    # Validation
+    if df_initial.empty:
+        # Return empty KPI/Timeline
+        return pd.DataFrame() # todo: minimal structure
+        
+    # Build working state
+    df_state = df_initial.copy()
+    
+    # Ensure Index via PersNr
+    if COL_PERSNR in df_state.columns:
+        df_state[COL_PERSNR] = df_state[COL_PERSNR].astype(str)
+        df_state = df_state.set_index(COL_PERSNR, drop=False)
+    
+    # Ensure types
+    df_state["active"] = True
+    
+    # Determine Initial MAK/Attributes
+    # This logic mimics _prepare_state in run_forecast, but assumes df_initial is already clean?
+    # Actually df_initial passed from page 3 is the raw loaded data (before simul).
+    # We must ensure 'mak' exists or is calculated.
+    
+    if "MAK_Calculated" in df_state.columns:
+        df_state["mak"] = pd.to_numeric(df_state["MAK_Calculated"], errors="coerce").fillna(0.0)
+    else:
+        # Fallback if missing (should not happen in prod)
+        df_state["mak"] = 1.0 
+        
+    # Initialize dynamic columns
+    df_state["status_ruhend"] = df_state[COL_STATUS] == "Ruhendes Beschäftigungsverhältnis"
+    
+    # Events Pre-Processing
+    if not events_df.empty:
+        events_df["event_date"] = pd.to_datetime(events_df["event_date"])
+        # Sort by date to ensure correct replay order
+        events_df = events_df.sort_values("event_date")
+
+    kpis = []
+    
+    for period in periods:
+        period_days = max(1, (period.end - period.start).days)
+        
+        # 1. Capture Start State
+        headcount_start = int(df_state["active"].sum())
+        mak_start = float(df_state.loc[df_state["active"], "mak"].sum())
+        
+        # 2. Process Events in this Window
+        # Filter events that happen strictly within this period?
+        # Forecast logic uses "events appended during period iteration".
+        # Here we filter events_df for (date > period.start AND date <= period.end)
+        # OR (date == period.end) - Forecast usually dates events at period_end.
+        
+        if not events_df.empty:
+            if freq == "M":
+                # Events are typically dated at month end
+                # Check labels or date ranges
+                period_mask = (events_df["event_date"] >= period.start) & (events_df["event_date"] <= period.end)
+                period_events = events_df[period_mask]
+            else:
+                period_mask = (events_df["event_date"] >= period.start) & (events_df["event_date"] <= period.end)
+                period_events = events_df[period_mask]
+        else:
+            period_events = pd.DataFrame()
+
+        # Apply State Changes
+        exit_count = 0
+        mak_loss_gross = 0.0
+        abgaenge_total_count = 0
+        
+        for _, event in period_events.iterrows():
+            p_id = str(event["persnr"])
+            
+            # Update State if person in this subset
+            if p_id in df_state.index:
+                # Apply MAK/Active changes
+                # Note: The event log already contains "mak_change". 
+                # We can trust the event log OR re-simulate via state.
+                # Trusting the log is safer for consistency, BUT:
+                # If we filter only ONE person, but the event says "mak_change=-0.5", 
+                # does it matter if the person is active in df_state? Yes.
+                
+                # Check logic:
+                # If event says "Retirement", he becomes inactive.
+                if event["headcount_change"] < 0:
+                     df_state.loc[p_id, "active"] = False
+                     exit_count += 1
+                     abgaenge_total_count += 1
+                
+                # Apply MAK change (delta)
+                # Ensure we handle float correctly
+                delta_mak = float(event["mak_change"])
+                current_mak = float(df_state.loc[p_id, "mak"])
+                new_mak = max(0.0, current_mak + delta_mak)
+                df_state.loc[p_id, "mak"] = new_mak
+                
+                # Track statistics (View-Only)
+                if delta_mak < 0:
+                    mak_loss_gross += abs(delta_mak)
+                    if event["headcount_change"] == 0:
+                         # ATZ Phase Change or Ruhend (Functional Departure)
+                         abgaenge_total_count += 1
+                         
+                # Handle Ruhend Return (Status update)
+                if event["reason_code"] == REASON_RUHEND_RETURN:
+                     df_state.loc[p_id, "status_ruhend"] = False
+                elif event["reason_code"] == REASON_RUHEND_START:
+                     df_state.loc[p_id, "status_ruhend"] = True
+
+        # 3. Capture End State
+        headcount_end = int(df_state["active"].sum())
+        mak_end = float(df_state.loc[df_state["active"], "mak"].sum())
+
+        avg_headcount = (headcount_start + headcount_end) / 2 if (headcount_start + headcount_end) > 0 else 0
+        abgangsquote = (exit_count / avg_headcount) if avg_headcount > 0 else 0.0
+
+        kpis.append({
+            "period_label": period.label,
+            "period_start": period.start,
+            "period_end": period.end,
+            "headcount_start": headcount_start,
+            "headcount_end": headcount_end,
+            "headcount_delta": headcount_end - headcount_start,
+            "mak_start": mak_start,
+            "mak_end": mak_end,
+            "mak_delta": mak_end - mak_start,
+            "abgaenge_total": abgaenge_total_count,
+            "exit_count": exit_count,
+            "mak_loss_gross": mak_loss_gross,
+            "abgangsquote": abgangsquote,
+        })
+        
+    return pd.DataFrame(kpis)
+
+
 def run_forecast_abgaenge(
     df_ma: pd.DataFrame,
     df_atz: pd.DataFrame,
     start_date: pd.Timestamp,
     end_date: pd.Timestamp,
-    freq: str,
-    params: Dict[str, Any],
+    freq: str = "M",
+    params: Dict[str, Any] = None,
 ) -> Dict[str, Any]:
     """
     Run Abgaenge forecast.
@@ -338,6 +501,9 @@ def run_forecast_abgaenge(
     Returns:
         dict with keys: forecast_kpis, events_person_level, assumptions, tables
     """
+    if params is None:
+        params = {}
+        
     start_date = pd.to_datetime(start_date)
     end_date = pd.to_datetime(end_date)
 
@@ -352,37 +518,17 @@ def run_forecast_abgaenge(
 
     rng = np.random.RandomState(int(params.get("random_seed", 42)))
 
-    # --- DATEN-FILTERUNG (Neu: Baseline muss zum Stichtag passen) ---
-    # REMOVED: The input df_ma is already filtered by loader.py based on Global Settings.
-    # We trust the input to contain the correct population (including Future Hires if enabled).
-    # Re-filtering here drops valid rows (e.g. NaT Eintritt) causing discrepancy with Kompakt.
-    
-    # if COL_EINTRITT in df_ma.columns:
-    #     df_ma = df_ma[df_ma[COL_EINTRITT] <= start_date]
-    #
-    # if COL_AUSTRITT in df_ma.columns:
-    #     df_ma = df_ma[
-    #         (df_ma[COL_AUSTRITT].isna()) |
-    #         (df_ma[COL_AUSTRITT] >= start_date)
-    #     ]
-
     # Build baseline state
     df_state = df_ma.copy()
-    
-    # Ensure PersNr column is string BEFORE setting index if possible,
-    # or cast index after.
     if COL_PERSNR in df_state.columns:
         df_state[COL_PERSNR] = df_state[COL_PERSNR].astype(str)
 
     df_state = df_state.set_index(COL_PERSNR, drop=True)
-    
-    # Force Index to String (Defensive)
     df_state.index = df_state.index.astype(str)
     
-    # CRITICAL FIX: Ensure unique index to avoid "Series is ambiguous" errors
-    # when accessing .loc[persnr] inside loops.
     if df_state.index.duplicated().any():
         df_state = df_state[~df_state.index.duplicated(keep='first')]
+
     df_state["age"] = _calc_age(df_state[COL_GEB], start_date)
     df_state["tenure"] = _calc_tenure(df_state[COL_EINTRITT], start_date)
     df_state["status_ruhend"] = df_state[COL_STATUS] == "Ruhendes Beschäftigungsverhältnis"
@@ -402,24 +548,16 @@ def run_forecast_abgaenge(
 
     bsgrd = pd.to_numeric(df_state[COL_BSGRD], errors="coerce").fillna(0.0)
     
-    # Neu: Normalisierung analog zu loader.py (Sollarbeitszeit / 39.0)
-    # Default 39.0, falls leer
     if COL_SOLL in df_state.columns:
         soll_hours = pd.to_numeric(df_state[COL_SOLL], errors="coerce").fillna(0.0)
-        # Fix: Wenn Soll=0 (fehlt/unmapped), dann Standard 39.0 annehmen (FTE Factor 1.0)
         soll_hours = np.where(soll_hours <= 0.01, 39.0, soll_hours)
         soll_fte_factor = soll_hours / 39.0
     else:
         soll_fte_factor = 1.0
 
-    # Explicit MAK Override from Loader (Guarantees 1:1 match with Dashboard)
-    # Explicit MAK Override from Loader (Guarantees 1:1 match with Dashboard)
     if "MAK_Calculated" in df_state.columns:
         df_state["mak"] = pd.to_numeric(df_state["MAK_Calculated"], errors="coerce").fillna(0.0)
-        # Note: We intentionally skip the 'status_ruhend/atz_fr' zeroing here,
-        # because MAK_Calculated from Loader already accounts for that.
     else:
-        # Fallback Calculation
         raw_mak = (bsgrd / 100.0) * soll_fte_factor
         df_state["mak"] = np.where(
             (df_state["status_ruhend"] | df_state["atz_fr_active"]),
@@ -427,32 +565,41 @@ def run_forecast_abgaenge(
             raw_mak,
         )
 
-    # Ruhend return schedule
     ruhend_months = int(params.get("ruhend", {}).get("ruhend_avg_duration_months", 12))
     df_state["ruhend_until"] = pd.NaT
-    df_state["mak_before_ruhend"] = df_state["mak"]  # P01: Snapshot for return
+    df_state["mak_before_ruhend"] = df_state["mak"]
     df_state.loc[df_state["status_ruhend"], "ruhend_until"] = start_date + pd.DateOffset(months=ruhend_months)
 
     atz_pivot = _build_atz_pivot(df_atz)
 
-    # Enforce minimum AR duration on existing cases from ATZ.xlsx
+    if not atz_pivot.empty:
+        valid_persnrs = set(df_state.index)
+        atz_pivot = atz_pivot[atz_pivot[COL_PERSNR].isin(valid_persnrs)].copy()
+
     atz_params = params.get("atz", {})
-    min_ar_months = int(round(float(atz_params.get("atz_duration_ar_years", 2.5)) * 12))
+    try:
+        ar_years_val = float(atz_params.get("atz_duration_ar_years", 2.5))
+        min_ar_months = int(round(ar_years_val * 12))
+    except (ValueError, TypeError):
+        min_ar_months = 30 # Default 2.5 years
+    
+    if min_ar_months < 6:
+        min_ar_months = 30
+    
     min_fr_months = int(round(float(atz_params.get("atz_duration_fr_years", 2.5)) * 12))
+        
     atz_pivot = _enforce_min_ar_duration(atz_pivot, min_ar_months, min_fr_months)
 
     periods = _periods(start_date, end_date, freq)
-
+    
     events: List[Dict[str, Any]] = []
-    kpis: List[Dict[str, Any]] = []
 
     for period in periods:
         period_days = max(1, (period.end - period.start).days)
-        headcount_start = int(df_state["active"].sum())
-        mak_start = float(df_state.loc[df_state["active"], "mak"].sum())
-        period_deactivated: set = set()  # P02: Track exits within this period
+        # KPI START CAPTURE REMOVED -> Handled by Aggregator
+        
+        period_deactivated: set = set()
 
-        # Refresh ages/tenure each period
         df_state["age"] = _calc_age(df_state[COL_GEB], period.start)
         df_state["tenure"] = _calc_tenure(df_state[COL_EINTRITT], period.start)
 
@@ -485,6 +632,11 @@ def run_forecast_abgaenge(
                         "mak_change": mak_change,
                         "age": float(df_state.loc[persnr, "age"]),
                         "tenure": float(df_state.loc[persnr, "tenure"]),
+                        "Organisationseinheit": str(df_state.loc[persnr, "Organisationseinheit"]) if "Organisationseinheit" in df_state.columns else "Unbekannt",
+                        "Kürzel OrgEinheit": str(df_state.loc[persnr, "Kürzel OrgEinheit"]) if "Kürzel OrgEinheit" in df_state.columns else "Unbekannt",
+                        "Jobfamily": str(df_state.loc[persnr, "Jobfamily"]) if "Jobfamily" in df_state.columns else "Unbekannt",
+                        "TrfGr": str(df_state.loc[persnr, "TrfGr"]) if "TrfGr" in df_state.columns else "Unbekannt",
+                        "St": str(df_state.loc[persnr, "St"]) if "St" in df_state.columns else "Unbekannt",
                     })
 
             for persnr in atz_end:
@@ -492,7 +644,7 @@ def run_forecast_abgaenge(
                     mak_change = -float(df_state.loc[persnr, "mak"])
                     df_state.loc[persnr, "mak"] = 0.0
                     df_state.loc[persnr, "active"] = False
-                    period_deactivated.add(persnr)  # P02: Track ATZ exit
+                    period_deactivated.add(persnr)
                     events.append({
                         "period_label": period.label,
                         "period_start": period.start,
@@ -505,18 +657,17 @@ def run_forecast_abgaenge(
                         "mak_change": mak_change,
                         "age": float(df_state.loc[persnr, "age"]),
                         "tenure": float(df_state.loc[persnr, "tenure"]),
-                        # Add Metadata for subsequent processing (e.g. Zugänge Forecast)
                         "Organisationseinheit": str(df_state.loc[persnr, "Organisationseinheit"]) if "Organisationseinheit" in df_state.columns else "Unbekannt",
+                        "Kürzel OrgEinheit": str(df_state.loc[persnr, "Kürzel OrgEinheit"]) if "Kürzel OrgEinheit" in df_state.columns else "Unbekannt",
                         "Jobfamily": str(df_state.loc[persnr, "Jobfamily"]) if "Jobfamily" in df_state.columns else "Unbekannt",
                         "TrfGr": str(df_state.loc[persnr, "TrfGr"]) if "TrfGr" in df_state.columns else "Unbekannt",
                         "St": str(df_state.loc[persnr, "St"]) if "St" in df_state.columns else "Unbekannt",
                     })
 
-        # Retirement events (non-ATZ only)
+        # Retirement events
         if params.get("components", {}).get("retirement", True):
             eligible = df_state[(df_state["active"]) & (~df_state["in_atz"])].copy()
             if not eligible.empty:
-                # P02: Exclude already-exited in this period
                 eligible = eligible[~eligible.index.isin(period_deactivated)]
             if not eligible.empty:
                 ages = eligible["age"]
@@ -530,7 +681,7 @@ def run_forecast_abgaenge(
                     mak_change = -float(df_state.loc[persnr, "mak"])
                     df_state.loc[persnr, "mak"] = 0.0
                     df_state.loc[persnr, "active"] = False
-                    period_deactivated.add(persnr)  # P02: Track retirement exit
+                    period_deactivated.add(persnr)
                     events.append({
                         "period_label": period.label,
                         "period_start": period.start,
@@ -544,16 +695,16 @@ def run_forecast_abgaenge(
                         "age": float(df_state.loc[persnr, "age"]),
                         "tenure": float(df_state.loc[persnr, "tenure"]),
                         "Organisationseinheit": str(df_state.loc[persnr, "Organisationseinheit"]) if "Organisationseinheit" in df_state.columns else "Unbekannt",
+                        "Kürzel OrgEinheit": str(df_state.loc[persnr, "Kürzel OrgEinheit"]) if "Kürzel OrgEinheit" in df_state.columns else "Unbekannt",
                         "Jobfamily": str(df_state.loc[persnr, "Jobfamily"]) if "Jobfamily" in df_state.columns else "Unbekannt",
                         "TrfGr": str(df_state.loc[persnr, "TrfGr"]) if "TrfGr" in df_state.columns else "Unbekannt",
                         "St": str(df_state.loc[persnr, "St"]) if "St" in df_state.columns else "Unbekannt",
                     })
 
-        # Quit events (non-ATZ only)
+        # Quit events
         if params.get("components", {}).get("quit", True):
             eligible = df_state[(df_state["active"]) & (~df_state["in_atz"])].copy()
             if not eligible.empty:
-                # P02: Exclude already-exited in this period
                 eligible = eligible[~eligible.index.isin(period_deactivated)]
             if not eligible.empty:
                 probs = []
@@ -582,6 +733,7 @@ def run_forecast_abgaenge(
                             "age": float(df_state.loc[persnr, "age"]),
                             "tenure": float(df_state.loc[persnr, "tenure"]),
                             "Organisationseinheit": str(df_state.loc[persnr, "Organisationseinheit"]) if "Organisationseinheit" in df_state.columns else "Unbekannt",
+                            "Kürzel OrgEinheit": str(df_state.loc[persnr, "Kürzel OrgEinheit"]) if "Kürzel OrgEinheit" in df_state.columns else "Unbekannt",
                             "Jobfamily": str(df_state.loc[persnr, "Jobfamily"]) if "Jobfamily" in df_state.columns else "Unbekannt",
                             "TrfGr": str(df_state.loc[persnr, "TrfGr"]) if "TrfGr" in df_state.columns else "Unbekannt",
                             "St": str(df_state.loc[persnr, "St"]) if "St" in df_state.columns else "Unbekannt",
@@ -600,7 +752,6 @@ def run_forecast_abgaenge(
 
                     for persnr in return_ids:
                         df_state.loc[persnr, "status_ruhend"] = False
-                        # P01: Restore original MAK instead of recalculating
                         df_state.loc[persnr, "mak"] = float(df_state.loc[persnr, "mak_before_ruhend"])
                         df_state.loc[persnr, "ruhend_until"] = pd.NaT
                         events.append({
@@ -615,6 +766,11 @@ def run_forecast_abgaenge(
                             "mak_change": float(df_state.loc[persnr, "mak"]),
                             "age": float(df_state.loc[persnr, "age"]),
                             "tenure": float(df_state.loc[persnr, "tenure"]),
+                        "Organisationseinheit": str(df_state.loc[persnr, "Organisationseinheit"]) if "Organisationseinheit" in df_state.columns else "Unbekannt",
+                        "Kürzel OrgEinheit": str(df_state.loc[persnr, "Kürzel OrgEinheit"]) if "Kürzel OrgEinheit" in df_state.columns else "Unbekannt",
+                        "Jobfamily": str(df_state.loc[persnr, "Jobfamily"]) if "Jobfamily" in df_state.columns else "Unbekannt",
+                        "TrfGr": str(df_state.loc[persnr, "TrfGr"]) if "TrfGr" in df_state.columns else "Unbekannt",
+                        "St": str(df_state.loc[persnr, "St"]) if "St" in df_state.columns else "Unbekannt",
                         })
 
         # Ruhend new cases
@@ -627,7 +783,7 @@ def run_forecast_abgaenge(
                     if not eligible.empty:
                         chosen = eligible.sample(n=min(count, len(eligible)), random_state=rng).index.tolist()
                         for persnr in chosen:
-                            df_state.loc[persnr, "mak_before_ruhend"] = df_state.loc[persnr, "mak"]  # P01: Save before zeroing
+                            df_state.loc[persnr, "mak_before_ruhend"] = df_state.loc[persnr, "mak"]
                             mak_change = -float(df_state.loc[persnr, "mak"])
                             df_state.loc[persnr, "status_ruhend"] = True
                             df_state.loc[persnr, "mak"] = 0.0
@@ -644,39 +800,29 @@ def run_forecast_abgaenge(
                                 "mak_change": mak_change,
                                 "age": float(df_state.loc[persnr, "age"]),
                                 "tenure": float(df_state.loc[persnr, "tenure"]),
+                                "Organisationseinheit": str(df_state.loc[persnr, "Organisationseinheit"]) if "Organisationseinheit" in df_state.columns else "Unbekannt",
+                                "Kürzel OrgEinheit": str(df_state.loc[persnr, "Kürzel OrgEinheit"]) if "Kürzel OrgEinheit" in df_state.columns else "Unbekannt",
+                                "Jobfamily": str(df_state.loc[persnr, "Jobfamily"]) if "Jobfamily" in df_state.columns else "Unbekannt",
+                                "TrfGr": str(df_state.loc[persnr, "TrfGr"]) if "TrfGr" in df_state.columns else "Unbekannt",
+                                "St": str(df_state.loc[persnr, "St"]) if "St" in df_state.columns else "Unbekannt",
                             })
-
-        headcount_end = int(df_state["active"].sum())
-        mak_end = float(df_state.loc[df_state["active"], "mak"].sum())
-
-        period_events = [e for e in events if e["period_label"] == period.label]
-        exit_count = sum(1 for e in period_events if e["headcount_change"] < 0)
-        mak_loss_gross = sum(-e["mak_change"] for e in period_events if e["mak_change"] < 0)
-        abgaenge_total = sum(1 for e in period_events if e["headcount_change"] < 0 or e["mak_change"] < 0)
-
-        avg_headcount = (headcount_start + headcount_end) / 2 if (headcount_start + headcount_end) > 0 else 0
-        abgangsquote = (exit_count / avg_headcount) if avg_headcount > 0 else 0.0
-
-        kpis.append({
-            "period_label": period.label,
-            "period_start": period.start,
-            "period_end": period.end,
-            "headcount_start": headcount_start,
-            "headcount_end": headcount_end,
-            "headcount_delta": headcount_end - headcount_start,
-            "mak_start": mak_start,
-            "mak_end": mak_end,
-            "mak_delta": mak_end - mak_start,
-            "abgaenge_total": abgaenge_total,
-            "exit_count": exit_count,
-            "mak_loss_gross": mak_loss_gross,
-            "abgangsquote": abgangsquote,
-        })
-
-    forecast_kpis = pd.DataFrame(kpis)
+        
+        # KPI Capture MOVED to aggregate_forecast_results
+        
     events_df = pd.DataFrame(events)
 
+    # Calculate Aggregations for the GLOBAL result immediately
+    forecast_kpis = aggregate_forecast_results(
+        df_initial=df_ma, 
+        events_df=events_df, 
+        start_date=start_date, 
+        end_date=end_date, 
+        freq=freq,
+        params=params
+    )
+    
     tables = {
+        "atz_pivot": atz_pivot,
         "atz": events_df[events_df["reason_code"].isin([REASON_ATZ_AR_TO_FR, REASON_ATZ_END])] if not events_df.empty else pd.DataFrame(),
         "retirement": events_df[events_df["reason_code"] == REASON_RETIREMENT] if not events_df.empty else pd.DataFrame(),
         "quit": events_df[events_df["reason_code"] == REASON_QUIT] if not events_df.empty else pd.DataFrame(),

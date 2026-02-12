@@ -61,6 +61,20 @@ ID_PAD_LENGTH = 6
 
 def normalize_persnr(series: pd.Series) -> pd.Series:
     """P05: Central PersNr normalization – zero-padded 6-digit string."""
-    return series.apply(
-        lambda x: str(int(x)).zfill(ID_PAD_LENGTH) if pd.notna(x) else pd.NA
-    )
+    def _safe_convert(x):
+        if pd.isna(x):
+            return pd.NA
+        try:
+            s = str(x).strip().lower()
+            if s in ["nan", "none", "", "nat"]:
+                return pd.NA
+            
+            # Handle float strings like "3223.0"
+            f = float(x)
+            i = int(f)
+            return str(i).zfill(ID_PAD_LENGTH)
+        except (ValueError, TypeError):
+            # Fallback for non-numeric strings
+            return str(x).strip().zfill(ID_PAD_LENGTH)
+
+    return series.apply(_safe_convert)
