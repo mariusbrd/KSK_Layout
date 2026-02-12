@@ -214,6 +214,24 @@ def _simulate_hires(
     strategy = hire_params.get("strategy", "Fill Vacancies")
     target_unit = hire_params.get("target_org_unit", None)
     
+    # Matrix Distribution Logic
+    dist_list = hire_params.get("distribution", [])
+
+    dist_choices = []
+    dist_weights = []
+    
+    if dist_list:
+        for d in dist_list:
+            dist_choices.append(d)
+            dist_weights.append(float(d.get("Share %", 0.0)))
+        
+        # Normalize weights
+        total_w = sum(dist_weights)
+        if total_w > 0:
+            dist_weights = [w / total_w for w in dist_weights]
+        else:
+            dist_list = [] # Invalid distribution
+    
     period_days = (period.end - period.start).days
     num_cases = _annual_to_period_count(count_annual, period_days, rng)
     
@@ -221,30 +239,56 @@ def _simulate_hires(
         new_id = f"NH_{rng.randint(10000, 99999)}"
         entry_date = period.start + pd.Timedelta(days=rng.randint(0, period_days))
         
-        # Determine OrgUnit & Planstelle
+        # Determine Attributes
         org_unit = "Unbekannt"
         plan_stelle = "Nachbesetzung" # Default
+        jf = "Angestellte"
+        oe_c = "Unclustered"
+        
+        is_replacement = False
         
         if strategy == "Fill Vacancies" and vacancies:
             # Find a matching vacancy (e.g. earliest date)
             valid_vacancies = [v for v in vacancies if v["date"] <= entry_date]
             if valid_vacancies:
                 vacancy = valid_vacancies.pop(0) # Consume
-                vacancies.remove(vacancy) # Remove from main list too
-                org_unit = vacancy["org_unit"]
+                vacancies.remove(vacancy) # Remove from main list
+                
+                org_unit = vacancy.get("org_unit", "Unbekannt")
                 plan_stelle = vacancy.get("planstelle", "Nachbesetzung")
+                
+                # Inherit Attributes from Leaver
+                jf = vacancy.get("Jobfamily", "Angestellte")
+                oe_c = vacancy.get("OE-Cluster", "Unclustered")
+                
+                is_replacement = True
             else:
-                # No vacancy available yet? Fallback to random
+                # No vacancy available yet? Fallback to random/matrix
                 org_unit = _get_random_org_unit(all_org_units, rng)
-                plan_stelle = org_unit # Fallback
+                plan_stelle = org_unit 
         else:
             org_unit = _resolve_org_unit(strategy, target_unit, all_org_units, [], rng)
-            plan_stelle = org_unit # Fallback
+            plan_stelle = org_unit 
+
+        # If NOT a replacement (or replacement lacked info? No, we stick to leaver info if available),
+        # Apply Matrix Distribution for JF/Cluster
+        if not is_replacement:
+            if dist_list:
+                # Sample from Matrix
+                idx = rng.choice(len(dist_choices), p=dist_weights)
+                choice = dist_choices[idx]
+                
+                jf = choice.get("Jobfamily", "Angestellte")
+                oe_c = choice.get("OE-Cluster", "Unclustered")
+            else:
+                # Fallback if no matrix: Keep defaults ("Angestellte", "Unclustered")
+                pass
 
         new_row = {
             "PersNr": new_id,
             "active": True,
-            "Jobfamily": "Angestellte",
+            "Jobfamily": jf,
+            "OE-Cluster": oe_c, 
             "TrfGr": "E9A", # Default
             "St": 3, # Experienced hire?
             "Organisationseinheit": org_unit,
@@ -266,9 +310,10 @@ def _simulate_hires(
             "mak": 1.0,
             "TrfGr": "E9A",
             "St": 3,
-            "Jobfamily": "Angestellte",
+            "Jobfamily": jf,
+            "OE-Cluster": oe_c, 
             "Planstelle": plan_stelle,
-            "_new_row": new_row
+            "_new_row": new_row # Marker to add to DF later
         })
 
 def run_forecast_zugaenge(

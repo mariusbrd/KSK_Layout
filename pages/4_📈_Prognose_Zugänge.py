@@ -171,7 +171,53 @@ def main():
         if hire_strat == "OrgUnit":
              units = sorted(snapshot_df["Organisationseinheit"].dropna().astype(str).unique())
              hire_target = st.selectbox("Ziel-Einheit (Hire)", units, key="hi_unit")
-             
+
+        # --- New Hire Distribution Matrix ---
+        with st.expander("📊 Verteilung Neueinstellungen (Matrix)", expanded=False):
+            st.caption("Steuern Sie, in welchen Bereichen neue Stellen (ohne Nachbesetzung) entstehen.")
+            
+            # 1. Calculate Default Distribution from Snapshot
+            # Group by JobFamily and OE-Cluster
+            if "Jobfamily" in snapshot_df.columns and "OE-Cluster" in snapshot_df.columns:
+                dist_base = snapshot_df.groupby(["Jobfamily", "OE-Cluster"]).size().reset_index(name="Count")
+                total_n = dist_base["Count"].sum()
+                dist_base["Share %"] = (dist_base["Count"] / total_n).round(4)
+                
+                # Sort by Share desc
+                dist_base = dist_base.sort_values("Share %", ascending=False).reset_index(drop=True)
+                dist_base = dist_base[["Jobfamily", "OE-Cluster", "Share %"]]
+            else:
+                # Fallback if columns missing
+                dist_base = pd.DataFrame([
+                    {"Jobfamily": "Angestellte", "OE-Cluster": "Unclustered", "Share %": 1.0}
+                ])
+
+            # 2. Render Editor
+            edited_dist = st.data_editor(
+                dist_base,
+                column_config={
+                    "Share %": st.column_config.NumberColumn(
+                        "Anteil (0.0 - 1.0)",
+                        min_value=0.0,
+                        max_value=1.0,
+                        step=0.01,
+                        format="%.2f"
+                    )
+                },
+                use_container_width=True,
+                num_rows="dynamic",
+                key="hire_dist_matrix"
+            )
+            
+            # 3. Normalize check (visual feedback)
+            total_share = edited_dist["Share %"].sum()
+            if not (0.99 <= total_share <= 1.01):
+                st.warning(f"⚠️ Summe der Anteile ist {total_share:.2%} (sollte 100% sein). Werte werden bei der Simulation normalisiert.")
+            
+            # Convert to list of dicts for backend
+            hire_distribution = edited_dist.to_dict("records")
+            
+
         submit = st.button("🚀 Prognose berechnen", use_container_width=True)
         
     # Logic: Run calculation OR Load from SessState
@@ -200,7 +246,8 @@ def main():
             "new_hires": {
                 "count_per_year": hire_count,
                 "strategy": hire_strat,
-                "target_org_unit": hire_target
+                "target_org_unit": hire_target,
+                "distribution": hire_distribution # Pass the matrix
             },
             "random_seed": 42
         }
@@ -224,12 +271,38 @@ def main():
                 if hire_strat == "Fill Vacancies":
                     events = abg_res["events_person_level"]
                     exits = events[events["headcount_change"] < 0]
+                    
+                    # Prepare lookup for Leaver Attributes
+                    # Note: events usually only have Date, Type, Count. Attributes need to be looked up.
+                    # We use snapshot_df for lookup of initial attributes.
+                    # Caveat: If person changed attributes during simulation (not supported yet), snapshot is still best proxy.
+                    
+                    # Ensure snapshot has string index for lookup
+                    snap_lookup = snapshot_df.copy()
+                    snap_lookup["pid_str"] = snap_lookup["PersNr"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+                    snap_lookup = snap_lookup.set_index("pid_str")
+                    
                     for _, row in exits.iterrows():
+                        pid = str(row["persnr"]).strip().replace(".0", "")
+                        
+                        # Lookup attributes
+                        leaver_jf = "Angestellte"
+                        leaver_oe_c = "Unclustered"
+                        
+                        if pid in snap_lookup.index:
+                            leaver_data = snap_lookup.loc[pid]
+                            if isinstance(leaver_data, pd.DataFrame): leaver_data = leaver_data.iloc[0] # handle dupes
+                            
+                            leaver_jf = leaver_data.get("Jobfamily", "Angestellte")
+                            leaver_oe_c = leaver_data.get("OE-Cluster", "Unclustered")
+                            
                         vacancies.append({
                             "date": row["event_date"],
                             "org_unit": row.get("Organisationseinheit", "Unbekannt"),
                             "planstelle": row.get("Planstelle", "Unbekannt"),
-                            "persnr": row["persnr"]
+                            "persnr": row["persnr"], # Leaver ID (for debug)
+                            "Jobfamily": leaver_jf,     # <--- ENRICHED
+                            "OE-Cluster": leaver_oe_c   # <--- ENRICHED
                         })
 
             except Exception as e:
@@ -274,23 +347,41 @@ def main():
             # 1. OE-Cluster
             if "OE-Cluster" in snapshot_df.columns:
                 oe_cluster_map = snapshot_unique.set_index("PersNr_str")["OE-Cluster"].to_dict()
-                events_df["OE-Cluster"] = events_df["persnr_str"].map(oe_cluster_map).fillna("Unclustered")
+                mapped_oe = events_df["persnr_str"].map(oe_cluster_map)
+                
+                if "OE-Cluster" in events_df.columns:
+                    # Prefer existing forecast value (e.g. New Hire Matrix), fallback to Snapshot map
+                    # Note: "Unclustered" might be a filled value, so we treat only NaN/None as "missing"
+                    events_df["OE-Cluster"] = events_df["OE-Cluster"].fillna(mapped_oe).fillna("Unclustered")
+                else:
+                    events_df["OE-Cluster"] = mapped_oe.fillna("Unclustered")
                 
                 # FALLBACK: If PersNr mapping failed (New Hires have fake IDs), try map via OrgUnit
+                # Only apply if value is still "Unclustered" or missing
                 org_cluster_map = snapshot_df.set_index("Organisationseinheit")["OE-Cluster"].to_dict()
-                mask_unclustered = events_df["OE-Cluster"] == "Unclustered"
+                mask_unclustered = (events_df["OE-Cluster"] == "Unclustered") | (events_df["OE-Cluster"].isna())
+                
                 if mask_unclustered.any() and "Organisationseinheit" in events_df.columns:
-                    events_df.loc[mask_unclustered, "OE-Cluster"] = events_df.loc[mask_unclustered, "Organisationseinheit"].map(org_cluster_map).fillna("Unclustered")
+                    # Apply Map
+                    fill_vals = events_df.loc[mask_unclustered, "Organisationseinheit"].map(org_cluster_map)
+                    # Update only where unclustered
+                    events_df.loc[mask_unclustered, "OE-Cluster"] = fill_vals.fillna("Unclustered")
             else:
-                events_df["OE-Cluster"] = "Unclustered"
+                if "OE-Cluster" not in events_df.columns:
+                    events_df["OE-Cluster"] = "Unclustered"
 
             # 2. JF-Cluster
             if "JF-Cluster" in snapshot_df.columns:
                 jf_cluster_map = snapshot_unique.set_index("PersNr_str")["JF-Cluster"].to_dict()
-                events_df["JF-Cluster"] = events_df["persnr_str"].map(jf_cluster_map).fillna("Unclustered")
+                mapped_jf = events_df["persnr_str"].map(jf_cluster_map)
+                
+                if "JF-Cluster" in events_df.columns:
+                    events_df["JF-Cluster"] = events_df["JF-Cluster"].fillna(mapped_jf).fillna("Unclustered")
+                else:
+                    events_df["JF-Cluster"] = mapped_jf.fillna("Unclustered")
                 
                 # FALLBACK for New Hires: via (OrgUnit, Planstelle) or Planstelle
-                mask_unclustered_jf = events_df["JF-Cluster"] == "Unclustered"
+                mask_unclustered_jf = (events_df["JF-Cluster"] == "Unclustered") | (events_df["JF-Cluster"].isna())
                 if mask_unclustered_jf.any():
                     from dataloader.cluster_manager import load_cluster_mappings
                     _, jf_map = load_cluster_mappings()
@@ -306,6 +397,20 @@ def main():
                                  events_df.loc[mask_unclustered_jf, "JF-Cluster"] = [jf_map.get(k, "Unclustered") for k in keys]
                         elif "Planstelle" in events_df.columns:
                              events_df.loc[mask_unclustered_jf, "JF-Cluster"] = events_df.loc[mask_unclustered_jf, "Planstelle"].map(jf_map).fillna("Unclustered")
+            
+            # NEW: Fallback via Jobfamily (Snapshot Lookup)
+            # If still Unclustered, try to map Jobfamily -> JF-Cluster (using mode/first from Snapshot)
+            if "JF-Cluster" in events_df.columns and "Jobfamily" in events_df.columns:
+                mask_still_unclustered = (events_df["JF-Cluster"] == "Unclustered") | (events_df["JF-Cluster"].isna())
+                
+                if mask_still_unclustered.any():
+                    # Build Map: Jobfamily -> JF-Cluster (drop duplicates on JF to get unique mapping)
+                    # We take the first available mapping. Ideally this is 1:1.
+                    snap_jf_map = snapshot_df.dropna(subset=["Jobfamily", "JF-Cluster"]).drop_duplicates("Jobfamily").set_index("Jobfamily")["JF-Cluster"].to_dict()
+                    
+                    # Apply
+                    fill_vals_jf = events_df.loc[mask_still_unclustered, "Jobfamily"].map(snap_jf_map)
+                    events_df.loc[mask_still_unclustered, "JF-Cluster"] = fill_vals_jf.fillna("Unclustered")
             else:
                 events_df["JF-Cluster"] = "Unclustered"
 
@@ -332,29 +437,30 @@ def main():
             # --- Attribute Filtering (OrgUnit, JF, Clusters) ---
             # These attributes exist on generated events, so we can filter directly.
             
+            # --- Attribute Filtering (OrgUnit, JF, Clusters) ---
+            # These attributes exist on generated events, so we can filter directly.
+            
+            # Helper for robust filtering (case-insensitive, strip, handles 123 vs 123.0)
+            def _apply_robust_filter(df, column, selected):
+                if not selected or column not in df.columns:
+                    return df
+                # Normalize data strings
+                s_norm = df[column].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+                # Normalize filter strings
+                vals_norm = [str(v).strip().replace(".0", "") for v in selected]
+                return df[s_norm.isin(vals_norm)]
+
             # Org Unit
-            selected_orgs = st.session_state.get("selected_org_units", [])
-            if selected_orgs:
-                if "Organisationseinheit" in events_view.columns:
-                    events_view = events_view[events_view["Organisationseinheit"].isin(selected_orgs)]
+            events_view = _apply_robust_filter(events_view, "Organisationseinheit", st.session_state.get("selected_org_units", []))
             
             # Job Family
-            selected_jf = st.session_state.get("selected_jobfamilies", [])
-            if selected_jf:
-                if "Jobfamily" in events_view.columns:
-                    events_view = events_view[events_view["Jobfamily"].isin(selected_jf)]
+            events_view = _apply_robust_filter(events_view, "Jobfamily", st.session_state.get("selected_jobfamilies", []))
 
-            # OE-Cluster (NEW)
-            selected_oe_c = st.session_state.get("selected_oe_cluster", [])
-            if selected_oe_c:
-                if "OE-Cluster" in events_view.columns:
-                    events_view = events_view[events_view["OE-Cluster"].isin(selected_oe_c)]
+            # OE-Cluster (Sync with sidebar plural key)
+            events_view = _apply_robust_filter(events_view, "OE-Cluster", st.session_state.get("selected_oe_clusters", []))
                     
-            # JF-Cluster (NEW)
-            selected_jf_c = st.session_state.get("selected_jf_cluster", [])
-            if selected_jf_c:
-                if "JF-Cluster" in events_view.columns:
-                    events_view = events_view[events_view["JF-Cluster"].isin(selected_jf_c)]
+            # JF-Cluster (Sync with sidebar plural key)
+            events_view = _apply_robust_filter(events_view, "JF-Cluster", st.session_state.get("selected_jf_clusters", []))
                     
             # --- Demographic Filtering (Gender, etc.) ---
             # Fallback to Snapshot Matching for attributes NOT in events
@@ -551,11 +657,14 @@ def main():
                 
                 if is_clustering_active():
                     if "OE-Cluster" in events_pos.columns:
-                        # Get full set of clusters from FILTERED data for Zoom effect
-                        all_clusters = sorted(df_filtered_rows["OE-Cluster"].unique().tolist())
-                        # Add Unclustered if present in data
-                        if "Unclustered" in events_pos["OE-Cluster"].unique() and "Unclustered" not in all_clusters:
-                            all_clusters.append("Unclustered")
+                        # Get full set of clusters for Zoom effect AND New Hires (Union of Snapshot + Events)
+                        # Fix: Ensure categories present in Events (e.g. Matrix assigned) are shown even if not in Snapshot
+                        snap_clusters = df_filtered_rows["OE-Cluster"].unique().tolist() if "OE-Cluster" in df_filtered_rows.columns else []
+                        evt_clusters = events_pos["OE-Cluster"].unique().tolist()
+                        all_clusters = sorted(list(set(snap_clusters + evt_clusters)))
+                        
+                        # Remove NaNs or empty strings if any
+                        all_clusters = [c for c in all_clusters if pd.notna(c) and str(c).strip() != ""]
                         
                         # Chart 1: Kopfzugänge
                         st.markdown("#### 👤 Zugänge nach Personen (OE)")
@@ -609,10 +718,12 @@ def main():
                     # Section 4: Cluster-Struktur (JF)
                     st.markdown("### 🧩 Zugänge nach Job-Family-Clustern")
                     if "JF-Cluster" in events_pos.columns:
-                        all_jf_clusters = sorted(df_filtered_rows["JF-Cluster"].unique().tolist())
-                        if "Unclustered" in events_pos["JF-Cluster"].unique() and "Unclustered" not in all_jf_clusters:
-                             all_jf_clusters.append("Unclustered")
+                        snap_jf = df_filtered_rows["JF-Cluster"].unique().tolist() if "JF-Cluster" in df_filtered_rows.columns else []
+                        evt_jf = events_pos["JF-Cluster"].unique().tolist()
+                        all_jf_clusters = sorted(list(set(snap_jf + evt_jf)))
                         
+                        all_jf_clusters = [c for c in all_jf_clusters if pd.notna(c) and str(c).strip() != ""]
+
                         # Chart 1: Kopfzugänge JF
                         st.markdown("#### 👤 Zugänge nach Personen (JF)")
                         c_stats_h_jf = events_pos.groupby("JF-Cluster").size().reindex(all_jf_clusters, fill_value=0).reset_index(name="Zugänge")
