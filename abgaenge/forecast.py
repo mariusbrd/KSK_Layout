@@ -440,10 +440,13 @@ def aggregate_forecast_results(
                      df_state.loc[p_id, "active"] = False
                      exit_count += 1
                      abgaenge_total_count += 1
+                elif event["headcount_change"] > 0:
+                     # Re-activation (e.g. Return from long term leave if treated as departure previously)
+                     df_state.loc[p_id, "active"] = True
                 
                 # Apply MAK change (delta)
                 # Ensure we handle float correctly
-                delta_mak = float(event["mak_change"])
+                delta_mak = float(event.get("mak_change", 0.0))
                 current_mak = float(df_state.loc[p_id, "mak"])
                 new_mak = max(0.0, current_mak + delta_mak)
                 df_state.loc[p_id, "mak"] = new_mak
@@ -456,10 +459,31 @@ def aggregate_forecast_results(
                          abgaenge_total_count += 1
                          
                 # Handle Ruhend Return (Status update)
-                if event["reason_code"] == REASON_RUHEND_RETURN:
+                if event.get("reason_code") == REASON_RUHEND_RETURN:
                      df_state.loc[p_id, "status_ruhend"] = False
-                elif event["reason_code"] == REASON_RUHEND_START:
+                elif event.get("reason_code") == REASON_RUHEND_START:
                      df_state.loc[p_id, "status_ruhend"] = True
+
+            else:
+                # Handle New Entries (New Hires, Trainees) not in initial state
+                if event["headcount_change"] > 0:
+                     # ADD NEW PERSON TO STATE
+                     # We use .loc to add/update. 
+                     # Warning: Adding rows via .loc in loop can be slow for massive data, 
+                     # but here we deal with aggregated event logs (usually < 1000s).
+                     
+                     # Initialize with defaults
+                     # We don't know all attributes (Cluster etc) here, but we know stats.
+                     delta_mak = float(event.get("mak_change", 0.0))
+                     
+                     # Create a series with matching index/columns if possible, or just set fields
+                     # To avoid "Schema mismatch", we allow NaN for other cols
+                     df_state.loc[p_id, "active"] = True
+                     df_state.loc[p_id, "mak"] = delta_mak
+                     df_state.loc[p_id, "status_ruhend"] = False
+                     
+                     # Check if we should track this as "Departure" (Unlikely for new hire)
+                     pass
 
         # 3. Capture End State
         headcount_end = int(df_state["active"].sum())

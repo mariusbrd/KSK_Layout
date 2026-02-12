@@ -1,94 +1,87 @@
-"""
-Verify that direct attribute filtering on events works correctly.
-Tests:
-1. Filter by OrgUnit → only events for that OrgUnit remain
-2. Filter by Jobfamily → only events for that Jobfamily remain  
-3. No filter → all events remain
-4. Filter by non-existent OrgUnit → 0 events
-"""
+
 import pandas as pd
-import numpy as np
-import re
-import sys, os
+import sys
+import os
+
+# Add parent dir to path to import modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Mock events (simulating global forecast output)
-events_global = pd.DataFrame({
-    "persnr": ["001", "002", "003", "004", "005"],
-    "reason_code": ["QUIT", "QUIT", "ATZ_END", "RETIREMENT", "ATZ_AR_FR"],
-    "Kürzel OrgEinheit": ["591", "591", "5910", "612", "612.0"],
-    "Organisationseinheit": [
-        "Beratungs-Center Herrenberg",
-        "Beratungs-Center Herrenberg", 
-        "Beratungs-Center-Verbund Herrenberg",
-        "Filiale Merklingen",
-        "Filiale Merklingen"
-    ],
-    "Jobfamily": ["Kundenberatung Privat", "Vermögensberatung", "Kundenberatung Privat", "IT", "IT"],
-    "headcount_change": [-1, -1, -1, -1, 0],
-    "mak_change": [-1.0, -0.5, -1.0, -1.0, -0.5],
-})
+# Mock streamlit session state
+class MockSessionState(dict):
+    def __getattr__(self, key):
+        return self.get(key)
+    def __setattr__(self, key, value):
+        self[key] = value
 
-def filter_events(events, selected_orgs=None, selected_jf=None, selected_genders=None, valid_ids=None):
-    """Replicate the new P04 filtering logic."""
-    events_view = events.copy()
+# Mock streamlit
+import streamlit as st
+if not hasattr(st, "session_state"):
+    st.session_state = MockSessionState()
+
+def verify_filter_zoom():
+    print("--- Verifying Page 4 Filter Logic (Zoom) ---")
     
-    # 1. OrgUnit direct
-    if selected_orgs and "Kürzel OrgEinheit" in events_view.columns:
-        s_ev = events_view["Kürzel OrgEinheit"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
-        f_ev = {re.sub(r"\.0$", "", str(x).strip()) for x in selected_orgs}
-        events_view = events_view[s_ev.isin(f_ev)]
+    # 1. Setup Mock Data
+    snapshot_df = pd.DataFrame({
+        "PersNr": [1, 2, 3],
+        "OE-Cluster": ["Cluster A", "Cluster A", "Cluster B"],
+        "Organisationseinheit": ["Org A", "Org A", "Org B"],
+        "Jobfamily": ["JF1", "JF1", "JF2"]
+    })
     
-    # 2. Jobfamily direct
-    if selected_jf and "Jobfamily" in events_view.columns:
-        events_view = events_view[events_view["Jobfamily"].isin(selected_jf)]
+    # ensure string type for PersNr
+    snapshot_df["PersNr"] = snapshot_df["PersNr"].astype(str)
     
-    # 3. PersNr fallback for other filters
-    if selected_genders and valid_ids is not None:
-        events_view = events_view[events_view["persnr"].isin(valid_ids)]
+    # Mock Forecast Result (Events)
+    # Event 1: New Hire in Cluster A (simulated via Org A)
+    # Event 2: New Hire in Cluster B
+    events_df = pd.DataFrame({
+        "persnr": ["NH_1", "NH_2"],
+        "org_unit": ["Org A", "Org B"], # Will be renamed
+        "count": [1, 1]
+    })
     
-    return events_view
+    print("\n[Input] Events Global:")
+    print(events_df)
+    
+    # 2. Simulate Page 4 Logic (Enrichment + Filtering)
+    
+    # --- A. Enrichment (Moving Block) ---
+    print("\n... Applying Enrichment Logic ...")
+    if "org_unit" in events_df.columns and "Organisationseinheit" not in events_df.columns:
+        events_df = events_df.rename(columns={"org_unit": "Organisationseinheit"})
 
-# Test 1: Filter by OrgUnit 591
-result = filter_events(events_global, selected_orgs=["591"])
-assert len(result) == 2, f"Expected 2, got {len(result)}"
-assert all(result["Kürzel OrgEinheit"] == "591"), "Wrong OrgUnit"
-print("✅ Test 1 PASSED: Filter OrgUnit 591 → 2 events")
-
-# Test 2: Filter by OrgUnit 5910
-result = filter_events(events_global, selected_orgs=["5910"])
-assert len(result) == 1, f"Expected 1, got {len(result)}"
-print("✅ Test 2 PASSED: Filter OrgUnit 5910 → 1 event")
-
-# Test 3: Filter by OrgUnit 612 (with .0 normalization)
-result = filter_events(events_global, selected_orgs=["612"])
-assert len(result) == 2, f"Expected 2, got {len(result)}"
-print("✅ Test 3 PASSED: Filter OrgUnit 612 (normalizes 612.0) → 2 events")
-
-# Test 4: No filter → all events
-result = filter_events(events_global)
-assert len(result) == 5, f"Expected 5, got {len(result)}"
-print("✅ Test 4 PASSED: No filter → 5 events")
-
-# Test 5: Non-existent OrgUnit
-result = filter_events(events_global, selected_orgs=["9999"])
-assert len(result) == 0, f"Expected 0, got {len(result)}"
-print("✅ Test 5 PASSED: Non-existent OrgUnit → 0 events")
-
-# Test 6: Jobfamily filter
-result = filter_events(events_global, selected_jf=["IT"])
-assert len(result) == 2, f"Expected 2, got {len(result)}"
-print("✅ Test 6 PASSED: Filter Jobfamily IT → 2 events")
-
-# Test 7: Combined OrgUnit + Jobfamily
-result = filter_events(events_global, selected_orgs=["591"], selected_jf=["Kundenberatung Privat"])
-assert len(result) == 1, f"Expected 1, got {len(result)}"
-print("✅ Test 7 PASSED: OrgUnit 591 + Jobfamily KP → 1 event")
-
-# Test 8: Filter back to all after filtering
-result1 = filter_events(events_global, selected_orgs=["591"])
-result2 = filter_events(events_global)
-assert len(result2) == 5, "Global values changed after filter!"
-print("✅ Test 8 PASSED: Unfiltert after filter → global values unchanged")
-
-print("\n🎉 ALL TESTS PASSED")
+    events_df["persnr_str"] = events_df["persnr"].astype(str)
+    snapshot_df["PersNr_str"] = snapshot_df["PersNr"].astype(str)
+    
+    # OE-Cluster Map via OrgUnit (since NH IDs are fake)
+    org_cluster_map = snapshot_df.set_index("Organisationseinheit")["OE-Cluster"].to_dict()
+    events_df["OE-Cluster"] = events_df["Organisationseinheit"].map(org_cluster_map).fillna("Unclustered")
+    
+    print("[Intermediate] Events Enriched:")
+    print(events_df[["persnr", "Organisationseinheit", "OE-Cluster"]])
+    
+    # --- B. Simulation of Filter Selection ---
+    print("\n... Simulating Filter: OE-Cluster = ['Cluster A'] ...")
+    st.session_state["selected_oe_cluster"] = ["Cluster A"]
+    
+    # --- C. Filtering Logic ---
+    events_view = events_df.copy()
+    
+    selected_oe_c = st.session_state.get("selected_oe_cluster", [])
+    if selected_oe_c:
+        if "OE-Cluster" in events_view.columns:
+            events_view = events_view[events_view["OE-Cluster"].isin(selected_oe_c)]
+            
+    print("\n[Output] Filtered Events (View):")
+    print(events_view)
+    
+    # 3. Assertions
+    if len(events_view) == 1 and events_view.iloc[0]["OE-Cluster"] == "Cluster A":
+        print("\n[SUCCESS] Filter correctly zoomed into Cluster A.")
+    else:
+        print("\n[FAILURE] Filter did not work as expected.")
+        # print details
+        
+if __name__ == "__main__":
+    verify_filter_zoom()

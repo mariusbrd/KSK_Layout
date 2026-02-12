@@ -399,15 +399,17 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
                 on_select_all=lambda: st.session_state.__setitem__("selected_education", education_options.copy()),
                 on_reset=lambda: st.session_state.__setitem__("selected_education", []),
             )
-
+            
             selected_education = st.multiselect(
-                "Qualifikation auswählen",
+                "Abschluss auswählen",
                 options=education_options,
                 default=edu_selected,
                 key="education_select",
                 label_visibility="collapsed",
             )
             st.session_state["selected_education"] = selected_education
+
+
 
         # ATZ-Status (Expander with smart label + buttons)
         atz_options = ["Kein ATZ", "Arbeitsphase", "Freistellungsphase"]
@@ -437,6 +439,13 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
         if st.button("🔄 Alle Filter zurücksetzen", use_container_width=True):
             reset_filters()
             st.rerun()
+
+        st.divider()
+        # Debug Mode Toggle (Hidden/Advanced)
+        if st.checkbox("🐞 Debug-Modus", value=False, key="debug_mode"):
+            st.session_state["debug_active"] = True
+        else:
+            st.session_state["debug_active"] = False
 
 
 def render_cohort_editor():
@@ -564,6 +573,9 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
         existing_fields = [f for f in person_fields if f in filtered.columns]
         
         # Auf Maske anwenden
+        if "Is_Vacant" not in filtered.columns:
+            filtered["Is_Vacant"] = False
+            
         filtered["Is_Vacant"] = filtered["Is_Vacant"].astype("boolean")
         filtered.loc[exclusion_mask, "Is_Vacant"] = True
         filtered.loc[exclusion_mask, existing_fields] = pd.NA

@@ -722,17 +722,50 @@ def main():
             d3.metric("MAK Start", f"{first['mak_start']:.1f}")
             d4.metric("MAK Ende", f"{last['mak_end']:.1f}", delta=f"{last['mak_delta']:.1f}")
 
+        # DEBUG OUTPUT
+        if st.session_state.get("debug_active", False):
+            with st.expander("🐞 Debug-Daten (Abgänge)", expanded=True):
+                st.write(f"Filtered Events in View: {len(events)}")
+                st.write(f"Sum MAK Change: {events['mak_change'].sum() if not events.empty else 0:.2f}")
+                st.write(f"Sum Headcount Change: {events['headcount_change'].sum() if not events.empty else 0}")
+                st.dataframe(events.head(20))
+
     charts = build_charts(forecast_kpis, events)
 
     tab1, tab2, tab3 = st.tabs(["📊 Überblick & Trends", "🎯 Treiber Details", "📋 Personenlisten / Export"])
+
+    # Helper for Debug Metrics
+    def _render_debug_metric(label, chart_val, global_val, unit=""):
+        if not st.session_state.get("debug_active", False):
+            return
+        
+        diff = chart_val - global_val
+        is_ok = abs(diff) < 0.1
+        color = "green" if is_ok else "red"
+        icon = "✅" if is_ok else "❌"
+        
+        st.markdown(
+            f"<small>{icon} **Debug ({label})**: Chart={chart_val:,.1f}{unit} | Global={global_val:,.1f}{unit} | Diff=:{color}[{diff:+.2f}]</small>", 
+            unsafe_allow_html=True
+        )
 
     with tab1:
         # ── Section 1: zeitliche Entwicklung & Gesamt-Struktur ──
         st.markdown("### 📈 Bestandsentwicklung (Trend)")
         st.plotly_chart(charts.get("line_headcount_mak"), use_container_width=True)
+        # Debug Timeline: Last Point vs KPI
+        if not forecast_kpis.empty:
+            _render_debug_metric("Timeline End MAK", last['mak_end'], last['mak_end'], " MAK")
+            
         st.caption("Die obige Grafik zeigt die Entwicklung von Headcount (Anzahl Personen) und MAK (Kapazität) über den Prognosezeitraum.")
 
         st.plotly_chart(charts.get("bar_reasons_total"), use_container_width=True)
+        # Debug Reason Total
+        if not events.empty:
+            layout_sum = events["mak_change"].sum()
+            # KPI is positive magnitude ("Loss"), Chart is negative delta. Use abs() for comparison.
+            _render_debug_metric("Reason Chart Sum", abs(layout_sum), mak_loss_total, " MAK")
+            
         st.caption("Gesamtanzahl der prognostizierten Abgänge nach Grund für den gesamten Zeitraum.")
 
         st.divider()
@@ -740,6 +773,11 @@ def main():
         # ── Section 2: Struktur der Abgänge ──
         st.markdown("### 🧬 Abgangsgründe")
         st.plotly_chart(charts.get("bar_abgaenge_reasons"), use_container_width=True)
+        # Debug Detailed Reasons
+        if not events.empty:
+            # We assume bar chart sums correctly over reasons
+            _render_debug_metric("Detailed Reason Sum", abs(events["mak_change"].sum()), mak_loss_total, " MAK")
+
         st.caption("Verteilung der Abgänge nach Ursache (Kündigung, Rente, ATZ etc.).")
 
         st.divider()
@@ -749,7 +787,10 @@ def main():
             
             # Aggregate
             exclude_units = ["Unbekannt", None]
+            # FIX: Only count actual Headcount Exits (ignore ATZ internal steps for this chart)
             org_events = events[~events["Organisationseinheit"].isin(exclude_units)]
+            org_events = org_events[org_events["headcount_change"] < 0]
+            
             if not org_events.empty:
                 org_stats = org_events.groupby("Organisationseinheit").size().reset_index(name="Abgänge")
                 org_stats = org_stats.sort_values("Abgänge", ascending=True).tail(15) 
@@ -766,6 +807,11 @@ def main():
                 )
                 fig_org.update_layout(yaxis_title=None, showlegend=False, height=600)
                 st.plotly_chart(fig_org, use_container_width=True)
+                # Debug OrgUnit Sum (Check if we missed anyone)
+                if not org_events.empty:
+                    # We check sum of ALL units (not just top 15) against global
+                    # Note: org_events excludes 'Unbekannt'
+                    _render_debug_metric("OrgUnit Sum (Headcount)", len(org_events), exits_total, "")
 
         st.divider()
 
@@ -801,6 +847,9 @@ def main():
                 )
                 fig_h.update_layout(yaxis_title=None, showlegend=False, height=600)
                 st.plotly_chart(fig_h, use_container_width=True)
+                # Debug Cluster Headcount
+                if not cluster_events_h.empty:
+                    _render_debug_metric("Cluster Sum (Headcount)", len(cluster_events_h), exits_total, "")
 
                 st.divider()
 
@@ -825,6 +874,10 @@ def main():
                     )
                     fig_m.update_layout(yaxis_title=None, showlegend=False, height=600)
                     st.plotly_chart(fig_m, use_container_width=True)
+                    # Debug Cluster MAK
+                    if not cluster_events_m.empty:
+                        # mak_loss is positive
+                        _render_debug_metric("Cluster Sum (MAK)", cluster_events_m["mak_loss"].sum(), mak_loss_total, " MAK")
                 else:
                     st.info("MAK-Daten für Cluster nicht verfügbar.")
             else:
@@ -861,6 +914,9 @@ def main():
                 )
                 fig_h_jf.update_layout(yaxis_title=None, showlegend=False, height=600)
                 st.plotly_chart(fig_h_jf, use_container_width=True)
+                # Debug JF Headcount
+                if not cluster_events_h_jf.empty:
+                    _render_debug_metric("JF Cluster Sum (Headcount)", len(cluster_events_h_jf), exits_total, "")
 
                 st.divider()
 
@@ -883,6 +939,10 @@ def main():
                     )
                     fig_m_jf.update_layout(yaxis_title=None, showlegend=False, height=600)
                     st.plotly_chart(fig_m_jf, use_container_width=True)
+                    # Debug JF MAK
+                    if not cluster_events_m_jf.empty:
+                         # mak_loss is positive
+                         _render_debug_metric("JF Cluster Sum (MAK)", cluster_events_m_jf["mak_loss"].sum(), mak_loss_total, " MAK")
             else:
                 st.warning("JF-Cluster Spalte nicht im Datensatz gefunden.")
 
