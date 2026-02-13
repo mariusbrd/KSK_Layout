@@ -449,6 +449,7 @@ def main():
             azubi_count = az1.number_input("Neue Azubis pro Jahr", 0, 100, params_zug["azubi"].get("new_cases_per_year", 15), key="hy_azu_count")
             retention = az2.slider("Azubi-Übernahme (%)", 0.0, 1.0, params_zug["azubi"]["retention_rate"], 0.05, key="hy_azu_ret")
             duration = az3.number_input("Ausbildungsdauer (Jahre)", 1.0, 5.0, params_zug["azubi"]["duration_years"], 0.5, key="hy_azu_dur")
+            azu_isolated = st.checkbox("Nur Prognose-Azubis (Bestand ignorieren)", value=False, key="hy_azu_iso")
             az_strat = az4.selectbox("Azubi-Verteilung", ["Random", "OrgUnit"], index=0, key="hy_azu_strat")
             
             tr1, tr2, tr3 = st.columns(3)
@@ -495,7 +496,17 @@ def main():
     final_params_abg = build_abgaenge_params_from_ui(ui_state_abg)
     
     final_params_zug = {
-        "azubi": {"active": comp_azubi, "retention_rate": retention, "duration_years": duration, "strategy": az_strat, "target_org_unit": None, "entry_tariff_group": "E 5", "entry_step": 1, "new_cases_per_year": azubi_count},
+        "azubi": {
+            "active": comp_azubi, 
+            "retention_rate": retention, 
+            "duration_years": duration, 
+            "strategy": az_strat, 
+            "target_org_unit": None, 
+            "entry_tariff_group": "E 5", 
+            "entry_step": 1, 
+            "new_cases_per_year": azubi_count,
+            "exclude_baseline_azubis": azu_isolated
+        },
         "trainee": {"active": comp_trainee, "new_cases_per_year": trainee_count, "duration_years": trainee_dur, "salary_group": "E 12", "strategy": tr_strat, "target_org_unit": None},
         "new_hires": {"active": comp_hires, "count_per_year": hire_count, "strategy": hire_strat, "target_org_unit": None, "distribution": hire_distribution},
         "random_seed": 42
@@ -546,7 +557,7 @@ def main():
             zug_res = run_forecast_zugaenge(
                 df_snapshot=df_ma,
                 start_date=pd.Timestamp(ist_stichtag),
-                periods_years=(forecast_end_date.year - ist_stichtag.year) + 1,
+                periods_years=(forecast_end_date.year - ist_stichtag.year),
                 params=final_params_zug,
                 vacancies=vacancies
             )
@@ -621,6 +632,14 @@ def main():
     filt_zug_events = _apply_robust_filter(filt_zug_events, "OE-Cluster", st.session_state.get("selected_oe_clusters", []))
     filt_zug_events = _apply_robust_filter(filt_zug_events, "JF-Cluster", st.session_state.get("selected_jf_clusters", []))
     
+    # --- Scope Filtering (Fix B: Harmonize Zugänge with Netto definition) ---
+    if "date" in filt_zug_events.columns:
+        filt_zug_events["date"] = pd.to_datetime(filt_zug_events["date"])
+        filt_zug_events = filt_zug_events[
+            (filt_zug_events["date"] >= pd.Timestamp(ist_stichtag)) & 
+            (filt_zug_events["date"] <= pd.Timestamp(forecast_end_date))
+        ].copy()
+    
     # --- Robustness Check: Zugänge ---
     zug_cols = ["date", "type", "count", "persnr", "Organisationseinheit", "source", "mak", "Jobfamily", "OE-Cluster", "TrfGr", "St", "Planstelle"]
     if any(c not in filt_zug_events.columns for c in ["count", "source", "mak"]):
@@ -633,7 +652,8 @@ def main():
     if "date" in filt_zug_events.columns:
         filt_zug_events["date"] = pd.to_datetime(filt_zug_events["date"])
 
-    filt_zug_events = filt_zug_events[filt_zug_events["count"] > 0].copy()
+    # Allow non-zero counts (including removals/exits for lifecycle tracking)
+    filt_zug_events = filt_zug_events[filt_zug_events["count"] != 0].copy()
 
 
 
@@ -643,7 +663,16 @@ def main():
     filt_zug_events_std["event_date"] = pd.to_datetime(filt_zug_events_std["date"])
     filt_zug_events_std["mak_change"] = filt_zug_events_std["mak"]
     filt_zug_events_std["headcount_change"] = filt_zug_events_std["count"]
-    filt_zug_events_std["reason_label"] = "Zugang (" + filt_zug_events_std["source"] + ")"
+    # --- Semantic Labels (Fix: Clarity) ---
+    def _map_zug_reason(row):
+        t = str(row.get("type", ""))
+        if t == "Azubi_Hire": return "Azubi Neueinstellung (externer Zugang)"
+        if t == "Azubi_Conversion_Out": return "Azubi-Abschluss (Statuswechsel: Ende Azubi)"
+        if t == "Azubi_Conversion_In": return "Azubi-Abschluss: Übernahme (Umwandlung)"
+        if t == "Azubi_Exit": return "Azubi-Abschluss: Nichtübernahme (Abgang)"
+        return "Zugang (" + str(row.get("source", "unbekannt")) + ")"
+
+    filt_zug_events_std["reason_label"] = filt_zug_events_std.apply(_map_zug_reason, axis=1)
     
     
     combined_events = pd.concat([filt_abg_events, filt_zug_events_std], ignore_index=True)
@@ -718,8 +747,17 @@ def main():
 
     # Management Summary
     if not net_kpis.empty:
-        total_exits = int(filt_abg_events[filt_abg_events["headcount_change"] < 0]["headcount_change"].abs().sum())
-        total_entries = int(filt_zug_events[filt_zug_events["count"] > 0]["count"].sum())
+        # Fix KPI Inflation: Identify real external hires vs. conversions
+        # External Hires: Azubi_Hire, Trainee_Hire, New_Hire...
+        ext_hire_mask = combined_events_in_scope["type"].astype(str).str.contains("Hire", case=False)
+        total_entries = int(combined_events_in_scope[ext_hire_mask & (combined_events_in_scope["headcount_change"] > 0)]["headcount_change"].sum())
+        
+        # Real Departures: Existing leavers + Azubi_Exit
+        # Azubi_Exit is a final departure. Conversion_Out is just a status change.
+        exit_mask = combined_events_in_scope["type"].astype(str).str.contains("Exit", case=False)
+        total_exits = int(combined_events_in_scope[(combined_events_in_scope["headcount_change"] < 0) & (combined_events_in_scope["source"] != "Azubi")]["headcount_change"].abs().sum())
+        total_exits += int(combined_events_in_scope[exit_mask]["headcount_change"].abs().sum())
+        
         net_hc_delta = total_entries - total_exits
         
         last_kpi = net_kpis.iloc[-1]
@@ -792,6 +830,63 @@ def main():
                     _check_sum("Driver Chart Sum vs Total Event Delta", chart_driver_sum, events_delta, "MAK")
                     
                     st.divider()
+                    st.markdown("### 🔭 Treiber-Analyse (Bottom-Up Summe)")
+                    # Calculate summary per driver
+                    driver_stats = []
+                    
+                    # 1. External Zugänge
+                    azu_hire = combined_events_in_scope[combined_events_in_scope["type"] == "Azubi_Hire"]["headcount_change"].sum()
+                    tra_hire = combined_events_in_scope[combined_events_in_scope["type"] == "Trainee_Hire"]["headcount_change"].sum()
+                    new_hire = combined_events_in_scope[combined_events_in_scope["type"] == "New_Hire"]["headcount_change"].sum()
+                    
+                    driver_stats.append({"Bereich": "Zugänge (extern)", "Treiber": "Azubi Neueinstellung (externer Zugang)", "Delta HC": int(azu_hire)})
+                    driver_stats.append({"Bereich": "Zugänge (extern)", "Treiber": "Trainee Neueinstellung", "Delta HC": int(tra_hire)})
+                    driver_stats.append({"Bereich": "Zugänge (extern)", "Treiber": "Basis-Einstellungen / Nachbesetzung", "Delta HC": int(new_hire)})
+                    
+                    # 2. Umwandlungen (Internal Moves)
+                    azu_conv_out = combined_events_in_scope[combined_events_in_scope["type"] == "Azubi_Conversion_Out"]["headcount_change"].sum()
+                    azu_conv_in = combined_events_in_scope[combined_events_in_scope["type"] == "Azubi_Conversion_In"]["headcount_change"].sum()
+                    azu_conv_count = int(combined_events_in_scope[combined_events_in_scope["type"] == "Azubi_Conversion_In"]["headcount_change"].sum())
+                    
+                    driver_stats.append({
+                        "Bereich": "Umwandlungen (Netto 0)", 
+                        "Treiber": "Azubi-Abschluss: Übernahme (Umwandlung)", 
+                        "Delta HC": int(azu_conv_out + azu_conv_in),
+                        "Fallzahl": azu_conv_count
+                    })
+                    
+                    # 3. Abgänge
+                    # Group reasons from abg_res
+                    abg_by_reason = filt_abg_events.groupby("reason_label")["headcount_change"].sum().reset_index()
+                    for _, row in abg_by_reason.iterrows():
+                        driver_stats.append({"Bereich": "Abgänge", "Treiber": row["reason_label"], "Delta HC": int(row["headcount_change"])})
+                    
+                    # Add Azubi Exit to Abgänge
+                    azu_exit = combined_events_in_scope[combined_events_in_scope["type"] == "Azubi_Exit"]["headcount_change"].sum()
+                    if azu_exit != 0:
+                        driver_stats.append({"Bereich": "Abgänge", "Treiber": "Azubi-Abschluss: Nichtübernahme (Abgang)", "Delta HC": int(azu_exit)})
+
+                    df_drivers_audit = pd.DataFrame(driver_stats)
+                    # Reorder to show Fallzahl for conversions
+                    st.table(df_drivers_audit.fillna("-"))
+                    
+                    # Residual Check (Fix B)
+                    sum_drivers = df_drivers_audit["Delta HC"].sum()
+                    total_raw_delta = combined_events_in_scope["headcount_change"].sum()
+                    residual = total_raw_delta - sum_drivers
+                    
+                    if abs(residual) > 0.1:
+                        st.warning(f"⚠️ **Abweichung identifiziert**: Summe der Treiber ({sum_drivers}) != Netto-Delta ({total_raw_delta:.0f}). Differenz: {residual:.0f}")
+                        unmapped = combined_events_in_scope[~combined_events_in_scope["type"].isin(["Azubi_Hire", "Trainee_Hire", "New_Hire", "Azubi_Conversion_Out", "Azubi_Conversion_In", "Azubi_Exit"])]
+                        # Also exclude events already in filt_abg_events (which we mapped by reason)
+                        unmapped = unmapped[~unmapped["persnr"].isin(filt_abg_events["persnr"])]
+                        if not unmapped.empty:
+                            st.write("Nicht kategorisierte Events:")
+                            st.dataframe(unmapped[["event_date", "type", "reason_label", "source", "headcount_change"]], use_container_width=True)
+                    else:
+                        st.success("✅ Treiber-Abstimmung erfolgreich (Residual = 0).")
+
+                    st.divider()
                     st.markdown("#### 🔢 Aggregierte Tabellen (Audit)")
                     
                     c1, c2 = st.columns(2)
@@ -829,8 +924,25 @@ def main():
                     else:
                         st.caption("Keine 'Retirement_ATZ' Events im Scope.")
                     
-                    # Check B: Suspicious OEs (Negative Headcount but Positive MAK)
-                    st.markdown("**Check: Inkonsistente OEs (Kopf < 0, MAK > 0)**")
+                    # Check C: MAK/Kopf-Konsistenz (Fix: MAK/Headcount Divergence)
+                    st.markdown("**Check: MAK/Kopf-Konsistenz (Vorzeichen & Betrag)**")
+                    
+                    # Ensure numeric types for comparison (Fix: TypeError on round)
+                    hc_numeric = pd.to_numeric(combined_events_in_scope["headcount_change"], errors="coerce").fillna(0)
+                    mak_numeric = pd.to_numeric(combined_events_in_scope["mak_change"], errors="coerce").fillna(0)
+                    
+                    mismatch = combined_events_in_scope[
+                        (np.sign(hc_numeric) != np.sign(mak_numeric)) |
+                        (abs(hc_numeric).round(1) != abs(mak_numeric).round(1))
+                    ]
+                    # Filter out non-zero headcount only (ignore MAK-only events if expected, e.g. Rente steps)
+                    mismatch = mismatch[hc_numeric != 0]
+                    
+                    if not mismatch.empty:
+                        st.warning(f"⚠️ {len(mismatch)} Events mit inkonsistenter MAK/Kopf-Änderung gefunden.")
+                        st.dataframe(mismatch[["event_date", "type", "persnr", "headcount_change", "mak_change", "source", "reason_label"]], use_container_width=True)
+                    else:
+                        st.success("✅ Sämtliche Köpfe-Deltas sind konsistent mit MAK-Deltas.")
                     oe_stats = combined_events_in_scope.groupby("Organisationseinheit")[["headcount_change", "mak_change"]].sum()
                     suspicious = oe_stats[
                         (oe_stats["headcount_change"] < 0) & 
@@ -969,14 +1081,188 @@ def main():
                     ]
                     st.dataframe(pd.DataFrame(status_data), use_container_width=True)
                         
-                    chart_z_cluster_sum = z_stats["Zugänge"].sum()
-                    # If z_stats comes from ALL events, comparing to real_entries might differ if negative events exist?
-                    # Zugänge page usually filters for count > 0 for these charts.
-                    # Let's ensure z_stats logic (above) matched this.
-                    # Previous code: z_stats = filt_zug_events.groupby...
-                    # We should filter z_stats to count > 0 too if that's what we want.
-                    # Assuming z_stats is correctly built:
-                    _check_sum("OE-Cluster Summe vs Total Events", chart_z_cluster_sum, len(filt_zug_events), "Events")
+                    if is_clustering_active() and "OE-Cluster" in filt_zug_events.columns:
+                        chart_z_cluster_sum = filt_zug_events.groupby("OE-Cluster").size().sum()
+                        _check_sum("OE-Cluster Summe vs Total Events", chart_z_cluster_sum, len(filt_zug_events), "Events")
+                    
+                    st.divider()
+                    st.markdown("#### 🎓 Azubi-Logik Drill-Down")
+                    # Detailed analysis for Azubis
+                    az_events = filt_zug_events[filt_zug_events["type"].astype(str).str.contains("Azubi", case=False)]
+                    if not az_events.empty:
+                        # Enhanced Audit Table (id: 16)
+                        st.write("📋 **Detaillierte Azubi-Audit-Tabelle (Einzelschicksale)**")
+                        audit_cols = ["persnr", "type", "entry_date", "graduation_date", "is_forecast", "source_pool", "cohort", "headcount_change", "mak_change"]
+                        # Filter cols that exist
+                        actual_cols = [c for c in audit_cols if c in az_events.columns]
+                        
+                        # Apply subtle deduplication for conversion view (Issue C)
+                        # We keep both for raw HC tracking, but for audit view, we can collapse them
+                        collapsed_audit = az_events[actual_cols].copy()
+                        collapsed_audit = collapsed_audit.sort_values(["entry_date", "is_forecast", "persnr"])
+                        
+                        st.dataframe(collapsed_audit, use_container_width=True)
+
+                        # Forecast Cohort Overview (Issue D)
+                        st.write("📊 **Forecast-Azubi Kohorten Übersicht**")
+                        f_hires_df = az_events[(az_events["type"] == "Azubi_Hire") & (az_events["is_forecast"] == True)].copy()
+                        if not f_hires_df.empty:
+                            # Check for grads
+                            grad_events = az_events[az_events["type"].isin(["Azubi_Conversion_In", "Azubi_Exit"]) & (az_events["is_forecast"] == True)]
+                            
+                            cohort_data = []
+                            for _, h_row in f_hires_df.iterrows():
+                                pid = h_row["persnr"]
+                                h_date = h_row["entry_date"]
+                                g_date = h_row["graduation_date"]
+                                
+                                # Check if graduation event exists in scope
+                                has_grad = grad_events[grad_events["persnr"] == pid]
+                                
+                                cohort_data.append({
+                                    "Person ID": pid,
+                                    "Entry Date": h_date,
+                                    "Expected Graduation": g_date,
+                                    "In Scope Hire": True,
+                                    "In Scope Graduation": not has_grad.empty
+                                })
+                            st.dataframe(pd.DataFrame(cohort_data), use_container_width=True)
+                        else:
+                            st.info("Keine Forecast-Azubis in diesem Zeitraum.")
+
+                        # Assertions & Metrics (Issue D)
+                        st.write("⚖️ **Lifecycle-Validierung (Harte Checks & Proof)**")
+                        
+                        f_hires = len(az_events[(az_events["type"] == "Azubi_Hire") & (az_events["is_forecast"] == True)])
+                        f_convs = len(az_events[(az_events["type"] == "Azubi_Conversion_In") & (az_events["is_forecast"] == True)])
+                        f_exits = len(az_events[(az_events["type"] == "Azubi_Exit") & (az_events["is_forecast"] == True)])
+                        f_grads = f_convs + f_exits
+                        
+                        b_hires = len(az_events[(az_events["type"] == "Azubi_Hire") & (az_events["is_forecast"] == False)])
+                        b_convs = len(az_events[(az_events["type"] == "Azubi_Conversion_In") & (az_events["is_forecast"] == False)])
+                        b_exits = len(az_events[(az_events["type"] == "Azubi_Exit") & (az_events["is_forecast"] == False)])
+                        b_grads = b_convs + b_exits
+
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            st.metric("Completions Forecast (completions_forecast_count)", f_grads)
+                            st.metric("Completions Baseline (completions_base_count)", b_grads)
+                        
+                        errors = []
+                        # 1. Assertion: completions_forecast_in_scope == 0 for 2 yrs window / 3 yrs duration (Heuristic check)
+                        duration = params_zug.get("azubi", {}).get("duration_years", 3.0)
+                        start_ts = pd.Timestamp(ist_stichtag)
+                        end_ts = pd.Timestamp(forecast_end_date)
+                        window_years = (end_ts - start_ts).days / 365.25
+                        
+                        if window_years < duration and f_grads > 0:
+                            # Find the problematic ones
+                            prob_ids = az_events[az_events["type"].isin(["Azubi_Conversion_In", "Azubi_Exit"]) & (az_events["is_forecast"] == True)]["persnr"].unique()
+                            errors.append(f"❌ **Assertion Failed**: Forecast-Completions > 0 ({f_grads}) im Zeitfenster {window_years:.1f}J bei Dauer {duration}J! Betroffene IDs: {prob_ids}")
+
+                        # 2. Assertion: unique_persons(grads) <= unique_persons(hires)
+                        unique_grads = az_events[az_events["type"].isin(["Azubi_Conversion_In", "Azubi_Exit"]) & (az_events["is_forecast"] == True)]["persnr"].nunique()
+                        if unique_grads > f_hires:
+                            errors.append(f"❌ **Assertion Failed**: Mehr Absolventen ({unique_grads}) als Neueinstellungen ({f_hires})!")
+
+                        # 3. Assertion: No grad_date < hire_date + duration
+                        if f_grads > 0:
+                            # Re-verify duration logic per ID
+                            for pid in az_events[az_events["is_forecast"] == True]["persnr"].unique():
+                                p_events = az_events[az_events["persnr"] == pid]
+                                h_e = p_events[p_events["type"] == "Azubi_Hire"]
+                                g_e = p_events[p_events["type"].isin(["Azubi_Conversion_In", "Azubi_Exit"])]
+                                if not h_e.empty and not g_e.empty:
+                                    h_date = pd.to_datetime(h_e.iloc[0]["entry_date"])
+                                    act_g_date = pd.to_datetime(g_e.iloc[0]["date"])
+                                    expected_min = h_date + pd.DateOffset(years=int(duration))
+                                    if act_g_date < expected_min:
+                                        errors.append(f"❌ **Assertion Failed**: Abschluss vorzeitig für {pid} ({act_g_date.date()} < {expected_min.date()})")
+
+                        # ID Uniqueness Check
+                        unique_hires_ids = az_events[az_events["type"] == "Azubi_Hire"]["persnr"].nunique()
+                        if unique_hires_ids != f_hires:
+                            errors.append(f"❌ **Fehler**: Hires haben keine eindeutigen IDs ({unique_hires_ids} unique IDs vs {f_hires} Events)!")
+                        
+                        # Status Check per ID (Deduplication check)
+                        ids_with_multi_grad = []
+                        grad_events_only = az_events[az_events["type"].isin(["Azubi_Conversion_In", "Azubi_Exit"])]
+                        grad_counts = grad_events_only.groupby("persnr").size()
+                        multi_grad_ids = grad_counts[grad_counts > 1].index.tolist()
+                        if multi_grad_ids:
+                            errors.append(f"❌ **Fehler**: {len(multi_grad_ids)} Azubis haben mehr als einen Abschluss (z.B. {multi_grad_ids[:3]})!")
+                        
+                        if not errors:
+                            st.success("✅ Sämtliche Lifecycle-Assetions erfolgreich erfüllt.")
+                        else:
+                            for err in errors:
+                                st.error(err)
+                        
+                        st.divider()
+                        st.write("📊 **Azubi Lebenszyklus-Analyse (Bestand vs. Prognose)**")
+                        # Use a copy to avoid SettingWithCopyWarning
+                        az_analysis = az_events.copy()
+                        # Pivot by Year and IsForecast
+                        az_analysis['Year'] = pd.to_datetime(az_analysis['date']).dt.year
+                        az_analysis['Herkunft'] = az_analysis['is_forecast'].map({True: "Prognose", False: "Bestand"}).fillna("Bestand")
+                        pivot_lifecycle = az_analysis.pivot_table(
+                            index="Year",
+                            columns=["Herkunft", "type"],
+                            values="count",
+                            aggfunc="sum",
+                            fill_value=0
+                        )
+                        st.dataframe(pivot_lifecycle, use_container_width=True)
+
+                        st.info("ℹ️ **Azubi_Hire**: Azubi Neueinstellung (externer Zugang).\n\n**Azubi_Conversion_In/Out**: Azubi-Abschluss: Übernahme (Umwandlung) (Netto 0 HC).\n\n**Azubi_Exit**: Azubi-Abschluss: Nichtübernahme (Abgang).")
+                    else:
+                        st.write("Keine Azubi-Events im Scope.")
+
+                    # Out-of-Scope Azubis (Fix D)
+                    raw_zug = st.session_state.get("hybrid_zug_res", {}).get("events", pd.DataFrame())
+                    if not raw_zug.empty:
+                        raw_az = raw_zug[raw_zug["type"].astype(str).str.contains("Azubi", case=False)]
+                        if not raw_az.empty:
+                            st_date = pd.Timestamp(ist_stichtag)
+                            en_date = pd.Timestamp(forecast_end_date)
+                            out_az = raw_az[(raw_az["date"] < st_date) | (raw_az["date"] > en_date)]
+                            if not out_az.empty:
+                                st.warning(f"⚠️ **{len(out_az)} Azubi-Events liegen außerhalb des Zeitfensters**")
+                                out_az_annual = out_az.groupby([out_az['date'].dt.year, 'type']).size().reset_index(name='Out-of-Scope Count')
+                                st.table(out_az_annual)
+
+                    # Scope Analysis (Filterverlust)
+                    st.divider()
+                    st.markdown("#### 🔭 Scope-Analyse & Filterverlust")
+                    raw_zug = st.session_state.get("hybrid_zug_res", {}).get("events", pd.DataFrame())
+                    if not raw_zug.empty:
+                        total_raw = len(raw_zug)
+                        in_scope = len(filt_zug_events)
+                        loss = total_raw - in_scope
+                        
+                        col1, col2, col3 = st.columns(3)
+                        col1.metric("Total Events", total_raw)
+                        col2.metric("In Scope", in_scope)
+                        col3.metric("Filterverlust", loss)
+                        
+                        if loss > 0:
+                            # Identify the filtered events
+                            # We assume filtering was by date and attributes
+                            # Let's show events that are outside the date range specifically
+                            st_date = pd.Timestamp(ist_stichtag)
+                            en_date = pd.Timestamp(forecast_end_date)
+                            
+                            date_filter_loss = raw_zug[(raw_zug["date"] < st_date) | (raw_zug["date"] > en_date)]
+                            if not date_filter_loss.empty:
+                                st.write(f"⚠️ **{len(date_filter_loss)} Events liegen außerhalb des Zeitraums** ({st_date.strftime('%Y-%m-%d')} bis {en_date.strftime('%Y-%m-%d')}):")
+                                # Summary of loss by type
+                                loss_summary = date_filter_loss.groupby(['type', date_filter_loss['date'].dt.year]).size().reset_index(name='Count')
+                                st.dataframe(loss_summary, use_container_width=True)
+                                
+                                if st.checkbox("Details zu Filterverlust anzeigen"):
+                                    st.dataframe(date_filter_loss[["date", "type", "source", "persnr"]], use_container_width=True)
+                        else:
+                            st.success("Alle generierten Events liegen innerhalb des gewählten Zeitraums.")
                 
                     st.divider()
                     st.markdown("#### 🔢 Aggregierte Tabellen (Audit)")

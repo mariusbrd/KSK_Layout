@@ -17,9 +17,15 @@ class PeriodInfo:
     end: pd.Timestamp
     label: str
 
-def _annual_to_period_count(annual_count: float, period_days: float, rng: np.random.RandomState) -> int:
-    expected = annual_count * (period_days / 365.25)
-    return int(rng.poisson(lam=expected)) if expected > 0 else 0
+def _annual_to_period_count(annual_count: float, period_days: float, rng: np.random.RandomState, debt: float = 0.0) -> (int, float):
+    """
+    Returns (num_cases, new_debt).
+    Uses a deterministic-preferred rounding to hit target annual counts.
+    """
+    expected = annual_count * (period_days / 365.25) + debt
+    count = int(expected)
+    new_debt = expected - count
+    return count, new_debt
 
 def _get_random_org_unit(all_org_units: List[str], rng: np.random.RandomState) -> str:
     if not all_org_units:
@@ -69,7 +75,8 @@ def _simulate_azubis(
     period: PeriodInfo,
     rng: np.random.RandomState,
     events: List[Dict[str, Any]],
-    all_org_units: List[str]
+    all_org_units: List[str],
+    debts: Dict[str, float] = None
 ):
     """
     Handle takeover of existing Azubis.
@@ -109,18 +116,55 @@ def _simulate_azubis(
         (df_state["Jobfamily"] == "Azubi")
     ]
 
+    # Support for Isolated Forecast (id: 16)
+    exclude_baseline = params.get("azubi", {}).get("exclude_baseline_azubis", False)
+
     for persnr, row in current_azubis.iterrows():
-        # Calculate graduation date
+        is_f = row.get("is_forecast", False)
+        is_forecast = False if pd.isna(is_f) else bool(is_f)
+        
+        # Isolation: If requested, ignore baseline Azubis
+        if exclude_baseline and not is_forecast:
+            continue
+
+        # Calculate graduation date: Use stored one if available (forecast), otherwise calculate (baseline)
         eintritt = pd.to_datetime(row.get("Eintritt", pd.NaT))
-        if pd.isna(eintritt):
-            continue # Can't determine graduation
-            
-        graduation_date = eintritt + pd.DateOffset(years=int(duration_years)) + pd.DateOffset(months=int((duration_years % 1) * 12))
+        graduation_date = row.get("GraduationDate", pd.NaT)
+        if pd.isna(graduation_date) and pd.notna(eintritt):
+            graduation_date = eintritt + pd.DateOffset(years=int(duration_years)) + pd.DateOffset(months=int((duration_years % 1) * 12))
+        
+        if pd.isna(graduation_date):
+            continue # Still can't determine graduation
         
         # Check if graduation is in this period
         if period.start <= graduation_date <= period.end:
             # Decisions: Retain?
-            if rng.random() < retention_rate:
+            # Check if destiny is already fixed (for NEW hires)
+            fixed_destiny = row.get("GraduationModus", None)
+            
+            if pd.notna(fixed_destiny):
+                should_retain = (fixed_destiny == "Takeover")
+            else:
+                # Baseline Azubi -> Deterministic roll
+                success_chance = retention_rate
+                if debts is not None:
+                    expected_success = success_chance + debts.get("takeover", 0.0)
+                    takeover_count = int(expected_success)
+                    debts["takeover"] = expected_success - takeover_count
+                    should_retain = takeover_count >= 1
+                else:
+                    should_retain = rng.random() < success_chance
+
+            # Common event fields for audit (id: 16)
+            audit_fields = {
+                "entry_date": eintritt,
+                "graduation_date": graduation_date,
+                "is_forecast": is_forecast,
+                "source_pool": "Forecast" if is_forecast else "Baseline",
+                "cohort": eintritt.year if pd.notna(eintritt) else "Unknown"
+            }
+
+            if should_retain:
                 # Retained
                 new_unit = _resolve_org_unit(strategy, target_unit, all_org_units, [], rng, valid_units)
                 new_cluster = unit_to_cluster.get(new_unit, "Unclustered")
@@ -135,33 +179,55 @@ def _simulate_azubis(
                 df_state.loc[persnr, "TrfGr"] = entry_tariff
                 df_state.loc[persnr, "St"] = entry_step
                 
+                # Modeled as Category Shift (Fix id: 13)
+                # 1. Azubi Graduation (Removal) - Part of Conversion
+                # Ensure MAK is strictly positive (Fix: FTE Consistency)
+                azu_fte = float(row.get("mak", 1.0))
+                if azu_fte <= 0: azu_fte = 1.0
                 events.append({
                     "date": graduation_date,
-                    "type": "Azubi_Takeover",
-                    "count": 0, # Neutral Headcount Change (Statustausch)
+                    "type": "Azubi_Conversion_Out",
+                    "count": -1,
+                    "persnr": persnr,
+                    "org_unit": row.get("Organisationseinheit"),
+                    "source": "Azubi",
+                    "mak": -azu_fte,
+                    "OE-Cluster": row.get("OE-Cluster", "Unclustered"),
+                    "comment": "Statuswechsel: Azubi Ende",
+                    **audit_fields
+                })
+                # 2. Regular Entry (Addition) - Part of Conversion
+                events.append({
+                    "date": graduation_date,
+                    "type": "Azubi_Conversion_In",
+                    "count": 1,
                     "persnr": persnr,
                     "org_unit": new_unit,
-                    "source": "Azubi",
-                    "mak": 0, # Neutral MAK Change (Assuming Azubi had 1.0 MAK before)
+                    "source": "Regular",
+                    "mak": azu_fte,
                     "TrfGr": entry_tariff,
                     "St": entry_step,
                     "Jobfamily": "Angestellte",
                     "Planstelle": str(row.get("Planstelle", "Nachbesetzung")),
-                    "OE-Cluster": new_cluster, 
-                    "source": "Azubi"
+                    "OE-Cluster": new_cluster,
+                    "comment": "Statuswechsel: Reguläre Übernahme",
+                    **audit_fields
                 })
             else:
                 # Not retained - Exit
                 df_state.loc[persnr, "active"] = False
+                azu_fte = float(row.get("mak", 1.0))
+                if azu_fte <= 0: azu_fte = 1.0
                 events.append({
                     "date": graduation_date,
                     "type": "Azubi_Exit",
                     "count": -1,
                     "persnr": persnr,
                     "org_unit": row.get("Organisationseinheit"),
-                    "mak": -float(row.get("mak", 1.0)),
+                    "mak": -azu_fte,
                     "OE-Cluster": row.get("OE-Cluster", "Unclustered"),
-                    "source": "Azubi"
+                    "source": "Azubi",
+                    **audit_fields
                 })
                 
 def _simulate_new_azubis(
@@ -170,14 +236,20 @@ def _simulate_new_azubis(
     period: PeriodInfo,
     rng: np.random.RandomState,
     events: List[Dict[str, Any]],
-    all_org_units: List[str]
+    all_org_units: List[str],
+    num_cases: int = 0,
+    forecast_start_date: Optional[pd.Timestamp] = None,
+    debts: Dict[str, float] = None
 ):
     """
     Simulate hiring of NEW Azubis (not just retention).
+    Azubi_Hire represents a brand new entry into the apprenticeship.
     """
     azubi_params = params.get("azubi", {})
     count_annual = float(azubi_params.get("new_cases_per_year", 0))
     # Duration doesn't affect ENTRY, but retention logic needs it later.
+    duration_years = float(azubi_params.get("duration_years", 3.0))
+    retention_rate = float(azubi_params.get("retention_rate", 0.8))
     strategy = azubi_params.get("strategy", "Random")
     target_unit = azubi_params.get("target_org_unit", None)
     entry_tariff = "TVAöD" # Default for Azubis during apprenticeship
@@ -186,16 +258,31 @@ def _simulate_new_azubis(
     unit_to_cluster = _get_unit_to_cluster_map(df_state)
     valid_units = list(unit_to_cluster.keys()) if unit_to_cluster else all_org_units
 
-    period_days = (period.end - period.start).days
-    num_cases = _annual_to_period_count(count_annual, period_days, rng)
+    period_days = (period.end - period.start).days + 1
+    # num_cases is passed from caller for determinism
     
-    for _ in range(num_cases):
-        new_id = f"AZ_N_{rng.randint(10000, 99999)}"
-        # Random start date in period
-        entry_date = period.start + pd.Timedelta(days=rng.randint(0, period_days))
+    # Effective start for random entry date (to avoid filter loss in first month)
+    eff_start = period.start
+    if forecast_start_date and forecast_start_date > period.start:
+        eff_start = forecast_start_date
+    
+    eff_days = (period.end - eff_start).days
+    if eff_days < 0: eff_days = 0
+
+    import uuid
+    for i in range(num_cases):
+        # Random start date in allowed period segment
+        entry_date = eff_start + pd.Timedelta(days=rng.randint(0, eff_days + 1))
+        
+        # Professional unique ID (id: 16)
+        unique_suffix = str(uuid.uuid4())[:4]
+        new_id = f"AZ_{entry_date.year}_N{i+1:02d}_{unique_suffix}"
         
         org_unit = _resolve_org_unit(strategy, target_unit, all_org_units, [], rng, valid_units)
         new_cluster = unit_to_cluster.get(org_unit, "Unclustered")
+
+        # Graduation calc (id: 16)
+        grad_date = entry_date + pd.DateOffset(years=int(duration_years)) + pd.DateOffset(months=int((duration_years % 1) * 12))
         
         # State Object
         new_row = {
@@ -206,6 +293,8 @@ def _simulate_new_azubis(
             "St": 1,
             "Organisationseinheit": org_unit,
             "Eintritt": entry_date,
+            "GraduationDate": grad_date, # id: 16
+            "is_forecast": True,        # id: 16
             "GebDatum": entry_date - pd.DateOffset(years=16), # Young
             "Planstelle": "Azubi",
             "age": 16.0,
@@ -213,6 +302,19 @@ def _simulate_new_azubis(
             "mak": 1.0,
             "OE-Cluster": new_cluster # Assigned Cluster
         }
+        
+        # --- Prepare Future Graduation Destiny (Fix id: 13) ---
+        success_chance = retention_rate
+        if debts is not None:
+            expected_success = success_chance + debts.get("takeover", 0.0)
+            takeover_count = int(expected_success)
+            debts["takeover"] = expected_success - takeover_count
+            should_retain = takeover_count >= 1
+        else:
+            should_retain = rng.random() < success_chance
+
+        # Mark destiny in new_row so _simulate_azubis picks it up later
+        new_row["GraduationModus"] = "Takeover" if should_retain else "Exit"
         
         events.append({
             "date": entry_date,
@@ -227,6 +329,11 @@ def _simulate_new_azubis(
             "Jobfamily": "Azubi",
             "Planstelle": "Azubi",
             "OE-Cluster": new_cluster,
+            "is_forecast": True,
+            "source_pool": "Forecast",
+            "entry_date": entry_date,
+            "graduation_date": grad_date,
+            "cohort": entry_date.year,
             "_new_row": new_row
         })
 
@@ -236,7 +343,9 @@ def _simulate_trainees(
     period: PeriodInfo,
     rng: np.random.RandomState,
     events: List[Dict[str, Any]],
-    all_org_units: List[str]
+    all_org_units: List[str],
+    num_cases: int = 0,
+    forecast_start_date: Optional[pd.Timestamp] = None
 ):
     trainee_params = params.get("trainee", {})
     count_annual = float(trainee_params.get("new_cases_per_year", 0))
@@ -244,16 +353,21 @@ def _simulate_trainees(
     strategy = trainee_params.get("strategy", "Random")
     target_unit = trainee_params.get("target_org_unit", None)
     
-    period_days = (period.end - period.start).days
-    num_cases = _annual_to_period_count(count_annual, period_days, rng)
+    # Effective start for random entry date (to avoid filter loss in first month)
+    eff_start = period.start
+    if forecast_start_date and forecast_start_date > period.start:
+        eff_start = forecast_start_date
     
+    eff_days = (period.end - eff_start).days
+    if eff_days < 0: eff_days = 0
+
     for _ in range(num_cases):
         # Generate new Trainee
         new_id = f"TR_{rng.randint(10000, 99999)}"
         # Check collision? Unlikely with prefix.
         
         org_unit = _resolve_org_unit(strategy, target_unit, all_org_units, [], rng)
-        entry_date = period.start + pd.Timedelta(days=rng.randint(0, period_days))
+        entry_date = eff_start + pd.Timedelta(days=rng.randint(0, eff_days + 1))
         
         # Add to State
         # We assume df_state structure matches
@@ -272,10 +386,6 @@ def _simulate_trainees(
             "mak": 1.0 # Full FTE
         }
         
-        # Append logic (slow for dataframe, but okay for simulation step)
-        # Better: Collect new rows and concat once per period. 
-        # But we modify df_state in place for Azubis.
-        # We'll rely on calling function to concat new hires.
         events.append({
             "date": entry_date,
             "type": "Trainee_Hire",
@@ -298,7 +408,9 @@ def _simulate_hires(
     rng: np.random.RandomState,
     events: List[Dict[str, Any]],
     all_org_units: List[str],
-    vacancies: List[Dict[str, Any]]
+    vacancies: List[Dict[str, Any]],
+    num_cases: int = 0,
+    forecast_start_date: Optional[pd.Timestamp] = None
 ):
     hire_params = params.get("new_hires", {})
     count_annual = float(hire_params.get("count_per_year", 0))
@@ -323,12 +435,17 @@ def _simulate_hires(
         else:
             dist_list = [] # Invalid distribution
     
-    period_days = (period.end - period.start).days
-    num_cases = _annual_to_period_count(count_annual, period_days, rng)
+    # Effective start for random entry date (to avoid filter loss in first month)
+    eff_start = period.start
+    if forecast_start_date and forecast_start_date > period.start:
+        eff_start = forecast_start_date
     
+    eff_days = (period.end - eff_start).days
+    if eff_days < 0: eff_days = 0
+
     for _ in range(num_cases):
         new_id = f"NH_{rng.randint(10000, 99999)}"
-        entry_date = period.start + pd.Timedelta(days=rng.randint(0, period_days))
+        entry_date = eff_start + pd.Timedelta(days=rng.randint(0, eff_days + 1))
         
         # Determine Attributes
         org_unit = "Unbekannt"
@@ -440,25 +557,49 @@ def run_forecast_zugaenge(
     # Mutable vacancy list
     current_vacancies = sorted(vacancies, key=lambda x: x["date"]) if vacancies else []
 
+    # Debt tracking for deterministic counts
+    debts = {"azubi": 0.0, "trainee": 0.0, "new_hires": 0.0, "takeover": 0.0}
+
     for p in period_range:
-        period = PeriodInfo(p.start_time, p.end_time, p.strftime("%Y-%m"))
+        # Clip to effective start/end (pro-rata support)
+        eff_p_start = max(p.start_time, start_date)
+        eff_p_end = min(p.end_time, end_date)
+        
+        if eff_p_start > eff_p_end:
+            continue # Outside effective range
+            
+        period = PeriodInfo(eff_p_start, eff_p_end, p.strftime("%Y-%m"))
+        period_days = (period.end - period.start).days + 1
         period_events = []
         
-        # 1. Azubis (Takeover)
+        # Calculate counts deterministic
+        n_az = 0
         if params.get("azubi", {}).get("active", True):
-            _simulate_azubis(df_state, params, period, rng, period_events, all_org_units)
-
-        # 2. Trainees
+            n_az, debts["azubi"] = _annual_to_period_count(params.get("azubi", {}).get("new_cases_per_year", 0), period_days, rng, debts["azubi"])
+        
+        n_tr = 0
         if params.get("trainee", {}).get("active", True):
-            _simulate_trainees(df_state, params, period, rng, period_events, all_org_units)
-        
-        # 3. New Azubis (NEW Feature)
-        if params.get("azubi", {}).get("active", True):
-            _simulate_new_azubis(df_state, params, period, rng, period_events, all_org_units)
-        
-        # 4. New Hires
+            n_tr, debts["trainee"] = _annual_to_period_count(params.get("trainee", {}).get("new_cases_per_year", 0), period_days, rng, debts["trainee"])
+            
+        n_hi = 0
         if params.get("new_hires", {}).get("active", True):
-            _simulate_hires(df_state, params, period, rng, period_events, all_org_units, current_vacancies)
+            n_hi, debts["new_hires"] = _annual_to_period_count(params.get("new_hires", {}).get("count_per_year", 0), period_days, rng, debts["new_hires"])
+
+        # 1. Azubis (Takeover of EXISTING & NEW from previous months)
+        if params.get("azubi", {}).get("active", True):
+            _simulate_azubis(df_state, params, period, rng, period_events, all_org_units, debts)
+
+        # 2. Trainees (NEW Hires)
+        if params.get("trainee", {}).get("active", True):
+            _simulate_trainees(df_state, params, period, rng, period_events, all_org_units, n_tr, start_date)
+        
+        # 3. New Azubis (NEW Hire entry)
+        if params.get("azubi", {}).get("active", True):
+            _simulate_new_azubis(df_state, params, period, rng, period_events, all_org_units, n_az, start_date, debts)
+        
+        # 4. New Hires (Standard)
+        if params.get("new_hires", {}).get("active", True):
+            _simulate_hires(df_state, params, period, rng, period_events, all_org_units, current_vacancies, n_hi, start_date)
         
         # Apply New Rows
         new_rows = [e["_new_row"] for e in period_events if "_new_row" in e]
