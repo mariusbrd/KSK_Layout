@@ -31,11 +31,14 @@ def _resolve_org_unit(
     target_unit: Optional[str],
     all_org_units: List[str],
     vacancies: List[Dict[str, Any]],
-    rng: np.random.RandomState
+    rng: np.random.RandomState,
+    valid_units_with_cluster: Optional[List[str]] = None
 ) -> str:
     """
     Determines the target OrgUnit based on strategy.
     Strategies: "Random", "OrgUnit", "Fill Vacancies".
+    
+    If valid_units_with_cluster is provided, 'Random' strategy restricts to these units.
     """
     if strategy == "OrgUnit" and target_unit:
         return target_unit
@@ -46,7 +49,19 @@ def _resolve_org_unit(
         # But here we just inspect.
         pass # Caller logic needed to consume vacancy.
         
-    return _get_random_org_unit(all_org_units, rng)
+    # Pool to choose from
+    pool = valid_units_with_cluster if valid_units_with_cluster else all_org_units
+    
+    return _get_random_org_unit(pool, rng)
+
+def _get_unit_to_cluster_map(df: pd.DataFrame) -> Dict[str, str]:
+    """Helper to create a mapping from Organisationseinheit to OE-Cluster."""
+    if "Organisationseinheit" not in df.columns or "OE-Cluster" not in df.columns:
+        return {}
+    # Drop duplicates to speed up lookup, keep last (or first)
+    # Ensure we drop NaNs in OE-Cluster so we don't map to NaN
+    valid_map = df.dropna(subset=["OE-Cluster"])[["Organisationseinheit", "OE-Cluster"]]
+    return valid_map.set_index("Organisationseinheit")["OE-Cluster"].to_dict()
 
 def _simulate_azubis(
     df_state: pd.DataFrame,
@@ -66,6 +81,10 @@ def _simulate_azubis(
     target_unit = azubi_params.get("target_org_unit", None)
     entry_tariff = azubi_params.get("entry_tariff_group", "E5")
     entry_step = int(azubi_params.get("entry_step", 1))
+    
+    # Pre-compute cluster map for lookups
+    unit_to_cluster = _get_unit_to_cluster_map(df_state)
+    valid_units = list(unit_to_cluster.keys()) if unit_to_cluster else all_org_units
 
     # Identify Azubis: TrfGr starts with "TVA" (TVAöD) or Jobfamily="Azubi"
     # We use a robust check
@@ -103,11 +122,15 @@ def _simulate_azubis(
             # Decisions: Retain?
             if rng.random() < retention_rate:
                 # Retained
-                new_unit = _resolve_org_unit(strategy, target_unit, all_org_units, [], rng)
+                new_unit = _resolve_org_unit(strategy, target_unit, all_org_units, [], rng, valid_units)
+                new_cluster = unit_to_cluster.get(new_unit, "Unclustered")
                 
                 # Update State
                 df_state.loc[persnr, "Jobfamily"] = "Angestellte" # Graduate
                 df_state.loc[persnr, "Organisationseinheit"] = new_unit
+                if "OE-Cluster" in df_state.columns:
+                    df_state.loc[persnr, "OE-Cluster"] = new_cluster
+                
                 # Reset Salary to Configured Entry (Assumption for ex-Azubi)
                 df_state.loc[persnr, "TrfGr"] = entry_tariff
                 df_state.loc[persnr, "St"] = entry_step
@@ -115,15 +138,16 @@ def _simulate_azubis(
                 events.append({
                     "date": graduation_date,
                     "type": "Azubi_Takeover",
-                    "count": 1,
+                    "count": 0, # Neutral Headcount Change (Statustausch)
                     "persnr": persnr,
                     "org_unit": new_unit,
                     "source": "Azubi",
-                    "mak": 1.0,
+                    "mak": 0, # Neutral MAK Change (Assuming Azubi had 1.0 MAK before)
                     "TrfGr": entry_tariff,
                     "St": entry_step,
                     "Jobfamily": "Angestellte",
                     "Planstelle": str(row.get("Planstelle", "Nachbesetzung")),
+                    "OE-Cluster": new_cluster, 
                     "source": "Azubi"
                 })
             else:
@@ -136,8 +160,75 @@ def _simulate_azubis(
                     "persnr": persnr,
                     "org_unit": row.get("Organisationseinheit"),
                     "mak": -float(row.get("mak", 1.0)),
+                    "OE-Cluster": row.get("OE-Cluster", "Unclustered"),
                     "source": "Azubi"
                 })
+                
+def _simulate_new_azubis(
+    df_state: pd.DataFrame,
+    params: Dict[str, Any],
+    period: PeriodInfo,
+    rng: np.random.RandomState,
+    events: List[Dict[str, Any]],
+    all_org_units: List[str]
+):
+    """
+    Simulate hiring of NEW Azubis (not just retention).
+    """
+    azubi_params = params.get("azubi", {})
+    count_annual = float(azubi_params.get("new_cases_per_year", 0))
+    # Duration doesn't affect ENTRY, but retention logic needs it later.
+    strategy = azubi_params.get("strategy", "Random")
+    target_unit = azubi_params.get("target_org_unit", None)
+    entry_tariff = "TVAöD" # Default for Azubis during apprenticeship
+    
+    # Pre-compute cluster map for lookups
+    unit_to_cluster = _get_unit_to_cluster_map(df_state)
+    valid_units = list(unit_to_cluster.keys()) if unit_to_cluster else all_org_units
+
+    period_days = (period.end - period.start).days
+    num_cases = _annual_to_period_count(count_annual, period_days, rng)
+    
+    for _ in range(num_cases):
+        new_id = f"AZ_N_{rng.randint(10000, 99999)}"
+        # Random start date in period
+        entry_date = period.start + pd.Timedelta(days=rng.randint(0, period_days))
+        
+        org_unit = _resolve_org_unit(strategy, target_unit, all_org_units, [], rng, valid_units)
+        new_cluster = unit_to_cluster.get(org_unit, "Unclustered")
+        
+        # State Object
+        new_row = {
+            "PersNr": new_id,
+            "active": True,
+            "Jobfamily": "Azubi",
+            "TrfGr": entry_tariff,
+            "St": 1,
+            "Organisationseinheit": org_unit,
+            "Eintritt": entry_date,
+            "GebDatum": entry_date - pd.DateOffset(years=16), # Young
+            "Planstelle": "Azubi",
+            "age": 16.0,
+            "tenure": 0.0,
+            "mak": 1.0,
+            "OE-Cluster": new_cluster # Assigned Cluster
+        }
+        
+        events.append({
+            "date": entry_date,
+            "type": "Azubi_Hire",
+            "count": 1,
+            "persnr": new_id,
+            "org_unit": org_unit,
+            "source": "Azubi (New)",
+            "mak": 1.0,
+            "TrfGr": entry_tariff,
+            "St": 1,
+            "Jobfamily": "Azubi",
+            "Planstelle": "Azubi",
+            "OE-Cluster": new_cluster,
+            "_new_row": new_row
+        })
 
 def _simulate_trainees(
     df_state: pd.DataFrame,
@@ -353,14 +444,21 @@ def run_forecast_zugaenge(
         period = PeriodInfo(p.start_time, p.end_time, p.strftime("%Y-%m"))
         period_events = []
         
-        # 1. Azubis
-        _simulate_azubis(df_state, params, period, rng, period_events, all_org_units)
+        # 1. Azubis (Takeover)
+        if params.get("azubi", {}).get("active", True):
+            _simulate_azubis(df_state, params, period, rng, period_events, all_org_units)
 
         # 2. Trainees
-        _simulate_trainees(df_state, params, period, rng, period_events, all_org_units)
+        if params.get("trainee", {}).get("active", True):
+            _simulate_trainees(df_state, params, period, rng, period_events, all_org_units)
         
-        # 3. New Hires
-        _simulate_hires(df_state, params, period, rng, period_events, all_org_units, current_vacancies)
+        # 3. New Azubis (NEW Feature)
+        if params.get("azubi", {}).get("active", True):
+            _simulate_new_azubis(df_state, params, period, rng, period_events, all_org_units)
+        
+        # 4. New Hires
+        if params.get("new_hires", {}).get("active", True):
+            _simulate_hires(df_state, params, period, rng, period_events, all_org_units, current_vacancies)
         
         # Apply New Rows
         new_rows = [e["_new_row"] for e in period_events if "_new_row" in e]
@@ -381,6 +479,9 @@ def run_forecast_zugaenge(
 
     # Result
     events_df = pd.DataFrame(all_events)
+    if events_df.empty:
+        # Enforce schema to avoid KeyErrors downstream
+        events_df = pd.DataFrame(columns=["date", "type", "count", "persnr", "org_unit", "source", "mak", "Jobfamily", "OE-Cluster", "TrfGr", "St", "Planstelle"])
     
     # Calculate Time Series KPIs (Headcount/MAK Evolution)
     # Start Stats

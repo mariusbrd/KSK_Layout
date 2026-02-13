@@ -840,6 +840,14 @@ def run_forecast_abgaenge(
         # KPI Capture MOVED to aggregate_forecast_results
         
     events_df = pd.DataFrame(events)
+    if events_df.empty:
+        # Enforce schema to avoid KeyErrors downstream
+        events_df = pd.DataFrame(columns=[
+            "period_label", "period_start", "period_end", "event_date", 
+            "persnr", "reason_code", "reason_label", "headcount_change", "mak_change",
+            "age", "tenure", "Organisationseinheit", "Kürzel OrgEinheit", 
+            "Jobfamily", "Planstelle", "TrfGr", "St"
+        ])
 
     # Calculate Aggregations for the GLOBAL result immediately
     forecast_kpis = aggregate_forecast_results(

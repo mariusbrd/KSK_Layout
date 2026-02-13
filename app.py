@@ -81,6 +81,7 @@ def main():
             st.Page("pages/1_⚡_Kompakt.py", title="Kompakt"),
             st.Page("pages/3_📉_Prognose_Abgänge.py", title="Prognose: Abgänge"),
             st.Page("pages/4_📈_Prognose_Zugänge.py", title="Prognose: Zugänge"),
+            st.Page("pages/5_🏢_Prognose_Hybrid.py", title="Prognose: Hybrid"),
             st.Page("pages/2_⚙️_Einstellungen.py", title="Einstellungen"),
         ],
     }

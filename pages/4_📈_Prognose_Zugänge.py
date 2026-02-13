@@ -121,11 +121,12 @@ def main():
         st.divider()
         
         # Azubis
-        st.subheader("🎓 1. Azubi-Übernahme")
-        c1, c2, c3 = st.columns(3)
-        retention = c1.slider("Übernahmequote (%)", 0.0, 1.0, params["azubi"]["retention_rate"], 0.05)
-        duration = c2.number_input("Ausbildungsdauer (Jahre)", 1.0, 5.0, params["azubi"]["duration_years"], 0.5)
-        az_strat = c3.selectbox("Verteilung", ["Random", "OrgUnit"], index=0 if params["azubi"]["strategy"] == "Random" else 1, key="az_strat")
+        st.subheader("🎓 1. Azubi-Übernahme & Neueinstellungen")
+        c1, c2, c3, c4 = st.columns(4)
+        azubi_count = c1.number_input("Neue Azubis pro Jahr", 0, 100, params["azubi"].get("new_cases_per_year", 15), key="az_count")
+        retention = c2.slider("Übernahmequote (%)", 0.0, 1.0, params["azubi"]["retention_rate"], 0.05)
+        duration = c3.number_input("Ausbildungsdauer (Jahre)", 1.0, 5.0, params["azubi"]["duration_years"], 0.5)
+        az_strat = c4.selectbox("Verteilung", ["Random", "OrgUnit"], index=0 if params["azubi"]["strategy"] == "Random" else 1, key="az_strat")
         
         azubi_target = None
         if az_strat == "OrgUnit":
@@ -134,9 +135,9 @@ def main():
             azubi_target = st.selectbox("Ziel-Einheit (Azubi)", units, key="az_unit")
             
         # Optional: Salary Config
-        c4, c5 = st.columns(2)
-        az_tarif = c4.selectbox("Übernahme-Tarif", TARIFF_GROUPS, index=TARIFF_GROUPS.index(params["azubi"]["entry_tariff_group"]) if params["azubi"]["entry_tariff_group"] in TARIFF_GROUPS else 5, key="az_tarif")
-        az_step = c5.number_input("Übernahme-Stufe", 1, 6, params["azubi"]["entry_step"], key="az_step")
+        c5, c6 = st.columns(2)
+        az_tarif = c5.selectbox("Übernahme-Tarif", TARIFF_GROUPS, index=TARIFF_GROUPS.index(params["azubi"]["entry_tariff_group"]) if params["azubi"]["entry_tariff_group"] in TARIFF_GROUPS else 5, key="az_tarif")
+        az_step = c6.number_input("Übernahme-Stufe", 1, 6, params["azubi"]["entry_step"], key="az_step")
             
         st.divider()
         
@@ -229,6 +230,7 @@ def main():
         # Build Params
         run_params = {
             "azubi": {
+                "new_cases_per_year": azubi_count,
                 "retention_rate": retention,
                 "duration_years": duration,
                 "strategy": az_strat,
