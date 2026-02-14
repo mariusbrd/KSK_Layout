@@ -719,6 +719,8 @@ def run_forecast_abgaenge(
                         "persnr": persnr,
                         "reason_code": REASON_RETIREMENT,
                         "reason_label": REASON_LABELS[REASON_RETIREMENT],
+                        "Organisationseinheit": str(df_state.loc[persnr, "Organisationseinheit"]),
+                        "Jobfamily": str(df_state.loc[persnr, "Jobfamily"]),
                         "headcount_change": -1,
                         "mak_change": mak_change,
                         "age": float(df_state.loc[persnr, "age"]),
@@ -751,6 +753,8 @@ def run_forecast_abgaenge(
                         "persnr": persnr,
                         "reason_code": REASON_QUIT,
                         "reason_label": REASON_LABELS[REASON_QUIT],
+                        "Organisationseinheit": str(df_state.loc[persnr, "Organisationseinheit"]),
+                        "Jobfamily": str(df_state.loc[persnr, "Jobfamily"]),
                         "headcount_change": -1,
                         "mak_change": mak_change,
                         "age": float(df_state.loc[persnr, "age"]),
@@ -775,6 +779,8 @@ def run_forecast_abgaenge(
                         events.append({
                             "period_label": period.label, "event_date": period.end, "persnr": persnr,
                             "reason_code": REASON_RUHEND_RETURN, "reason_label": REASON_LABELS[REASON_RUHEND_RETURN],
+                            "Organisationseinheit": str(df_state.loc[persnr, "Organisationseinheit"]),
+                            "Jobfamily": str(df_state.loc[persnr, "Jobfamily"]),
                             "headcount_change": 0, "mak_change": float(df_state.loc[persnr, "mak"]),
                         })
             # New
@@ -796,6 +802,8 @@ def run_forecast_abgaenge(
                             events.append({
                                 "period_label": period.label, "event_date": period.end, "persnr": persnr,
                                 "reason_code": REASON_RUHEND_START, "reason_label": REASON_LABELS[REASON_RUHEND_START],
+                                "Organisationseinheit": str(df_state.loc[persnr, "Organisationseinheit"]),
+                                "Jobfamily": str(df_state.loc[persnr, "Jobfamily"]),
                                 "headcount_change": 0, "mak_change": mak_diff,
                             })
         

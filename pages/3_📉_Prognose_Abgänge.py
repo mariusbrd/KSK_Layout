@@ -429,15 +429,15 @@ def main():
         st.write("")
         submit = st.form_submit_button("🚀 Prognose mit diesen Parametern berechnen", use_container_width=True)
 
-
     # ── Rendering or Calculation Logic ──
+    freq = "M" if freq_label == "Monat" else "Q"
+
     if submit:
         # Pre-calculation checks
         if forecast_end_date <= ist_stichtag:
             st.error("Prognose-Ende muss nach dem Ist-Stichtag liegen.")
             st.stop()
 
-        freq = "M" if freq_label == "Monat" else "Q"
         ui_state = {
             "ist_stichtag": ist_stichtag.isoformat() if hasattr(ist_stichtag, "isoformat") else str(ist_stichtag),
             "forecast_end_date": forecast_end_date.isoformat() if hasattr(forecast_end_date, "isoformat") else str(forecast_end_date),
@@ -670,6 +670,9 @@ def main():
     
     # Current UI State for Drift Detection
     curr_ui_state = {
+        "ist_stichtag": ist_stichtag.isoformat() if hasattr(ist_stichtag, "isoformat") else str(ist_stichtag),
+        "forecast_end_date": forecast_end_date.isoformat() if hasattr(forecast_end_date, "isoformat") else str(forecast_end_date),
+        "freq": freq,
         "components": {
             "atz": comp_atz, "retirement": comp_ret, "quit": comp_quit, "ruhend": comp_ruhend
         },
@@ -721,40 +724,12 @@ def main():
         else:
             st.success("✅ Ergebnisse aktuell.")
 
-        # Feature: Enrich events with JF-Cluster
-        if "JF-Cluster" not in events.columns and "JF-Cluster" in df_ma.columns:
-            # P12: Robust enrichment with deduplication
-            lookup_cluster_jf = df_ma[["PersNr", "JF-Cluster"]].copy()
-            lookup_cluster_jf["key"] = lookup_cluster_jf["PersNr"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
-            lookup_cluster_jf = lookup_cluster_jf.drop_duplicates(subset=["key"])
-            
-            events["key"] = events["persnr"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
-            
-            events = events.merge(
-                lookup_cluster_jf[["key", "JF-Cluster"]],
-                on="key",
-                how="left"
-            )
-            events.drop(columns=["key"], inplace=True)
-            events["JF-Cluster"] = events["JF-Cluster"].fillna("Unclustered")
-            
-            # FALLBACK: If PersNr mapping failed, try map via (Org, Pos) or Pos
-            mask_unclustered_jf = events["JF-Cluster"] == "Unclustered"
-            if mask_unclustered_jf.any():
-                from dataloader.cluster_manager import load_cluster_mappings
-                _, jf_map = load_cluster_mappings()
-                if jf_map:
-                    first_key = next(iter(jf_map.keys()), None)
-                    if isinstance(first_key, tuple):
-                         # Combination mapping
-                         if "Organisationseinheit" in events.columns and "Planstelle" in events.columns:
-                             s_org = events.loc[mask_unclustered_jf, "Organisationseinheit"].astype(str).str.strip()
-                             s_pos = events.loc[mask_unclustered_jf, "Planstelle"].astype(str).str.strip()
-                             keys = list(zip(s_org, s_pos))
-                             events.loc[mask_unclustered_jf, "JF-Cluster"] = [jf_map.get(k, "Unclustered") for k in keys]
-                    elif "Planstelle" in events.columns:
-                         events.loc[mask_unclustered_jf, "JF-Cluster"] = events.loc[mask_unclustered_jf, "Planstelle"].map(jf_map).fillna("Unclustered")
-
+        # Feature: Ensure Clusters exist (populated by engine, fallback to Unclustered)
+        for cluster_col in ["OE-Cluster", "JF-Cluster", "Organisationseinheit", "Jobfamily"]:
+            if cluster_col not in events.columns:
+                events[cluster_col] = "Unbekannt"
+            else:
+                events[cluster_col] = events[cluster_col].fillna("Unbekannt")
         # Fix Arrow Error: Mixed types in persnr
         if "persnr" in events.columns:
             events["persnr"] = events["persnr"].astype(str)
