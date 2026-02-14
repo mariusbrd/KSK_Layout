@@ -437,7 +437,11 @@ def main():
             st.error("Prognose-Ende muss nach dem Ist-Stichtag liegen.")
             st.stop()
 
+        freq = "M" if freq_label == "Monat" else "Q"
         ui_state = {
+            "ist_stichtag": ist_stichtag.isoformat() if hasattr(ist_stichtag, "isoformat") else str(ist_stichtag),
+            "forecast_end_date": forecast_end_date.isoformat() if hasattr(forecast_end_date, "isoformat") else str(forecast_end_date),
+            "freq": freq,
             "components": {
                 "atz": comp_atz,
                 "retirement": comp_ret,
@@ -473,7 +477,6 @@ def main():
         }
 
         params = build_params_from_ui(ui_state)
-        freq = "M" if freq_label == "Monat" else "Q"
     
         # ── Calculation Block ──
         try:
@@ -483,8 +486,8 @@ def main():
                     df_ma=df_ma, 
                     df_atz=df_atz,
                     start_date=pd.Timestamp(ist_stichtag),
-                    # P01: Ensure end date covers full day to avoid month-end truncation in _periods
-                    end_date=pd.Timestamp(forecast_end_date) + pd.Timedelta(hours=23, minutes=59, seconds=59),
+                    # P01: Using exact date for consistency across pages
+                    end_date=pd.Timestamp(forecast_end_date),
                     freq=freq,
                     params=params,
                 )
@@ -595,18 +598,10 @@ def main():
                         events_view = events_view.merge(lookup_c, left_on="persnr", right_on="PersNr", how="left").drop(columns=["PersNr"])
                         events_view[cluster_col] = events_view[cluster_col].fillna("Unclustered")
 
-                # P10: STABLE UID (Contract V3)
+                # P10: STABLE UID (Contract V4)
                 # Used for deterministic reconciliation across pages.
-                # Using 6-digit zero-padding as standard per KSK requirement.
-                from abgaenge.schemas import normalize_persnr
-                events_view["p_norm"] = normalize_persnr(events_view["persnr"])
-                events_view["event_uid"] = (
-                    pd.to_datetime(events_view["event_date"]).dt.strftime("%Y-%m-%d") + "|" +
-                    events_view["p_norm"] + "|" +
-                    events_view.get("reason_code", events_view["reason_label"]).astype(str).str.strip() + "|" +
-                    events_view.get("source_step", events_view.get("type", "")).astype(str).str.strip()
-                )
-                events_view.drop(columns=["p_norm"], inplace=True, errors="ignore")
+                from abgaenge.schemas import build_event_uid
+                events_view["event_uid"] = build_event_uid(events_view)
 
                 if "persnr" in events_view.columns:
                     events_view["persnr"] = events_view["persnr"].astype(str)

@@ -503,6 +503,9 @@ def main():
 
     # 1. Build Final Params
     ui_state_abg = {
+        "ist_stichtag": ist_stichtag.isoformat() if hasattr(ist_stichtag, "isoformat") else str(ist_stichtag),
+        "forecast_end_date": forecast_end_date.isoformat() if hasattr(forecast_end_date, "isoformat") else str(forecast_end_date),
+        "freq": "M" if freq_label == "Monat" else "Q",
         "components": {"atz": comp_atz, "retirement": comp_ret, "quit": comp_quit, "ruhend": comp_ruhend},
         "atz": {"new_atz_rate": new_atz_base, "atz_eligible_age_min": eligible_age, "atz_eligible_age_max": eligible_age_max, "atz_duration_ar_years": ar_years, "atz_duration_fr_years": fr_years, "use_atz_matrix": use_atz_matrix, "atz_dimension": atz_dim, "atz_matrix": new_atz_matrix},
         "retirement": {"rent_rate_65": rent65, "rent_rate_60_65": rent60},
@@ -526,21 +529,35 @@ def main():
         },
         "trainee": {"active": comp_trainee, "new_cases_per_year": trainee_count, "duration_years": trainee_dur, "salary_group": "E 12", "strategy": tr_strat, "target_org_unit": None},
         "new_hires": {"active": comp_hires, "count_per_year": hire_count, "strategy": hire_strat, "target_org_unit": None, "distribution": hire_distribution},
-        "random_seed": 42
+        "random_seed": random_seed
     }
 
     # 2. Execution ──────────────────────────────────────────────────
     if submit:
         # A. Departures (Basis)
         with st.spinner("Berechne Abgangs-Szenario..."):
-            abg_res = run_forecast_abgaenge(
-                df_ma=df_ma, 
-                df_atz=df_atz,
-                start_date=pd.Timestamp(ist_stichtag),
-                end_date=pd.Timestamp(forecast_end_date),
-                freq="M" if freq_label == "Monat" else "Q",
-                params=final_params_abg,
-            )
+            # CONTRACT V3: Synchronize with Page 3 results if parameters match
+            p3_bundle = st.session_state.get("abgaenge_results")
+            use_cached_abg = False
+            if p3_bundle and p3_bundle.get("schema_version") == 3:
+                p3_params = p3_bundle.get("params", {})
+                if p3_params == ui_state_abg:
+                    p3_global = st.session_state.get("abgaenge_global_result")
+                    if p3_global:
+                        abg_res = p3_global
+                        use_cached_abg = True
+                        st.info("🔄 Verwende identische Abgangs-Ergebnisse von der Abgänge-Seite.")
+
+            if not use_cached_abg:
+                abg_res = run_forecast_abgaenge(
+                    df_ma=df_ma, 
+                    df_atz=df_atz,
+                    start_date=pd.Timestamp(ist_stichtag),
+                    end_date=pd.Timestamp(forecast_end_date),
+                    freq="M" if freq_label == "Monat" else "Q",
+                    params=final_params_abg,
+                )
+            
             st.session_state["hybrid_abg_res"] = abg_res
             st.session_state["hybrid_abg_params"] = final_params_abg
         
@@ -576,7 +593,7 @@ def main():
                 start_date=pd.Timestamp(ist_stichtag),
                 end_date=pd.Timestamp(forecast_end_date),
                 freq="M" if freq_label == "Monat" else "Q",
-                params={**final_params_zug, "random_seed": 42},
+                params=final_params_zug,
                 vacancies=vacancies
             )
             st.session_state["hybrid_zug_res"] = zug_res
@@ -645,13 +662,30 @@ def main():
         if "_pid_clean" in filt_abg_events.columns:
             del filt_abg_events["_pid_clean"]
 
+    # --- Scope Filtering & Initial Workforce Sync (Matches Page 3) ---
+    df_snapshot_filtered = apply_filters(snapshot_df) # Position Level filters (Sidebar)
+    initial_ids = set(df_snapshot_filtered["PersNr"].astype(str).str.replace(r"\.0$", "", regex=True))
+    
+    # helper for robust attribute filtering (Synchronized with Page 3)
+    def _apply_prognosis_filters(df, p_ids):
+        if df.empty: return df
+        # 1. Restrict to initially filtered workforce (Patch 3 Consistency)
+        df["_pid_clean"] = df["persnr"].astype(str).str.replace(r"\.0$", "", regex=True)
+        df = df[df["_pid_clean"].isin(p_ids)].copy()
+        
+        # 2. Apply Sidebar Attribute Filters (Standard V4)
+        df = _apply_robust_filter(df, "Organisationseinheit", st.session_state.get("selected_org_units", []))
+        df = _apply_robust_filter(df, "Jobfamily", st.session_state.get("selected_jobfamilies", []))
+        df = _apply_robust_filter(df, "OE-Cluster", st.session_state.get("selected_oe_clusters", []))
+        df = _apply_robust_filter(df, "JF-Cluster", st.session_state.get("selected_jf_clusters", []))
+        return df
+
+    filt_abg_events = _apply_prognosis_filters(raw_abg_events.copy(), initial_ids)
+    
     # Zugänge
     raw_zug_events = zug_res["events"].copy()
     if "org_unit" in raw_zug_events.columns: raw_zug_events = raw_zug_events.rename(columns={"org_unit": "Organisationseinheit"})
-    filt_zug_events = _apply_robust_filter(raw_zug_events, "Organisationseinheit", st.session_state.get("selected_org_units", []))
-    filt_zug_events = _apply_robust_filter(filt_zug_events, "Jobfamily", st.session_state.get("selected_jobfamilies", []))
-    filt_zug_events = _apply_robust_filter(filt_zug_events, "OE-Cluster", st.session_state.get("selected_oe_clusters", []))
-    filt_zug_events = _apply_robust_filter(filt_zug_events, "JF-Cluster", st.session_state.get("selected_jf_clusters", []))
+    filt_zug_events = _apply_prognosis_filters(raw_zug_events.copy(), initial_ids)
     
     # --- Scope Filtering (Fix B: Harmonize Zugänge with Netto definition) ---
     if "date" in filt_zug_events.columns:
@@ -1014,16 +1048,9 @@ def main():
                 # A. Prepare Sets (Use Semantic Match Key for robustness)
                 # A. Prepare Sets (Use Semantic Match Key for robustness)
                 # Re-Construct Key strictly for combined_events too
-                # Using 100% matching logic as Page 3 (Contract V3)
-                from abgaenge.schemas import normalize_persnr
-                combined_events_in_scope["p_norm"] = normalize_persnr(combined_events_in_scope["persnr"])
-                combined_events_in_scope["event_uid"] = (
-                    pd.to_datetime(combined_events_in_scope["event_date"]).dt.strftime("%Y-%m-%d") + "|" +
-                    combined_events_in_scope["p_norm"] + "|" +
-                    combined_events_in_scope["reason_label"].astype(str).str.strip() + "|" +
-                    combined_events_in_scope.get("source_step", combined_events_in_scope.get("type", "")).astype(str).str.strip()
-                )
-                combined_events_in_scope.drop(columns=["p_norm"], inplace=True, errors="ignore")
+                # Using 100% matching logic as Page 3 (Contract V4)
+                from abgaenge.schemas import build_event_uid
+                combined_events_in_scope["event_uid"] = build_event_uid(combined_events_in_scope)
 
                 exits_any = combined_events_in_scope[combined_events_in_scope["is_headcount_exit_any"] == True]
                 exits_bank = combined_events_in_scope[combined_events_in_scope["is_headcount_exit_bank"] == True]
@@ -1115,16 +1142,10 @@ def main():
                 if p3_exists and detail_ref_df is not None:
                      # 2. Build Key (Strict & Robust - MUST match Page 3 event_uid logic)
                      try:
-                        # Ensure persistence of normalize_persnr across Detail set
+                        # Ensure persistence of canonical UID across Detail set
                         if "event_uid" not in detail_ref_df.columns:
-                            from abgaenge.schemas import normalize_persnr
-                            detail_ref_df["p_norm"] = normalize_persnr(detail_ref_df["persnr"])
-                            detail_ref_df["event_uid"] = (
-                                pd.to_datetime(detail_ref_df["event_date"]).dt.strftime("%Y-%m-%d") + "|" +
-                                detail_ref_df["p_norm"] + "|" +
-                                detail_ref_df["reason_label"].astype(str).str.strip() + "|" +
-                                detail_ref_df.get("source_step", detail_ref_df.get("type", "")).astype(str).str.strip()
-                            )
+                            from abgaenge.schemas import build_event_uid
+                            detail_ref_df["event_uid"] = build_event_uid(detail_ref_df)
                         
                         key_detail = set(detail_ref_df["event_uid"])
                         c_detail = len(key_detail)
@@ -1141,10 +1162,145 @@ def main():
                     c_detail = len(key_detail)
                     detail_source_label = "Hybrid Marker (Fail Safe)"
 
-                # RECONCILIATION SUMMARY (TASK 2)
-                key_intersection = key_detail & key_bank
-                c_inter = len(key_intersection)
+                # RECONCILIATION SUMMARY (V6)
+                from abgaenge.schemas import build_event_uid
+
+                # Ensure canonical V6 UIDs across all sets for exact matching
+                combined_events_in_scope["event_uid"] = build_event_uid(combined_events_in_scope)
                 
+                # Get Detail Page Exits (Gold Standard from session_state if available)
+                detail_ref_df = None
+                if "abgaenge_results" in st.session_state:
+                    res = st.session_state["abgaenge_results"]
+                    detail_ref_df = res.get("events_chart", res.get("events"))
+                    if detail_ref_df is not None:
+                        detail_ref_df["event_uid"] = build_event_uid(detail_ref_df)
+                        # Filter to HC exits only for reconciliation
+                        detail_ref_df = detail_ref_df[detail_ref_df["headcount_change"] < 0].copy()
+
+                # Patch 4: Decouple Bank Exits from MAK
+                # Definition: headcount_change < 0 AND not in explicit exclusion list
+                def _is_bank_exit_v6(row):
+                    if row["headcount_change"] >= 0: return False
+                    rl = str(row.get("reason_label", ""))
+                    # 1. Exclude Status Changes / Conversions (Standard Bank Definition)
+                    if "Statuswechsel" in rl or "Conversion" in rl: return False
+                    # 2. Exclude Ruhend
+                    if "Ruhend" in rl: return False
+                    return True
+
+                combined_events_in_scope["is_headcount_exit_bank"] = combined_events_in_scope.apply(_is_bank_exit_v6, axis=1)
+                exits_bank = combined_events_in_scope[combined_events_in_scope["is_headcount_exit_bank"] == True].copy()
+                exits_bank["event_uid"] = build_event_uid(exits_bank)
+
+                key_detail = set(detail_ref_df["event_uid"]) if detail_ref_df is not None else set()
+                key_bank = set(exits_bank["event_uid"])
+                
+                st.markdown("### 📊 Side-by-Side Rekonziliation (Contract V6)")
+                
+                # 1. Reason-Level Table (Goal 1.1)
+                def _get_reason_reco_v6(detail_df, bank_df):
+                    reasons = ["QUIT", "RETIREMENT", "ATZ_END"]
+                    rows = []
+                    for r in reasons:
+                        d_r = detail_df[detail_df["event_uid"].str.contains(f"\\|{r}$", regex=True)] if detail_df is not None else pd.DataFrame()
+                        b_r = bank_df[bank_df["event_uid"].str.contains(f"\\|{r}$", regex=True)]
+                        
+                        k_d = set(d_r["event_uid"]) if not d_r.empty else set()
+                        k_b = set(b_r["event_uid"])
+                        k_i = k_d & k_b
+                        
+                        rows.append({
+                            "Grund": r,
+                            "Abgänge Seite": len(k_d),
+                            "Hybrid Bank": len(k_b),
+                            "Schnittmenge": len(k_i),
+                            "Nur AbgängeSeite": len(k_d - k_b),
+                            "Nur HybridBank": len(k_b - k_d)
+                        })
+                    return pd.DataFrame(rows)
+
+                reco_df = _get_reason_reco_v6(detail_ref_df, exits_bank)
+                st.dataframe(reco_df, use_container_width=True, hide_index=True)
+
+                # 2. Monthly Counts Comparison (Goal 3)
+                if detail_ref_df is not None:
+                    st.markdown("#### 📅 Monatlicher Vergleich (QUIT & RETIREMENT)")
+                    def _get_monthly_comp_v6(d_df, b_df):
+                        # Use first part of UID (period_label) for grouping
+                        d_df["month"] = d_df["event_uid"].str.split('|').str[0]
+                        b_df["month"] = b_df["event_uid"].str.split('|').str[0]
+                        all_months = sorted(set(d_df["month"]) | set(b_df["month"]), key=lambda x: pd.to_datetime(x, format="%b %Y", errors='coerce'))
+                        
+                        res = []
+                        for m in all_months:
+                            dq = len(d_df[(d_df["month"] == m) & (d_df["event_uid"].str.contains("|QUIT"))])
+                            bq = len(b_df[(b_df["month"] == m) & (b_df["event_uid"].str.contains("|QUIT"))])
+                            dr = len(d_df[(d_df["month"] == m) & (d_df["event_uid"].str.contains("|RETIREMENT"))])
+                            br = len(b_df[(b_df["month"] == m) & (b_df["event_uid"].str.contains("|RETIREMENT"))])
+                            res.append({
+                                "Monat": m,
+                                "QUIT (P3)": dq, "QUIT (Bank)": bq,
+                                "RET (P3)": dr, "RET (Bank)": br,
+                                "Identisch?": "✅" if (dq == bq and dr == br) else "❌"
+                            })
+                        return pd.DataFrame(res)
+                    
+                    st.dataframe(_get_monthly_comp_v6(detail_ref_df.copy(), exits_bank.copy()).head(36), use_container_width=True, hide_index=True)
+
+                # 3. Bank Exclusion Analysis (Goal 2)
+                if detail_ref_df is not None:
+                    gap_keys = key_detail - key_bank
+                    if gap_keys:
+                        st.markdown(f"#### 🚫 Bank-Exklusions Analyse (Gap: {len(gap_keys)} Events)")
+                        gap_df = detail_ref_df[detail_ref_df["event_uid"].isin(gap_keys)].copy()
+                        
+                        def _explain_v6(row):
+                            rl = str(row.get("reason_label", ""))
+                            hc = row.get("headcount_change", 0)
+                            mak = row.get("mak_change", 0)
+                            
+                            # Check categorization rules
+                            if "Statuswechsel" in rl or "Conversion" in rl: return "Regel: Azubi/Statuswechsel (Kein Bank-Exit)"
+                            if "Ruhend" in rl: return "Regel: Ruhend (Nicht-permanenter Abgang)"
+                            
+                            # Detection of Patch 4 decoupling
+                            if hc < 0 and mak == 0: return "Sollte in Bank sein (Check Patch 4 Integration)"
+                            return "Filterabweichung (Stichtag/Pool)"
+                        
+                        gap_df["dropped_due_to_mak_filter"] = (gap_df["headcount_change"] < 0) & (gap_df["mak_change"] == 0)
+                        gap_df["Begründung"] = gap_df.apply(_explain_v6, axis=1)
+                        
+                        display_cols = ["event_date", "persnr", "reason_label", "headcount_change", "mak_change", "dropped_due_to_mak_filter", "Begründung"]
+                        st.dataframe(gap_df[display_cols].head(50), use_container_width=True, hide_index=True)
+
+                # Eligibility Debug (Requirement C.1)
+                with st.expander("🛠️ Ursachen-Analyse: Kündigungs-Abweichung (217 vs 169)", expanded=False):
+                    st.markdown("**Eligibility Check (Eligible for QUIT):**")
+                    # Simulation in Abgänge Page (217) uses GLOBAL population.
+                    # Hybrid (169) uses GLOBAL population but might have different active components.
+                    # Gap 217 vs 169: check if any filters or excluded statuses (Ruhend, Azubi) are applied differently.
+                    
+                    if not df_ma.empty:
+                        c_ruhend = len(df_ma[df_ma["Status kundenindividuell"] == "Ruhendes Beschäftigungsverhältnis"])
+                        c_azubi = len(df_ma[df_ma["Status kundenindividuell"].str.contains("Auszubildende", na=False)])
+                        c_no_mak = len(df_ma[df_ma["mak"] <= 0])
+                        
+                        st.write({
+                            "Gesamt-Personalstand (Aggregiert)": len(df_ma),
+                            "Davon Ruhend": c_ruhend,
+                            "Davon Azubi/Intern": c_azubi,
+                            "Davon MAK <= 0 (Filterkriterium?)": c_no_mak
+                        })
+                        st.caption("Hinweis: In Page 3 werden alle 'Köpfe' simuliert, Hybrid könnte durch Vor-Filterung (z.B. nur MAK>0) Personen verlieren.")
+
+                st.markdown("---")
+                # RECO COUNTS (Fix for NameError crash)
+                c_tech = len(combined_events_in_scope[combined_events_in_scope["headcount_change"] < 0])
+                c_detail = len(key_detail)
+                c_bank = len(key_bank)
+                c_inter = len(key_detail & key_bank)
+
                 st.write({
                     "1. Abgänge technisch (HC<0)": c_tech,
                     "2. Abgänge Detailseite (Ref Page 3)": c_detail,
@@ -1154,12 +1310,15 @@ def main():
 
                 if c_inter == 0 and c_detail > 0 and c_bank > 0:
                     st.error("🚨 KRITISCH: Keine Schnittmenge gefunden! Prüfe Key-Definitionen (PersNr Padding?).")
-                    with st.expander("🔬 Key-Debugging (Samples)", expanded=True):
-                         c1, c2 = st.columns(2)
-                         c1.write("Sample Detail Key:")
-                         c1.code(list(key_detail)[:3])
-                         c2.write("Sample Bank Key:")
-                         c2.code(list(key_bank)[:3])
+                    with st.expander("🔬 Key-Debugging (Sample Rows)", expanded=True):
+                         dbg_cols = [c for c in ["event_date", "period_start", "period_end", "persnr", "reason_code", "reason_label", "event_uid"] if c in combined_events_in_scope.columns]
+                         
+                         st.markdown("**Detail Seite (Top 10):**")
+                         if detail_ref_df is not None:
+                             st.dataframe(detail_ref_df[dbg_cols].head(10), use_container_width=True)
+                         
+                         st.markdown("**Bank Cockpit (Top 10):**")
+                         st.dataframe(exits_bank[dbg_cols].head(10), use_container_width=True)
 
                 # Audit Table (Robust & Explicit)
                 with st.expander("🔎 Audit: Datenquellen & Definitionen", expanded=False):
@@ -1173,7 +1332,6 @@ def main():
                     ]
                     audit_df = pd.DataFrame(audit_rows, columns=audit_cols)
                     st.dataframe(audit_df, use_container_width=True, hide_index=True)
-                    st.caption(f"Audit Rows: {len(audit_df)}")
 
                 col_d1, col_d2 = st.columns(2)
                 
@@ -1184,7 +1342,7 @@ def main():
                     if diff_detail_bank:
                         st.caption("Events auf Detailseite (Ref P3), die im Bank-Cockpit fehlen:")
                         # Events might be in Hybrid OR only in P3
-                        # Check Hybrid first
+                        # Use the standardized UID for filtering
                         df_d_only = combined_events_in_scope[combined_events_in_scope["event_uid"].isin(diff_detail_bank)]
                         
                         if df_d_only.empty and p3_exists:

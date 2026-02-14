@@ -352,7 +352,7 @@ def _simulate_new_azubis(
     import uuid
     for i in range(num_cases):
         # Random start date in allowed period segment
-        entry_date = eff_start + pd.Timedelta(days=rng.randint(0, eff_days + 1))
+        entry_date = eff_start + pd.Timedelta(days=rng.integers(0, eff_days + 1))
         
         # Professional unique ID (id: 16)
         unique_suffix = str(uuid.uuid4())[:4]
@@ -445,11 +445,11 @@ def _simulate_trainees(
 
     for _ in range(num_cases):
         # Generate new Trainee
-        new_id = f"TR_{rng.randint(10000, 99999)}"
+        new_id = f"TR_{rng.integers(10000, 99999)}"
         # Check collision? Unlikely with prefix.
         
         org_unit = _resolve_org_unit(strategy, target_unit, all_org_units, [], rng)
-        entry_date = eff_start + pd.Timedelta(days=rng.randint(0, eff_days + 1))
+        entry_date = eff_start + pd.Timedelta(days=rng.integers(0, eff_days + 1))
         
         # Add to State
         # We assume df_state structure matches
@@ -527,8 +527,8 @@ def _simulate_hires(
     if eff_days < 0: eff_days = 0
 
     for _ in range(num_cases):
-        new_id = f"NH_{rng.randint(10000, 99999)}"
-        entry_date = eff_start + pd.Timedelta(days=rng.randint(0, eff_days + 1))
+        new_id = f"NH_{rng.integers(10000, 99999)}"
+        entry_date = eff_start + pd.Timedelta(days=rng.integers(0, eff_days + 1))
         
         # Determine Attributes
         org_unit = "Unbekannt"
@@ -622,16 +622,19 @@ def run_forecast_zugaenge(
         from .params import default_params
         params = default_params()
         
-    rng = np.random.RandomState(params.get("random_seed", 42))
+    # RNG Isolation (Contract V6)
+    base_seed = int(params.get("random_seed", 42))
+    ss = np.random.SeedSequence(base_seed)
+    rng = np.random.default_rng(ss.spawn(1)[0])
     
     # Prepare State
     df_state = df_snapshot.copy()
     if "active" not in df_state.columns:
         df_state["active"] = True # Assume snapshot is all active
         
-    # Index Optimization (id: 16 - Fix Indexing)
     if not df_state.empty and "PersNr" in df_state.columns:
         df_state.set_index("PersNr", drop=False, inplace=True)
+        df_state.sort_index(inplace=True)
         
     # Get all OrgUnits for random assignment
     all_org_units = []

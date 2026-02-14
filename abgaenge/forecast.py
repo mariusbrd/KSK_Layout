@@ -286,7 +286,7 @@ def _schedule_new_atz_cases(
     if COL_OE_CODE in df_state.columns:
         mask = mask & (~df_state[COL_OE_CODE].astype(str).isin(EXCLUDED_OE_CODES))
 
-    eligible = df_state[mask]
+    eligible = df_state[mask].sort_index()
 
     if eligible.empty:
         return atz_pivot
@@ -317,7 +317,7 @@ def _schedule_new_atz_cases(
 
     new_rows = []
     for persnr in chosen:
-        offset_days = rng.randint(0, max(1, (period.end - period.start).days + 1))
+        offset_days = rng.integers(0, max(1, (period.end - period.start).days + 1))
         ar_start = period.start + pd.Timedelta(days=int(offset_days))
         ar_end = ar_start + pd.DateOffset(months=ar_months)
         fr_start = ar_end + pd.Timedelta(days=1)
@@ -540,15 +540,26 @@ def run_forecast_abgaenge(
     if missing:
         raise ValueError(f"Mitarbeiter.xlsx fehlt Spalten: {', '.join(missing)}")
 
-    rng = np.random.RandomState(int(params.get("random_seed", 42)))
+    # RNG Isolation (Contract V6)
+    # Using SeedSequence to spawn independent streams per component.
+    base_seed = int(params.get("random_seed", 42))
+    ss = np.random.SeedSequence(base_seed)
+    
+    # Spawn 5 distinct seeds for abgaenge components
+    seeds = ss.spawn(5)
+    rng_atz = np.random.default_rng(seeds[0])
+    rng_ret = np.random.default_rng(seeds[1])
+    rng_quit = np.random.default_rng(seeds[2])
+    rng_ruh_new = np.random.default_rng(seeds[3])
+    rng_ruh_ret = np.random.default_rng(seeds[4])
 
     # Build baseline state
     df_state = df_ma.copy()
     if COL_PERSNR in df_state.columns:
-        df_state[COL_PERSNR] = df_state[COL_PERSNR].astype(str)
+        # Standardize PersNr for sorting and matching
+        df_state[COL_PERSNR] = df_state[COL_PERSNR].astype(str).str.split('.').str[0].str.zfill(6)
 
     df_state = df_state.set_index(COL_PERSNR, drop=True)
-    df_state.index = df_state.index.astype(str)
     
     if df_state.index.duplicated().any():
         df_state = df_state[~df_state.index.duplicated(keep='first')]
@@ -564,9 +575,10 @@ def run_forecast_abgaenge(
         fr_active = fr_rows[
             (fr_rows[COL_ATZ_BEGINN] <= start_date) & (fr_rows[COL_ATZ_ENDE] >= start_date)
         ]
-        atz_fr_active = set(fr_active[COL_PERSNR].dropna().astype(str))
+        atz_fr_active = set(fr_active[COL_PERSNR].dropna().astype(str).str.split('.').str[0].str.zfill(6))
 
-    df_state["in_atz"] = df_state.index.isin(df_atz[COL_PERSNR].dropna().astype(str).unique()) if not df_atz.empty else False
+    all_atz_persnrs = set(df_atz[COL_PERSNR].dropna().astype(str).str.split('.').str[0].str.zfill(6)) if not df_atz.empty else set()
+    df_state["in_atz"] = df_state.index.isin(all_atz_persnrs)
     df_state["atz_fr_active"] = df_state.index.isin(atz_fr_active)
     df_state["active"] = True
 
@@ -594,9 +606,10 @@ def run_forecast_abgaenge(
     df_state["mak_before_ruhend"] = df_state["mak"]
     df_state.loc[df_state["status_ruhend"], "ruhend_until"] = start_date + pd.DateOffset(months=ruhend_months)
 
+    # Standardize ATZ Pivot PersNr
     atz_pivot = _build_atz_pivot(df_atz)
-
     if not atz_pivot.empty:
+        atz_pivot[COL_PERSNR] = atz_pivot[COL_PERSNR].astype(str).str.split('.').str[0].str.zfill(6)
         valid_persnrs = set(df_state.index)
         atz_pivot = atz_pivot[atz_pivot[COL_PERSNR].isin(valid_persnrs)].copy()
 
@@ -620,34 +633,31 @@ def run_forecast_abgaenge(
 
     for period in periods:
         period_days = max(1, (period.end - period.start).days)
-        # KPI START CAPTURE REMOVED -> Handled by Aggregator
-        
         period_deactivated: set = set()
 
         df_state["age"] = _calc_age(df_state[COL_GEB], period.start)
         df_state["tenure"] = _calc_tenure(df_state[COL_EINTRITT], period.start)
 
-        # Schedule new ATZ cases for this period
-        if params.get("components", {}).get("atz", True):
-            atz_pivot = _schedule_new_atz_cases(df_state, atz_pivot, params, period, rng)
-            df_state["in_atz"] = df_state.index.isin(atz_pivot[COL_PERSNR].dropna().astype(str).unique())
+        # ---------------------------------------------------------
+        # Patch 3: Strict Monthly Execution Order
+        # ---------------------------------------------------------
 
-        # ATZ events
+        # A. ATZ Scheduling (uses rng_atz)
+        if params.get("components", {}).get("atz", True):
+            # Sort for deterministic selection? _schedule_new_atz_cases should sort its mask.
+            atz_pivot = _schedule_new_atz_cases(df_state, atz_pivot, params, period, rng_atz)
+            df_state["in_atz"] = df_state.index.isin(atz_pivot[COL_PERSNR].unique())
+
+        # B. ATZ Status Change (Deterministic based on pivot)
         if params.get("components", {}).get("atz", True):
             ar_to_fr, atz_end = _get_atz_events_from_schedule(atz_pivot, period.start, period.end)
 
-            for persnr in ar_to_fr:
+            for persnr in sorted(ar_to_fr): # Deterministic order
                 if persnr in df_state.index and df_state.loc[persnr, "active"]:
-                    # Strict ATZ Logic: Maske sure mak_change is negative
                     current_mak = float(df_state.loc[persnr, "mak"])
-                    if current_mak > 0.001:
-                        mak_change = -current_mak
-                        df_state.loc[persnr, "mak"] = 0.0
-                    else:
-                        # Fallback: Force a negative change to avoid neutralization
-                        mak_change = -1.0 
-                        
+                    mak_change = -current_mak if current_mak > 0.001 else -1.0 
                     df_state.loc[persnr, "atz_fr_active"] = True
+                    df_state.loc[persnr, "mak"] = 0.0
                     events.append({
                         "period_label": period.label,
                         "period_start": period.start,
@@ -658,18 +668,13 @@ def run_forecast_abgaenge(
                         "reason_label": REASON_LABELS[REASON_ATZ_AR_TO_FR],
                         "headcount_change": 0,
                         "mak_change": mak_change,
-                        "source_step": "forecast_atz_ar_to_fr",
                         "age": float(df_state.loc[persnr, "age"]),
                         "tenure": float(df_state.loc[persnr, "tenure"]),
-                        "Organisationseinheit": str(df_state.loc[persnr, "Organisationseinheit"]) if "Organisationseinheit" in df_state.columns else "Unbekannt",
-                        "Kürzel OrgEinheit": str(df_state.loc[persnr, "Kürzel OrgEinheit"]) if "Kürzel OrgEinheit" in df_state.columns else "Unbekannt",
-                        "Jobfamily": str(df_state.loc[persnr, "Jobfamily"]) if "Jobfamily" in df_state.columns else "Unbekannt",
-                        "Planstelle": str(df_state.loc[persnr, "Planstelle"]) if "Planstelle" in df_state.columns else "Unbekannt",
-                        "TrfGr": str(df_state.loc[persnr, "TrfGr"]) if "TrfGr" in df_state.columns else "Unbekannt",
-                        "St": str(df_state.loc[persnr, "St"]) if "St" in df_state.columns else "Unbekannt",
+                        "Organisationseinheit": str(df_state.loc[persnr, "Organisationseinheit"]),
+                        "Jobfamily": str(df_state.loc[persnr, "Jobfamily"]),
                     })
 
-            for persnr in atz_end:
+            for persnr in sorted(atz_end): # Deterministic order
                 if persnr in df_state.index and df_state.loc[persnr, "active"]:
                     mak_change = -float(df_state.loc[persnr, "mak"])
                     df_state.loc[persnr, "mak"] = 0.0
@@ -686,26 +691,19 @@ def run_forecast_abgaenge(
                         "headcount_change": -1,
                         "mak_change": mak_change,
                         "age": float(df_state.loc[persnr, "age"]),
-                        "tenure": float(df_state.loc[persnr, "tenure"]),
-                        "Organisationseinheit": str(df_state.loc[persnr, "Organisationseinheit"]) if "Organisationseinheit" in df_state.columns else "Unbekannt",
-                        "Kürzel OrgEinheit": str(df_state.loc[persnr, "Kürzel OrgEinheit"]) if "Kürzel OrgEinheit" in df_state.columns else "Unbekannt",
-                        "Jobfamily": str(df_state.loc[persnr, "Jobfamily"]) if "Jobfamily" in df_state.columns else "Unbekannt",
-                        "Planstelle": str(df_state.loc[persnr, "Planstelle"]) if "Planstelle" in df_state.columns else "Unbekannt",
-                        "TrfGr": str(df_state.loc[persnr, "TrfGr"]) if "TrfGr" in df_state.columns else "Unbekannt",
-                        "St": str(df_state.loc[persnr, "St"]) if "St" in df_state.columns else "Unbekannt",
                     })
 
-        # Retirement events
+        # C. Retirement (uses rng_ret)
         if params.get("components", {}).get("retirement", True):
-            eligible = df_state[(df_state["active"]) & (~df_state["in_atz"])].copy()
+            eligible = df_state[(df_state["active"]) & (~df_state["in_atz"]) & (~df_state.index.isin(period_deactivated))].copy()
             if not eligible.empty:
-                eligible = eligible[~eligible.index.isin(period_deactivated)]
-            if not eligible.empty:
+                # Patch 2: Stable Sorting
+                eligible = eligible.sort_index()
                 ages = eligible["age"]
                 p65 = _annual_to_period_rate(params.get("retirement", {}).get("rent_rate_65", 0.9), period_days)
                 p60 = _annual_to_period_rate(params.get("retirement", {}).get("rent_rate_60_65", 0.1), period_days)
                 probs = np.where(ages >= 65, p65, np.where((ages >= 60) & (ages < 65), p60, 0.0))
-                draws = rng.random(len(eligible))
+                draws = rng_ret.random(len(eligible))
                 retire_ids = eligible.index[draws < probs].tolist()
 
                 for persnr in retire_ids:
@@ -724,122 +722,81 @@ def run_forecast_abgaenge(
                         "headcount_change": -1,
                         "mak_change": mak_change,
                         "age": float(df_state.loc[persnr, "age"]),
-                        "tenure": float(df_state.loc[persnr, "tenure"]),
-                        "Organisationseinheit": str(df_state.loc[persnr, "Organisationseinheit"]) if "Organisationseinheit" in df_state.columns else "Unbekannt",
-                        "Kürzel OrgEinheit": str(df_state.loc[persnr, "Kürzel OrgEinheit"]) if "Kürzel OrgEinheit" in df_state.columns else "Unbekannt",
-                        "Jobfamily": str(df_state.loc[persnr, "Jobfamily"]) if "Jobfamily" in df_state.columns else "Unbekannt",
-                        "Planstelle": str(df_state.loc[persnr, "Planstelle"]) if "Planstelle" in df_state.columns else "Unbekannt",
-                        "TrfGr": str(df_state.loc[persnr, "TrfGr"]) if "TrfGr" in df_state.columns else "Unbekannt",
-                        "St": str(df_state.loc[persnr, "St"]) if "St" in df_state.columns else "Unbekannt",
                     })
 
-        # Quit events
+        # D. Quit (uses rng_quit) - AFTER Retirement
         if params.get("components", {}).get("quit", True):
-            eligible = df_state[(df_state["active"]) & (~df_state["in_atz"])].copy()
+            eligible = df_state[(df_state["active"]) & (~df_state["in_atz"]) & (~df_state.index.isin(period_deactivated))].copy()
             if not eligible.empty:
-                eligible = eligible[~eligible.index.isin(period_deactivated)]
-            if not eligible.empty:
+                # Patch 2: Stable Sorting
+                eligible = eligible.sort_index()
                 probs = []
                 for _, row in eligible.iterrows():
                     annual = _select_quit_prob(row, params)
                     probs.append(_annual_to_period_rate(annual, period_days))
                 probs = np.array(probs)
-                draws = rng.random(len(eligible))
+                draws = rng_quit.random(len(eligible))
                 quit_ids = eligible.index[draws < probs].tolist()
 
                 for persnr in quit_ids:
-                    if df_state.loc[persnr, "active"]:
-                        mak_change = -float(df_state.loc[persnr, "mak"])
-                        df_state.loc[persnr, "mak"] = 0.0
-                        df_state.loc[persnr, "active"] = False
-                        events.append({
-                            "period_label": period.label,
-                            "period_start": period.start,
-                            "period_end": period.end,
-                            "event_date": period.end,
-                            "persnr": persnr,
-                            "reason_code": REASON_QUIT,
-                            "reason_label": REASON_LABELS[REASON_QUIT],
-                            "headcount_change": -1,
-                            "mak_change": mak_change,
-                            "age": float(df_state.loc[persnr, "age"]),
-                            "tenure": float(df_state.loc[persnr, "tenure"]),
-                            "Organisationseinheit": str(df_state.loc[persnr, "Organisationseinheit"]) if "Organisationseinheit" in df_state.columns else "Unbekannt",
-                            "Kürzel OrgEinheit": str(df_state.loc[persnr, "Kürzel OrgEinheit"]) if "Kürzel OrgEinheit" in df_state.columns else "Unbekannt",
-                            "Jobfamily": str(df_state.loc[persnr, "Jobfamily"]) if "Jobfamily" in df_state.columns else "Unbekannt",
-                            "Planstelle": str(df_state.loc[persnr, "Planstelle"]) if "Planstelle" in df_state.columns else "Unbekannt",
-                            "TrfGr": str(df_state.loc[persnr, "TrfGr"]) if "TrfGr" in df_state.columns else "Unbekannt",
-                            "St": str(df_state.loc[persnr, "St"]) if "St" in df_state.columns else "Unbekannt",
-                        })
+                    mak_change = -float(df_state.loc[persnr, "mak"])
+                    df_state.loc[persnr, "mak"] = 0.0
+                    df_state.loc[persnr, "active"] = False
+                    period_deactivated.add(persnr) # Not strictly needed as it's the end of exits, but good practice
+                    events.append({
+                        "period_label": period.label,
+                        "period_start": period.start,
+                        "period_end": period.end,
+                        "event_date": period.end,
+                        "persnr": persnr,
+                        "reason_code": REASON_QUIT,
+                        "reason_label": REASON_LABELS[REASON_QUIT],
+                        "headcount_change": -1,
+                        "mak_change": mak_change,
+                        "age": float(df_state.loc[persnr, "age"]),
+                    })
 
-        # Ruhend return events
+        # E. Ruhend logic (return then new)
         if params.get("components", {}).get("ruhend", True):
+            # Return
             return_rate = float(params.get("ruhend", {}).get("ruhend_return_rate", 0.95))
             return_prob = _annual_to_period_rate(return_rate, period_days)
-            eligible = df_state[(df_state["active"]) & (df_state["status_ruhend"])].copy()
+            eligible = df_state[(df_state["active"]) & (df_state["status_ruhend"]) & (~df_state.index.isin(period_deactivated))].copy()
             if not eligible.empty:
+                eligible = eligible.sort_index() # Patch 2
                 can_return = eligible[eligible["ruhend_until"].notna() & (eligible["ruhend_until"] <= period.start)]
                 if not can_return.empty:
-                    draws = rng.random(len(can_return))
+                    draws = rng_ruh_ret.random(len(can_return))
                     return_ids = can_return.index[draws < return_prob].tolist()
-
                     for persnr in return_ids:
                         df_state.loc[persnr, "status_ruhend"] = False
                         df_state.loc[persnr, "mak"] = float(df_state.loc[persnr, "mak_before_ruhend"])
                         df_state.loc[persnr, "ruhend_until"] = pd.NaT
                         events.append({
-                            "period_label": period.label,
-                            "period_start": period.start,
-                            "period_end": period.end,
-                            "event_date": period.end,
-                            "persnr": persnr,
-                            "reason_code": REASON_RUHEND_RETURN,
-                            "reason_label": REASON_LABELS[REASON_RUHEND_RETURN],
-                            "headcount_change": 0,
-                            "mak_change": float(df_state.loc[persnr, "mak"]),
-                            "age": float(df_state.loc[persnr, "age"]),
-                            "tenure": float(df_state.loc[persnr, "tenure"]),
-                        "Organisationseinheit": str(df_state.loc[persnr, "Organisationseinheit"]) if "Organisationseinheit" in df_state.columns else "Unbekannt",
-                        "Kürzel OrgEinheit": str(df_state.loc[persnr, "Kürzel OrgEinheit"]) if "Kürzel OrgEinheit" in df_state.columns else "Unbekannt",
-                        "Jobfamily": str(df_state.loc[persnr, "Jobfamily"]) if "Jobfamily" in df_state.columns else "Unbekannt",
-                        "Planstelle": str(df_state.loc[persnr, "Planstelle"]) if "Planstelle" in df_state.columns else "Unbekannt",
-                        "TrfGr": str(df_state.loc[persnr, "TrfGr"]) if "TrfGr" in df_state.columns else "Unbekannt",
-                        "St": str(df_state.loc[persnr, "St"]) if "St" in df_state.columns else "Unbekannt",
+                            "period_label": period.label, "event_date": period.end, "persnr": persnr,
+                            "reason_code": REASON_RUHEND_RETURN, "reason_label": REASON_LABELS[REASON_RUHEND_RETURN],
+                            "headcount_change": 0, "mak_change": float(df_state.loc[persnr, "mak"]),
                         })
-
-        # Ruhend new cases
-        if params.get("components", {}).get("ruhend", True):
+            # New
             expected = float(params.get("ruhend", {}).get("ruhend_new_cases_per_year", 0)) * (period_days / 365.25)
             if expected > 0:
-                count = int(rng.poisson(lam=expected))
+                count = int(rng_ruh_new.poisson(lam=expected))
                 if count > 0:
-                    eligible = df_state[(df_state["active"]) & (~df_state["status_ruhend"]) & (~df_state["in_atz"])].copy()
+                    eligible = df_state[(df_state["active"]) & (~df_state["status_ruhend"]) & (~df_state["in_atz"]) & (~df_state.index.isin(period_deactivated))].copy()
                     if not eligible.empty:
-                        chosen = eligible.sample(n=min(count, len(eligible)), random_state=rng).index.tolist()
+                        # Patch 2: Stable sample
+                        eligible = eligible.sort_index()
+                        chosen = eligible.sample(n=min(count, len(eligible)), random_state=rng_ruh_new).index.tolist()
                         for persnr in chosen:
                             df_state.loc[persnr, "mak_before_ruhend"] = df_state.loc[persnr, "mak"]
-                            mak_change = -float(df_state.loc[persnr, "mak"])
+                            mak_diff = -float(df_state.loc[persnr, "mak"])
                             df_state.loc[persnr, "status_ruhend"] = True
                             df_state.loc[persnr, "mak"] = 0.0
                             df_state.loc[persnr, "ruhend_until"] = period.start + pd.DateOffset(months=ruhend_months)
                             events.append({
-                                "period_label": period.label,
-                                "period_start": period.start,
-                                "period_end": period.end,
-                                "event_date": period.end,
-                                "persnr": persnr,
-                                "reason_code": REASON_RUHEND_START,
-                                "reason_label": REASON_LABELS[REASON_RUHEND_START],
-                                "headcount_change": 0,
-                                "mak_change": mak_change,
-                                "age": float(df_state.loc[persnr, "age"]),
-                                "tenure": float(df_state.loc[persnr, "tenure"]),
-                                "Organisationseinheit": str(df_state.loc[persnr, "Organisationseinheit"]) if "Organisationseinheit" in df_state.columns else "Unbekannt",
-                                "Kürzel OrgEinheit": str(df_state.loc[persnr, "Kürzel OrgEinheit"]) if "Kürzel OrgEinheit" in df_state.columns else "Unbekannt",
-                                "Jobfamily": str(df_state.loc[persnr, "Jobfamily"]) if "Jobfamily" in df_state.columns else "Unbekannt",
-                                "Planstelle": str(df_state.loc[persnr, "Planstelle"]) if "Planstelle" in df_state.columns else "Unbekannt",
-                                "TrfGr": str(df_state.loc[persnr, "TrfGr"]) if "TrfGr" in df_state.columns else "Unbekannt",
-                                "St": str(df_state.loc[persnr, "St"]) if "St" in df_state.columns else "Unbekannt",
+                                "period_label": period.label, "event_date": period.end, "persnr": persnr,
+                                "reason_code": REASON_RUHEND_START, "reason_label": REASON_LABELS[REASON_RUHEND_START],
+                                "headcount_change": 0, "mak_change": mak_diff,
                             })
         
         # KPI Capture MOVED to aggregate_forecast_results
