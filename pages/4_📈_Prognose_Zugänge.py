@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from datetime import date
+from utils.plot_helpers import apply_legend_bottom
 from typing import Any
 from pathlib import Path
 import sys
@@ -111,115 +112,134 @@ def main():
     default_start = get_current_stichtag().date()
     default_end = date(default_start.year + 3, default_start.month, default_start.day)
     
-    # 3. Settings UI
+    # 3. Sidebar Actions (Reset)
+    if st.sidebar.button("♻️ Ergebnisse zurücksetzen", use_container_width=True):
+        st.session_state.pop("zugaenge_global_result", None)
+        st.session_state.pop("zugaenge_vacancies", None)
+        st.rerun()
+
+    # 4. Settings UI
     with st.expander("⚙️ Prognose-Einstellungen", expanded=True):
-        st.markdown("##### 📅 Zeitraum")
-        col_date1, col_date2 = st.columns(2)
-        start_date = col_date1.date_input("Startdatum", value=default_start)
-        end_date = col_date2.date_input("Enddatum", value=default_end)
-        
-        st.divider()
-        
-        # Azubis
-        st.subheader("🎓 1. Azubi-Übernahme & Neueinstellungen")
-        c1, c2, c3, c4 = st.columns(4)
-        azubi_count = c1.number_input("Neue Azubis pro Jahr", 0, 100, params["azubi"].get("new_cases_per_year", 15), key="az_count")
-        retention = c2.slider("Übernahmequote (%)", 0.0, 1.0, params["azubi"]["retention_rate"], 0.05)
-        duration = c3.number_input("Ausbildungsdauer (Jahre)", 1.0, 5.0, params["azubi"]["duration_years"], 0.5)
-        az_strat = c4.selectbox("Verteilung", ["Random", "OrgUnit"], index=0 if params["azubi"]["strategy"] == "Random" else 1, key="az_strat")
-        
-        azubi_target = None
-        if az_strat == "OrgUnit":
-            # Use units from original raw data or aggregated? Aggregated is fine.
-            units = sorted(snapshot_df["Organisationseinheit"].dropna().astype(str).unique())
-            azubi_target = st.selectbox("Ziel-Einheit (Azubi)", units, key="az_unit")
+        with st.form("forecast_inputs"):
+            st.markdown("##### 📅 Zeitraum")
+            col_date1, col_date2 = st.columns(2)
+            start_date = col_date1.date_input("Startdatum", value=default_start)
+            end_date = col_date2.date_input("Enddatum", value=default_end)
             
-        # Optional: Salary Config
-        c5, c6 = st.columns(2)
-        az_tarif = c5.selectbox("Übernahme-Tarif", TARIFF_GROUPS, index=TARIFF_GROUPS.index(params["azubi"]["entry_tariff_group"]) if params["azubi"]["entry_tariff_group"] in TARIFF_GROUPS else 5, key="az_tarif")
-        az_step = c6.number_input("Übernahme-Stufe", 1, 6, params["azubi"]["entry_step"], key="az_step")
-            
-        st.divider()
-        
-        # Trainees
-        st.subheader("🚀 2. Trainee-Programm")
-        t1, t2, t3, t4 = st.columns(4)
-        trainee_count = t1.number_input("Neue Trainees pro Jahr", 0, 100, params["trainee"]["new_cases_per_year"])
-        trainee_dur = t2.number_input("Dauer (Jahre)", 0.5, 3.0, params["trainee"]["duration_years"], 0.5)
-        trainee_sal = t3.selectbox("Einstiegsgehalt", TARIFF_GROUPS, index=TARIFF_GROUPS.index(params["trainee"]["salary_group"]) if params["trainee"]["salary_group"] in TARIFF_GROUPS else 12)
-        tr_strat = t4.selectbox("Verteilung", ["Random", "OrgUnit"], index=0, key="tr_strat")
-        
-        trainee_target = None
-        if tr_strat == "OrgUnit":
-             units = sorted(snapshot_df["Organisationseinheit"].dropna().astype(str).unique())
-             trainee_target = st.selectbox("Ziel-Einheit (Trainee)", units, key="tr_unit")
-             
-        st.divider()
-        
-        # New Hires
-        st.subheader("💼 3. Neueinstellungen")
-        h1, h2, h3 = st.columns(3)
-        hire_count = h1.number_input("Einstellungen pro Jahr", 0, 500, params["new_hires"]["count_per_year"])
-        hire_strat = h2.selectbox(
-            "Strategie", 
-            ["Random", "OrgUnit", "Fill Vacancies"], 
-            index=2, # Default Fill Vacancies
-            help="'Fill Vacancies' nutzt die Abgangsprognose (Standard-Parameter), um Lücken zu füllen.",
-            key="hi_strat"
-        )
-        
-        hire_target = None
-        if hire_strat == "OrgUnit":
-             units = sorted(snapshot_df["Organisationseinheit"].dropna().astype(str).unique())
-             hire_target = st.selectbox("Ziel-Einheit (Hire)", units, key="hi_unit")
+            st.divider()
 
-        # --- New Hire Distribution Matrix ---
-        with st.expander("📊 Verteilung Neueinstellungen (Matrix)", expanded=False):
-            st.caption("Steuern Sie, in welchen Bereichen neue Stellen (ohne Nachbesetzung) entstehen.")
+            # --- Row 2: Component Toggles (horizontal) ---
+            st.markdown("##### 🧩 Aktive Komponenten (Zugänge)")
+            cc1, cc2, cc3 = st.columns(3)
+            with cc1:
+                use_azubis = st.checkbox("Azubis", value=True, help="Azubi-Einstellungen + Übernahmen (MAK-wirksam bei Übernahme)")
+            with cc2:
+                use_trainees = st.checkbox("Trainees", value=True, help="Trainee-Programm inkl. Einstellungen")
+            with cc3:
+                use_newhires = st.checkbox("Neueinstellungen", value=True, help="Externe Einstellungen / Nachbesetzung")
+
+            st.divider()
             
-            # 1. Calculate Default Distribution from Snapshot
-            # Group by JobFamily and OE-Cluster
-            if "Jobfamily" in snapshot_df.columns and "OE-Cluster" in snapshot_df.columns:
-                dist_base = snapshot_df.groupby(["Jobfamily", "OE-Cluster"]).size().reset_index(name="Count")
-                total_n = dist_base["Count"].sum()
-                dist_base["Share %"] = (dist_base["Count"] / total_n).round(4)
+            # Azubis
+            st.subheader("🎓 1. Azubi-Übernahme & Neueinstellungen")
+            c1, c2, c3, c4 = st.columns(4)
+            azubi_count = c1.number_input("Neue Azubis pro Jahr", 0, 100, params["azubi"].get("new_cases_per_year", 15), key="az_count")
+            retention = c2.slider("Übernahmequote (%)", 0.0, 1.0, float(params["azubi"]["retention_rate"]), 0.05)
+            duration = c3.number_input("Ausbildungsdauer (Jahre)", 1.0, 5.0, params["azubi"]["duration_years"], 0.5)
+            az_strat = c4.selectbox("Verteilung", ["Random", "OrgUnit"], index=0 if params["azubi"]["strategy"] == "Random" else 1, key="az_strat")
+            
+            azubi_target = None
+            if az_strat == "OrgUnit":
+                # Use units from original raw data or aggregated? Aggregated is fine.
+                units = sorted(snapshot_df["Organisationseinheit"].dropna().astype(str).unique())
+                azubi_target = st.selectbox("Ziel-Einheit (Azubi)", units, key="az_unit")
                 
-                # Sort by Share desc
-                dist_base = dist_base.sort_values("Share %", ascending=False).reset_index(drop=True)
-                dist_base = dist_base[["Jobfamily", "OE-Cluster", "Share %"]]
-            else:
-                # Fallback if columns missing
-                dist_base = pd.DataFrame([
-                    {"Jobfamily": "Angestellte", "OE-Cluster": "Unclustered", "Share %": 1.0}
-                ])
-
-            # 2. Render Editor
-            edited_dist = st.data_editor(
-                dist_base,
-                column_config={
-                    "Share %": st.column_config.NumberColumn(
-                        "Anteil (0.0 - 1.0)",
-                        min_value=0.0,
-                        max_value=1.0,
-                        step=0.01,
-                        format="%.2f"
-                    )
-                },
-                use_container_width=True,
-                num_rows="dynamic",
-                key="hire_dist_matrix"
+            # Optional: Salary Config
+            c5, c6 = st.columns(2)
+            az_tarif = c5.selectbox("Übernahme-Tarif", TARIFF_GROUPS, index=TARIFF_GROUPS.index(params["azubi"]["entry_tariff_group"]) if params["azubi"]["entry_tariff_group"] in TARIFF_GROUPS else 5, key="az_tarif")
+            az_step = c6.number_input("Übernahme-Stufe", 1, 6, params["azubi"]["entry_step"], key="az_step")
+                
+            st.divider()
+            
+            # Trainees
+            st.subheader("🚀 2. Trainee-Programm")
+            t1, t2, t3, t4 = st.columns(4)
+            trainee_count = t1.number_input("Neue Trainees pro Jahr", 0, 100, params["trainee"]["new_cases_per_year"])
+            trainee_dur = t2.number_input("Dauer (Jahre)", 0.5, 3.0, params["trainee"]["duration_years"], 0.5)
+            trainee_sal = t3.selectbox("Einstiegsgehalt", TARIFF_GROUPS, index=TARIFF_GROUPS.index(params["trainee"]["salary_group"]) if params["trainee"]["salary_group"] in TARIFF_GROUPS else 12)
+            tr_strat = t4.selectbox("Verteilung", ["Random", "OrgUnit"], index=0, key="tr_strat")
+            
+            trainee_target = None
+            if tr_strat == "OrgUnit":
+                 units = sorted(snapshot_df["Organisationseinheit"].dropna().astype(str).unique())
+                 trainee_target = st.selectbox("Ziel-Einheit (Trainee)", units, key="tr_unit")
+                 
+            st.divider()
+            
+            # New Hires
+            st.subheader("💼 3. Neueinstellungen")
+            h1, h2, h3 = st.columns(3)
+            hire_count = h1.number_input("Einstellungen pro Jahr", 0, 500, params["new_hires"]["count_per_year"])
+            hire_strat = h2.selectbox(
+                "Strategie", 
+                ["Random", "OrgUnit", "Fill Vacancies"], 
+                index=2, # Default Fill Vacancies
+                help="'Fill Vacancies' nutzt die Abgangsprognose (Standard-Parameter), um Lücken zu füllen.",
+                key="hi_strat"
             )
             
-            # 3. Normalize check (visual feedback)
-            total_share = edited_dist["Share %"].sum()
-            if not (0.99 <= total_share <= 1.01):
-                st.warning(f"⚠️ Summe der Anteile ist {total_share:.2%} (sollte 100% sein). Werte werden bei der Simulation normalisiert.")
-            
-            # Convert to list of dicts for backend
-            hire_distribution = edited_dist.to_dict("records")
+            hire_target = None
+            if hire_strat == "OrgUnit":
+                 units = sorted(snapshot_df["Organisationseinheit"].dropna().astype(str).unique())
+                 hire_target = st.selectbox("Ziel-Einheit (Hire)", units, key="hi_unit")
+
+            # --- New Hire Distribution Matrix ---
+            with st.expander("📊 Verteilung Neueinstellungen (Matrix)", expanded=False):
+                st.caption("Steuern Sie, in welchen Bereichen neue Stellen (ohne Nachbesetzung) entstehen.")
+                
+                # 1. Calculate Default Distribution from Snapshot
+                # Group by JobFamily and OE-Cluster
+                if "Jobfamily" in snapshot_df.columns and "OE-Cluster" in snapshot_df.columns:
+                    dist_base = snapshot_df.groupby(["Jobfamily", "OE-Cluster"]).size().reset_index(name="Count")
+                    total_n = dist_base["Count"].sum()
+                    dist_base["Share %"] = (dist_base["Count"] / total_n).round(4)
+                    
+                    # Sort by Share desc
+                    dist_base = dist_base.sort_values("Share %", ascending=False).reset_index(drop=True)
+                    dist_base = dist_base[["Jobfamily", "OE-Cluster", "Share %"]]
+                else:
+                    # Fallback if columns missing
+                    dist_base = pd.DataFrame([
+                        {"Jobfamily": "Angestellte", "OE-Cluster": "Unclustered", "Share %": 1.0}
+                    ])
+
+                # 2. Render Editor
+                edited_dist = st.data_editor(
+                    dist_base,
+                    column_config={
+                        "Share %": st.column_config.NumberColumn(
+                            "Anteil (0.0 - 1.0)",
+                            min_value=0.0,
+                            max_value=1.0,
+                            step=0.01,
+                            format="%.2f"
+                        )
+                    },
+                    use_container_width=True,
+                    num_rows="dynamic",
+                    key="hire_dist_matrix"
+                )
+                
+                # 3. Normalize check (visual feedback)
+                total_share = edited_dist["Share %"].sum()
+                if not (0.99 <= total_share <= 1.01):
+                    st.warning(f"⚠️ Summe der Anteile ist {total_share:.2%} (sollte 100% sein). Werte werden bei der Simulation normalisiert.")
+                
+                # Convert to list of dicts for backend
+                hire_distribution = edited_dist.to_dict("records")
             
 
-        submit = st.button("🚀 Prognose berechnen", use_container_width=True)
+            submit = st.form_submit_button("🚀 Prognose berechnen", use_container_width=True)
         
     # Logic: Run calculation OR Load from SessState
     res = None
@@ -230,6 +250,7 @@ def main():
         # Build Params
         run_params = {
             "azubi": {
+                "active": use_azubis,
                 "new_cases_per_year": azubi_count,
                 "retention_rate": retention,
                 "duration_years": duration,
@@ -239,6 +260,7 @@ def main():
                 "entry_step": az_step,
             },
             "trainee": {
+                "active": use_trainees,
                 "new_cases_per_year": trainee_count,
                 "duration_years": trainee_dur,
                 "salary_group": trainee_sal,
@@ -246,6 +268,7 @@ def main():
                 "target_org_unit": trainee_target
             },
             "new_hires": {
+                "active": use_newhires,
                 "count_per_year": hire_count,
                 "strategy": hire_strat,
                 "target_org_unit": hire_target,
@@ -314,29 +337,14 @@ def main():
         res = run_forecast_zugaenge(
             df_snapshot=snapshot_df,
             start_date=pd.Timestamp(start_date),
-            periods_years=(end_date.year - start_date.year) + 1, # Approx
-            params=run_params,
+            end_date=pd.Timestamp(end_date),
+            freq="M",
+            params={**run_params, "random_seed": 42},
             vacancies=vacancies
         )
-        # Store Result
-        st.session_state["zugaenge_global_result"] = res
-        st.session_state["zugaenge_vacancies"] = vacancies
-    
-    elif "zugaenge_global_result" in st.session_state:
-        res = st.session_state["zugaenge_global_result"]
-        vacancies = st.session_state.get("zugaenge_vacancies", [])
-    else:
-        st.info("⬆️ Parameter einstellen und Prognose berechnen.")
         
-    
-    if res is not None:
+        # ── 3. Ergebnis-Aufbereitung (Enrichment) ──
         events_df = res["events"]
-        # zog_kpis is not used here, we re-aggregate later.
-
-        # ── 3. Ergebnis-Aufbereitung ──
-        
-        # --- Feature: Enrich events with OE-Cluster & JF-Cluster (MOVED UP) ---
-        # Must happen BEFORE filtering so we can filter by these clusters.
         if not events_df.empty:
             if "org_unit" in events_df.columns and "Organisationseinheit" not in events_df.columns:
                 events_df = events_df.rename(columns={"org_unit": "Organisationseinheit"})
@@ -352,21 +360,15 @@ def main():
                 mapped_oe = events_df["persnr_str"].map(oe_cluster_map)
                 
                 if "OE-Cluster" in events_df.columns:
-                    # Prefer existing forecast value (e.g. New Hire Matrix), fallback to Snapshot map
-                    # Note: "Unclustered" might be a filled value, so we treat only NaN/None as "missing"
                     events_df["OE-Cluster"] = events_df["OE-Cluster"].fillna(mapped_oe).fillna("Unclustered")
                 else:
                     events_df["OE-Cluster"] = mapped_oe.fillna("Unclustered")
                 
-                # FALLBACK: If PersNr mapping failed (New Hires have fake IDs), try map via OrgUnit
-                # Only apply if value is still "Unclustered" or missing
                 org_cluster_map = snapshot_df.set_index("Organisationseinheit")["OE-Cluster"].to_dict()
                 mask_unclustered = (events_df["OE-Cluster"] == "Unclustered") | (events_df["OE-Cluster"].isna())
                 
                 if mask_unclustered.any() and "Organisationseinheit" in events_df.columns:
-                    # Apply Map
                     fill_vals = events_df.loc[mask_unclustered, "Organisationseinheit"].map(org_cluster_map)
-                    # Update only where unclustered
                     events_df.loc[mask_unclustered, "OE-Cluster"] = fill_vals.fillna("Unclustered")
             else:
                 if "OE-Cluster" not in events_df.columns:
@@ -382,7 +384,6 @@ def main():
                 else:
                     events_df["JF-Cluster"] = mapped_jf.fillna("Unclustered")
                 
-                # FALLBACK for New Hires: via (OrgUnit, Planstelle) or Planstelle
                 mask_unclustered_jf = (events_df["JF-Cluster"] == "Unclustered") | (events_df["JF-Cluster"].isna())
                 if mask_unclustered_jf.any():
                     from dataloader.cluster_manager import load_cluster_mappings
@@ -391,7 +392,6 @@ def main():
                     if jf_map:
                         first_key = next(iter(jf_map.keys()), None)
                         if isinstance(first_key, tuple):
-                             # Combination mapping
                              if "Organisationseinheit" in events_df.columns and "Planstelle" in events_df.columns:
                                  s_org = events_df.loc[mask_unclustered_jf, "Organisationseinheit"].astype(str).str.strip()
                                  s_pos = events_df.loc[mask_unclustered_jf, "Planstelle"].astype(str).str.strip()
@@ -400,24 +400,48 @@ def main():
                         elif "Planstelle" in events_df.columns:
                              events_df.loc[mask_unclustered_jf, "JF-Cluster"] = events_df.loc[mask_unclustered_jf, "Planstelle"].map(jf_map).fillna("Unclustered")
             
-            # NEW: Fallback via Jobfamily (Snapshot Lookup)
-            # If still Unclustered, try to map Jobfamily -> JF-Cluster (using mode/first from Snapshot)
             if "JF-Cluster" in events_df.columns and "Jobfamily" in events_df.columns:
                 mask_still_unclustered = (events_df["JF-Cluster"] == "Unclustered") | (events_df["JF-Cluster"].isna())
-                
                 if mask_still_unclustered.any():
-                    # Build Map: Jobfamily -> JF-Cluster (drop duplicates on JF to get unique mapping)
-                    # We take the first available mapping. Ideally this is 1:1.
                     snap_jf_map = snapshot_df.dropna(subset=["Jobfamily", "JF-Cluster"]).drop_duplicates("Jobfamily").set_index("Jobfamily")["JF-Cluster"].to_dict()
-                    
-                    # Apply
                     fill_vals_jf = events_df.loc[mask_still_unclustered, "Jobfamily"].map(snap_jf_map)
                     events_df.loc[mask_still_unclustered, "JF-Cluster"] = fill_vals_jf.fillna("Unclustered")
             else:
-                events_df["JF-Cluster"] = "Unclustered"
+                if "JF-Cluster" not in events_df.columns:
+                    events_df["JF-Cluster"] = "Unclustered"
 
             events_df.drop(columns=["persnr_str"], inplace=True)
             snapshot_df.drop(columns=["PersNr_str"], inplace=True, errors="ignore")
+            
+            # Save enriched events back to result
+            res["events"] = events_df
+
+        # Store Result
+        st.session_state["zugaenge_global_result"] = res
+        st.session_state["zugaenge_vacancies"] = vacancies
+        st.session_state["zugaenge_start_date"] = start_date
+        st.session_state["zugaenge_end_date"] = end_date
+        st.session_state["zugaenge_use_azubis"] = use_azubis
+        st.session_state["zugaenge_use_trainees"] = use_trainees
+        st.session_state["zugaenge_use_newhires"] = use_newhires
+    
+    elif "zugaenge_global_result" in st.session_state:
+        res = st.session_state["zugaenge_global_result"]
+        vacancies = st.session_state.get("zugaenge_vacancies", [])
+        start_date = st.session_state.get("zugaenge_start_date", start_date)
+        end_date = st.session_state.get("zugaenge_end_date", end_date)
+        use_azubis = st.session_state.get("zugaenge_use_azubis", use_azubis)
+        use_trainees = st.session_state.get("zugaenge_use_trainees", use_trainees)
+        use_newhires = st.session_state.get("zugaenge_use_newhires", use_newhires)
+    else:
+        st.info("⬆️ Parameter einstellen und Prognose berechnen.")
+        
+    
+    if res is not None:
+        events_df = res["events"]
+        # zog_kpis is not used here, we re-aggregate later.
+
+        # ── 3. Ergebnis-Aufbereitung ──
         
         # Ensure cluster columns exist even if empty
         if "OE-Cluster" not in events_df.columns:
@@ -583,12 +607,41 @@ def main():
             with m3:
                 st.metric("Δ Personalkosten (Jahr)", f"{total_added_cost:,.0f} €")
             
+            # Dynamic Info Text based on active components
+            info_parts = []
+            if use_azubis:
+                if use_trainees or use_newhires:
+                    info_parts.append("Trainee- und externe Einstellungen sind sofort MAK-wirksam.")
+                    info_parts.append("Auszubildende erhöhen zunächst nur Köpfe; MAK wird erst bei der Übernahme wirksam (zeitverzögert).")
+                else:
+                    info_parts.append("Auszubildende erhöhen zunächst nur den Personalbestand (Köpfe).")
+                    info_parts.append("MAK/FTE werden erst bei der Übernahme nach Ausbildungsende wirksam (zeitverzögert).")
+            elif use_trainees or use_newhires:
+                info_parts.append("Trainee- und externe Einstellungen sind i.d.R. sofort MAK/FTE-wirksam und erhöhen Köpfe und MAK gleichzeitig.")
+            
+            if info_parts:
+                st.info(f"💡 **Hinweis:** {' '.join(info_parts)}")
+            
             # DEBUG OUTPUT
             if st.session_state.get("debug_active", False):
                 with st.expander("🐞 Debug-Daten (Zugänge)", expanded=True):
-                    st.write(f"Global Events (Raw): {len(events_df)}")
+                    show_technical_debug = st.toggle(
+                        "🔧 Technische Audit-Kennzahlen anzeigen",
+                        value=False,
+                        help="Zeigt interne Berechnungs- und Lifecycle-Events zur Validierung der Prognoselogik."
+                    )
+                    
+                    if show_technical_debug:
+                        st.markdown("**Technische Audit-Kennzahlen (nicht managementrelevant)**")
+                        st.caption(
+                            "Diese Werte enthalten zusätzlich interne Lifecycle- und Hilfs-Events "
+                            "zur Validierung der Prognoselogik und entsprechen nicht den tatsächlichen Personalzugängen."
+                        )
+                        st.write(f"Global Events (Raw): {len(events_df)}")
+                        st.write(f"Net Count Sum: {events_df['count'].sum()}")
+                        st.divider()
+
                     st.write(f"Gross Entries: {gross_entries}")
-                    st.write(f"Net Count Sum: {events_df['count'].sum()}")
                     st.dataframe(events_df.head(20))
             
             with st.expander("🔍 Details: Bestandsentwicklung (Brutto-Zuwachs)", expanded=False):
@@ -623,34 +676,183 @@ def main():
                     forecast_kpis, 
                     x="period_end", 
                     y=["headcount_end", "mak_end"],
-                    labels={"value": "Anzahl", "period_end": "Datum", "variable": "Metrik"},
+                    labels={
+                        "value": "Anzahl", 
+                        "period_end": "Datum", 
+                        "variable": "Metrik"
+                    },
                     color_discrete_map={"headcount_end": COLORS["accent_blue"], "mak_end": COLORS["accent_green"]}
                 )
-                fig_evo.update_layout(title=None)
+                # Explicitly Rename Traces (Fixes "undefiniert")
+                fig_evo.update_traces(name="Köpfe (Headcount)", selector=dict(name="headcount_end"))
+                fig_evo.update_traces(name="MAK (FTE)", selector=dict(name="mak_end"))
+                
+                def build_entries_caption(use_azubis, use_trainees, use_newhires):
+                    base = "Brutto-Entwicklung durch Zugänge (ohne Berücksichtigung von Abgängen)."
+                    if use_azubis:
+                        if use_trainees or use_newhires:
+                            ext = "(Mix: Trainees/Neueinstellungen sofort MAK-wirksam; Azubis zeitverzögert)"
+                        else:
+                            ext = "(Azubis: MAK-Wirkung erst bei Übernahme)"
+                    else:
+                        ext = "(Zugänge sind sofort MAK-wirksam)"
+                    return f"{base} {ext}"
+
+                fig_evo.update_layout(title=None, hovermode="x unified")
+                fig_evo = apply_legend_bottom(fig_evo)
                 st.plotly_chart(fig_evo, use_container_width=True)
                 # Debug Timeline (Checks Net State)
                 if not forecast_kpis.empty:
                     _render_debug_metric("Timeline End Headcount", float(last["headcount_end"]), float(end_hc), "")
-                st.caption("Brutto-Entwicklung durch Neueinstellungen (ohne Berücksichtigung von Abgängen).")
+                
+                st.caption(build_entries_caption(use_azubis, use_trainees, use_newhires))
                 
                 st.divider()
                 
                 # Section 2: Struktur (Show Gross Entries)
                 st.markdown("### 📥 Zugänge nach Quelle")
+                
+                # 1. Definiere explizite Teilmengen (Strikte Trennung)
+                # A) Alle Azubi-Events (inkl. Statuswechsel Out)
+                events_all_azubi = events_pos[events_pos["type"].astype(str).str.contains("Azubi")]
+                
+                # B) Echte Zugänge (Inflows): headcount_change > 0 -> Hire, Conversion_In, New_Hire, Trainee_Hire
+                valid_types = ["Azubi_Hire", "Azubi_Conversion_In", "New_Hire", "Trainee_Hire"]
                 if not events_pos.empty:
-                    fig_hist = px.histogram(
-                        events_pos, 
-                        x="date", 
-                        color="source", 
-                        text_auto=True,
-                        color_discrete_map={"Azubi": COLORS["accent_blue"], "Trainee": COLORS["accent_green"], "NewHire": COLORS["accent_red"]}
-                    )
-                    fig_hist.update_layout(title=None)
-                    st.plotly_chart(fig_hist, use_container_width=True)
-                    # Debug Source Hist (Check against Gross Entries)
-                    _render_debug_metric("Source Chart Sum", len(events_pos), gross_entries, "")
+                    events_inflows = events_pos[events_pos["type"].isin(valid_types)].copy()
                 else:
-                    st.info("Keine Zugangs-Events vorhanden.")
+                    events_inflows = pd.DataFrame()
+
+                # C) Teilmengen für Debug
+                # Externe Azubi-Einstellungen
+                events_external_azubi = events_inflows[events_inflows["type"] == "Azubi_Hire"]
+                # Interne Übernahmen
+                events_internal = events_inflows[events_inflows["type"] == "Azubi_Conversion_In"]
+                # Neueinstellungen extern
+                events_external_hire = events_inflows[events_inflows["type"] == "New_Hire"]
+                # Trainees
+                events_trainee = events_inflows[events_inflows["type"] == "Trainee_Hire"]
+                
+                # Statuswechsel (Out) Disclaimer
+                events_status_change_out = events_all_azubi[events_all_azubi["type"] == "Azubi_Conversion_Out"]
+
+                if not events_inflows.empty:
+                    # 2. Deutschsprachige Labels für Chart und Legende
+                    label_map = {
+                        "Azubi_Hire": "Neue Auszubildende",
+                        "Azubi_Conversion_In": "Übernahme aus Ausbildung", 
+                        "New_Hire": "Neueinstellung",
+                        "Trainee_Hire": "Trainee"
+                    }
+                    events_inflows["Quelle"] = events_inflows["type"].map(label_map)
+                    
+                    # 3. Chart mit stikt gefilterten Daten (Inflows only)
+                    fig_hist = px.histogram(
+                        events_inflows, 
+                        x="date", 
+                        color="Quelle", 
+                        text_auto=True,
+                        labels={"date": "Datum", "count": "Anzahl (Zugänge)", "Quelle": "Quelle"},
+                        # Use specific colors for clarity
+                        color_discrete_map={
+                            "Neue Auszubildende": COLORS.get("accent_blue", "#1f77b4"),
+                            "Übernahme aus Ausbildung": "#9467bd", # Purple (Transformation)
+                            "Neueinstellung": COLORS.get("accent_green", "#2ca02c"),
+                            "Trainee": COLORS.get("accent_orange", "#ff7f0e")
+                        }
+                    )
+                    def build_source_caption(use_azubis, use_trainees, use_newhires):
+                        if use_azubis:
+                            if use_trainees or use_newhires:
+                                return "Übernahmen erhöhen den MAK (interne Stellenbesetzung). Auszubildende zählen während der Ausbildung nur als Köpfe; Trainees und externe Neueinstellungen sind i.d.R. sofort MAK-wirksam."
+                            else:
+                                return "Übernahmen (Azubi-Übernahme) sind interne Stellenbesetzungen und erhöhen den MAK. Neue Auszubildende zählen während der Ausbildung nur als Köpfe; MAK wird erst bei Übernahme wirksam."
+                        else:
+                            if use_trainees and use_newhires:
+                                return "Trainee- und externe Neueinstellungen sind i.d.R. sofort MAK-wirksam und erhöhen Köpfe und MAK gleichzeitig."
+                            elif use_trainees:
+                                return "Trainee-Einstellungen sind i.d.R. sofort MAK-wirksam und erhöhen Köpfe und MAK gleichzeitig."
+                            elif use_newhires:
+                                return "Externe Neueinstellungen sind i.d.R. sofort MAK-wirksam und erhöhen Köpfe und MAK gleichzeitig."
+                            return ""
+
+                    fig_hist.update_layout(title=None, xaxis_title="Datum", yaxis_title="Anzahl (Zugänge)")
+                    fig_hist = apply_legend_bottom(fig_hist)
+                    st.plotly_chart(fig_hist, use_container_width=True)
+                    
+                    # 4. Erklärung
+                    st.caption(build_source_caption(use_azubis, use_trainees, use_newhires))
+                    
+                    # Debug Source Hist (Check against Gross Entries)
+                    if st.session_state.get("debug_active", False):
+                        st.markdown("#### 🐞 Debug-Analyse (Zugänge)")
+                        
+                        # Treiber-Status Tabelle
+                        driver_data = [
+                            {
+                                "Treiber": "Azubis – Neueinstellungen", 
+                                "Aktiv (UI)": use_azubis, 
+                                "Events (technisch)": len(events_external_azubi),
+                                "Inflow-Events (gezählt)": len(events_external_azubi)
+                            },
+                            {
+                                "Treiber": "Azubis – Übernahmen", 
+                                "Aktiv (UI)": use_azubis, 
+                                "Events (technisch)": len(events_internal) + len(events_status_change_out),
+                                "Inflow-Events (gezählt)": len(events_internal)
+                            },
+                            {
+                                "Treiber": "Trainees", 
+                                "Aktiv (UI)": use_trainees, 
+                                "Events (technisch)": len(events_trainee),
+                                "Inflow-Events (gezählt)": len(events_trainee)
+                            },
+                            {
+                                "Treiber": "Neueinstellungen", 
+                                "Aktiv (UI)": use_newhires, 
+                                "Events (technisch)": len(events_external_hire),
+                                "Inflow-Events (gezählt)": len(events_external_hire)
+                            },
+                        ]
+                        st.table(pd.DataFrame(driver_data))
+                        
+                        # Unique Counts
+                        unique_inflows = events_inflows["persnr"].nunique()
+                        unique_ext_azubi = events_external_azubi["persnr"].nunique()
+                        unique_int_conv = events_internal["persnr"].nunique()
+                        unique_ext_hire = events_external_hire["persnr"].nunique()
+                        unique_trainee = events_trainee["persnr"].nunique()
+                        
+                        col_d1, col_d2 = st.columns(2)
+                        with col_d1:
+                            st.markdown("**Event-Anzahl (Zeilen)**")
+                            st.write(f"Zugänge gesamt (Inflows): `{len(events_inflows)}`")
+                            st.write(f"- Neue Auszubildende: `{len(events_external_azubi)}`")
+                            st.write(f"- Übernahmen (intern): `{len(events_internal)}`")
+                            st.write(f"- Neueinstellungen (extern): `{len(events_external_hire)}`")
+                            st.write(f"- Trainee-Einstellungen: `{len(events_trainee)}`")
+                            
+                            st.divider()
+                            st.caption("*(Hinweis: Die Zugänge-Seite zählt nur Inflows. Ein 'Conversion_Out' kann als technischer Statuswechsel zur Paarbildung auftreten, wird aber nicht als Abgang bewertet.)*")
+                        
+                        with col_d2:
+                            st.markdown("**Unique Personen (Köpfe)**")
+                            st.write(f"Unique Personen (Inflows): `{unique_inflows}`")
+                            st.write(f"- Unique Auszubildende: `{unique_ext_azubi}`")
+                            st.write(f"- Unique Übernahmen: `{unique_int_conv}`")
+                            st.write(f"- Unique Neueinstellungen: `{unique_ext_hire}`")
+                            st.write(f"- Unique Trainees: `{unique_trainee}`")
+                            
+                            # Summencheck
+                            sum_events = len(events_external_azubi) + len(events_internal) + len(events_external_hire) + len(events_trainee)
+                            if sum_events == len(events_inflows):
+                                st.success(f"✅ Summencheck: {sum_events} = {len(events_inflows)}")
+                            else:
+                                st.error(f"❌ Summencheck: {sum_events} != {len(events_inflows)}")
+
+                        _render_debug_metric("Zugänge (Events): Chart vs Inflows", len(events_inflows), len(events_inflows), "")
+                else:
+                    st.info("Keine Zugangs-Events vorhanden (nach Filterung).")
                 
                 st.divider()
                 
@@ -658,11 +860,11 @@ def main():
                 st.markdown("### 🧩 Zugänge nach OE-Clustern")
                 
                 if is_clustering_active():
-                    if "OE-Cluster" in events_pos.columns:
+                    if "OE-Cluster" in events_inflows.columns:
                         # Get full set of clusters for Zoom effect AND New Hires (Union of Snapshot + Events)
-                        # Fix: Ensure categories present in Events (e.g. Matrix assigned) are shown even if not in Snapshot
+                        # Fix: Ensure categories present in Inflows (e.g. Matrix assigned) are shown even if not in Snapshot
                         snap_clusters = df_filtered_rows["OE-Cluster"].unique().tolist() if "OE-Cluster" in df_filtered_rows.columns else []
-                        evt_clusters = events_pos["OE-Cluster"].unique().tolist()
+                        evt_clusters = events_inflows["OE-Cluster"].unique().tolist()
                         all_clusters = sorted(list(set(snap_clusters + evt_clusters)))
                         
                         # Remove NaNs or empty strings if any
@@ -670,7 +872,7 @@ def main():
                         
                         # Chart 1: Kopfzugänge
                         st.markdown("#### 👤 Zugänge nach Personen (OE)")
-                        c_stats_h = events_pos.groupby("OE-Cluster").size().reindex(all_clusters, fill_value=0).reset_index(name="Zugänge")
+                        c_stats_h = events_inflows.groupby("OE-Cluster").size().reindex(all_clusters, fill_value=0).reset_index(name="Zugänge")
                         c_stats_h = c_stats_h.sort_values("Zugänge", ascending=True)
                         
                         fig_h = px.bar(
@@ -678,7 +880,8 @@ def main():
                             x="Zugänge",
                             y="OE-Cluster",
                             orientation="h",
-                            title="Kopfzugänge (Anzahl Personen)",
+                            title=None,
+                            labels={"OE-Cluster": "Bereich (OE)", "Zugänge": "Anzahl Personen"},
                             text="Zugänge",
                             color="Zugänge",
                             color_continuous_scale="Blues"
@@ -692,8 +895,8 @@ def main():
 
                         # Chart 2: MAK-Zuwachs
                         st.markdown("#### 📊 Zugänge nach Kapazität (MAK) (OE)")
-                        if "mak" in events_pos.columns:
-                            c_stats_m = events_pos.groupby("OE-Cluster")["mak"].sum().reindex(all_clusters, fill_value=0.0).reset_index(name="MAK-Zuwachs")
+                        if "mak" in events_inflows.columns:
+                            c_stats_m = events_inflows.groupby("OE-Cluster")["mak"].sum().reindex(all_clusters, fill_value=0.0).reset_index(name="MAK-Zuwachs")
                             c_stats_m = c_stats_m.sort_values("MAK-Zuwachs", ascending=True)
                             
                             fig_m = px.bar(
@@ -701,7 +904,8 @@ def main():
                                 x="MAK-Zuwachs",
                                 y="OE-Cluster",
                                 orientation="h",
-                                title="Kapazitätszuwachs (MAK)",
+                                title=None,
+                                labels={"OE-Cluster": "Bereich (OE)", "MAK-Zuwachs": "MAK-Zuwachs (FTE)"},
                                 text_auto=".1f",
                                 color="MAK-Zuwachs",
                                 color_continuous_scale="Blues"
@@ -719,16 +923,16 @@ def main():
 
                     # Section 4: Cluster-Struktur (JF)
                     st.markdown("### 🧩 Zugänge nach Job-Family-Clustern")
-                    if "JF-Cluster" in events_pos.columns:
+                    if "JF-Cluster" in events_inflows.columns:
                         snap_jf = df_filtered_rows["JF-Cluster"].unique().tolist() if "JF-Cluster" in df_filtered_rows.columns else []
-                        evt_jf = events_pos["JF-Cluster"].unique().tolist()
+                        evt_jf = events_inflows["JF-Cluster"].unique().tolist()
                         all_jf_clusters = sorted(list(set(snap_jf + evt_jf)))
                         
                         all_jf_clusters = [c for c in all_jf_clusters if pd.notna(c) and str(c).strip() != ""]
 
                         # Chart 1: Kopfzugänge JF
                         st.markdown("#### 👤 Zugänge nach Personen (JF)")
-                        c_stats_h_jf = events_pos.groupby("JF-Cluster").size().reindex(all_jf_clusters, fill_value=0).reset_index(name="Zugänge")
+                        c_stats_h_jf = events_inflows.groupby("JF-Cluster").size().reindex(all_jf_clusters, fill_value=0).reset_index(name="Zugänge")
                         c_stats_h_jf = c_stats_h_jf.sort_values("Zugänge", ascending=True)
                         
                         fig_h_jf = px.bar(
@@ -736,7 +940,8 @@ def main():
                             x="Zugänge",
                             y="JF-Cluster",
                             orientation="h",
-                            title="Kopfzugänge Job-Family (Anzahl Personen)",
+                            title=None,
+                            labels={"JF-Cluster": "Berufsgruppe (JF)", "Zugänge": "Anzahl Personen"},
                             text="Zugänge",
                             color="Zugänge",
                             color_continuous_scale="Blues"
@@ -750,8 +955,8 @@ def main():
 
                         # Chart 2: MAK-Zuwachs JF
                         st.markdown("#### 📊 Zugänge nach Kapazität (MAK) (JF)")
-                        if "mak" in events_pos.columns:
-                            c_stats_m_jf = events_pos.groupby("JF-Cluster")["mak"].sum().reindex(all_jf_clusters, fill_value=0.0).reset_index(name="MAK-Zuwachs")
+                        if "mak" in events_inflows.columns:
+                            c_stats_m_jf = events_inflows.groupby("JF-Cluster")["mak"].sum().reindex(all_jf_clusters, fill_value=0.0).reset_index(name="MAK-Zuwachs")
                             c_stats_m_jf = c_stats_m_jf.sort_values("MAK-Zuwachs", ascending=True)
                             
                             fig_m_jf = px.bar(
@@ -759,7 +964,8 @@ def main():
                                 x="MAK-Zuwachs",
                                 y="JF-Cluster",
                                 orientation="h",
-                                title="Kapazitätszuwachs Job-Family (MAK)",
+                                title=None,
+                                labels={"JF-Cluster": "Berufsgruppe (JF)", "MAK-Zuwachs": "MAK-Zuwachs (FTE)"},
                                 text_auto=".1f",
                                 color="MAK-Zuwachs",
                                 color_continuous_scale="Blues"
@@ -781,13 +987,28 @@ def main():
                 st.markdown("### 💰 Kosten-Impact")
                 if not events_df.empty:
                     cost_df["Month"] = cost_df["date"].dt.to_period("M").astype(str)
-                    cost_agg = cost_df.groupby(["Month", "source"])["Cost_Impact"].sum().reset_index()
+                    
+                    # Translation Map for Source
+                    label_map_src = {
+                        "Azubi": "Auszubildende",
+                        "Trainee": "Trainee",
+                        "NewHire": "Externe Neueinstellung"
+                    }
+                    cost_df["Quelle"] = cost_df["source"].map(label_map_src).fillna("Unbekannt")
+                    
+                    cost_agg = cost_df.groupby(["Month", "Quelle"])["Cost_Impact"].sum().reset_index()
                          
                     fig_cost = px.bar(
-                        cost_agg, x="Month", y="Cost_Impact", color="source",
-                        color_discrete_map={"Azubi": COLORS["accent_blue"], "Trainee": COLORS["accent_green"], "NewHire": COLORS["accent_red"]}
+                        cost_agg, x="Month", y="Cost_Impact", color="Quelle",
+                        color_discrete_map={
+                            "Auszubildende": COLORS["accent_blue"], 
+                            "Trainee": COLORS["accent_green"], 
+                            "Externe Neueinstellung": COLORS["accent_red"]
+                        },
+                        labels={"Month": "Monat", "Cost_Impact": "Kosten-Impact (Jahr) in €", "Quelle": "Quelle"}
                     )
-                    fig_cost.update_layout(title=None, yaxis_title="Kosten-Impact (Jahr) in €")
+                    fig_cost.update_layout(title=None)
+                    fig_cost = apply_legend_bottom(fig_cost)
                     st.plotly_chart(fig_cost, use_container_width=True)
                     
                     st.markdown("#### Detail-Tabelle Kosten")

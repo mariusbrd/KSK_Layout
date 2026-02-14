@@ -41,6 +41,7 @@ from abgaenge import (
 from dataloader.loader import load_and_prepare_data, load_atz_data_cached
 from dataloader.cluster_manager import is_clustering_active
 from components.sidebar import render_global_filters, apply_filters
+from utils.plot_helpers import apply_legend_bottom
 
 
 def main():
@@ -52,8 +53,17 @@ def main():
         # Loader automatically picks up 'global_uploads' from session_state (see loader.py)
         snapshot_df, history_df, _, _ = load_and_prepare_data()
 
-        # 2. Render Sidebar Filters (Standard Dashboard Logic)
+        # 2. Render Sidebar Filters
         render_global_filters(snapshot_df, history_df)
+        
+        # --- Sidebar Reset Button ---
+        with st.sidebar:
+            st.divider()
+            if st.button("♻️ Ergebnisse zurücksetzen", use_container_width=True, help="Löscht die aktuelle Prognose aus dem Speicher."):
+                for key in ["abgaenge_results", "abgaenge_global_result", "abgaenge_params"]:
+                    if key in st.session_state:
+                         del st.session_state[key]
+                st.rerun()
         
         # 3. GLOBAL DATA PREPARATION (Filters applied LATER for View)
         # We skip apply_filters(snapshot_df) here to ensure Global Forecast.
@@ -165,11 +175,11 @@ def main():
     default_start = get_current_stichtag().date()
     default_end = date(default_start.year + 2, default_start.month, default_start.day)
 
-    # ── Parametrierung (kompakt) ──
+    # ── Parametrierung (Form) ──
     params = default_params()
 
-    # ── Settings Accordion ──────────────────────────────────────────
-    with st.expander("⚙️ Prognose-Einstellungen", expanded=True):
+    with st.form("abgaenge_forecast_form", clear_on_submit=False):
+        st.markdown("### ⚙️ Prognose-Einstellungen")
         # ── Row 1: Base Settings (horizontal) ──
         st.markdown("##### 📅 Zeitraum & Basis")
         submit = False
@@ -189,7 +199,7 @@ def main():
         st.markdown("##### 🧩 Aktive Komponenten")
         cc1, cc2, cc3, cc4 = st.columns(4)
         with cc1:
-            comp_atz = st.checkbox("ATZ", value=params["components"]["atz"])
+            comp_atz = st.checkbox("ATZ (inkl. Renteneintritt nach ATZ)", value=params["components"]["atz"])
         with cc2:
             comp_ret = st.checkbox("Rente", value=params["components"]["retirement"])
         with cc3:
@@ -198,6 +208,7 @@ def main():
             comp_ruhend = st.checkbox("Ruhend", value=params["components"]["ruhend"])
 
         st.markdown("---")
+        st.info("💡 **Hinweis zu ATZ:** Wenn 'ATZ' aktiv ist, werden auch die ATZ-Endereignisse automatisch modelliert. Diese erscheinen als 'Rente (nach ATZ)' – unabhängig davon, ob die Komponente 'Rente' separat aktiviert ist.")
 
         # ── Row 3: Detail Parameters (sub-expanders) - OUTSIDE FORM for interactivity ──
         st.markdown("##### 🔧 Detail-Parameter")
@@ -206,7 +217,7 @@ def main():
             # ── ATZ Row 1: General Constraints ──
             ac1, ac2, ac3, ac4, ac5 = st.columns(5)
             with ac1:
-                new_atz_base = st.slider("Neue Fälle (Basis)", min_value=0.0, max_value=0.5, value=float(params["atz"].get("new_atz_rate", 0.05)), step=0.005, format="%.3f", help="Basis-Anteil der berechtigten Mitarbeiter, die pro Jahr in ATZ gehen.", key="slide_atz_base")
+                new_atz_base = st.slider("Neue Fälle (Basis): 0.05 (Range 0.00–0.50)", min_value=0.0, max_value=0.5, value=float(params["atz"].get("new_atz_rate", 0.05)), step=0.005, format="%.3f", help="Basis-Anteil der berechtigten Mitarbeiter, die pro Jahr in ATZ gehen.", key="slide_atz_base")
                 params["atz"]["new_atz_rate"] = new_atz_base
             with ac2:
                 eligible_age = st.number_input("Mindestalter", value=int(params["atz"]["atz_eligible_age_min"]), step=1, key="num_atz_age_min")
@@ -299,10 +310,10 @@ def main():
         with st.expander("Renten-Parameter"):
             rc1, rc2 = st.columns(2)
             with rc1:
-                rent65 = st.slider("Renteneintritt 65+", min_value=0.0, max_value=1.0, value=float(params["retirement"]["rent_rate_65"]), step=0.05, key="slide_rent_65")
+                rent65 = st.slider("Renteneintritt 65+: 0.90 (Range 0.00–1.00)", min_value=0.0, max_value=1.0, value=float(params["retirement"]["rent_rate_65"]), step=0.05, key="slide_rent_65")
                 params["retirement"]["rent_rate_65"] = rent65
             with rc2:
-                rent60 = st.slider("Frühverrentung 60-64", min_value=0.0, max_value=1.0, value=float(params["retirement"]["rent_rate_60_65"]), step=0.05, key="slide_rent_60")
+                rent60 = st.slider("Frühverrentung 60-64: 0.10 (Range 0.00–1.00)", min_value=0.0, max_value=1.0, value=float(params["retirement"]["rent_rate_60_65"]), step=0.05, key="slide_rent_60")
                 params["retirement"]["rent_rate_60_65"] = rent60
 
         with st.expander("Kündigungs-Parameter", expanded=False):
@@ -311,7 +322,7 @@ def main():
             
             with c1:
                 quit_base = st.slider(
-                    "Basisrate p.a.", 
+                    "Basisrate p.a.: 0.05 (Range 0.00–0.50)", 
                     min_value=0.0, max_value=0.5, 
                     value=float(params["quit"]["quit_rate_base"]), 
                     step=0.01, 
@@ -408,49 +419,276 @@ def main():
                 ruhend_new = st.number_input("Neue Fälle / Jahr", value=int(params["ruhend"]["ruhend_new_cases_per_year"]), step=1, key="num_ruhend_new")
                 params["ruhend"]["ruhend_new_cases_per_year"] = ruhend_new
             with hc2:
-                ruhend_return = st.slider("Rückkehrquote p.a.", min_value=0.0, max_value=1.0, value=float(params["ruhend"]["ruhend_return_rate"]), step=0.05, key="slide_ruhend_ret_live")
+                ruhend_return = st.slider("Rückkehrquote p.a.: 0.50 (Range 0.00–1.00)", min_value=0.0, max_value=1.0, value=float(params["ruhend"]["ruhend_return_rate"]), step=0.05, key="slide_ruhend_ret_live")
                 params["ruhend"]["ruhend_return_rate"] = ruhend_return
             with hc3:
                 ruhend_duration = st.number_input("Ø Dauer (Monate)", value=int(params["ruhend"]["ruhend_avg_duration_months"]), step=1, key="num_ruhend_dur_live")
                 params["ruhend"]["ruhend_avg_duration_months"] = ruhend_duration
 
-    # ── Lower Action Button ──
-    st.write("")
-    if st.button("🚀 Prognose mit diesen Parametern berechnen", use_container_width=True, key="btn_run_bottom"):
-        submit = True # Override submit for this run
+    # ── Action Button ──
+        st.write("")
+        submit = st.form_submit_button("🚀 Prognose mit diesen Parametern berechnen", use_container_width=True)
 
 
-    has_global_result = "abgaenge_global_result" in st.session_state
+    # ── Rendering or Calculation Logic ──
+    if submit:
+        # Pre-calculation checks
+        if forecast_end_date <= ist_stichtag:
+            st.error("Prognose-Ende muss nach dem Ist-Stichtag liegen.")
+            st.stop()
 
-    if not submit and not has_global_result:
-        st.info("⬆️ Parameter oben einstellen und Prognose berechnen.")
+        ui_state = {
+            "components": {
+                "atz": comp_atz,
+                "retirement": comp_ret,
+                "quit": comp_quit,
+                "ruhend": comp_ruhend,
+            },
+            "atz": {
+                "new_atz_rate": new_atz_base,
+                "atz_eligible_age_min": eligible_age,
+                "atz_eligible_age_max": eligible_age_max,
+                "atz_duration_ar_years": ar_years,
+                "atz_duration_fr_years": fr_years,
+                "use_atz_matrix": use_atz_matrix,
+                "atz_dimension": atz_dim,
+                "atz_matrix": new_atz_matrix,
+            },
+            "retirement": {
+                "rent_rate_65": rent65,
+                "rent_rate_60_65": rent60,
+            },
+            "quit": {
+                "quit_rate_base": quit_base,
+                "use_quit_matrix": use_quit_matrix,
+                "quit_dimension": quit_dim,
+                "quit_matrix": new_quit_matrix,
+            },
+            "ruhend": {
+                "ruhend_new_cases_per_year": ruhend_new,
+                "ruhend_return_rate": ruhend_return,
+                "ruhend_avg_duration_months": ruhend_duration,
+            },
+            "random_seed": random_seed,
+        }
+
+        params = build_params_from_ui(ui_state)
+        freq = "M" if freq_label == "Monat" else "Q"
+    
+        # ── Calculation Block ──
+        try:
+            with st.spinner("Berechne Prognose..."):
+                # P01: Run Global Forecast
+                global_result = run_forecast_abgaenge(
+                    df_ma=df_ma, 
+                    df_atz=df_atz,
+                    start_date=pd.Timestamp(ist_stichtag),
+                    # P01: Ensure end date covers full day to avoid month-end truncation in _periods
+                    end_date=pd.Timestamp(forecast_end_date) + pd.Timedelta(hours=23, minutes=59, seconds=59),
+                    freq=freq,
+                    params=params,
+                )
+        
+            # P02: Apply Sidebar Filters (View Only)
+            # Use snapshot_df (Position Level) to allow filtering by position attributes
+            # (e.g. OrgUnit, Planstelle) even if aggregation picked "First".
+            df_filtered_rows = apply_filters(snapshot_df)
+
+            if df_filtered_rows.empty:
+                st.warning("⚠️ Keine Daten nach Filterung verfügbar.")
+                st.stop()
+
+            # P03: Re-Aggregate Filtered Data (Person Level for View)
+            view_agg_dict = {
+                "MAK_Calculated": "sum",
+                "GebDatum": "first",
+                "Eintritt": "first",
+                "Austritt": "first",
+                "Status kundenindividuell": "first",
+                "Sollarbeitszeit": "sum",
+                "Organisationseinheit": "first",
+            }
+            for col in ["Geschlecht", "Planstelle", "Kürzel OrgEinheit", "ATZ_Status", "Jobfamily", "TrfGr", "St"]:
+                 if col in df_filtered_rows.columns:
+                     view_agg_dict[col] = "first"
+
+            df_view_agg = df_filtered_rows.groupby("PersNr", as_index=False).agg(view_agg_dict)
+            
+            # Prepare for Aggregator (needs 'mak' column)
+            df_view_agg["mak"] = pd.to_numeric(df_view_agg["MAK_Calculated"], errors="coerce").fillna(0.0)
+
+            # P04: Filter Events – Direct Attribute Filtering ("Zoom")
+            events_global = global_result["events_person_level"]
+            
+            if events_global.empty:
+                events_view = pd.DataFrame()
+            else:
+                events_view = events_global.copy()
+                
+                # 1. OrgUnit Filter: direct on event attribute
+                selected_orgs = st.session_state.get("selected_org_units", [])
+                if selected_orgs and "Organisationseinheit" in events_view.columns:
+                    events_view = events_view[events_view["Organisationseinheit"].isin(selected_orgs)]
+                
+                # 2. Jobfamily Filter: direct on event attribute
+                selected_jf = st.session_state.get("selected_jobfamilies", [])
+                if selected_jf and "Jobfamily" in events_view.columns:
+                    events_view = events_view[events_view["Jobfamily"].isin(selected_jf)]
+                
+                # 3. Other filters fall back to PersNr matching
+                has_non_attr_filters = any([
+                    st.session_state.get("selected_genders", []),
+                    st.session_state.get("selected_employment", []),
+                    st.session_state.get("selected_atz_status", []),
+                    st.session_state.get("selected_cohorts", []),
+                    st.session_state.get("selected_education", []),
+                ])
+                if has_non_attr_filters:
+                    valid_ids = set(df_view_agg["PersNr"].astype(str))
+                    events_view = events_view[events_view["persnr"].isin(valid_ids)]
+
+                # P13: SYNC WITH INITIAL WORKFORCE (TASK 1)
+                # Ensure events ONLY include persons present at start of prognosis.
+                # This aligns the event log with the KPI 'exit_count' (The 169 mystery).
+                if not events_view.empty and not df_view_agg.empty:
+                    initial_ids = set(df_view_agg["PersNr"].astype(str))
+                    events_view = events_view[events_view["persnr"].astype(str).isin(initial_ids)]
+
+            # P05: Adjust Events (Clamp MAK Loss to View Reality)
+            if not events_view.empty:
+                df_view_agg_indexed = df_view_agg.set_index("PersNr")
+                if "mak" in df_view_agg_indexed.columns:
+                    pmak_map = df_view_agg_indexed["mak"].to_dict()
+                    
+                    def adjust_mak_loss(row):
+                        pid = str(row["persnr"])
+                        if row["mak_change"] < 0: # Is a loss event
+                            current_view_mak = float(pmak_map.get(pid, 0.0))
+                            return -abs(current_view_mak)
+                        return row["mak_change"]
+
+                    events_view["mak_change"] = events_view.apply(adjust_mak_loss, axis=1)
+
+            # P06: Re-Aggregate KPIs
+            forecast_kpis = aggregate_forecast_results(
+                df_initial=df_view_agg,
+                events_df=events_view,
+                start_date=pd.Timestamp(ist_stichtag),
+                end_date=pd.Timestamp(forecast_end_date) + pd.Timedelta(hours=23, minutes=59, seconds=59),
+                freq=freq,
+                params=params
+            )
+            
+            # --- Enrichment (inside submit) ---
+            if not events_view.empty:
+                # Add OrgUnit if missing
+                if "Organisationseinheit" not in events_view.columns and "Organisationseinheit" in df_ma.columns:
+                    lookup_oe = df_ma[["PersNr", "Organisationseinheit"]].drop_duplicates("PersNr").copy()
+                    lookup_oe["PersNr"] = lookup_oe["PersNr"].astype(str)
+                    events_view = events_view.merge(lookup_oe, left_on="persnr", right_on="PersNr", how="left").drop(columns=["PersNr"])
+                
+                # Add Clusters
+                for cluster_col in ["OE-Cluster", "JF-Cluster"]:
+                    if cluster_col not in events_view.columns and cluster_col in df_ma.columns:
+                        lookup_c = df_ma[["PersNr", cluster_col]].drop_duplicates("PersNr").copy()
+                        lookup_c["PersNr"] = lookup_c["PersNr"].astype(str)
+                        events_view = events_view.merge(lookup_c, left_on="persnr", right_on="PersNr", how="left").drop(columns=["PersNr"])
+                        events_view[cluster_col] = events_view[cluster_col].fillna("Unclustered")
+
+                # P10: STABLE UID (Contract V3)
+                # Used for deterministic reconciliation across pages.
+                # Using 6-digit zero-padding as standard per KSK requirement.
+                from abgaenge.schemas import normalize_persnr
+                events_view["p_norm"] = normalize_persnr(events_view["persnr"])
+                events_view["event_uid"] = (
+                    pd.to_datetime(events_view["event_date"]).dt.strftime("%Y-%m-%d") + "|" +
+                    events_view["p_norm"] + "|" +
+                    events_view.get("reason_code", events_view["reason_label"]).astype(str).str.strip() + "|" +
+                    events_view.get("source_step", events_view.get("type", "")).astype(str).str.strip()
+                )
+                events_view.drop(columns=["p_norm"], inplace=True, errors="ignore")
+
+                if "persnr" in events_view.columns:
+                    events_view["persnr"] = events_view["persnr"].astype(str)
+
+            # --- Save Result Bundle ---
+            import datetime
+            current_filters = {
+                "org": st.session_state.get("selected_org_units", []),
+                "jf": st.session_state.get("selected_jobfamilies", []),
+                "gender": st.session_state.get("selected_genders", []),
+                "empl": st.session_state.get("selected_employment", []),
+                "atz": st.session_state.get("selected_atz_status", []),
+            }
+
+            # CONTRACT V3: Save Exact Chart View (100% KPI match)
+            events_chart_df = events_view[events_view["headcount_change"] < 0].copy() if not events_view.empty else pd.DataFrame()
+            
+            # --- TASK 1: COUNT VERIFICATION ---
+            kpi_exit_count = int(forecast_kpis["exit_count"].sum())
+            actual_event_count = len(events_chart_df)
+            
+            if kpi_exit_count != actual_event_count:
+                # Log to terminal for developer
+                print(f"DEBUG: Consistency Mismatch! KPI={kpi_exit_count} vs Events={actual_event_count}")
+                print(f"Candidates: Raw_Global={len(global_result['events_person_level'])}, View_Filt={len(events_view)}")
+                # Display warning in UI if debug active
+                if st.session_state.get("debug_active"):
+                    st.error(f"⚠️ Konsistenz-Fehler: KPI ({kpi_exit_count}) != Events ({actual_event_count}). Fix in Progress.")
+
+            st.session_state["abgaenge_results"] = {
+                "schema_version": 3,
+                "forecast_kpis": forecast_kpis,
+                "events_chart": events_chart_df,     # THE "169" DATAFRAME
+                "events_raw": events_view,           # Includes MAK-only changes
+                "events": events_view,               # Legacy compat
+                "params": ui_state,
+                "filters": current_filters, 
+                "meta": {
+                    "rows_chart": actual_event_count,
+                    "rows_raw": int(len(events_view)),
+                    "unique_persons_chart": int(events_chart_df["persnr"].nunique()) if not events_chart_df.empty else 0,
+                    "created_at": datetime.datetime.now().isoformat()
+                },
+                "timestamp": datetime.datetime.now().strftime("%d.%m.%Y, %H:%M:%S"),
+            }
+            st.session_state["abgaenge_global_result"] = global_result
+            st.session_state["abgaenge_params"] = params
+            st.success("Prognose erfolgreich berechnet.")
+            st.rerun()
+            
+        except Exception as e:
+            st.error(f"Fehler in der Prognose calculation: {e}")
+            st.stop()
+
+    # ── Rendering Logic (from Session State) ──
+    res = st.session_state.get("abgaenge_results")
+    if not res:
+        st.info("ℹ️ Keine Prognose berechnet. Bitte stellen Sie die Parameter ein und klicken Sie auf 'Prognose berechnen'.")
         return
 
-    if forecast_end_date <= ist_stichtag:
-        st.error("Prognose-Ende muss nach dem Ist-Stichtag liegen.")
-        return
-
-    ui_state = {
+    forecast_kpis = res["forecast_kpis"]
+    events = res["events"]
+    last_run_params = res["params"]
+    # Robust Reader (Schema normalization)
+    last_run_filters = res.get("filters", res.get("params", {}))
+    
+    # Current UI State for Drift Detection
+    curr_ui_state = {
         "components": {
-            "atz": comp_atz,
-            "retirement": comp_ret,
-            "quit": comp_quit,
-            "ruhend": comp_ruhend,
+            "atz": comp_atz, "retirement": comp_ret, "quit": comp_quit, "ruhend": comp_ruhend
         },
         "atz": {
-            "new_atz_rate": new_atz_base,
-            "atz_eligible_age_min": eligible_age,
-            "atz_eligible_age_max": eligible_age_max,
-            "atz_duration_ar_years": ar_years,
-            "atz_duration_fr_years": fr_years,
-            "use_atz_matrix": use_atz_matrix,
-            "atz_dimension": atz_dim,
-            "atz_matrix": new_atz_matrix,
+             "new_atz_rate": new_atz_base,
+             "atz_eligible_age_min": eligible_age,
+             "atz_eligible_age_max": eligible_age_max,
+             "atz_duration_ar_years": ar_years,
+             "atz_duration_fr_years": fr_years,
+             "use_atz_matrix": use_atz_matrix,
+             "atz_dimension": atz_dim,
+             "atz_matrix": new_atz_matrix,
         },
-        "retirement": {
-            "rent_rate_65": rent65,
-            "rent_rate_60_65": rent60,
-        },
+        "retirement": { "rent_rate_65": rent65, "rent_rate_60_65": rent60 },
         "quit": {
             "quit_rate_base": quit_base,
             "use_quit_matrix": use_quit_matrix,
@@ -464,196 +702,29 @@ def main():
         },
         "random_seed": random_seed,
     }
-
-    params = build_params_from_ui(ui_state)
-    # Save params for other pages (e.g. Zugänge: Fill Vacancies)
-    st.session_state["abgaenge_params"] = params
-    freq = "M" if freq_label == "Monat" else "Q"
     
-    # ── Prognose Start ──────────────────────────────────────────────
-    try:
-        # P01: Run Global Forecast
-        # P01: Run Global Forecast or Load from Session
-        if submit:
-             # Run fresh forecast
-             global_result = run_forecast_abgaenge(
-                 df_ma=df_ma, 
-                 df_atz=df_atz,
-                 start_date=pd.Timestamp(ist_stichtag),
-                 end_date=pd.Timestamp(forecast_end_date),
-                 freq=freq,
-                 params=params,
-             )
-             # Save to Session State (for other pages like Zugänge)
-             st.session_state["abgaenge_global_result"] = global_result
-             st.session_state["abgaenge_params"] = params
+    current_filters = {
+        "org": st.session_state.get("selected_org_units", []),
+        "jf": st.session_state.get("selected_jobfamilies", []),
+        "gender": st.session_state.get("selected_genders", []),
+        "empl": st.session_state.get("selected_employment", []),
+        "atz": st.session_state.get("selected_atz_status", []),
+    }
+    
+    def dict_hash(d):
+        return json.dumps(d, sort_keys=True, default=str)
+
+    drift = (dict_hash(curr_ui_state) != dict_hash(last_run_params)) or (dict_hash(current_filters) != dict_hash(last_run_filters))
+    
+    # Header Info
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        st.write(f"⏱️ **Stand der Berechnung:** {res['timestamp']}")
+    with c2:
+        if drift:
+            st.warning("⚠️ Parameter geändert - bitte neu berechnen.")
         else:
-             global_result = st.session_state["abgaenge_global_result"]
-             # Note: params are re-built from UI but forecast result uses old params.
-             # This is acceptable for "View Filtering".
-             # If consistency becomes an issue, we could store params with result and warn if diff.
-        
-        # P02: Apply Sidebar Filters (View Only)
-        # Use snapshot_df (Position Level) to allow filtering by position attributes
-        # (e.g. OrgUnit, Planstelle) even if aggregation picked "First".
-        df_filtered_rows = apply_filters(snapshot_df)
-
-        if df_filtered_rows.empty:
-            st.warning("⚠️ Keine Daten nach Filterung verfügbar.")
-            return
-
-        # P03: Re-Aggregate Filtered Data (Person Level for View)
-        # Same aggregation logic as global to ensure consistent MAK sum
-        # We must use the SAME agg_dict defined above.
-        # Check if agg_dict is available in scope (it is defined in 'main', but scope is tricky).
-        # We re-define minimal agg_dict or rely on it being present.
-        # Since agg_dict was in a try/except earlier, it might be safer to rebuild it.
-        
-        view_agg_dict = {
-            "MAK_Calculated": "sum",
-            "GebDatum": "first",
-            "Eintritt": "first",
-            "Austritt": "first",
-            "Status kundenindividuell": "first",
-            "Sollarbeitszeit": "sum",
-            "Organisationseinheit": "first",
-        }
-        for col in ["Geschlecht", "Planstelle", "Kürzel OrgEinheit", "ATZ_Status", "Jobfamily", "TrfGr", "St"]:
-             if col in df_filtered_rows.columns:
-                 view_agg_dict[col] = "first"
-
-        df_view_agg = df_filtered_rows.groupby("PersNr", as_index=False).agg(view_agg_dict)
-        
-        # Prepare for Aggregator (needs 'mak' column)
-        df_view_agg["mak"] = pd.to_numeric(df_view_agg["MAK_Calculated"], errors="coerce").fillna(0.0)
-
-        # P04: Filter Events – Direct Attribute Filtering ("Zoom")
-        # Events carry their own OrgUnit/Jobfamily attributes from the simulation.
-        # We filter directly on these attributes (not via PersNr matching from snapshot),
-        # ensuring the filtered view shows exactly the same events visible in the global charts.
-        events_global = global_result["events_person_level"]
-        
-        if events_global.empty:
-            events_view = pd.DataFrame()
-        else:
-            events_view = events_global.copy()
-            
-            # 1. OrgUnit Filter: direct on event attribute (Organisationseinheit = unique name)
-            # FIX: Kürzel OrgEinheit is NOT unique (e.g. 591 = "Beratungs-Center Herrenberg"
-            # AND "Akquisepool Herrenberg"). Use Organisationseinheit for exact matching.
-            selected_orgs = st.session_state.get("selected_org_units", [])
-            if selected_orgs and "Organisationseinheit" in events_view.columns:
-                events_view = events_view[events_view["Organisationseinheit"].isin(selected_orgs)]
-            
-            # 2. Jobfamily Filter: direct on event attribute
-            selected_jf = st.session_state.get("selected_jobfamilies", [])
-            if selected_jf and "Jobfamily" in events_view.columns:
-                events_view = events_view[events_view["Jobfamily"].isin(selected_jf)]
-            
-            # 3. Other filters (Geschlecht, Arbeitszeit, ATZ-Status etc.) are NOT
-            #    present in event attributes. For these, fall back to PersNr matching
-            #    from the filtered snapshot.
-            has_non_attr_filters = any([
-                st.session_state.get("selected_genders", []),
-                st.session_state.get("selected_employment", []),
-                st.session_state.get("selected_atz_status", []),
-                st.session_state.get("selected_cohorts", []),
-                st.session_state.get("selected_education", []),
-            ])
-            if has_non_attr_filters:
-                valid_ids = set(df_view_agg["PersNr"].astype(str))
-                events_view = events_view[events_view["persnr"].isin(valid_ids)]
-
-
-            
-        # P05: Adjust Events (Clamp MAK Loss to View Reality)
-        # If Global Event implies -1.0 loss, but View MAK is 0.5, set change to -0.5.
-        if not events_view.empty:
-            # Create Lookup Map for View MAK
-            # Use Index for speed
-            df_view_agg_indexed = df_view_agg.set_index("PersNr")
-            if "mak" in df_view_agg_indexed.columns:
-                pmak_map = df_view_agg_indexed["mak"].to_dict()
-                
-                # Iterate and adjust 'mak_change' if negative (Exit/Transition)
-                # We do this row by row or apply. Row by row on events (usually small n) is readable.
-                # But we use apply for conciseness.
-                def adjust_mak_loss(row):
-                    pid = str(row["persnr"])
-                    if row["mak_change"] < 0: # Is a loss event
-                        current_view_mak = float(pmak_map.get(pid, 0.0))
-                        # Return negative of current view mak (Full Exit from View)
-                        # Ensure we don't gain MAK (min(0, ...)? No, return -value)
-                        return -abs(current_view_mak)
-                    return row["mak_change"]
-
-                events_view["mak_change"] = events_view.apply(adjust_mak_loss, axis=1)
-
-        # P06: Re-Aggregate KPIs for View
-        forecast_kpis = aggregate_forecast_results(
-            df_initial=df_view_agg,
-            events_df=events_view,
-            start_date=pd.Timestamp(ist_stichtag),
-            end_date=pd.Timestamp(forecast_end_date),
-            freq=freq,
-            params=params
-        )
-
-        # P07: Finalize Result for Charts
-        result = global_result.copy()
-        result["forecast_kpis"] = forecast_kpis
-        result["events_person_level"] = events_view
-        
-    except Exception as e:
-        st.error(f"Fehler in der Prognose calculation: {e}")
-        return
-
-    # Use 'result' for subsequent chart rendering (lines below use forecast_kpis, events)
-    forecast_kpis = result["forecast_kpis"]
-
-    events = result["events_person_level"]
-    
-    # Feature: Enrich events with Organisationseinheit (Last Known)
-    # Feature: Enrich events with Organisationseinheit (Last Known)
-    # df_ma has aggregated info per employee, including OrgUnit (added to agg_dict)
-    
-    if not events.empty:
-        # Check if already present (from forecast)
-        if "Organisationseinheit" not in events.columns and "Organisationseinheit" in df_ma.columns:
-            # P12: Robust enrichment with deduplication
-            lookup_oe = df_ma[["PersNr", "Organisationseinheit"]].copy()
-            lookup_oe["key"] = lookup_oe["PersNr"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
-            lookup_oe = lookup_oe.drop_duplicates(subset=["key"])
-            
-            events["key"] = events["persnr"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
-            
-            events = events.merge(
-                lookup_oe[["key", "Organisationseinheit"]],
-                on="key",
-                how="left"
-            )
-            events.drop(columns=["key"], inplace=True)
-
-        if "Organisationseinheit" in events.columns:
-            events["Organisationseinheit"] = events["Organisationseinheit"].fillna("Unbekannt")
-            
-        # Feature: Enrich events with OE-Cluster
-        if "OE-Cluster" not in events.columns and "OE-Cluster" in df_ma.columns:
-            # P12: Robust enrichment with deduplication
-            lookup_cluster = df_ma[["PersNr", "OE-Cluster"]].copy()
-            lookup_cluster["key"] = lookup_cluster["PersNr"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
-            lookup_cluster = lookup_cluster.drop_duplicates(subset=["key"])
-            
-            # Ensure key is present (might have been dropped above)
-            events["key"] = events["persnr"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
-            
-            events = events.merge(
-                lookup_cluster[["key", "OE-Cluster"]],
-                on="key",
-                how="left"
-            )
-            events.drop(columns=["key"], inplace=True)
-            events["OE-Cluster"] = events["OE-Cluster"].fillna("Unclustered")
+            st.success("✅ Ergebnisse aktuell.")
 
         # Feature: Enrich events with JF-Cluster
         if "JF-Cluster" not in events.columns and "JF-Cluster" in df_ma.columns:
@@ -705,32 +776,124 @@ def main():
         mak_loss_total = float(forecast_kpis["mak_loss_gross"].sum())
         avg_headcount = float(forecast_kpis[["headcount_start", "headcount_end"]].mean(axis=1).mean())
         abgangsquote = (exits_total / avg_headcount) if avg_headcount > 0 else 0.0
+        
+        # Calculate annualized rate
+        forecast_days = (pd.Timestamp(forecast_end_date) - pd.Timestamp(ist_stichtag)).days
+        years = max(0.1, forecast_days / 365.25)
+        abgangsquote_annual = (1 - (1 - abgangsquote)**(1/years)) if abgangsquote < 1 else (abgangsquote / years)
 
         st.markdown("### 🏆 Kennzahlen (Management-Summary)")
-        m1, m2, m3 = st.columns([1, 1, 1])
+        m1, m2, m3, m4 = st.columns([1, 1, 1, 1])
         with m1:
             st.metric("Abgänge gesamt (Köpfe)", f"{exits_total}")
         with m2:
             st.metric("Kapazitätsverlust (MAK)", f"{mak_loss_total:.1f}")
         with m3:
-            st.metric("Prognostizierte Fluktuation", f"{abgangsquote*100:.1f}%")
+            st.metric("Abgangsquote (Zeitraum)", f"{abgangsquote*100:.1f}%", help="Summierte Abgänge im Verhältnis zum Ø Bestand über den gesamten Zeitraum.")
+        with m4:
+            st.metric("Ø Fluktuation (p.a.)", f"{abgangsquote_annual*100:.1f}%", help="Annualisierte Abgangsquote (geometrischer Durchschnitt pro Jahr).")
         
+        st.info("""
+        **💡 Interpretationshilfe: Köpfe vs. Kapazität (MAK)**
+        * **Abgänge (Köpfe):** Personen, die das Unternehmen verlassen (Rente, Kündigung etc.).
+        * **Kapazitätsverlust (MAK):** Summierter Verlust an Arbeitskraft. Hier zählen auch **ATZ-Wechsel (AR→FR)** und Ruhenphasen, da diese die Kapazität reduzieren, ohne dass die Person die Bank verlassen muss.
+        """)
+        
+        # P03: Secure Start/End KPI (Robust extraction from Timeline info)
         with st.expander("🔍 Details: Bestandsentwicklung (Start vs. Ende)", expanded=False):
             d1, d2, d3, d4 = st.columns(4)
-            d1.metric("Headcount Start", f"{int(first['headcount_start'])}")
-            d2.metric("Headcount Ende", f"{int(last['headcount_end'])}", delta=int(last["headcount_delta"]))
-            d3.metric("MAK Start", f"{first['mak_start']:.1f}")
-            d4.metric("MAK Ende", f"{last['mak_end']:.1f}", delta=f"{last['mak_delta']:.1f}")
+            
+            # Use total period delta (End - Start) for consistency
+            hc_start = float(first['headcount_start']) if not pd.isna(first['headcount_start']) else 0.0
+            hc_end = float(last['headcount_end']) if not pd.isna(last['headcount_end']) else 0.0
+            mak_start = float(first['mak_start']) if not pd.isna(first['mak_start']) else 0.0
+            mak_end = float(last['mak_end']) if not pd.isna(last['mak_end']) else 0.0
+            
+            total_hc_delta = int(hc_end - hc_start)
+            total_mak_delta = float(mak_end - mak_start)
+            
+            d1.metric("Headcount Start", f"{int(hc_start)}")
+            d2.metric("Headcount Ende", f"{int(hc_end)}", 
+                      delta=f"{total_hc_delta}", delta_color="normal", help="Δ gesamt im Zeitraum")
+            
+            d3.metric("MAK Start", f"{mak_start:.1f}")
+            d4.metric("MAK Ende", f"{mak_end:.1f}", 
+                      delta=f"{total_mak_delta:.1f}", delta_color="normal", help="Δ gesamt im Zeitraum")
+            
+            # P01: Clearer caption without hardcoded artifacts
+            end_date_str = last['period_end'].strftime("%d.%m.%Y") if hasattr(last['period_end'], 'strftime') else last['period_label']
+            st.caption(f"Das Delta (**Δ gesamt**) entspricht der Differenz zwischen dem Bestand am Ende des Prognosezeitraums ({end_date_str}) und dem Bestand zu Beginn.")
 
         # DEBUG OUTPUT
         if st.session_state.get("debug_active", False):
             with st.expander("🐞 Debug-Daten (Abgänge)", expanded=True):
-                st.write(f"Filtered Events in View: {len(events)}")
-                st.write(f"Sum MAK Change: {events['mak_change'].sum() if not events.empty else 0:.2f}")
-                st.write(f"Sum Headcount Change: {events['headcount_change'].sum() if not events.empty else 0}")
-                st.dataframe(events.head(20))
+                # 1. Summary Metrics
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    st.write(f"**Events (Raw):** `{len(events)}`")
+                    st.write(f"**Abgänge (Köpfe, sum):** `{events['headcount_change'].sum() if not events.empty else 0}`")
+                with c2:
+                    unique_total = events['persnr'].nunique() if not events.empty else 0
+                    unique_hc = events[events['headcount_change'] < 0]['persnr'].nunique() if not events.empty else 0
+                    unique_cap = events[(events['headcount_change'] == 0) & (events['mak_change'] < 0)]['persnr'].nunique() if not events.empty else 0
+                    
+                    st.write(f"**Unique Personen (alle Events):** `{unique_total}`")
+                    st.write(f"**- davon mit Headcount-Abgang:** `{unique_hc}`")
+                    st.write(f"**- davon nur Kapazität (ohne Austritt):** `{unique_cap}`")
+                
+                with c3:
+                    st.write(f"**MAK-Verlust (sum):** `{events['mak_change'].sum() if not events.empty else 0:.2f}`")
+                    st.caption("*(Debug, 2 Dez. Summe über alle Events)*")
+                    
+                    # Logic Overlap Check (ATZ_END vs RETIREMENT)
+                    if not events.empty:
+                        from abgaenge.schemas import REASON_ATZ_END, REASON_RETIREMENT
+                        pnr_atz_end = set(events[events["reason_code"] == REASON_ATZ_END]["persnr"])
+                        pnr_retirement = set(events[events["reason_code"] == REASON_RETIREMENT]["persnr"])
+                        overlap = len(pnr_atz_end & pnr_retirement)
+                        color = "red" if overlap > 0 else "green"
+                        st.markdown(f"**Overlap ATZ_END ∩ Rente (Unique):** :{color}[`{overlap}`]")
 
-    charts = build_charts(forecast_kpis, events)
+                st.divider()
+                
+                # 2. Impact Table
+                st.markdown("**Events nach Wirkung (Abstimmung)**")
+                if not events.empty:
+                    debug_impact = events.groupby("reason_code").agg(
+                        Event_Count=("reason_code", "count"),
+                        Unique_Pers=("persnr", "nunique"),
+                        Sum_Headcount=("headcount_change", "sum"),
+                        Sum_MAK=("mak_change", "sum")
+                    ).reset_index()
+                    
+                    # Labels
+                    from abgaenge.schemas import REASON_LABELS
+                    debug_impact["Ursache"] = debug_impact["reason_code"].map(REASON_LABELS)
+                    st.caption("🔍 **Debug (2 Dez.):** Rohsummen der identifizierten Events.")
+                    st.table(debug_impact[["Ursache", "Event_Count", "Unique_Pers", "Sum_Headcount", "Sum_MAK"]].round(2))
+                
+                st.divider()
+                st.markdown("**Stichprobe (Letzte 20 Events)**")
+                st.dataframe(events.tail(20))
+
+    # --- Choice of Metric for Charts ---
+    st.write("")
+    col_toggle1, col_toggle2 = st.columns([2, 3])
+    with col_toggle1:
+        metric_choice = st.radio(
+            "Dimension für Abgangs-Charts:",
+            options=["Köpfe", "MAK"],
+            index=0,
+            horizontal=True,
+            help="Wählen Sie, ob die Charts die Anzahl der Personen oder den Kapazitätsverlust (MAK) anzeigen sollen."
+        )
+
+    charts = build_charts(forecast_kpis, events, metric_type=metric_choice)
+    
+    # Apply standard legend to all charts from builder
+    for key, fig in charts.items():
+        if fig:
+            charts[key] = apply_legend_bottom(fig)
 
     tab1, tab2, tab3 = st.tabs(["📊 Überblick & Trends", "🎯 Treiber Details", "📋 Personenlisten / Export"])
 
@@ -744,8 +907,9 @@ def main():
         color = "green" if is_ok else "red"
         icon = "✅" if is_ok else "❌"
         
+        # UI uses 1 decimal, Debug uses 2
         st.markdown(
-            f"<small>{icon} **Debug ({label})**: Chart={chart_val:,.1f}{unit} | Global={global_val:,.1f}{unit} | Diff=:{color}[{diff:+.2f}]</small>", 
+            f"<small>{icon} **Debug ({label})**: UI (gerundet, 1 Dez.): **{global_val:,.1f}{unit}** | Debug (2 Dez.): **{global_val:,.2f}{unit}** | Diff (zu Chart): :{color}[{diff:+.3f}]</small>", 
             unsafe_allow_html=True
         )
 
@@ -757,28 +921,27 @@ def main():
         if not forecast_kpis.empty:
             _render_debug_metric("Timeline End MAK", last['mak_end'], last['mak_end'], " MAK")
             
-        st.caption("Die obige Grafik zeigt die Entwicklung von Headcount (Anzahl Personen) und MAK (Kapazität) über den Prognosezeitraum.")
+        st.caption("Die Trendlinie zeigt den Bestand am Ende jeder Periode. Ein sinkender MAK-Verlauf bei stabilem Headcount deutet auf ATZ-Übergänge hin.")
 
         st.plotly_chart(charts.get("bar_reasons_total"), use_container_width=True)
         # Debug Reason Total
         if not events.empty:
-            layout_sum = events["mak_change"].sum()
-            # KPI is positive magnitude ("Loss"), Chart is negative delta. Use abs() for comparison.
-            _render_debug_metric("Reason Chart Sum", abs(layout_sum), mak_loss_total, " MAK")
+            layout_val = events["headcount_change" if metric_choice=="Köpfe" else "mak_change"].sum()
+            compare_val = exits_total if metric_choice=="Köpfe" else mak_loss_total
+            _render_debug_metric(f"Reason Chart Sum ({metric_choice})", abs(layout_val), compare_val, " MAK" if metric_choice=="MAK" else "")
             
-        st.caption("Gesamtanzahl der prognostizierten Abgänge nach Grund für den gesamten Zeitraum.")
+        st.caption(f"Gesamt-Verlust ({metric_choice}) nach Ursache für den gewählten Zeitraum.")
 
         st.divider()
 
         # ── Section 2: Struktur der Abgänge ──
-        st.markdown("### 🧬 Abgangsgründe")
+        st.markdown(f"### 🧬 {metric_choice} nach Ursache (zeitlich)")
         st.plotly_chart(charts.get("bar_abgaenge_reasons"), use_container_width=True)
         # Debug Detailed Reasons
         if not events.empty:
-            # We assume bar chart sums correctly over reasons
-            _render_debug_metric("Detailed Reason Sum", abs(events["mak_change"].sum()), mak_loss_total, " MAK")
+            _render_debug_metric("Detailed Reason Sum", abs(events["headcount_change" if metric_choice=="Köpfe" else "mak_change"].sum()), exits_total if metric_choice=="Köpfe" else mak_loss_total, " MAK" if metric_choice=="MAK" else "")
 
-        st.caption("Verteilung der Abgänge nach Ursache (Kündigung, Rente, ATZ etc.).")
+        st.caption(f"Diese Grafik zeigt, in welchen Perioden der Kapazitätsverlust ({metric_choice}) durch welche Ursache auftritt.")
 
         st.divider()
 
@@ -953,7 +1116,12 @@ def main():
 
         # ── Section 3: Datengrundlage ──
         with st.expander("📄 Detaillierte Kennzahlentabelle (Rohdaten)", expanded=False):
-            st.dataframe(forecast_kpis, use_container_width=True)
+            # Round for raw display (2 digits as requested for non-summary)
+            df_display = forecast_kpis.copy()
+            for col in ["mak_start", "mak_end", "mak_delta", "mak_loss_gross", "abgangsquote"]:
+                if col in df_display.columns:
+                    df_display[col] = df_display[col].round(2)
+            st.dataframe(df_display, use_container_width=True, height=500)
 
     with tab2:
         if events.empty:
@@ -994,7 +1162,8 @@ def main():
                 mak_exits["MAK_Verlust"] = mak_exits["mak_change"].abs()
                 mak_pivot = mak_exits.pivot_table(index="Jahr", columns="reason_label", values="MAK_Verlust", aggfunc="sum", fill_value=0.0)
                 mak_pivot["Gesamt"] = mak_pivot.sum(axis=1)
-                st.dataframe(mak_pivot.round(2), use_container_width=True)
+                # Management View: Round to 1 decimal place as requested
+                st.dataframe(mak_pivot.round(1), use_container_width=True)
             else:
                 st.info("Keine Kapazitäts-Abgänge.")
 
@@ -1010,7 +1179,8 @@ def main():
 
             # ── Section 3: Detailed Data Tables ──
             st.markdown("### 📋 Detail-Tabellen nach Treiber")
-            tables = result.get("tables", {})
+            res_global = st.session_state.get("abgaenge_global_result", {})
+            tables = res_global.get("tables", {})
             if not tables:
                 st.info("Keine detaillierten Tabellen verfügbar.")
             else:
@@ -1037,11 +1207,13 @@ def main():
                     )
 
     with st.expander("Plausibilitätschecks und Parameter"):
-        checks = validate_outputs(result)
-        st.write("**Checks**")
-        st.json(checks)
+        res_global = st.session_state.get("abgaenge_global_result")
+        if res_global:
+            checks = validate_outputs(res_global)
+            st.write("**Checks**")
+            st.json(checks)
         st.write("**Parameter**")
-        st.json(params)
+        st.json(last_run_params)
 
 
 main()

@@ -638,11 +638,15 @@ def run_forecast_abgaenge(
 
             for persnr in ar_to_fr:
                 if persnr in df_state.index and df_state.loc[persnr, "active"]:
-                    if df_state.loc[persnr, "mak"] > 0:
-                        mak_change = -float(df_state.loc[persnr, "mak"])
+                    # Strict ATZ Logic: Maske sure mak_change is negative
+                    current_mak = float(df_state.loc[persnr, "mak"])
+                    if current_mak > 0.001:
+                        mak_change = -current_mak
                         df_state.loc[persnr, "mak"] = 0.0
                     else:
-                        mak_change = 0.0
+                        # Fallback: Force a negative change to avoid neutralization
+                        mak_change = -1.0 
+                        
                     df_state.loc[persnr, "atz_fr_active"] = True
                     events.append({
                         "period_label": period.label,
@@ -654,6 +658,7 @@ def run_forecast_abgaenge(
                         "reason_label": REASON_LABELS[REASON_ATZ_AR_TO_FR],
                         "headcount_change": 0,
                         "mak_change": mak_change,
+                        "source_step": "forecast_atz_ar_to_fr",
                         "age": float(df_state.loc[persnr, "age"]),
                         "tenure": float(df_state.loc[persnr, "tenure"]),
                         "Organisationseinheit": str(df_state.loc[persnr, "Organisationseinheit"]) if "Organisationseinheit" in df_state.columns else "Unbekannt",

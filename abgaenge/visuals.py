@@ -15,47 +15,67 @@ def _empty_fig(title: str) -> go.Figure:
     return fig
 
 
-def build_charts(forecast_kpis: pd.DataFrame, events_person_level: pd.DataFrame) -> Dict[str, go.Figure]:
+def build_charts(
+    forecast_kpis: pd.DataFrame, 
+    events_person_level: pd.DataFrame,
+    metric_type: str = "Köpfe"
+) -> Dict[str, go.Figure]:
     charts: Dict[str, go.Figure] = {}
 
     if forecast_kpis is None or forecast_kpis.empty:
-        charts["line_headcount_mak"] = _empty_fig("Headcount und MAK")
-        charts["bar_abgaenge_reasons"] = _empty_fig("Abgänge nach Grund")
+        charts["line_headcount_mak"] = _empty_fig("Personalstand (Köpfe & MAK)")
+        charts["bar_abgaenge_reasons"] = _empty_fig("Abgangsgründe")
         return charts
 
-    # Line chart: Headcount & MAK
+    # 1. Line chart: Headcount & MAK (Trend)
     fig_line = go.Figure()
     fig_line.add_trace(go.Scatter(
         x=forecast_kpis["period_label"],
         y=forecast_kpis["headcount_end"],
         mode="lines+markers",
-        name="Headcount",
+        name="Köpfe (Headcount)",
+        line=dict(color="#1f77b4")
     ))
     fig_line.add_trace(go.Scatter(
         x=forecast_kpis["period_label"],
         y=forecast_kpis["mak_end"],
         mode="lines+markers",
-        name="MAK",
+        name="MAK (Kapazität)",
+        line=dict(color="#2ca02c")
     ))
-    fig_line.update_layout(title="Headcount und MAK", xaxis_title="Periode", yaxis_title="Wert")
+    fig_line.update_layout(
+        title="Entwicklung Personalbestand (Brutto-Verlust)", 
+        xaxis_title="Zeitraum", 
+        yaxis_title="Anzahl / MAK",
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5)
+    )
     charts["line_headcount_mak"] = fig_line
 
-    # Stacked bar & Total bar: Abgänge nach Grund
-    # Default to empty figs to ensure keys exist
-    charts["bar_abgaenge_reasons"] = _empty_fig("Abgänge nach Grund")
-    charts["bar_reasons_total"] = _empty_fig("Gesamtverteilung der Abgänge nach Grund")
+    # 2. Preparation for Reason-based charts
+    charts["bar_abgaenge_reasons"] = _empty_fig("Abgangsursachen im Zeitverlauf")
+    charts["bar_reasons_total"] = _empty_fig("Gesamtverteilung nach Ursache")
     
     if events_person_level is not None and not events_person_level.empty:
         df = events_person_level.copy()
-        df = df[(df["headcount_change"] < 0) | (df["mak_change"] < 0)]
+        
+        # Determine value column based on metric type
+        val_col = "headcount_change" if metric_type == "Köpfe" else "mak_change"
+        val_label = "Anzahl (Köpfe)" if metric_type == "Köpfe" else "Kapazität (MAK)"
+        unit = "" if metric_type == "Köpfe" else " MAK"
+        
+        # We only want to visualize "losses" or meaningful events for this view
+        # Ensure we take the absolute value for bar heights (loss is positive magnitude in chart)
+        df["vis_value"] = df[val_col].abs()
+        df = df[df["vis_value"] > 0]
         
         if not df.empty:
-            # 1. Stacked Bar (Time Series)
+            # 2.1 Stacked Bar (Time Series)
             pivot = df.pivot_table(
                 index="period_label",
                 columns="reason_code",
-                values="persnr",
-                aggfunc="count",
+                values="vis_value",
+                aggfunc="sum",
                 fill_value=0,
             )
             fig_bar = go.Figure()
@@ -68,50 +88,62 @@ def build_charts(forecast_kpis: pd.DataFrame, events_person_level: pd.DataFrame)
                 ))
             fig_bar.update_layout(
                 barmode="stack",
-                title="Abgänge nach Grund (zeitlich)",
-                xaxis_title="Periode",
-                yaxis_title="Anzahl",
+                title=f"Verlauf {val_label} nach Ursache",
+                xaxis_title="Zeitraum",
+                yaxis_title=val_label,
+                legend=dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5)
             )
             charts["bar_abgaenge_reasons"] = fig_bar
 
-            # 2. Total Bar (Aggregated)
-            total_stats = df.groupby("reason_code").size().reset_index(name="count")
+            # 2.2 Total Bar (Aggregated)
+            total_stats = df.groupby("reason_code")["vis_value"].sum().reset_index(name="sum_val")
             total_stats["reason_label"] = total_stats["reason_code"].map(REASON_LABELS)
-            total_stats = total_stats.sort_values("count", ascending=True)
+            total_stats = total_stats.sort_values("sum_val", ascending=True)
             
             fig_total = go.Figure()
             fig_total.add_trace(go.Bar(
-                x=total_stats["count"],
+                x=total_stats["sum_val"],
                 y=total_stats["reason_label"],
                 orientation="h",
-                text=total_stats["count"],
+                text=total_stats["sum_val"].apply(lambda x: f"{x:,.1f}{unit}" if metric_type == "MAK" else f"{int(x)}"),
                 textposition="auto",
-                marker_color="rgb(55, 83, 109)"
+                marker_color="#37536d"
             ))
             fig_total.update_layout(
-                title="Gesamtverteilung der Abgänge nach Grund",
-                xaxis_title="Anzahl Personen",
+                title=f"Gesamt-Verlust {val_label} nach Ursache",
+                xaxis_title=val_label,
                 yaxis_title=None,
                 height=400,
-                margin=dict(l=0, r=0, t=30, b=0)
+                margin=dict(l=0, r=0, t=50, b=50)
             )
             charts["bar_reasons_total"] = fig_total
 
-    # Driver details charts (simple counts per period)
+    # 3. Driver details charts (individual bars)
     if events_person_level is not None and not events_person_level.empty:
         df = events_person_level.copy()
+        val_col = "headcount_change" if metric_type == "Köpfe" else "mak_change"
+        val_label = "Anzahl (Köpfe)" if metric_type == "Köpfe" else "Kapazität (MAK)"
+        
         for reason_code, label in REASON_LABELS.items():
-            sub = df[df["reason_code"] == reason_code]
+            sub = df[df["reason_code"] == reason_code].copy()
+            sub["vis_value"] = sub[val_col].abs()
+            sub = sub[sub["vis_value"] > 0]
+            
             if sub.empty:
                 continue
-            counts = sub.groupby("period_label").size().reset_index(name="count")
+            sums = sub.groupby("period_label")["vis_value"].sum().reset_index(name="sum_val")
             fig = go.Figure()
             fig.add_trace(go.Bar(
-                x=counts["period_label"],
-                y=counts["count"],
+                x=sums["period_label"],
+                y=sums["sum_val"],
                 name=label,
+                marker_color="#1f77b4"
             ))
-            fig.update_layout(title=f"{label} pro Periode", xaxis_title="Periode", yaxis_title="Anzahl")
+            fig.update_layout(
+                title=f"{label} ({val_label}) pro Periode", 
+                xaxis_title="Zeitraum", 
+                yaxis_title=val_label
+            )
             charts[f"driver_{reason_code}"] = fig
 
     return charts

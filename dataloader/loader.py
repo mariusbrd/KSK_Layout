@@ -350,6 +350,63 @@ def get_data_summary(snapshot_df: pd.DataFrame) -> Dict:
     return summary
 
 
+def _zero_out_azubi_mak(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Sets MAK to 0.0 for Azubis (Single Source of Truth).
+    Preserves original values in *_raw columns for auditing.
+    
+    Identifies Azubis by:
+    - TrfGr containing "TVA" (TVÖD Azubi)
+    - Jobfamily containing "Azubi" or "Ausbildung"
+    """
+    if df.empty:
+        return df
+    
+    df = df.copy()
+    
+    # 1. Robust Identification
+    # TrfGr contains "TVA" OR Jobfamily contains "Azubi"/"Ausbildung"
+    mask_azubi = pd.Series(False, index=df.index)
+    
+    if "TrfGr" in df.columns:
+        mask_azubi |= df["TrfGr"].astype(str).str.contains("TVA", na=False, case=False)
+        
+    if "Jobfamily" in df.columns:
+        mask_azubi |= df["Jobfamily"].astype(str).str.contains("Azubi|Ausbildung", regex=True, na=False, case=False)
+        
+    if not mask_azubi.any():
+        return df
+        
+    # 2. Columns to Zero out
+    # Priorities: MAK_Calculated (Hybrid), mak (Forecast), BsGrd (Source of MAK)
+    
+    # MAK_Calculated
+    if "MAK_Calculated" in df.columns:
+        if "MAK_Calculated_raw" not in df.columns:
+            df["MAK_Calculated_raw"] = df["MAK_Calculated"]
+        df.loc[mask_azubi, "MAK_Calculated"] = 0.0
+        
+    # MAK (Capitalized - often from enrich_snapshot)
+    if "MAK" in df.columns:
+        if "MAK_raw" not in df.columns:
+            df["MAK_raw"] = df["MAK"]
+        df.loc[mask_azubi, "MAK"] = 0.0
+
+    # mak (lowercase - used in forecast engine)
+    if "mak" in df.columns:
+        if "mak_raw" not in df.columns:
+            df["mak_raw"] = df["mak"]
+        df.loc[mask_azubi, "mak"] = 0.0
+        
+    # BsGrd (Occupancy Rate) - Root cause for MAK usually
+    if "BsGrd" in df.columns:
+         if "BsGrd_raw" not in df.columns:
+             df["BsGrd_raw"] = df["BsGrd"]
+         df.loc[mask_azubi, "BsGrd"] = 0
+         
+    return df
+
+
 def load_and_prepare_data(
     use_original: bool = True,
     uploaded_files: Optional[Dict[str, Any]] = None
@@ -408,6 +465,9 @@ def load_and_prepare_data(
             # Custom Clusters
             snapshot_df = apply_clusters_to_snapshot(snapshot_df)
 
+            # Centralized Azubi MAK Zeroing (Single Source of Truth)
+            snapshot_df = _zero_out_azubi_mak(snapshot_df)
+
             summary = get_data_summary(snapshot_df)
             summary["data_source_type"] = "Eigene Daten (Upload)"
             return snapshot_df, history_df, org_df, summary
@@ -464,6 +524,9 @@ def load_and_prepare_data(
                 # 5b. Custom Clusters
                 snapshot_df = apply_clusters_to_snapshot(snapshot_df)
 
+                # Centralized Azubi MAK Zeroing (Single Source of Truth)
+                snapshot_df = _zero_out_azubi_mak(snapshot_df)
+
                 # 6. Generiere History
                 history_df = generate_history_from_snapshot(snapshot_df)
 
@@ -507,6 +570,9 @@ def load_and_prepare_data(
 
     # Custom Clusters
     snapshot_df = apply_clusters_to_snapshot(snapshot_df)
+
+    # Centralized Azubi MAK Zeroing (Single Source of Truth)
+    snapshot_df = _zero_out_azubi_mak(snapshot_df)
 
     # Berechne Summary
     summary = get_data_summary(snapshot_df)

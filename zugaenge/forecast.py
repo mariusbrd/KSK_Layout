@@ -17,6 +17,53 @@ class PeriodInfo:
     end: pd.Timestamp
     label: str
 
+def _next_august_conversion_date(entry_date: pd.Timestamp, conversion_month: int = 8, conversion_day: int = 1) -> pd.Timestamp:
+    """
+    Calculates the detailed graduation/conversion date based on the August rule.
+    Rule: 
+    - If entry is on or before conversion_day.conversion_month of the same year -> convert same year.
+    - Else -> convert next year.
+    
+    NOTE: This effectively synchronizes all Azubis to the next available cycle.
+    """
+    if pd.isna(entry_date):
+        return pd.NaT
+        
+    year = entry_date.year
+    cutoff = pd.Timestamp(year, conversion_month, conversion_day)
+    
+    if entry_date <= cutoff:
+        return cutoff
+    else:
+        return pd.Timestamp(year + 1, conversion_month, conversion_day)
+
+def _estimate_baseline_graduation_date(entry_date: pd.Timestamp, duration_years: float, conversion_month: int = 8, conversion_day: int = 1) -> pd.Timestamp:
+    """
+    Calculates estimated graduation for Baseline Azubis (missing graduation date).
+    Logic:
+    1. Estimate end based on Entry + Duration.
+    2. Snap to NEXT valid August cycle (same year if end <= August, else next year).
+    
+    This ensures baseline Azubis are distributed across years based on their entry date,
+    instead of all bunching up in the next immediate August.
+    """
+    if pd.isna(entry_date):
+        return pd.NaT
+        
+    # 1. Estimated Finish
+    years = int(duration_years)
+    months = int((duration_years % 1) * 12)
+    estimated_end = entry_date + pd.DateOffset(years=years, months=months)
+    
+    # 2. August Candidate in same year
+    august_candidate = pd.Timestamp(estimated_end.year, conversion_month, conversion_day)
+    
+    # 3. Decision
+    if estimated_end <= august_candidate:
+        return august_candidate
+    else:
+        return pd.Timestamp(estimated_end.year + 1, conversion_month, conversion_day)
+
 def _annual_to_period_count(annual_count: float, period_days: float, rng: np.random.RandomState, debt: float = 0.0) -> (int, float):
     """
     Returns (num_cases, new_debt).
@@ -89,6 +136,11 @@ def _simulate_azubis(
     entry_tariff = azubi_params.get("entry_tariff_group", "E5")
     entry_step = int(azubi_params.get("entry_step", 1))
     
+    # MAK Logic Parameters
+    mak_after = float(azubi_params.get("azubi_mak_after_takeover", 1.0))
+    conv_month = int(azubi_params.get("azubi_conversion_month", 8))
+    conv_day = int(azubi_params.get("azubi_conversion_day", 1))
+    
     # Pre-compute cluster map for lookups
     unit_to_cluster = _get_unit_to_cluster_map(df_state)
     valid_units = list(unit_to_cluster.keys()) if unit_to_cluster else all_org_units
@@ -130,8 +182,13 @@ def _simulate_azubis(
         # Calculate graduation date: Use stored one if available (forecast), otherwise calculate (baseline)
         eintritt = pd.to_datetime(row.get("Eintritt", pd.NaT))
         graduation_date = row.get("GraduationDate", pd.NaT)
+        
+        # If no strict graduation date set, calculate using Helper Logic
         if pd.isna(graduation_date) and pd.notna(eintritt):
-            graduation_date = eintritt + pd.DateOffset(years=int(duration_years)) + pd.DateOffset(months=int((duration_years % 1) * 12))
+             # Baseline Azubi Logic: 
+             # Use _estimate_baseline_graduation_date to respect contract duration
+             # and distribute conversions across years.
+             graduation_date = _estimate_baseline_graduation_date(eintritt, duration_years, conv_month, conv_day)
         
         if pd.isna(graduation_date):
             continue # Still can't determine graduation
@@ -164,10 +221,23 @@ def _simulate_azubis(
                 "cohort": eintritt.year if pd.notna(eintritt) else "Unknown"
             }
 
+            # FTE handling
+            # Current Azubi MAK (should be 0.0 for new logic, but might be 1.0 for legacy)
+            current_mak = float(row.get("mak", 0.0))
+            
             if should_retain:
                 # Retained
-                new_unit = _resolve_org_unit(strategy, target_unit, all_org_units, [], rng, valid_units)
-                new_cluster = unit_to_cluster.get(new_unit, "Unclustered")
+                
+                # FIX: Enforce Dimension Consistency (Source of Truth)
+                # Option 1: Conversion_In inherits dimensions from Conversion_Out (Row)
+                # This ensures Netto-Zero effect on Cluster level.
+                
+                # 1. Inherit Unit & Cluster from Source (Row)
+                new_unit = row.get("Organisationseinheit")
+                new_cluster = row.get("OE-Cluster", "Unclustered") # Keep original cluster
+                
+                # Note: Previously we resolved new units for Forecast Azubis.
+                # Now we stick to the assigned unit to avoid migration effects.
                 
                 # Update State
                 df_state.loc[persnr, "Jobfamily"] = "Angestellte" # Graduate
@@ -175,36 +245,41 @@ def _simulate_azubis(
                 if "OE-Cluster" in df_state.columns:
                     df_state.loc[persnr, "OE-Cluster"] = new_cluster
                 
+                # Explicitly transfer reporting dimensions if present (e.g. 'Bereich')
+                # (Assuming they are in row)
+                
                 # Reset Salary to Configured Entry (Assumption for ex-Azubi)
                 df_state.loc[persnr, "TrfGr"] = entry_tariff
                 df_state.loc[persnr, "St"] = entry_step
                 
+                # Update MAK to Target (1.0)
+                df_state.loc[persnr, "mak"] = mak_after
+                
                 # Modeled as Category Shift (Fix id: 13)
-                # 1. Azubi Graduation (Removal) - Part of Conversion
-                # Ensure MAK is strictly positive (Fix: FTE Consistency)
-                azu_fte = float(row.get("mak", 1.0))
-                if azu_fte <= 0: azu_fte = 1.0
+                # 1. Azubi Graduation (Removal) - Remove current MAK (0.0 or 1.0)
                 events.append({
                     "date": graduation_date,
                     "type": "Azubi_Conversion_Out",
+                    "reason_label": "Azubi-Abschluss: Übernahme (Umwandlung)",
                     "count": -1,
                     "persnr": persnr,
                     "org_unit": row.get("Organisationseinheit"),
                     "source": "Azubi",
-                    "mak": -azu_fte,
+                    "mak": -current_mak, # Remove whatever was there
                     "OE-Cluster": row.get("OE-Cluster", "Unclustered"),
                     "comment": "Statuswechsel: Azubi Ende",
                     **audit_fields
                 })
-                # 2. Regular Entry (Addition) - Part of Conversion
+                # 2. Regular Entry (Addition) - Add Target MAK (1.0)
                 events.append({
                     "date": graduation_date,
                     "type": "Azubi_Conversion_In",
+                    "reason_label": "Azubi-Abschluss: Übernahme (Umwandlung)",
                     "count": 1,
                     "persnr": persnr,
                     "org_unit": new_unit,
                     "source": "Regular",
-                    "mak": azu_fte,
+                    "mak": mak_after, # +1.0
                     "TrfGr": entry_tariff,
                     "St": entry_step,
                     "Jobfamily": "Angestellte",
@@ -216,15 +291,15 @@ def _simulate_azubis(
             else:
                 # Not retained - Exit
                 df_state.loc[persnr, "active"] = False
-                azu_fte = float(row.get("mak", 1.0))
-                if azu_fte <= 0: azu_fte = 1.0
+                
                 events.append({
                     "date": graduation_date,
                     "type": "Azubi_Exit",
+                    "reason_label": "Azubi-Abschluss: Nichtübernahme (Abgang)",
                     "count": -1,
                     "persnr": persnr,
                     "org_unit": row.get("Organisationseinheit"),
-                    "mak": -azu_fte,
+                    "mak": -current_mak, # Remove current MAK
                     "OE-Cluster": row.get("OE-Cluster", "Unclustered"),
                     "source": "Azubi",
                     **audit_fields
@@ -254,6 +329,11 @@ def _simulate_new_azubis(
     target_unit = azubi_params.get("target_org_unit", None)
     entry_tariff = "TVAöD" # Default for Azubis during apprenticeship
     
+    # MAK Logic Parameters
+    mak_during = float(azubi_params.get("azubi_mak_during_training", 0.0))
+    conv_month = int(azubi_params.get("azubi_conversion_month", 8))
+    conv_day = int(azubi_params.get("azubi_conversion_day", 1))
+    
     # Pre-compute cluster map for lookups
     unit_to_cluster = _get_unit_to_cluster_map(df_state)
     valid_units = list(unit_to_cluster.keys()) if unit_to_cluster else all_org_units
@@ -281,8 +361,8 @@ def _simulate_new_azubis(
         org_unit = _resolve_org_unit(strategy, target_unit, all_org_units, [], rng, valid_units)
         new_cluster = unit_to_cluster.get(org_unit, "Unclustered")
 
-        # Graduation calc (id: 16)
-        grad_date = entry_date + pd.DateOffset(years=int(duration_years)) + pd.DateOffset(months=int((duration_years % 1) * 12))
+        # Graduation calc (id: 16) - Use August Rule respecting Duration
+        grad_date = _estimate_baseline_graduation_date(entry_date, duration_years, conv_month, conv_day)
         
         # State Object
         new_row = {
@@ -290,6 +370,7 @@ def _simulate_new_azubis(
             "active": True,
             "Jobfamily": "Azubi",
             "TrfGr": entry_tariff,
+            "TrfGrStart": entry_tariff, # Store for audit
             "St": 1,
             "Organisationseinheit": org_unit,
             "Eintritt": entry_date,
@@ -299,7 +380,7 @@ def _simulate_new_azubis(
             "Planstelle": "Azubi",
             "age": 16.0,
             "tenure": 0.0,
-            "mak": 1.0,
+            "mak": mak_during, # Azubi counts as 0 MAK initially (per new Rule)
             "OE-Cluster": new_cluster # Assigned Cluster
         }
         
@@ -319,11 +400,12 @@ def _simulate_new_azubis(
         events.append({
             "date": entry_date,
             "type": "Azubi_Hire",
+            "reason_label": "Azubi Neueinstellung (externer Zugang)",
             "count": 1,
             "persnr": new_id,
             "org_unit": org_unit,
             "source": "Azubi (New)",
-            "mak": 1.0,
+            "mak": mak_during, # 0.0
             "TrfGr": entry_tariff,
             "St": 1,
             "Jobfamily": "Azubi",
@@ -389,6 +471,7 @@ def _simulate_trainees(
         events.append({
             "date": entry_date,
             "type": "Trainee_Hire",
+            "reason_label": "Trainee Neueinstellung",
             "count": 1,
             "persnr": new_id,
             "org_unit": org_unit,
@@ -511,6 +594,7 @@ def _simulate_hires(
         events.append({
             "date": entry_date,
             "type": "New_Hire",
+            "reason_label": "Basis-Einstellungen / Nachbesetzung",
             "count": 1,
             "persnr": new_id,
             "org_unit": org_unit,
@@ -528,6 +612,8 @@ def run_forecast_zugaenge(
     df_snapshot: pd.DataFrame,
     start_date: pd.Timestamp,
     periods_years: int = 3,
+    end_date: Optional[pd.Timestamp] = None,
+    freq: str = "M",
     params: Dict[str, Any] = None,
     vacancies: List[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
@@ -543,13 +629,18 @@ def run_forecast_zugaenge(
     if "active" not in df_state.columns:
         df_state["active"] = True # Assume snapshot is all active
         
+    # Index Optimization (id: 16 - Fix Indexing)
+    if not df_state.empty and "PersNr" in df_state.columns:
+        df_state.set_index("PersNr", drop=False, inplace=True)
+        
     # Get all OrgUnits for random assignment
     all_org_units = []
     if "Organisationseinheit" in df_state.columns:
         all_org_units = df_state["Organisationseinheit"].dropna().unique().tolist()
 
     # Generate Periods (Monthly)
-    end_date = start_date + pd.DateOffset(years=periods_years)
+    if end_date is None:
+        end_date = start_date + pd.DateOffset(years=periods_years)
     period_range = pd.period_range(start=start_date, end=end_date, freq="M")
     
     all_events = []
@@ -622,8 +713,95 @@ def run_forecast_zugaenge(
     events_df = pd.DataFrame(all_events)
     if events_df.empty:
         # Enforce schema to avoid KeyErrors downstream
-        events_df = pd.DataFrame(columns=["date", "type", "count", "persnr", "org_unit", "source", "mak", "Jobfamily", "OE-Cluster", "TrfGr", "St", "Planstelle"])
+        events_df = pd.DataFrame(columns=["date", "type", "count", "persnr", "org_unit", "source", "mak", "Jobfamily", "OE-Cluster", "TrfGr", "St", "Planstelle", "is_forecast"])
     
+    # Schema Normalization (id: 16 - Fix Schema)
+    # Ensure consistent keys: persnr -> PersNr, org_unit -> Organisationseinheit
+    # But keep 'persnr' for backward compatibility if needed, or better aliasing.
+    # The hybrid page expects lower case 'persnr' in some places, but 'PersNr' is the standard in df.
+    # We will enforce:
+    # 1. persnr (lower) for events
+    # 2. PersNr (Title) for State match
+    # 3. org_unit (events) vs Organisationseinheit (State)
+    # Actually, let's just make sure both exist to avoid KeyErrors.
+    if not events_df.empty:
+        if "PersNr" not in events_df.columns and "persnr" in events_df.columns:
+            events_df["PersNr"] = events_df["persnr"]
+        if "persnr" not in events_df.columns and "PersNr" in events_df.columns:
+            events_df["persnr"] = events_df["PersNr"]
+            
+        if "Organisationseinheit" not in events_df.columns and "org_unit" in events_df.columns:
+            events_df["Organisationseinheit"] = events_df["org_unit"]
+        if "org_unit" not in events_df.columns and "Organisationseinheit" in events_df.columns:
+            events_df["org_unit"] = events_df["Organisationseinheit"]
+
+        # Ensure 'mak' exists
+        if "mak" not in events_df.columns:
+            events_df["mak"] = 1.0
+            
+    # Final Sanity: Drop duplicate columns (fix InvalidIndexError via concat)
+    if not events_df.empty:
+        events_df = events_df.loc[:, ~events_df.columns.duplicated()]
+            
+    # Debug / Regression Check (id: 16 - Fix Regression Check)
+    debug_info = {}
+    if params.get("debug", False) or params.get("azubi", {}).get("exclude_baseline_azubis", False):
+        try:
+            # Check internal pools
+            # Note: This is post-simulation, so 'active' might have changed.
+            # We better check the EVENTS generated.
+            
+            # Count Azubi-Outcome events by Source Pool
+            outcome_events = events_df[events_df["type"].isin(["Azubi_Conversion_In", "Azubi_Exit", "Azubi_Conversion_Out"])].copy()
+            if not outcome_events.empty:
+                if "is_forecast" not in outcome_events.columns:
+                    outcome_events["is_forecast"] = False # Assume baseline if missing
+                
+                # Event-based counts
+                fc_ev = len(outcome_events[outcome_events["is_forecast"] == True])
+                bl_ev = len(outcome_events[outcome_events["is_forecast"] == False])
+                
+                # Person-based counts (Unique PersNr)
+                fc_pers = outcome_events[outcome_events["is_forecast"] == True]["persnr"].nunique()
+                bl_pers = outcome_events[outcome_events["is_forecast"] == False]["persnr"].nunique()
+                
+                debug_info["completions_forecast_count"] = f"{fc_ev} Events ({fc_pers} Persons)"
+                debug_info["completions_baseline_count"] = f"{bl_ev} Events ({bl_pers} Persons)"
+            else:
+                debug_info["completions_forecast_count"] = "0 Events (0 Persons)"
+                debug_info["completions_baseline_count"] = "0 Events (0 Persons)"
+                
+            # Isolation Verification
+            if params.get("azubi", {}).get("exclude_baseline_azubis", False):
+                if bl_ev > 0: # Use event count for strict check
+                     debug_info["isolation_error"] = f"CRITICAL: Found {bl_ev} baseline events despite isolation!"
+        except Exception as e:
+            debug_info["error"] = str(e)
+    
+    
+    # Audit Baseline Conversions (New Feature)
+    if params.get("azubi", {}).get("active", True):
+        # 1. Identify Baseline Conversions in events
+        baseline_convs = events_df[
+            (events_df["type"] == "Azubi_Conversion_In") & 
+            (events_df["is_forecast"] == False)
+        ]
+        
+        if not baseline_convs.empty:
+            # Group by year
+            baseline_counts = baseline_convs["date"].dt.year.value_counts()
+            
+            # Compare against planned new cases
+            planned_cases = float(params.get("azubi", {}).get("new_cases_per_year", 0))
+            
+            for year, count in baseline_counts.items():
+                if count > planned_cases:
+                    msg = f"Hinweis: Im Jahr {year} werden {count} Bestands-Azubis fertig (Planung: {int(planned_cases)})."
+                    if "warnings" not in debug_info:
+                        debug_info["warnings"] = []
+                    debug_info["warnings"].append(msg)
+                    # print(f"WARNING: {msg}") # Optional Console Output
+
     # Calculate Time Series KPIs (Headcount/MAK Evolution)
     # Start Stats
     start_hc = df_snapshot["active"].sum() if "active" in df_snapshot.columns else len(df_snapshot)
@@ -682,5 +860,6 @@ def run_forecast_zugaenge(
     return {
         "events": events_df,
         "final_state": df_state,
-        "forecast_kpis": forecast_kpis
+        "forecast_kpis": forecast_kpis,
+        "debug_info": debug_info
     }

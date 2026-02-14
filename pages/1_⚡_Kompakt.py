@@ -32,6 +32,7 @@ from config.settings import (
     EDUCATION_GROUPS, EDUCATION_HIERARCHY,
 )
 from dataloader.jobfamily_matcher import assign_jobfamilies, load_jobfamily_definitions
+from utils.plot_helpers import apply_legend_bottom
 
 # Scroll Navigation
 try:
@@ -535,12 +536,10 @@ def create_donut_chart(df: pd.DataFrame, values_col: str, names_col: str,
         margin=dict(l=20, r=20, t=50, b=20),
         height=350,
         showlegend=True,
-        legend=dict(
-            orientation="h", yanchor="bottom", y=-0.2,
-            xanchor="center", x=0.5, font=dict(size=10)
-        )
+        # legend=dict(...) # Entfernt zugunsten von apply_legend_bottom
     )
-
+    
+    fig = apply_legend_bottom(fig)
     return fig
 
 
@@ -652,14 +651,12 @@ def create_stacked_tariff_chart(
         font=dict(color="#64748b", size=11),
         margin=dict(l=10, r=40, t=50, b=30),
         height=height,
-        legend=dict(
-            orientation="h", yanchor="bottom", y=1.02,
-            xanchor="right", x=1, font=dict(size=10),
-            title_text="Erfahrungsstufe",
-        ),
         xaxis=dict(showgrid=True, gridcolor="rgba(226, 232, 240, 0.8)", zeroline=False, tickformat=x_tickformat),
         yaxis=dict(showgrid=False, categoryorder="array", categoryarray=present_groups),
     )
+    
+    fig = apply_legend_bottom(fig)
+
 
     return fig
 
@@ -807,13 +804,12 @@ def create_stacked_tariff_comparison_chart(
         font=dict(color="#64748b", size=11),
         margin=dict(l=10, r=40, t=50, b=30),
         height=height,
-        legend=dict(
-            orientation="h", yanchor="bottom", y=1.02,
-            xanchor="right", x=1, font=dict(size=10),
-        ),
         xaxis=dict(showgrid=True, gridcolor="rgba(226, 232, 240, 0.8)", zeroline=False, tickformat=x_tickformat),
         yaxis=dict(showgrid=False, categoryorder="array", categoryarray=present_groups),
     )
+    
+    fig = apply_legend_bottom(fig)
+
 
     return fig
 
@@ -864,10 +860,12 @@ def create_comparison_chart(df: pd.DataFrame, dimension_col: str,
         font=dict(color="#64748b", size=11),
         margin=dict(l=10, r=80, t=50, b=30),
         height=height,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         xaxis=dict(showgrid=True, gridcolor="rgba(226, 232, 240, 0.8)", zeroline=False),
         yaxis=dict(showgrid=False)
     )
+    
+    fig = apply_legend_bottom(fig)
+
 
     return fig
 
@@ -1085,19 +1083,11 @@ def create_education_range_chart(range_df: pd.DataFrame,
         font=dict(color="#64748b", size=11),
         margin=dict(l=10, r=30, t=50, b=80),
         height=height,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        xaxis=dict(
-            showgrid=True,
-            gridcolor="rgba(226, 232, 240, 0.8)",
-            zeroline=False,
-            tickvals=tick_vals,
-            ticktext=tick_labels,
-            tickangle=-35,
-            range=[min(all_ords) - 0.5, max(all_ords) + 0.5],
-            title="Ausbildungsniveau (ordinal)",
-        ),
         yaxis=dict(showgrid=False),
     )
+    
+    fig = apply_legend_bottom(fig)
+
 
     return fig
 
