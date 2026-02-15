@@ -903,7 +903,9 @@ def main():
             _df.loc[_mask, "JF-Cluster"] = "Sonstiges"
 
     # C. Re-Aggregate (View Level)
-    df_snapshot_filtered = apply_filters(snapshot_df) # Position Level
+    # NOTE: Use df_ma (employee-level, with MAK_Calculated) — NOT snapshot_df
+    # (raw position-level without MAK_Calculated).
+    df_snapshot_filtered = apply_filters(df_ma)
     if df_snapshot_filtered.empty:
         st.warning("⚠️ Keine Daten nach Filterung.")
         return
