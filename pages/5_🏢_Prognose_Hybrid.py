@@ -662,30 +662,69 @@ def main():
         if "_pid_clean" in filt_abg_events.columns:
             del filt_abg_events["_pid_clean"]
 
-    # --- Scope Filtering & Initial Workforce Sync (Matches Page 3) ---
-    df_snapshot_filtered = apply_filters(snapshot_df) # Position Level filters (Sidebar)
-    initial_ids = set(df_snapshot_filtered["PersNr"].astype(str).str.replace(r"\.0$", "", regex=True))
-    
-    # helper for robust attribute filtering (Synchronized with Page 3)
-    def _apply_prognosis_filters(df, p_ids):
-        if df.empty: return df
-        # 1. Restrict to initially filtered workforce (Patch 3 Consistency)
-        df["_pid_clean"] = df["persnr"].astype(str).str.replace(r"\.0$", "", regex=True)
-        df = df[df["_pid_clean"].isin(p_ids)].copy()
-        
-        # 2. Apply Sidebar Attribute Filters (Standard V4)
-        df = _apply_robust_filter(df, "Organisationseinheit", st.session_state.get("selected_org_units", []))
-        df = _apply_robust_filter(df, "Jobfamily", st.session_state.get("selected_jobfamilies", []))
-        df = _apply_robust_filter(df, "OE-Cluster", st.session_state.get("selected_oe_clusters", []))
-        df = _apply_robust_filter(df, "JF-Cluster", st.session_state.get("selected_jf_clusters", []))
-        return df
+    # --- Scope Filtering (mirror page-specific logic 1:1) ---
+    df_snapshot_filtered = apply_filters(snapshot_df)  # Position Level filters (Sidebar)
+    if df_snapshot_filtered.empty:
+        st.warning("⚠️ Keine Daten nach Filterung verfügbar.")
 
-    filt_abg_events = _apply_prognosis_filters(raw_abg_events.copy(), initial_ids)
-    
-    # Zugänge
+    valid_ids = set(df_snapshot_filtered["PersNr"].astype(str).str.replace(r"\.0$", "", regex=True)) if not df_snapshot_filtered.empty else set()
+
+    # Abgänge filtering aligned with Seite 3
+    filt_abg_events = raw_abg_events.copy()
+    if not filt_abg_events.empty:
+        filt_abg_events["_pid_clean"] = filt_abg_events["persnr"].astype(str).str.replace(r"\.0$", "", regex=True)
+
+        # direct attribute filtering
+        filt_abg_events = _apply_robust_filter(filt_abg_events, "Organisationseinheit", st.session_state.get("selected_org_units", []))
+        filt_abg_events = _apply_robust_filter(filt_abg_events, "Jobfamily", st.session_state.get("selected_jobfamilies", []))
+        filt_abg_events = _apply_robust_filter(filt_abg_events, "OE-Cluster", st.session_state.get("selected_oe_clusters", []))
+        filt_abg_events = _apply_robust_filter(filt_abg_events, "JF-Cluster", st.session_state.get("selected_jf_clusters", []))
+
+        has_non_attr_filters = any([
+            st.session_state.get("selected_genders", []),
+            st.session_state.get("selected_employment", []),
+            st.session_state.get("selected_atz_status", []),
+            st.session_state.get("selected_cohorts", []),
+            st.session_state.get("selected_education", []),
+        ])
+
+        if has_non_attr_filters and valid_ids:
+            filt_abg_events = filt_abg_events[filt_abg_events["_pid_clean"].isin(valid_ids)]
+
+        # P13 sync with initial workforce (same as Seite 3)
+        if valid_ids:
+            filt_abg_events = filt_abg_events[filt_abg_events["_pid_clean"].isin(valid_ids)]
+
+        filt_abg_events = filt_abg_events.drop(columns=["_pid_clean"], errors="ignore")
+
+    # Zugänge filtering aligned with Seite 4
     raw_zug_events = zug_res["events"].copy()
-    if "org_unit" in raw_zug_events.columns: raw_zug_events = raw_zug_events.rename(columns={"org_unit": "Organisationseinheit"})
-    filt_zug_events = _apply_prognosis_filters(raw_zug_events.copy(), initial_ids)
+    if "org_unit" in raw_zug_events.columns:
+        raw_zug_events = raw_zug_events.rename(columns={"org_unit": "Organisationseinheit"})
+    filt_zug_events = raw_zug_events.copy()
+    if not filt_zug_events.empty:
+        filt_zug_events["_pid_clean"] = filt_zug_events["persnr"].astype(str).str.replace(r"\.0$", "", regex=True)
+
+        # direct attribute filtering
+        filt_zug_events = _apply_robust_filter(filt_zug_events, "Organisationseinheit", st.session_state.get("selected_org_units", []))
+        filt_zug_events = _apply_robust_filter(filt_zug_events, "Jobfamily", st.session_state.get("selected_jobfamilies", []))
+        filt_zug_events = _apply_robust_filter(filt_zug_events, "OE-Cluster", st.session_state.get("selected_oe_clusters", []))
+        filt_zug_events = _apply_robust_filter(filt_zug_events, "JF-Cluster", st.session_state.get("selected_jf_clusters", []))
+
+        has_non_attr_filters = any([
+            st.session_state.get("selected_genders", []),
+            st.session_state.get("selected_employment", []),
+            st.session_state.get("selected_atz_status", []),
+            st.session_state.get("selected_cohorts", []),
+            st.session_state.get("selected_education", []),
+        ])
+        if has_non_attr_filters:
+            all_existing_ids = set(snapshot_df["PersNr"].astype(str).str.replace(r"\.0$", "", regex=True))
+            mask_is_filtered_existing = filt_zug_events["_pid_clean"].isin(valid_ids)
+            mask_is_new_hire = ~filt_zug_events["_pid_clean"].isin(all_existing_ids)
+            filt_zug_events = filt_zug_events[mask_is_filtered_existing | mask_is_new_hire]
+
+        filt_zug_events = filt_zug_events.drop(columns=["_pid_clean"], errors="ignore")
     
     # --- Scope Filtering (Fix B: Harmonize Zugänge with Netto definition) ---
     if "date" in filt_zug_events.columns:
@@ -907,8 +946,9 @@ def main():
     )
 
     # Standalone KPIs for specific tabs
-    abg_view_kpis = aggregate_forecast_results(df_initial=df_view_agg, events_df=filt_abg_events, start_date=pd.Timestamp(ist_stichtag), end_date=pd.Timestamp(forecast_end_date), freq="M", params=None)
-    zug_view_kpis = aggregate_forecast_results(df_initial=df_view_agg, events_df=filt_zug_events_std, start_date=pd.Timestamp(ist_stichtag), end_date=pd.Timestamp(forecast_end_date), freq="M", params=None)
+    agg_freq = "M" if freq_label == "Monat" else "Q"
+    abg_view_kpis = aggregate_forecast_results(df_initial=df_view_agg, events_df=filt_abg_events, start_date=pd.Timestamp(ist_stichtag), end_date=pd.Timestamp(forecast_end_date), freq=agg_freq, params=None)
+    zug_view_kpis = aggregate_forecast_results(df_initial=df_view_agg, events_df=filt_zug_events_std, start_date=pd.Timestamp(ist_stichtag), end_date=pd.Timestamp(forecast_end_date), freq=agg_freq, params=None)
 
     # 4. Rendering ──────────────────────────────────────────────────
     st.divider()
