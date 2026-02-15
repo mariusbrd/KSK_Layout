@@ -208,3 +208,73 @@ def sidebar_separator(label: str = None):
         )
     else:
         st.sidebar.markdown("<hr style='margin: 1.5rem 0; border: 0; border-top: 1px solid #e0e0e0;'>", unsafe_allow_html=True)
+
+def render_distribution_matrix(
+    label: str,
+    dimension: str,
+    current_matrix: dict,
+    valid_vals: list,
+    key_prefix: str,
+    disabled: bool = False,
+    default_value: float = 1.0,
+    column_label: str = "Anteil (0.0 - 1.0)"
+) -> dict:
+    """
+    Renders a reusable distribution matrix editor.
+    
+    Args:
+        label: Caption for the matrix
+        dimension: Name of the dimension (e.g. "JobFamily")
+        current_matrix: Current state dictionary {val: share}
+        valid_vals: List of allowed values for the dimension
+        key_prefix: Unique key prefix for streamlit components
+        disabled: Whether the editor is disabled
+        default_value: Fallback if a value is missing
+        column_label: Label for the numeric column
+        
+    Returns:
+        Updated matrix dictionary
+    """
+    import pandas as pd
+    
+    st.caption(label)
+    
+    items = ["Default"] + sorted(valid_vals)
+    editor_data = []
+
+    for val in items:
+        rate = current_matrix.get(str(val))
+        if rate is None:
+            rate = current_matrix.get("Default", default_value)
+        
+        editor_data.append({
+            dimension: val,
+            column_label: float(rate)
+        })
+    
+    df_matrix = pd.DataFrame(editor_data).set_index(dimension)
+    
+    edited_df = st.data_editor(
+        df_matrix,
+        use_container_width=True,
+        height=min(400, 50 + len(items) * 35),
+        key=f"{key_prefix}_editor",
+        disabled=disabled,
+        column_config={
+            column_label: st.column_config.NumberColumn(
+                column_label,
+                min_value=0.0, max_value=1.0, step=0.01, format="%.2f"
+            )
+        }
+    )
+    
+    new_matrix = {}
+    for dim_val, row in edited_df.iterrows():
+        new_matrix[str(dim_val)] = float(row[column_label])
+        
+    # Visual check for sum
+    total_share = sum(new_matrix.values()) - new_matrix.get("Default", 0)
+    # Note: For ATZ this sum isn't necessarily 1.0, but for Azubi Takeover it should be.
+    # We leave validation to the caller or add a flag later.
+    
+    return new_matrix

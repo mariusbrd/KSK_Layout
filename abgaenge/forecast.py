@@ -195,47 +195,51 @@ def _get_atz_events_from_schedule(
     return ar_to_fr, atz_end
 
 
-def _select_quit_prob(row: pd.Series, params: Dict[str, Any]) -> float:
+def _select_quit_prob(row: pd.Series, params: Dict[str, Any], period_year: int) -> float:
     quit_params = params.get("quit", {})
     base = float(quit_params.get("quit_rate_base", 0.05))
     if not quit_params.get("use_quit_matrix", True):
-        return base
-
-    matrix = quit_params.get("quit_matrix", {})
-    dimension = quit_params.get("quit_dimension", "JobFamily") # Default
-
-    age = float(row["age"])
-    
-    # Analyze Age Group
-    if age < 30:
-        age_key = "alter_unter_30"
-    elif age < 45:
-        age_key = "alter_30_45"
-    elif age < 55:
-        age_key = "alter_45_55"
+        prob = base
     else:
-        age_key = "alter_55_plus"
+        matrix = quit_params.get("quit_matrix", {})
+        dimension = quit_params.get("quit_dimension", "JobFamily") # Default
+        age = float(row["age"])
+        
+        # Analyze Age Group
+        if age < 30:
+            age_key = "alter_unter_30"
+        elif age < 45:
+            age_key = "alter_30_45"
+        elif age < 55:
+            age_key = "alter_45_55"
+        else:
+            age_key = "alter_55_plus"
 
-    # Analyze Dimension
-    if dimension == "OrgUnit":
-        # Ensure column exists; fallback to "Default" if missing or value not in matrix
-        dim_value = str(row.get("Organisationseinheit", "Default"))
-    else:
-        # JobFamily
-        dim_value = str(row.get("Jobfamily", "Default"))
+        # Analyze Dimension
+        if dimension == "OrgUnit":
+            dim_value = str(row.get("Organisationseinheit", "Default"))
+        else:
+            dim_value = str(row.get("Jobfamily", "Default"))
 
-    # Lookup
-    # 1. Try exact match
-    # 2. Try "Default"
-    # 3. Fallback to base rate
+        age_row = matrix.get(age_key, {})
+        if dim_value in age_row:
+            prob = float(age_row[dim_value])
+        elif "Default" in age_row:
+            prob = float(age_row["Default"])
+        else:
+            prob = base
+
+    # 4. Apply Year/JF Adjustments
+    adjustments = quit_params.get("quit_adjustments", {})
+    jf_name = str(row.get("Jobfamily", "Default"))
     
-    age_row = matrix.get(age_key, {})
-    if dim_value in age_row:
-        return float(age_row[dim_value])
-    elif "Default" in age_row:
-        return float(age_row["Default"])
-    
-    return base
+    # "more" -> 1.5x, "less" -> 0.5x
+    if jf_name in adjustments.get("more", {}) and period_year in adjustments["more"][jf_name]:
+        prob *= 1.5
+    elif jf_name in adjustments.get("less", {}) and period_year in adjustments["less"][jf_name]:
+        prob *= 0.5
+        
+    return min(1.0, prob)
 
 
 def _select_atz_prob(row: pd.Series, params: Dict[str, Any]) -> float:
@@ -733,8 +737,9 @@ def run_forecast_abgaenge(
                 # Patch 2: Stable Sorting
                 eligible = eligible.sort_index()
                 probs = []
+                period_year = period.start.year
                 for _, row in eligible.iterrows():
-                    annual = _select_quit_prob(row, params)
+                    annual = _select_quit_prob(row, params, period_year)
                     probs.append(_annual_to_period_rate(annual, period_days))
                 probs = np.array(probs)
                 draws = rng_quit.random(len(eligible))

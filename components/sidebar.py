@@ -14,7 +14,8 @@ import re
 
 # Import settings
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config.settings import DEFAULT_COHORTS, COLORS
+from config.settings import DEFAULT_COHORTS, COLORS, DATA_PATH, BASE_DIR
+from dataloader.source_service import SourceService, DataSourceOrigin
 
 
 # -----------------------------
@@ -115,6 +116,49 @@ def _segmented_multi_gender(label: str, options: list[str], default: list[str], 
     )
 
 
+def render_data_status():
+    """Renders the structured data status in an ultra-compact Ampel-format."""
+    uploads = st.session_state.get("global_uploads", {})
+    original_dir = os.path.join(BASE_DIR, "..", "Original-Daten")
+    cluster_dir = os.path.abspath(os.path.join(BASE_DIR, "..", "Cluster-Daten"))
+    
+    group_labels = {
+        "Mitarbeiterinformationen": "Mitarbeiter",
+        "Entgeltinformationen": "Entgelt",
+        "Clusterinformationen": "Cluster"
+    }
+
+    # Ampel-Logic Mapping
+    ampel_cfg = {
+        DataSourceOrigin.UPLOADED: ("#10b981", "Upload"),     # Green
+        DataSourceOrigin.ORIGINAL: ("#f59e0b", "Standard"),   # Yellow
+        DataSourceOrigin.SYNTHETIC: ("#ef4444", "synthetisch") # Red
+    }
+
+    # Start HTML block
+    html = ["<div style='margin-bottom: 8px;'>"]
+    html.append("<div style='margin: 0 0 4px 0; font-size: 13px; font-weight: bold;'>📊 Datenstatus</div>")
+    html.append("<div style='border-left: 2px solid #e5e7eb; padding-left: 8px;'>")
+    
+    for group_name in SourceService.GROUPS.keys():
+        status = SourceService.derive_group_status(group_name, uploads, original_dir, cluster_dir)
+        color, short_origin = ampel_cfg[status.origin]
+        
+        # Build compact row without leading whitespace to avoid markdown code blocks
+        row = (
+            f"<div style='display: flex; align-items: center; gap: 6px; line-height: 1.1; margin-bottom: 2px; font-size: 11px;'>"
+            f"<span style='height: 8px; width: 8px; background-color: {color}; border-radius: 50%; display: inline-block; flex-shrink: 0;'></span>"
+            f"<span style='font-weight: 500; color: #374151;'>{group_labels[group_name]}:</span>"
+            f"<span style='color: #6b7280;' title='{status.completeness_label}'>{short_origin}</span>"
+            f"</div>"
+        )
+        html.append(row)
+
+    html.append("</div></div>")
+    
+    st.markdown("".join(html), unsafe_allow_html=True)
+
+
 # -----------------------------
 # Public API
 # -----------------------------
@@ -169,10 +213,9 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
 
     with st.sidebar:
         # -----------------------------
-        # Data Source Indicator
+        # Data Source Status
         # -----------------------------
-        from components.data_source_indicator import show_data_source_badge
-        show_data_source_badge()
+        render_data_status()
 
         st.markdown("---")
 

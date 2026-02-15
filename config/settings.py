@@ -6,7 +6,11 @@ from dataclasses import dataclass
 from typing import Dict, List, Tuple
 from utils.settings_loader import load_user_settings
 
+import os
 USER_SETTINGS = load_user_settings()
+
+# Basis-Verzeichnis des Projekts
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # =============================================================================
 # FARBPALETTE

@@ -40,6 +40,10 @@ def default_params() -> Dict[str, Any]:
                 "alter_45_55": {"Default": 0.05},
                 "alter_55_plus": {"Default": 0.02},
             },
+            "quit_adjustments": {
+                "more": {}, # Format: {"JF_Name": [2024, 2025]}
+                "less": {}, # Format: {"JF_Name": [2026]}
+            },
         },
         "ruhend": {
             "ruhend_new_cases_per_year": 0,

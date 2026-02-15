@@ -19,6 +19,10 @@ def default_params() -> Dict[str, Any]:
             "azubi_mak_after_takeover": 1.0,
             "azubi_conversion_month": 8,
             "azubi_conversion_day": 1,
+            "use_takeover_matrix": False,
+            "takeover_dimension": "JobFamily", # "JobFamily" or "OrgUnit"
+            "takeover_matrix": {}, # {val: weight}
+            "jf_to_cluster_map": {}, # For consistent cluster assignment in engine
         },
         "trainee": {
             "new_cases_per_year": 5,

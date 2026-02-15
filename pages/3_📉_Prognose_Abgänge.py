@@ -40,6 +40,7 @@ from abgaenge import (
 # Shared Components
 from dataloader.loader import load_and_prepare_data, load_atz_data_cached
 from dataloader.cluster_manager import is_clustering_active
+from dataloader.jobfamily_service import JobFamilyService
 from components.sidebar import render_global_filters, apply_filters
 from utils.plot_helpers import apply_legend_bottom
 
@@ -162,7 +163,15 @@ def main():
         
         # Use aggregated data for forecast
         df_ma = df_employee_agg
+
+        # P07: Sync valid Job Families
+        valid_jfs = JobFamilyService.get_active_jobfamilies(df_ma)
         
+        # Cleanup Session State selections if they are invalid
+        if "selected_jobfamilies" in st.session_state:
+            st.session_state["selected_jobfamilies"] = JobFamilyService.sanitize_selection(
+                st.session_state["selected_jobfamilies"], valid_jfs
+            )
     except FileNotFoundError as e:
         st.error(str(e))
         return
@@ -259,14 +268,12 @@ def main():
             # ── ATZ Row 3: Matrix Editor ──
             st.caption(f"Matrix: {atz_dim} (Eintrittswahrscheinlichkeit für berechtigte MA)")
             
-            if atz_dim == "OrgUnit":
-                atz_col_name = "Organisationseinheit"
-            else:
-                atz_col_name = "Jobfamily"
-            
             atz_unique_vals = []
-            if atz_col_name in df_ma.columns:
-                atz_unique_vals = sorted([str(x) for x in df_ma[atz_col_name].dropna().unique()])
+            if atz_dim == "OrgUnit":
+                if "Organisationseinheit" in df_ma.columns:
+                    atz_unique_vals = sorted([str(x) for x in df_ma["Organisationseinheit"].dropna().unique()])
+            else:
+                atz_unique_vals = valid_jfs
             
             current_atz_matrix = params["atz"].get("atz_matrix", {})
             atz_dim_items = ["Default"] + atz_unique_vals
@@ -357,14 +364,12 @@ def main():
             st.caption(f"Matrix: {quit_dim} × Alter")
             
             # 1. Determine dimension values
-            if quit_dim == "OrgUnit":
-                col_name = "Organisationseinheit"
-            else:
-                col_name = "Jobfamily"
-            
             unique_vals = []
-            if col_name in df_ma.columns:
-                unique_vals = sorted([str(x) for x in df_ma[col_name].dropna().unique()])
+            if quit_dim == "OrgUnit":
+                if "Organisationseinheit" in df_ma.columns:
+                    unique_vals = sorted([str(x) for x in df_ma["Organisationseinheit"].dropna().unique()])
+            else:
+                unique_vals = valid_jfs
             
             age_cohorts = ["alter_unter_30", "alter_30_45", "alter_45_55", "alter_55_plus"]
             age_labels = {"alter_unter_30": "u30", "alter_30_45": "30-45", "alter_45_55": "45-55", "alter_55_plus": "ü55"}
@@ -412,6 +417,71 @@ def main():
                 for c in age_cohorts:
                     new_quit_matrix[c][str(dim_val)] = float(row[c])
             params["quit"]["quit_matrix"] = new_quit_matrix
+
+            st.divider()
+            st.markdown("##### 📅 Jahresgenaue Anpassungen (Job-Families)")
+            st.info("Hier können Sie für spezifische Jahre und Job-Families eine Erhöhung (+50%) oder Reduktion (-50%) der Kündigungsrate festlegen.")
+            
+            # More/Less selections
+            adj_col1, adj_col2 = st.columns(2)
+            
+            # Load current adjustments from session_state or params
+            current_adj = params["quit"].get("quit_adjustments", {"more": {}, "less": {}})
+            
+            with adj_col1:
+                st.caption("📈 Mehr Kündigungen (+50%)")
+                selected_more_jf = st.multiselect(
+                    "Job-Families wählen", 
+                    options=valid_jfs, 
+                    default=list(current_adj.get("more", {}).keys()),
+                    key="ms_quit_more_jf"
+                )
+                
+                more_years_map = {}
+                available_years = JobFamilyService.get_available_years(ist_stichtag.year, (forecast_end_date.year - ist_stichtag.year) + 1)
+                
+                for jf in selected_more_jf:
+                    default_years = current_adj.get("more", {}).get(jf, [])
+                    # Sanitize default years to be within available range
+                    default_years = [y for y in default_years if y in available_years]
+                    
+                    years = st.multiselect(
+                        f"Jahre für {jf}", 
+                        options=available_years,
+                        default=default_years,
+                        key=f"ms_more_years_{jf}"
+                    )
+                    if years:
+                        more_years_map[jf] = years
+            
+            with adj_col2:
+                st.caption("📉 Weniger Kündigungen (-50%)")
+                selected_less_jf = st.multiselect(
+                    "Job-Families wählen", 
+                    options=valid_jfs, 
+                    default=list(current_adj.get("less", {}).keys()),
+                    key="ms_quit_less_jf"
+                )
+                
+                less_years_map = {}
+                for jf in selected_less_jf:
+                    default_years = current_adj.get("less", {}).get(jf, [])
+                    default_years = [y for y in default_years if y in available_years]
+
+                    years = st.multiselect(
+                        f"Jahre für {jf}", 
+                        options=available_years,
+                        default=default_years,
+                        key=f"ms_less_years_{jf}"
+                    )
+                    if years:
+                        less_years_map[jf] = years
+            
+            quit_adjustments = {
+                "more": more_years_map,
+                "less": less_years_map
+            }
+            params["quit"]["quit_adjustments"] = quit_adjustments
 
         with st.expander("Ruhend-Parameter"):
             hc1, hc2, hc3 = st.columns(3)
@@ -467,6 +537,7 @@ def main():
                 "use_quit_matrix": use_quit_matrix,
                 "quit_dimension": quit_dim,
                 "quit_matrix": new_quit_matrix,
+                "quit_adjustments": quit_adjustments,
             },
             "ruhend": {
                 "ruhend_new_cases_per_year": ruhend_new,

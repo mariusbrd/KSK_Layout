@@ -4,9 +4,10 @@ import os
 import io
 import streamlit as st
 from typing import Dict, List, Optional, Tuple
+from config.settings import BASE_DIR
 
 # Path for persistent cluster mapping
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# BASE_DIR imported from config.settings
 # DEFAULT (Internal)
 CLUSTER_FILE = os.path.join(BASE_DIR, "config", "cluster_mapping.xlsx")
 # PRIMARY (User-modified external if available)
@@ -14,6 +15,19 @@ EXTERNAL_CLUSTER_FILE = os.path.abspath(os.path.join(BASE_DIR, "..", "Cluster-Da
 
 def get_active_cluster_file() -> str:
     """Returns the path to the most recent cluster mapping file."""
+    # Priority: CLUSTER_FILE (Internal/UI-Upload) > EXTERNAL_CLUSTER_FILE (Original-Daten)
+    # The UI upload saves to CLUSTER_FILE. To ensure it overrides the external file:
+    if os.path.exists(CLUSTER_FILE):
+        # We assume CLUSTER_FILE is either the factory default or a user upload.
+        # If EXTERNAL_CLUSTER_FILE exists, it's "Original data".
+        # If the user uses the UI to upload, they intend to override.
+        # Check if internal file is newer than external (likely an upload)
+        if os.path.exists(EXTERNAL_CLUSTER_FILE):
+             if os.path.getmtime(CLUSTER_FILE) >= os.path.getmtime(EXTERNAL_CLUSTER_FILE):
+                 return CLUSTER_FILE
+             return EXTERNAL_CLUSTER_FILE
+        return CLUSTER_FILE
+    
     if os.path.exists(EXTERNAL_CLUSTER_FILE):
         return EXTERNAL_CLUSTER_FILE
     return CLUSTER_FILE
@@ -86,20 +100,24 @@ def validate_and_save_clusters(uploaded_file) -> Tuple[bool, str]:
     except Exception as e:
         return False, f"Fehler bei der Validierung: {str(e)}"
 
-def load_cluster_mappings() -> Tuple[Dict[str, str], Dict]:
+def load_cluster_mappings(uploaded_file: Optional[bytes] = None) -> Tuple[Dict[str, str], Dict]:
     """
     Loads saved cluster mappings.
+    If uploaded_file is provided (bytes), it takes priority (session state).
     Returns (OE_Mapping, JF_Mapping)
     """
     oe_map = {}
     jf_map = {}
     
-    active_file = get_active_cluster_file()
-    if not os.path.exists(active_file):
-        return oe_map, jf_map
-        
     try:
-        xls = pd.ExcelFile(active_file)
+        if uploaded_file:
+            xls = pd.ExcelFile(io.BytesIO(uploaded_file))
+        else:
+            active_file = get_active_cluster_file()
+            if not os.path.exists(active_file):
+                return oe_map, jf_map
+            xls = pd.ExcelFile(active_file)
+            
         df_oe = pd.read_excel(xls, sheet_name='OrgUnits')
         df_jf = pd.read_excel(xls, sheet_name='JobFamilies')
         
@@ -133,11 +151,56 @@ def load_cluster_mappings() -> Tuple[Dict[str, str], Dict]:
         
     return oe_map, jf_map
 
-def apply_clusters_to_snapshot(df: pd.DataFrame) -> pd.DataFrame:
+def enrich_jf_clusters(
+    df: pd.DataFrame, 
+    jf_map: Dict, 
+    snapshot_jf_map: Optional[Dict] = None
+) -> pd.Series:
+    """
+    Core logic for JF-Cluster derivation with normalization and aliases.
+    id: 72 - Normalization & Fallbacks
+    """
+    if "Jobfamily" not in df.columns:
+        return pd.Series("Unclustered", index=df.index)
+
+    # 1. Aliases & Fallbacks
+    # id: 72 - Normalization & Permanent Fallbacks
+    # NOTE: DO NOT REMOVE the "sonstige" -> "Sonstiges" rule. 
+    # It ensures that Azubis in training (labeled as "Sonstige") are correctly clustered 
+    # even without an explicit mapping. "Trainee" follows the same logic.
+    alias_map = {
+        "sonstige": "Sonstiges",
+        "sonstiges": "Sonstiges",
+        "trainee": "Sonstiges",
+        "azubi": "Sonstiges"
+    }
+    
+    # 2. Key Normalization
+    # Normalize the lookup maps to lowercase for case-insensitive matching
+    norm_jf_map = {str(k).strip().lower(): v for k, v in jf_map.items() if not isinstance(k, tuple)}
+    norm_snap_map = {str(k).strip().lower(): v for k, v in snapshot_jf_map.items()} if snapshot_jf_map else {}
+    
+    # 3. Apply Mapping Sequence
+    s_jf_raw = df["Jobfamily"].astype(str).str.strip()
+    s_jf_lower = s_jf_raw.str.lower()
+    
+    # Priority: 
+    # A) Direct Map (External/Internal)
+    # B) Snapshot Map (Inherited)
+    # C) Alias Map (Fallback)
+    # D) "Unclustered"
+    
+    res = s_jf_lower.map(norm_jf_map)
+    res = res.fillna(s_jf_lower.map(norm_snap_map))
+    res = res.fillna(s_jf_lower.map(alias_map))
+    
+    return res.fillna("Unclustered")
+
+def apply_clusters_to_snapshot(df: pd.DataFrame, uploaded_file: Optional[bytes] = None) -> pd.DataFrame:
     """
     Adds Cluster columns to snapshot based on mapping file.
     """
-    oe_map, jf_map = load_cluster_mappings()
+    oe_map, jf_map = load_cluster_mappings(uploaded_file)
     
     # Map OE Clusters
     if "Organisationseinheit" in df.columns:
@@ -145,38 +208,41 @@ def apply_clusters_to_snapshot(df: pd.DataFrame) -> pd.DataFrame:
     
     # Map JF Clusters
     if not jf_map:
-        df["JF-Cluster"] = "Unclustered"
+        # Even without a map, apply at least aliases? 
+        # Actually better to use the central function.
+        df["JF-Cluster"] = enrich_jf_clusters(df, {})
     else:
         first_key = next(iter(jf_map.keys()))
         if isinstance(first_key, tuple):
-             # Tuple-based key (Org, Pos)
+             # Tuple-based key (Org, Pos) -> Use specific logic for high-fidelity records
              if "Organisationseinheit" in df.columns and "Planstelle" in df.columns:
                  s_org = df["Organisationseinheit"].astype(str).str.strip()
                  s_pos = df["Planstelle"].astype(str).str.strip()
                  keys = list(zip(s_org, s_pos))
-                 df["JF-Cluster"] = [jf_map.get(k, "Unclustered") for k in keys]
+                 # Fallback to JF matching if tuple lookup fails
+                 tuple_res = pd.Series([jf_map.get(k) for k in keys], index=df.index)
+                 df["JF-Cluster"] = tuple_res.fillna(enrich_jf_clusters(df, jf_map))
              else:
-                 df["JF-Cluster"] = "Unclustered"
-        elif "Planstelle" in df.columns and any(k in df["Planstelle"].values for k in jf_map.keys()):
-             # Planstelle-based (string)
-             df["JF-Cluster"] = df["Planstelle"].astype(str).str.strip().map(jf_map).fillna("Unclustered")
-        elif "Jobfamily" in df.columns:
-             # Jobfamily-based (string)
-             df["JF-Cluster"] = df["Jobfamily"].map(jf_map).fillna("Unclustered")
+                 df["JF-Cluster"] = enrich_jf_clusters(df, jf_map)
         else:
-             df["JF-Cluster"] = "Unclustered"
+             # Standard string-based mapping
+             df["JF-Cluster"] = enrich_jf_clusters(df, jf_map)
         
     return df
 
-def is_clustering_active() -> bool:
+def is_clustering_active(uploaded_file: Optional[bytes] = None) -> bool:
     """
-    Returns True if a valid cluster mapping file exists and has entries.
+    Returns True if a valid cluster mapping file exists (or is provided) and has entries.
     """
-    active_file = get_active_cluster_file()
-    if not os.path.exists(active_file):
-        return False
     try:
-        xls = pd.ExcelFile(active_file)
+        if uploaded_file:
+            xls = pd.ExcelFile(io.BytesIO(uploaded_file))
+        else:
+            active_file = get_active_cluster_file()
+            if not os.path.exists(active_file):
+                return False
+            xls = pd.ExcelFile(active_file)
+            
         df_oe = pd.read_excel(xls, sheet_name='OrgUnits')
         if not df_oe.empty and 'Cluster' in df_oe.columns:
             if df_oe['Cluster'].dropna().astype(str).str.strip().ne("").any():

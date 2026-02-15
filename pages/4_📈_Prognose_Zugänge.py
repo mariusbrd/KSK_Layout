@@ -24,6 +24,7 @@ from abgaenge.forecast import run_forecast_abgaenge, aggregate_forecast_results
 from abgaenge.params import default_params as default_abgaenge_params, build_params_from_ui as build_abgaenge_params_from_ui
 from zugaenge.params import default_params as default_zugaenge_params, get_strategies
 from zugaenge.forecast import run_forecast_zugaenge
+from utils.ui_helpers import render_distribution_matrix
 
 def main():
     st.title("📈 Prognose: Zugänge")
@@ -140,104 +141,173 @@ def main():
 
             st.divider()
             
-            # Azubis
-            st.subheader("🎓 1. Azubi-Übernahme & Neueinstellungen")
-            c1, c2, c3, c4 = st.columns(4)
-            azubi_count = c1.number_input("Neue Azubis pro Jahr", 0, 100, params["azubi"].get("new_cases_per_year", 15), key="az_count")
-            retention = c2.slider("Übernahmequote (%)", 0.0, 1.0, float(params["azubi"]["retention_rate"]), 0.05)
-            duration = c3.number_input("Ausbildungsdauer (Jahre)", 1.0, 5.0, params["azubi"]["duration_years"], 0.5)
-            az_strat = c4.selectbox("Verteilung", ["Random", "OrgUnit"], index=0 if params["azubi"]["strategy"] == "Random" else 1, key="az_strat")
+            # --- Settings Tabs ---
+            tab_azubi, tab_trainee, tab_hires = st.tabs([
+                "🎓 Reiter 1: Azubi Übernahme", 
+                "🚀 Reiter 2: Trainee-Programm", 
+                "💼 Reiter 3: Neueinstellungen"
+            ])
             
-            azubi_target = None
-            if az_strat == "OrgUnit":
-                # Use units from original raw data or aggregated? Aggregated is fine.
-                units = sorted(snapshot_df["Organisationseinheit"].dropna().astype(str).unique())
-                azubi_target = st.selectbox("Ziel-Einheit (Azubi)", units, key="az_unit")
+            with tab_azubi:
+                # Azubis
+                st.subheader("🎓 1. Azubi-Übernahme & Neueinstellungen")
+                c1, c2, c3, c4 = st.columns(4)
+                azubi_count = c1.number_input("Neue Azubis pro Jahr", 0, 100, params["azubi"].get("new_cases_per_year", 15), key="az_count")
+                retention = c2.slider("Übernahmequote (%)", 0.0, 1.0, float(params["azubi"]["retention_rate"]), 0.05)
+                duration = c3.number_input("Ausbildungsdauer (Jahre)", 1.0, 5.0, params["azubi"]["duration_years"], 0.5)
+                az_strat = c4.selectbox("Verteilung", ["Random", "OrgUnit"], index=0 if params["azubi"]["strategy"] == "Random" else 1, key="az_strat")
                 
-            # Optional: Salary Config
-            c5, c6 = st.columns(2)
-            az_tarif = c5.selectbox("Übernahme-Tarif", TARIFF_GROUPS, index=TARIFF_GROUPS.index(params["azubi"]["entry_tariff_group"]) if params["azubi"]["entry_tariff_group"] in TARIFF_GROUPS else 5, key="az_tarif")
-            az_step = c6.number_input("Übernahme-Stufe", 1, 6, params["azubi"]["entry_step"], key="az_step")
+                azubi_target = None
+                if az_strat == "OrgUnit":
+                    # Use units from original raw data or aggregated? Aggregated is fine.
+                    units = sorted(snapshot_df["Organisationseinheit"].dropna().astype(str).unique())
+                    azubi_target = st.selectbox("Ziel-Einheit (Azubi)", units, key="az_unit")
+                    
+                # Optional: Salary Config
+                c5, c6 = st.columns(2)
+                az_tarif = c5.selectbox("Übernahme-Tarif", TARIFF_GROUPS, index=TARIFF_GROUPS.index(params["azubi"]["entry_tariff_group"]) if params["azubi"]["entry_tariff_group"] in TARIFF_GROUPS else 5, key="az_tarif")
+                az_step = c6.number_input("Übernahme-Stufe", 1, 6, params["azubi"]["entry_step"], key="az_step")
                 
-            st.divider()
-            
-            # Trainees
-            st.subheader("🚀 2. Trainee-Programm")
-            t1, t2, t3, t4 = st.columns(4)
-            trainee_count = t1.number_input("Neue Trainees pro Jahr", 0, 100, params["trainee"]["new_cases_per_year"])
-            trainee_dur = t2.number_input("Dauer (Jahre)", 0.5, 3.0, params["trainee"]["duration_years"], 0.5)
-            trainee_sal = t3.selectbox("Einstiegsgehalt", TARIFF_GROUPS, index=TARIFF_GROUPS.index(params["trainee"]["salary_group"]) if params["trainee"]["salary_group"] in TARIFF_GROUPS else 12)
-            tr_strat = t4.selectbox("Verteilung", ["Random", "OrgUnit"], index=0, key="tr_strat")
-            
-            trainee_target = None
-            if tr_strat == "OrgUnit":
-                 units = sorted(snapshot_df["Organisationseinheit"].dropna().astype(str).unique())
-                 trainee_target = st.selectbox("Ziel-Einheit (Trainee)", units, key="tr_unit")
+                st.divider()
+
+                # --- Azubi Takeover Matrix (Refined) ---
+                st.markdown("##### 📊 Detaillierte Übernahme-Verteilung")
+                
+                az_matrix_col1, az_matrix_col2 = st.columns([1, 1])
+                with az_matrix_col1:
+                    use_az_matrix = st.checkbox(
+                        "Detailmatrix statt pauschaler Verteilung verwenden",
+                        value=params["azubi"].get("use_takeover_matrix", False),
+                        help="Wenn aktiviert, wird die nachfolgende Matrix für die Verteilung der Übernahmen genutzt.",
+                        key="chk_use_az_matrix"
+                    )
+                with az_matrix_col2:
+                    az_dim = st.radio(
+                        "Dimension für Übernahme",
+                        options=["JobFamily", "OrgUnit"],
+                        index=0 if params["azubi"].get("takeover_dimension", "JobFamily") == "JobFamily" else 1,
+                        format_func=lambda x: "Verteilen nach Jobfamily" if x == "JobFamily" else "Verteilen nach Org Unit",
+                        disabled=not use_az_matrix,
+                        horizontal=True,
+                        key="rad_az_dim"
+                    )
+                
+                # Extract valid values from snapshot
+                valid_units = sorted(snapshot_df["Organisationseinheit"].dropna().astype(str).unique())
+                valid_jfs = sorted(snapshot_df["Jobfamily"].dropna().astype(str).unique())
+                az_matrix_vals = valid_units if az_dim == "OrgUnit" else valid_jfs
+                
+                az_takeover_matrix = render_distribution_matrix(
+                    label=f"Matrix: {az_dim} (Gewichtung für Übernahme)",
+                    dimension=az_dim,
+                    current_matrix=params["azubi"].get("takeover_matrix", {}),
+                    valid_vals=az_matrix_vals,
+                    key_prefix="az_takeover_matrix",
+                    disabled=not use_az_matrix
+                )
+                
+                # --- UI SNAPSHOT (for consistency check) ---
+                if st.session_state.get("chk_forecast_debug", False):
+                    ui_snap = {
+                        "active": use_az_matrix,
+                        "dim": az_dim,
+                        "matrix": {k: float(v) for k, v in az_takeover_matrix.items() if float(v) > 0}
+                    }
+                    st.session_state["ui_matrix_snapshot"] = ui_snap
+                    with st.expander("🛠️ Debug: UI Matrix Snapshot", expanded=False):
+                        st.json(ui_snap)
                  
             st.divider()
             
-            # New Hires
-            st.subheader("💼 3. Neueinstellungen")
-            h1, h2, h3 = st.columns(3)
-            hire_count = h1.number_input("Einstellungen pro Jahr", 0, 500, params["new_hires"]["count_per_year"])
-            hire_strat = h2.selectbox(
-                "Strategie", 
-                ["Random", "OrgUnit", "Fill Vacancies"], 
-                index=2, # Default Fill Vacancies
-                help="'Fill Vacancies' nutzt die Abgangsprognose (Standard-Parameter), um Lücken zu füllen.",
-                key="hi_strat"
-            )
-            
-            hire_target = None
-            if hire_strat == "OrgUnit":
-                 units = sorted(snapshot_df["Organisationseinheit"].dropna().astype(str).unique())
-                 hire_target = st.selectbox("Ziel-Einheit (Hire)", units, key="hi_unit")
-
-            # --- New Hire Distribution Matrix ---
-            with st.expander("📊 Verteilung Neueinstellungen (Matrix)", expanded=False):
-                st.caption("Steuern Sie, in welchen Bereichen neue Stellen (ohne Nachbesetzung) entstehen.")
+            with tab_trainee:
+                # Trainees
+                st.subheader("🚀 2. Trainee-Programm")
+                t1, t2, t3, t4 = st.columns(4)
+                trainee_count = t1.number_input("Neue Trainees pro Jahr", 0, 100, params["trainee"]["new_cases_per_year"])
+                trainee_dur = t2.number_input("Dauer (Jahre)", 0.5, 3.0, params["trainee"]["duration_years"], 0.5)
+                trainee_sal = t3.selectbox("Einstiegsgehalt", TARIFF_GROUPS, index=TARIFF_GROUPS.index(params["trainee"]["salary_group"]) if params["trainee"]["salary_group"] in TARIFF_GROUPS else 12)
+                tr_strat = t4.selectbox("Verteilung", ["Random", "OrgUnit"], index=0, key="tr_strat")
                 
-                # 1. Calculate Default Distribution from Snapshot
-                # Group by JobFamily and OE-Cluster
-                if "Jobfamily" in snapshot_df.columns and "OE-Cluster" in snapshot_df.columns:
-                    dist_base = snapshot_df.groupby(["Jobfamily", "OE-Cluster"]).size().reset_index(name="Count")
-                    total_n = dist_base["Count"].sum()
-                    dist_base["Share %"] = (dist_base["Count"] / total_n).round(4)
-                    
-                    # Sort by Share desc
-                    dist_base = dist_base.sort_values("Share %", ascending=False).reset_index(drop=True)
-                    dist_base = dist_base[["Jobfamily", "OE-Cluster", "Share %"]]
-                else:
-                    # Fallback if columns missing
-                    dist_base = pd.DataFrame([
-                        {"Jobfamily": "Angestellte", "OE-Cluster": "Unclustered", "Share %": 1.0}
-                    ])
-
-                # 2. Render Editor
-                edited_dist = st.data_editor(
-                    dist_base,
-                    column_config={
-                        "Share %": st.column_config.NumberColumn(
-                            "Anteil (0.0 - 1.0)",
-                            min_value=0.0,
-                            max_value=1.0,
-                            step=0.01,
-                            format="%.2f"
-                        )
-                    },
-                    use_container_width=True,
-                    num_rows="dynamic",
-                    key="hire_dist_matrix"
+                trainee_target = None
+                if tr_strat == "OrgUnit":
+                     units = sorted(snapshot_df["Organisationseinheit"].dropna().astype(str).unique())
+                     trainee_target = st.selectbox("Ziel-Einheit (Trainee)", units, key="tr_unit")
+                 
+            st.divider()
+            
+            with tab_hires:
+                # New Hires
+                st.subheader("💼 3. Neueinstellungen")
+                h1, h2, h3 = st.columns(3)
+                hire_count = h1.number_input("Einstellungen pro Jahr", 0, 500, params["new_hires"]["count_per_year"])
+                hire_strat = h2.selectbox(
+                    "Strategie", 
+                    ["Random", "OrgUnit", "Fill Vacancies"], 
+                    index=2, # Default Fill Vacancies
+                    help="'Fill Vacancies' nutzt die Abgangsprognose (Standard-Parameter), um Lücken zu füllen.",
+                    key="hi_strat"
                 )
                 
-                # 3. Normalize check (visual feedback)
-                total_share = edited_dist["Share %"].sum()
-                if not (0.99 <= total_share <= 1.01):
-                    st.warning(f"⚠️ Summe der Anteile ist {total_share:.2%} (sollte 100% sein). Werte werden bei der Simulation normalisiert.")
-                
-                # Convert to list of dicts for backend
-                hire_distribution = edited_dist.to_dict("records")
+                hire_target = None
+                if hire_strat == "OrgUnit":
+                     units = sorted(snapshot_df["Organisationseinheit"].dropna().astype(str).unique())
+                     hire_target = st.selectbox("Ziel-Einheit (Hire)", units, key="hi_unit")
+
+                # --- New Hire Distribution Matrix ---
+                with st.expander("📊 Verteilung Neueinstellungen (Matrix)", expanded=False):
+                    st.caption("Steuern Sie, in welchen Bereichen neue Stellen (ohne Nachbesetzung) entstehen.")
+                    
+                    # 1. Calculate Default Distribution from Snapshot
+                    # Group by JobFamily and OE-Cluster
+                    if "Jobfamily" in snapshot_df.columns and "OE-Cluster" in snapshot_df.columns:
+                        dist_base = snapshot_df.groupby(["Jobfamily", "OE-Cluster"]).size().reset_index(name="Count")
+                        total_n = dist_base["Count"].sum()
+                        dist_base["Share %"] = (dist_base["Count"] / total_n).round(4)
+                        
+                        # Sort by Share desc
+                        dist_base = dist_base.sort_values("Share %", ascending=False).reset_index(drop=True)
+                        dist_base = dist_base[["Jobfamily", "OE-Cluster", "Share %"]]
+                    else:
+                        # Fallback if columns missing
+                        dist_base = pd.DataFrame([
+                            {"Jobfamily": "Angestellte", "OE-Cluster": "Unclustered", "Share %": 1.0}
+                        ])
+
+                    # 2. Render Editor
+                    edited_dist = st.data_editor(
+                        dist_base,
+                        column_config={
+                            "Share %": st.column_config.NumberColumn(
+                                "Anteil (0.0 - 1.0)",
+                                min_value=0.0,
+                                max_value=1.0,
+                                step=0.01,
+                                format="%.2f"
+                            )
+                        },
+                        use_container_width=True,
+                        num_rows="dynamic",
+                        key="hire_dist_matrix"
+                    )
+                    
+                    # 3. Normalize check (visual feedback)
+                    total_share = edited_dist["Share %"].sum()
+                    if not (0.99 <= total_share <= 1.01):
+                        st.warning(f"⚠️ Summe der Anteile ist {total_share:.2%} (sollte 100% sein). Werte werden bei der Simulation normalisiert.")
+                    
+                    # Convert to list of dicts for backend
+                    hire_distribution = edited_dist.to_dict("records")
             
+
+            
+            # --- DEBUG TOGGLE ---
+            st.divider()
+            zugaenge_debug = st.checkbox(
+                "Debug-Modus: Experten-Diagnose anzeigen",
+                value=st.session_state.get("chk_forecast_debug", False),
+                key="chk_forecast_debug",
+                help="Zeigt technische Details zur Azubi-Verteilung und Cluster-Logik vor/nach der Simulation."
+            )
 
             submit = st.form_submit_button("🚀 Prognose berechnen", use_container_width=True)
         
@@ -247,6 +317,59 @@ def main():
     abg_kpis = pd.DataFrame()
 
     if submit:
+        # 1. Debug Pre-Calculation Summary (Step 3)
+        if st.session_state.get("chk_forecast_debug", False):
+            sim_snap = {
+                "active": use_az_matrix,
+                "dim": az_dim,
+                "matrix": {k: float(v) for k, v in az_takeover_matrix.items() if float(v) > 0}
+            }
+            ui_snap = st.session_state.get("ui_matrix_snapshot", {})
+            
+            with st.expander("🛠️ Debug: Diagnose vor Start", expanded=True):
+                # Consistency Check
+                if ui_snap and sim_snap != ui_snap:
+                    st.error("⚠️ INKONSISTENZ: UI Matrix und Simulation Input weichen ab!")
+                    col_diff1, col_diff2 = st.columns(2)
+                    ui_keys = set(ui_snap["matrix"].keys())
+                    sim_keys = set(sim_snap["matrix"].keys())
+                    
+                    with col_diff1:
+                        st.write("**Nur im UI:**", ui_keys - sim_keys if ui_keys != sim_keys else "Keine")
+                    with col_diff2:
+                        st.write("**Nur in Simulation:**", sim_keys - ui_keys if sim_keys != ui_keys else "Keine")
+                        
+                    weight_diffs = {k: (ui_snap["matrix"][k], sim_snap["matrix"][k]) 
+                                  for k in (ui_keys & sim_keys) if ui_snap["matrix"][k] != sim_snap["matrix"][k]}
+                    if weight_diffs:
+                        st.write("**Abweichende Gewichte (UI vs Sim):**", weight_diffs)
+                elif ui_snap:
+                    st.success("✅ Konsistenz-Check: UI Matrix == Simulation Input")
+
+                col_dbg1, col_dbg2 = st.columns(2)
+                with col_dbg1:
+                    st.markdown("**Matrix Status:**")
+                    st.write(f"- Detailmatrix aktiv: {'Ja' if use_az_matrix else 'Nein'}")
+                    st.write(f"- Modus: {az_dim}")
+                    
+                    if use_az_matrix:
+                        weights = [float(v) for v in az_takeover_matrix.values() if float(v) > 0]
+                        st.write(f"- Befüllte Kategorien: {len(weights)}")
+                        st.write(f"- Summe Gewichte (roh): {sum(weights):.2f}")
+                
+                with col_dbg2:
+                    st.markdown("**Daten-Status:**")
+                    if "Jobfamily" in snapshot_df.columns:
+                        jfs = snapshot_df["Jobfamily"].dropna().unique()
+                        st.write(f"- Aktive Job Families: {len(jfs)}")
+                        st.write(f"- Top 5: {', '.join(sorted(list(jfs))[:5])}")
+                
+                if use_az_matrix:
+                    st.markdown("**Top 5 Matrix-Einträge:**")
+                    sorted_matrix = sorted(az_takeover_matrix.items(), key=lambda x: float(x[1]), reverse=True)
+                    for k, v in sorted_matrix[:5]:
+                        st.write(f"- {k}: {v}")
+
         # Build Params
         run_params = {
             "azubi": {
@@ -258,6 +381,10 @@ def main():
                 "target_org_unit": azubi_target,
                 "entry_tariff_group": az_tarif,
                 "entry_step": az_step,
+                "use_takeover_matrix": use_az_matrix,
+                "takeover_dimension": az_dim,
+                "takeover_matrix": az_takeover_matrix,
+                "jf_to_cluster_map": {str(k).strip(): v for k, v in zip(snapshot_df["Jobfamily"], snapshot_df["JF-Cluster"])} if "Jobfamily" in snapshot_df.columns and "JF-Cluster" in snapshot_df.columns else {}
             },
             "trainee": {
                 "active": use_trainees,
@@ -374,7 +501,7 @@ def main():
                 if "OE-Cluster" not in events_df.columns:
                     events_df["OE-Cluster"] = "Unclustered"
 
-            # 2. JF-Cluster
+            # 2. JF-Cluster (Modified for Robustness)
             if "JF-Cluster" in snapshot_df.columns:
                 jf_cluster_map = snapshot_unique.set_index("PersNr_str")["JF-Cluster"].to_dict()
                 mapped_jf = events_df["persnr_str"].map(jf_cluster_map)
@@ -385,7 +512,9 @@ def main():
                     events_df["JF-Cluster"] = mapped_jf.fillna("Unclustered")
                 
                 mask_unclustered_jf = (events_df["JF-Cluster"] == "Unclustered") | (events_df["JF-Cluster"].isna())
+                
                 if mask_unclustered_jf.any():
+                    # a) Try Mapping via Planstelle/OrgUnit (External Cluster File)
                     from dataloader.cluster_manager import load_cluster_mappings
                     _, jf_map = load_cluster_mappings()
                     
@@ -398,23 +527,111 @@ def main():
                                  keys = list(zip(s_org, s_pos))
                                  events_df.loc[mask_unclustered_jf, "JF-Cluster"] = [jf_map.get(k, "Unclustered") for k in keys]
                         elif "Planstelle" in events_df.columns:
-                             events_df.loc[mask_unclustered_jf, "JF-Cluster"] = events_df.loc[mask_unclustered_jf, "Planstelle"].map(jf_map).fillna("Unclustered")
-            
-            if "JF-Cluster" in events_df.columns and "Jobfamily" in events_df.columns:
-                mask_still_unclustered = (events_df["JF-Cluster"] == "Unclustered") | (events_df["JF-Cluster"].isna())
-                if mask_still_unclustered.any():
-                    snap_jf_map = snapshot_df.dropna(subset=["Jobfamily", "JF-Cluster"]).drop_duplicates("Jobfamily").set_index("Jobfamily")["JF-Cluster"].to_dict()
-                    fill_vals_jf = events_df.loc[mask_still_unclustered, "Jobfamily"].map(snap_jf_map)
-                    events_df.loc[mask_still_unclustered, "JF-Cluster"] = fill_vals_jf.fillna("Unclustered")
+                             # Normalize Planstelle for better lookup
+                             s_pos_clean = events_df.loc[mask_unclustered_jf, "Planstelle"].astype(str).str.strip()
+                             jf_map_clean = {str(k).strip(): v for k, v in jf_map.items()}
+                             events_df.loc[mask_unclustered_jf, "JF-Cluster"] = s_pos_clean.map(jf_map_clean).fillna("Unclustered")
+
+                # b) Fallback: Try Mapping via Jobfamily (Centralized + Snapshot Map)
+                mask_still_uncl = (events_df["JF-Cluster"] == "Unclustered") | (events_df["JF-Cluster"].isna())
+                if mask_still_uncl.any() and "Jobfamily" in events_df.columns:
+                    # id: 72 - Use centralized function with normalization and aliases
+                    from dataloader.cluster_manager import enrich_jf_clusters
+                    
+                    # Create normalized map from snapshot for inheritance
+                    snap_clean = snapshot_df.dropna(subset=["Jobfamily", "JF-Cluster"])
+                    snap_jf_map = {str(k).strip(): v for k, v in zip(snap_clean["Jobfamily"], snap_clean["JF-Cluster"])}
+                    
+                    # Apply to unclustered rows
+                    subset = events_df.loc[mask_still_uncl]
+                    events_df.loc[mask_still_uncl, "JF-Cluster"] = enrich_jf_clusters(subset, {}, snap_jf_map)
+
+                    # --- DEBUG: Mapping Failures (id: 73) ---
+                    if st.session_state.get("chk_forecast_debug", False):
+                        # Filter for chart inflows (id: 62)
+                        valid_types = ["Azubi_Hire", "Azubi_Conversion_In", "New_Hire", "Trainee_Hire"]
+                        chart_inflows = events_df[events_df["type"].isin(valid_types)]
+                        failed_mask = (chart_inflows["JF-Cluster"] == "Unclustered")
+                        
+                        if failed_mask.any():
+                            failed_counts = chart_inflows.loc[failed_mask, "Jobfamily"].value_counts().head(5)
+                            st.write(f"🛠️ Debug (Mapping): {failed_mask.sum()} Einträge in den JF-Charts sind 'Unclustered'.")
+                            st.write(f"Top 5 fehlende Job Families: {failed_counts.to_dict()}")
             else:
                 if "JF-Cluster" not in events_df.columns:
                     events_df["JF-Cluster"] = "Unclustered"
 
+            # Add granular diagnostic source (id: 62)
+            def _get_diag_source(row):
+                t = str(row.get("type", ""))
+                if t == "Azubi_Hire": return "Azubi neu in Ausbildung"
+                if t == "Azubi_Conversion_In": return "Azubi Übernahme"
+                if t == "New_Hire": return "Neueinstellung"
+                if t == "Trainee_Hire": return "Trainee-Einstellung"
+                if "Azubi" in str(row.get("source", "")): return "Bestands-Azubi"
+                return "Sonstige Zugänge"
+            events_df["Diagnose-Quelle"] = events_df.apply(_get_diag_source, axis=1)
+
             events_df.drop(columns=["persnr_str"], inplace=True)
             snapshot_df.drop(columns=["PersNr_str"], inplace=True, errors="ignore")
             
-            # Save enriched events back to result
-            res["events"] = events_df
+        # Save enriched events back to result
+        res["events"] = events_df
+
+        # 2. Debug Post-Calculation Summary (Step 5 & Debug JF Enrichment)
+        if st.session_state.get("chk_forecast_debug", False):
+            with st.expander("📊 Debug: Diagnose nach Simulation", expanded=True):
+                # A: Newly Hired Azubis (during training - source: Forecast Hire)
+                hire_events = events_df[events_df["type"] == "Azubi_Hire"]
+                # B: Retained Azubis (takeover to regular - source: Conversion)
+                tk_events = events_df[events_df["type"] == "Azubi_Conversion_In"]
+                
+                col_res1, col_res2 = st.columns(2)
+                with col_res1:
+                    st.markdown("**A: Neue Azubis (Ausbildung/Bestand)**")
+                    st.write(f"- Gesamtanzahl Hike-Events: {len(hire_events)}")
+                    if not hire_events.empty:
+                        st.write("- Verteilung OE-Cluster (Top 10):")
+                        st.write(hire_events["OE-Cluster"].value_counts().head(10))
+                        st.write("- Verteilung JF-Cluster (Top 10):")
+                        st.write(hire_events["JF-Cluster"].value_counts().head(10))
+                        
+                        uncl_jf_a = (hire_events["JF-Cluster"] == "Unclustered").sum()
+                        st.write(f"- **JF-unclustered A:** {uncl_jf_a}")
+                
+                with col_res2:
+                    st.markdown("**B: Übernahmen (Übernahme -> Fest)**")
+                    st.write(f"- Gesamtanzahl Conversion-Events: {len(tk_events)}")
+                    if not tk_events.empty:
+                        st.write("- Verteilung OE-Cluster (Top 10):")
+                        st.write(tk_events["OE-Cluster"].value_counts().head(10))
+                        st.write("- Verteilung JF-Cluster (Top 10):")
+                        st.write(tk_events["JF-Cluster"].value_counts().head(10))
+                        
+                        uncl_jf_b = (tk_events["JF-Cluster"] == "Unclustered").sum()
+                        st.write(f"- **JF-unclustered B:** {uncl_jf_b}")
+                
+                # --- id: 62: Unclustered Breakdown Table ---
+                st.divider()
+                st.markdown("##### 🔍 Unclustered Breakdown (JF-Charts Basis)")
+                
+                # Use same inflows as charts
+                valid_types = ["Azubi_Hire", "Azubi_Conversion_In", "New_Hire", "Trainee_Hire"]
+                events_inflows = events_df[events_df["type"].isin(valid_types)]
+                unclustered_df = events_inflows[events_inflows["JF-Cluster"] == "Unclustered"].copy()
+                
+                if not unclustered_df.empty:
+                    st.warning(f"⚠️ Es gibt {len(unclustered_df)} 'Unclustered' Einträge in der Chart-Basis.")
+                    # Prepare display table
+                    display_cols = ["date", "Diagnose-Quelle", "type", "count", "mak", "Jobfamily", "JF-Cluster", "OE-Cluster"]
+                    # Filter for existing columns
+                    actual_cols = [c for c in display_cols if c in unclustered_df.columns]
+                    st.dataframe(unclustered_df[actual_cols].sort_values("date"), use_container_width=True)
+                else:
+                    st.success("✅ Keine 'Unclustered' Einträge in den JF-Charts.")
+
+                st.divider()
+                st.caption("Hinweis: In Kategorie A sehen wir Azubis, die im Forecast neu eingestellt werden. In Kategorie B sehen wir ehemalige Azubis bei deren Übernahme in den regulären Betrieb.")
 
         # Store Result
         st.session_state["zugaenge_global_result"] = res

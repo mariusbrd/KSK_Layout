@@ -20,7 +20,7 @@ import os
 # Import settings
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.settings import (
-    DATA_PATH, DEFAULT_COHORTS, BASE_SALARY, STEP_MULTIPLIER, EMPLOYER_COST_FACTOR
+    DATA_PATH, DEFAULT_COHORTS, BASE_SALARY, STEP_MULTIPLIER, EMPLOYER_COST_FACTOR, BASE_DIR
 )
 from utils.settings_loader import get_setting
 from dataloader.cluster_manager import apply_clusters_to_snapshot
@@ -540,7 +540,7 @@ def load_and_prepare_data(
                     snapshot_df["Jobfamily"] = "UNMAPPED"
             
             # Custom Clusters
-            snapshot_df = apply_clusters_to_snapshot(snapshot_df)
+            snapshot_df = apply_clusters_to_snapshot(snapshot_df, uploaded_file=uploaded_files.get("Cluster"))
 
             # Centralized Azubi MAK Zeroing (Single Source of Truth)
             snapshot_df = _zero_out_azubi_mak(snapshot_df)
@@ -603,7 +603,7 @@ def load_and_prepare_data(
                         snapshot_df["Jobfamily"] = "UNMAPPED"
 
                 # 5b. Custom Clusters
-                snapshot_df = apply_clusters_to_snapshot(snapshot_df)
+                snapshot_df = apply_clusters_to_snapshot(snapshot_df, uploaded_file=(uploaded_files or {}).get("Cluster"))
 
                 # Centralized Azubi MAK Zeroing (Single Source of Truth)
                 snapshot_df = _zero_out_azubi_mak(snapshot_df)
@@ -664,7 +664,7 @@ def load_and_prepare_data(
             snapshot_df["Jobfamily"] = "UNMAPPED"
 
     # Custom Clusters
-    snapshot_df = apply_clusters_to_snapshot(snapshot_df)
+    snapshot_df = apply_clusters_to_snapshot(snapshot_df, uploaded_file=(uploaded_files or {}).get("Cluster"))
 
     # Centralized Azubi MAK Zeroing (Single Source of Truth)
     snapshot_df = _zero_out_azubi_mak(snapshot_df)
@@ -692,7 +692,7 @@ def load_and_prepare_data(
 
 from config.settings import DEFAULT_COHORTS, BASE_SALARY, STEP_MULTIPLIER, EMPLOYER_COST_FACTOR
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# BASE_DIR imported from config.settings
 ORIGINAL_DATA_DIR = os.path.join(BASE_DIR, "..", "Original-Daten")
 
 ORIGINAL_FILES = {

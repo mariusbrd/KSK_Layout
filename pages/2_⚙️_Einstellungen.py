@@ -23,6 +23,8 @@ from kpi_reference import STICHTAG_DEFAULT
 from dataloader.loader import load_and_prepare_data
 from dataloader.jobfamily_matcher import load_jobfamily_definitions
 from dataloader.cluster_manager import generate_template_bytes, validate_and_save_clusters, load_cluster_mappings
+from dataloader.source_service import SourceService, DataSourceOrigin
+from config.settings import BASE_DIR
 
 
 def render_settings_page():
@@ -30,6 +32,34 @@ def render_settings_page():
     st.caption("Loader-spezifische Parameter für Kostenberechnung")
 
     st.divider()
+
+    # --- Success Message Helper ---
+    if st.session_state.get("show_reload_success"):
+        uploads = st.session_state.get("global_uploads", {})
+        original_dir = os.path.join(BASE_DIR, "..", "Original-Daten")
+        cluster_dir = os.path.abspath(os.path.join(BASE_DIR, "..", "Cluster-Daten"))
+        
+        with st.container():
+            st.success("✅ **Daten erfolgreich neu geladen!**")
+            
+            diag_col1, diag_col2 = st.columns(2)
+            
+            with diag_col1:
+                st.markdown("**Datenquellen Status:**")
+                for group in SourceService.GROUPS.keys():
+                    status = SourceService.derive_group_status(group, uploads, original_dir, cluster_dir)
+                    st.markdown(f"- **{group}**: {status.origin.value} ({status.completeness_label})")
+            
+            with diag_col2:
+                st.markdown("**Aktive Einstellungen:**")
+                oe_map, jf_map = load_cluster_mappings()
+                st.markdown(f"- **Cluster**: {len(oe_map)} OE / {len(jf_map)} JF Mappings")
+                tvoed_ok = st.session_state.get("tvoed_available", False)
+                st.markdown(f"- **Entgelttabelle**: {'Aktiv' if tvoed_ok else 'Fallback-Modus'}")
+                
+            st.divider()
+            # Reset flag after rendering once
+            st.session_state["show_reload_success"] = False
 
     # --- Datenmanagement ---
     st.subheader("Datenmanagement")
@@ -115,15 +145,22 @@ def render_settings_page():
             if up_cluster:
                 success, msg = validate_and_save_clusters(up_cluster)
                 if success:
+                    # Register in session state for SourceService and Loader
+                    if "global_uploads" not in st.session_state:
+                         st.session_state["global_uploads"] = {}
+                    st.session_state["global_uploads"]["Cluster"] = up_cluster.getvalue()
+                    
                     st.success(msg)
                     if st.button("Änderungen jetzt anwenden (Cache leeren)"):
                         st.cache_data.clear()
+                        st.session_state["show_reload_success"] = True
                         st.rerun()
                 else:
                     st.error(msg)
                     
-        # Check if file exists
-        oe_map, jf_map = load_cluster_mappings()
+        # Check if file exists (considering session override)
+        cluster_override = st.session_state.get("global_uploads", {}).get("Cluster")
+        oe_map, jf_map = load_cluster_mappings(cluster_override)
         if oe_map or jf_map:
             st.info(f"✅ Aktive Mappings: {len(oe_map)} OE-Clusters, {len(jf_map)} JF-Clusters.")
 
@@ -392,6 +429,7 @@ def render_settings_page():
 
     if st.button("Daten neu laden", type="primary"):
         st.cache_data.clear()
+        st.session_state["show_reload_success"] = True
         st.rerun()
 
 

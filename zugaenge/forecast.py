@@ -107,6 +107,127 @@ def _resolve_org_unit(
     
     return _get_random_org_unit(pool, rng)
 
+def resolve_distribution(
+    rng: np.random.RandomState,
+    matrix: Dict[str, float],
+    dimension: str,
+    valid_vals: List[str],
+    default_val: str = "Unbekannt"
+) -> str:
+    """
+    Resolves a target value based on a distribution matrix.
+    
+    Args:
+        rng: Random state
+        matrix: Dictionary mapping dimension values (or "Default") to weights/probabilities
+        dimension: Name of the dimension (used for logging or fallback)
+        valid_vals: List of allowed values
+        default_val: Fallback if everything else fails
+        
+    Returns:
+        Selected value
+    """
+    if not matrix:
+        return default_val
+        
+    # 1. Filter matrix for valid values and non-zero weights
+    choices = []
+    weights = []
+    
+    # We include valid values that are in the matrix
+    for val in valid_vals:
+        weight = matrix.get(str(val))
+        if weight is None:
+            weight = matrix.get("Default", 0.0)
+        
+        if weight > 0:
+            choices.append(str(val))
+            weights.append(float(weight))
+            
+    # 2. If no valid choices found in matrix, use Default item from matrix if it has weight
+    if not choices:
+        default_weight = float(matrix.get("Default", 0.0))
+        if default_weight > 0 and valid_vals:
+            # Distribute Default weight across all valid values? 
+            # Or just pick one? Pick a random one from valid pool if Default is specified.
+            return str(rng.choice(valid_vals))
+        return default_val
+        
+    # 3. Normalize weights
+    total_w = sum(weights)
+    if total_w <= 0:
+        return default_val
+        
+    norm_weights = [w / total_w for w in weights]
+    
+    # 4. Sample
+    return str(rng.choice(choices, p=norm_weights))
+
+def distribute_deterministic(
+    total_count: int,
+    weights_dict: Dict[str, float],
+    valid_vals: List[str] = None
+) -> List[str]:
+    """
+    Distributes an integer total_count across categories defined in weights_dict
+    using a stable rounding strategy (Largest Remainder Method).
+    
+    Args:
+        total_count: Total number of items to distribute
+        weights_dict: Mapping of category -> weight/share
+        valid_vals: Optional list of allowed categories. If provided, weights_dict 
+                   is filtered to these.
+                   
+    Returns:
+        A list of category strings of length total_count.
+    """
+    if total_count <= 0:
+        return []
+        
+    # 1. Prepare and normalize weights
+    filtered_weights = {}
+    if weights_dict:
+        for k, v in weights_dict.items():
+            if v > 0 and (valid_vals is None or k in valid_vals):
+                filtered_weights[k] = float(v)
+                
+    if not filtered_weights:
+        # Fallback: if no weights, return first valid value or "Unbekannt"
+        fallback = valid_vals[0] if valid_vals else "Unbekannt"
+        return [fallback] * total_count
+        
+    total_weight = sum(filtered_weights.values())
+    shares = {k: v / total_weight for k, v in filtered_weights.items()}
+    
+    # 2. Initial allocation (floor)
+    allocations = {}
+    remainders = []
+    
+    current_sum = 0
+    for k, share in shares.items():
+        val = total_count * share
+        count = int(np.floor(val))
+        allocations[k] = count
+        current_sum += count
+        remainders.append((k, val - count))
+        
+    # 3. Distribute remainders
+    # Sort by remainder descending, then by key ascending (for stable tie-breaking)
+    remainders.sort(key=lambda x: (-x[1], x[0]))
+    
+    diff = total_count - current_sum
+    for i in range(diff):
+        k, _ = remainders[i % len(remainders)]
+        allocations[k] += 1
+        
+    # 4. Flatten to list
+    result = []
+    # Sort keys for determinism
+    for k in sorted(allocations.keys()):
+        result.extend([k] * allocations[k])
+        
+    return result
+
 def _get_unit_to_cluster_map(df: pd.DataFrame) -> Dict[str, str]:
     """Helper to create a mapping from Organisationseinheit to OE-Cluster."""
     if "Organisationseinheit" not in df.columns or "OE-Cluster" not in df.columns:
@@ -144,65 +265,58 @@ def _simulate_azubis(
     # Pre-compute cluster map for lookups
     unit_to_cluster = _get_unit_to_cluster_map(df_state)
     valid_units = list(unit_to_cluster.keys()) if unit_to_cluster else all_org_units
+    valid_jfs = sorted(df_state["Jobfamily"].dropna().unique().tolist()) if "Jobfamily" in df_state.columns else []
 
-    # Identify Azubis: TrfGr starts with "TVA" (TVAöD) or Jobfamily="Azubi"
-    # We use a robust check
+    # Identify Azubis
     mask_azubi = (
         df_state["TrfGr"].astype(str).str.contains("TVA", na=False, case=False) |
         (df_state["Jobfamily"].astype(str).str.contains("Azubi", na=False, case=False)) |
         (df_state["Jobfamily"].astype(str).str.contains("Ausbildung", na=False, case=False))
     )
     
-    # Only consider those currently active and modeled as Azubis
-    # We need a marker for "Is Azubi". 
-    # If we don't track it, we might re-process them.
-    # We'll use 'Jobfamily' as the definitive marker in the simulation.
+    # id: 63 - Label training phase as "Sonstige" for charts
+    training_label = "Sonstige"
     if "Jobfamily" not in df_state.columns:
         df_state["Jobfamily"] = "Unbekannt"
-        
-    # Standardize Azubis to Jobfamily="Azubi" if they match criteria and aren't already processed
-    df_state.loc[mask_azubi & (df_state["Jobfamily"] != "Azubi"), "Jobfamily"] = "Azubi"
+    
+    df_state.loc[mask_azubi, "Jobfamily"] = training_label
 
     current_azubis = df_state[
         (df_state["active"] == True) & 
-        (df_state["Jobfamily"] == "Azubi")
+        (df_state["Jobfamily"] == training_label) &
+        mask_azubi # Ensure we only pick the ones identified as Azubis
     ]
 
     # Support for Isolated Forecast (id: 16)
     exclude_baseline = params.get("azubi", {}).get("exclude_baseline_azubis", False)
 
+    # --- Phase 1: Identify Graduates & Make Retention Decisions ---
+    retained_info = [] # List of (persnr, row, graduation_date, is_forecast)
+    exited_info = []   # List of (persnr, row, graduation_date, is_forecast)
+    
     for persnr, row in current_azubis.iterrows():
         is_f = row.get("is_forecast", False)
         is_forecast = False if pd.isna(is_f) else bool(is_f)
         
-        # Isolation: If requested, ignore baseline Azubis
         if exclude_baseline and not is_forecast:
             continue
 
-        # Calculate graduation date: Use stored one if available (forecast), otherwise calculate (baseline)
         eintritt = pd.to_datetime(row.get("Eintritt", pd.NaT))
         graduation_date = row.get("GraduationDate", pd.NaT)
         
-        # If no strict graduation date set, calculate using Helper Logic
         if pd.isna(graduation_date) and pd.notna(eintritt):
-             # Baseline Azubi Logic: 
-             # Use _estimate_baseline_graduation_date to respect contract duration
-             # and distribute conversions across years.
              graduation_date = _estimate_baseline_graduation_date(eintritt, duration_years, conv_month, conv_day)
         
         if pd.isna(graduation_date):
-            continue # Still can't determine graduation
+            continue
         
-        # Check if graduation is in this period
         if period.start <= graduation_date <= period.end:
-            # Decisions: Retain?
-            # Check if destiny is already fixed (for NEW hires)
+            # Deterministic decision
             fixed_destiny = row.get("GraduationModus", None)
             
             if pd.notna(fixed_destiny):
                 should_retain = (fixed_destiny == "Takeover")
             else:
-                # Baseline Azubi -> Deterministic roll
                 success_chance = retention_rate
                 if debts is not None:
                     expected_success = success_chance + debts.get("takeover", 0.0)
@@ -212,7 +326,47 @@ def _simulate_azubis(
                 else:
                     should_retain = rng.random() < success_chance
 
-            # Common event fields for audit (id: 16)
+            if should_retain:
+                retained_info.append((persnr, row, graduation_date, is_forecast))
+            else:
+                exited_info.append((persnr, row, graduation_date, is_forecast))
+
+    # --- Phase 2: Distribute Dimension Values for Retained Azubis ---
+    if retained_info:
+        # Stable sort by PersNr to ensure deterministic assignment
+        retained_info.sort(key=lambda x: str(x[0]))
+        total_retained = len(retained_info)
+        
+        # Prepare defaults (inherit from current row)
+        assigned_units = [row.get("Organisationseinheit") for _, row, _, _ in retained_info]
+        assigned_jfs = ["Angestellte"] * total_retained
+        assigned_clusters = [row.get("OE-Cluster", "Unclustered") for _, row, _, _ in retained_info]
+
+        if azubi_params.get("use_takeover_matrix", False):
+            matrix = azubi_params.get("takeover_matrix", {})
+            dim = azubi_params.get("takeover_dimension", "JobFamily")
+            
+            if dim == "OrgUnit":
+                new_units = distribute_deterministic(total_retained, matrix)
+                for i, unit in enumerate(new_units):
+                    assigned_units[i] = unit
+                    assigned_clusters[i] = unit_to_cluster.get(unit, "Unclustered")
+            else: # JobFamily
+                new_jfs = distribute_deterministic(total_retained, matrix)
+                for i, jf in enumerate(new_jfs):
+                    assigned_jfs[i] = jf
+
+        # Phase 3: Update State & Create Events for Retained
+        for i, (persnr, row, graduation_date, is_forecast) in enumerate(retained_info):
+            new_unit = assigned_units[i]
+            new_jf = assigned_jfs[i]
+            new_cluster = assigned_clusters[i]
+            
+            # id: 60 - Derive JF-Cluster for Takeovers
+            jf_to_cluster = azubi_params.get("jf_to_cluster_map", {})
+            new_jf_cluster = jf_to_cluster.get(str(new_jf).strip(), "Unclustered")
+
+            eintritt = pd.to_datetime(row.get("Eintritt", pd.NaT))
             audit_fields = {
                 "entry_date": eintritt,
                 "graduation_date": graduation_date,
@@ -220,90 +374,79 @@ def _simulate_azubis(
                 "source_pool": "Forecast" if is_forecast else "Baseline",
                 "cohort": eintritt.year if pd.notna(eintritt) else "Unknown"
             }
-
-            # FTE handling
-            # Current Azubi MAK (should be 0.0 for new logic, but might be 1.0 for legacy)
             current_mak = float(row.get("mak", 0.0))
+
+            # Update State
+            df_state.loc[persnr, "Jobfamily"] = new_jf 
+            df_state.loc[persnr, "Organisationseinheit"] = new_unit
+            if "OE-Cluster" in df_state.columns:
+                df_state.loc[persnr, "OE-Cluster"] = new_cluster
+            if "JF-Cluster" in df_state.columns:
+                df_state.loc[persnr, "JF-Cluster"] = new_jf_cluster
             
-            if should_retain:
-                # Retained
-                
-                # FIX: Enforce Dimension Consistency (Source of Truth)
-                # Option 1: Conversion_In inherits dimensions from Conversion_Out (Row)
-                # This ensures Netto-Zero effect on Cluster level.
-                
-                # 1. Inherit Unit & Cluster from Source (Row)
-                new_unit = row.get("Organisationseinheit")
-                new_cluster = row.get("OE-Cluster", "Unclustered") # Keep original cluster
-                
-                # Note: Previously we resolved new units for Forecast Azubis.
-                # Now we stick to the assigned unit to avoid migration effects.
-                
-                # Update State
-                df_state.loc[persnr, "Jobfamily"] = "Angestellte" # Graduate
-                df_state.loc[persnr, "Organisationseinheit"] = new_unit
-                if "OE-Cluster" in df_state.columns:
-                    df_state.loc[persnr, "OE-Cluster"] = new_cluster
-                
-                # Explicitly transfer reporting dimensions if present (e.g. 'Bereich')
-                # (Assuming they are in row)
-                
-                # Reset Salary to Configured Entry (Assumption for ex-Azubi)
-                df_state.loc[persnr, "TrfGr"] = entry_tariff
-                df_state.loc[persnr, "St"] = entry_step
-                
-                # Update MAK to Target (1.0)
-                df_state.loc[persnr, "mak"] = mak_after
-                
-                # Modeled as Category Shift (Fix id: 13)
-                # 1. Azubi Graduation (Removal) - Remove current MAK (0.0 or 1.0)
-                events.append({
-                    "date": graduation_date,
-                    "type": "Azubi_Conversion_Out",
-                    "reason_label": "Azubi-Abschluss: Übernahme (Umwandlung)",
-                    "count": -1,
-                    "persnr": persnr,
-                    "org_unit": row.get("Organisationseinheit"),
-                    "source": "Azubi",
-                    "mak": -current_mak, # Remove whatever was there
-                    "OE-Cluster": row.get("OE-Cluster", "Unclustered"),
-                    "comment": "Statuswechsel: Azubi Ende",
-                    **audit_fields
-                })
-                # 2. Regular Entry (Addition) - Add Target MAK (1.0)
-                events.append({
-                    "date": graduation_date,
-                    "type": "Azubi_Conversion_In",
-                    "reason_label": "Azubi-Abschluss: Übernahme (Umwandlung)",
-                    "count": 1,
-                    "persnr": persnr,
-                    "org_unit": new_unit,
-                    "source": "Regular",
-                    "mak": mak_after, # +1.0
-                    "TrfGr": entry_tariff,
-                    "St": entry_step,
-                    "Jobfamily": "Angestellte",
-                    "Planstelle": str(row.get("Planstelle", "Nachbesetzung")),
-                    "OE-Cluster": new_cluster,
-                    "comment": "Statuswechsel: Reguläre Übernahme",
-                    **audit_fields
-                })
-            else:
-                # Not retained - Exit
-                df_state.loc[persnr, "active"] = False
-                
-                events.append({
-                    "date": graduation_date,
-                    "type": "Azubi_Exit",
-                    "reason_label": "Azubi-Abschluss: Nichtübernahme (Abgang)",
-                    "count": -1,
-                    "persnr": persnr,
-                    "org_unit": row.get("Organisationseinheit"),
-                    "mak": -current_mak, # Remove current MAK
-                    "OE-Cluster": row.get("OE-Cluster", "Unclustered"),
-                    "source": "Azubi",
-                    **audit_fields
-                })
+            df_state.loc[persnr, "TrfGr"] = entry_tariff
+            df_state.loc[persnr, "St"] = entry_step
+            df_state.loc[persnr, "mak"] = mak_after
+            
+            # Events
+            events.append({
+                "date": graduation_date,
+                "type": "Azubi_Conversion_Out",
+                "reason_label": "Azubi-Abschluss: Übernahme (Umwandlung)",
+                "count": -1,
+                "persnr": persnr,
+                "org_unit": row.get("Organisationseinheit"),
+                "source": "Azubi",
+                "mak": -current_mak,
+                "OE-Cluster": row.get("OE-Cluster", "Unclustered"),
+                "JF-Cluster": row.get("JF-Cluster", "Unclustered"),
+                "comment": "Statuswechsel: Azubi Ende",
+                **audit_fields
+            })
+            events.append({
+                "date": graduation_date,
+                "type": "Azubi_Conversion_In",
+                "reason_label": "Azubi-Abschluss: Übernahme (Umwandlung)",
+                "count": 1,
+                "persnr": persnr,
+                "org_unit": new_unit,
+                "source": "Regular",
+                "mak": mak_after,
+                "TrfGr": entry_tariff,
+                "St": entry_step,
+                "Jobfamily": new_jf,
+                "Planstelle": str(row.get("Planstelle", "Nachbesetzung")),
+                "OE-Cluster": new_cluster,
+                "JF-Cluster": new_jf_cluster,
+                "comment": "Statuswechsel: Reguläre Übernahme",
+                **audit_fields
+            })
+
+    # --- Phase 4: Handle Exits ---
+    for persnr, row, graduation_date, is_forecast in exited_info:
+        eintritt = pd.to_datetime(row.get("Eintritt", pd.NaT))
+        audit_fields = {
+            "entry_date": eintritt,
+            "graduation_date": graduation_date,
+            "is_forecast": is_forecast,
+            "source_pool": "Forecast" if is_forecast else "Baseline",
+            "cohort": eintritt.year if pd.notna(eintritt) else "Unknown"
+        }
+        current_mak = float(row.get("mak", 0.0))
+        
+        df_state.loc[persnr, "active"] = False
+        events.append({
+            "date": graduation_date,
+            "type": "Azubi_Exit",
+            "reason_label": "Azubi-Abschluss: Nichtübernahme (Abgang)",
+            "count": -1,
+            "persnr": persnr,
+            "org_unit": row.get("Organisationseinheit"),
+            "mak": -current_mak,
+            "OE-Cluster": row.get("OE-Cluster", "Unclustered"),
+            "source": "Azubi",
+            **audit_fields
+        })
                 
 def _simulate_new_azubis(
     df_state: pd.DataFrame,
@@ -364,11 +507,16 @@ def _simulate_new_azubis(
         # Graduation calc (id: 16) - Use August Rule respecting Duration
         grad_date = _estimate_baseline_graduation_date(entry_date, duration_years, conv_month, conv_day)
         
+        # id: 63 - Azubi Training -> "Sonstige" Job Family
+        jf_to_cluster = azubi_params.get("jf_to_cluster_map", {})
+        new_jf = "Sonstige"
+        new_jf_cluster = jf_to_cluster.get(new_jf, "Unclustered")
+
         # State Object
         new_row = {
             "PersNr": new_id,
             "active": True,
-            "Jobfamily": "Azubi",
+            "Jobfamily": new_jf,
             "TrfGr": entry_tariff,
             "TrfGrStart": entry_tariff, # Store for audit
             "St": 1,
@@ -381,7 +529,8 @@ def _simulate_new_azubis(
             "age": 16.0,
             "tenure": 0.0,
             "mak": mak_during, # Azubi counts as 0 MAK initially (per new Rule)
-            "OE-Cluster": new_cluster # Assigned Cluster
+            "OE-Cluster": new_cluster, # Assigned Cluster
+            "JF-Cluster": new_jf_cluster
         }
         
         # --- Prepare Future Graduation Destiny (Fix id: 13) ---
@@ -408,9 +557,10 @@ def _simulate_new_azubis(
             "mak": mak_during, # 0.0
             "TrfGr": entry_tariff,
             "St": 1,
-            "Jobfamily": "Azubi",
+            "Jobfamily": new_jf,
             "Planstelle": "Azubi",
             "OE-Cluster": new_cluster,
+            "JF-Cluster": new_jf_cluster,
             "is_forecast": True,
             "source_pool": "Forecast",
             "entry_date": entry_date,
