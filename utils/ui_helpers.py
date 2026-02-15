@@ -278,3 +278,25 @@ def render_distribution_matrix(
     # We leave validation to the caller or add a flag later.
     
     return new_matrix
+
+
+# ---------------------------------------------------------------------------
+# OrgUnit-Modus Hinweis (shared across Page 4 & 5)
+# ---------------------------------------------------------------------------
+
+ORGUNIT_MODE_HINT = (
+    'Auch wenn du nach OrgUnit verteilst, ist es normal, dass in den JF-Charts '
+    'dann viele Einträge unter „Sonstiges" landen – denn das ist ja eure fachliche '
+    'Vorgabe. Entscheidend ist: nicht "Unclustered" und kein "Fallback (Mapping fehlt)".'
+)
+
+
+def is_orgunit_mode_active(use_matrix: bool, dimension: str) -> bool:
+    """Return True when the OrgUnit takeover mode hint should be shown."""
+    return use_matrix and dimension == "OrgUnit"
+
+
+def render_orgunit_mode_hint(use_matrix: bool, dimension: str) -> None:
+    """Show an info hint when OrgUnit takeover mode is active."""
+    if is_orgunit_mode_active(use_matrix, dimension):
+        st.info(ORGUNIT_MODE_HINT)

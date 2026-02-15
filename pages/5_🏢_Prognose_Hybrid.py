@@ -39,12 +39,14 @@ from abgaenge import (
 )
 from zugaenge.params import default_params as default_zugaenge_params, get_strategies
 from zugaenge.forecast import run_forecast_zugaenge
+from zugaenge.enrichment import build_jf_to_cluster_map, enrich_zugaenge_events, render_zugaenge_debug_sections
 
 # Shared Components
 from dataloader.loader import load_and_prepare_data, load_atz_data_cached, calculate_mak_vectorized, calculate_cost_vectorized
 from dataloader.cluster_manager import is_clustering_active
 from components.sidebar import render_global_filters, apply_filters
 from utils.plot_helpers import apply_legend_bottom
+from utils.ui_helpers import render_distribution_matrix, render_orgunit_mode_hint
 
 
 def calculate_kpi_from_events(df_start_stats: pd.DataFrame, events_df: pd.DataFrame, start_date: pd.Timestamp, end_date: pd.Timestamp, freq: str) -> pd.DataFrame:
@@ -468,7 +470,49 @@ def main():
             duration = az3.number_input("Ausbildungsdauer (Jahre)", 1.0, 5.0, float(params_zug["azubi"]["duration_years"]), 0.5, key="hy_azu_dur")
             azu_isolated = st.checkbox("Nur Prognose-Azubis (Bestand ignorieren)", value=False, key="hy_azu_iso")
             az_strat = az4.selectbox("Azubi-Verteilung", ["Random", "OrgUnit"], index=0, key="hy_azu_strat")
-            
+
+            # --- Azubi Takeover Matrix ---
+            st.markdown("##### Detaillierte Übernahme-Verteilung")
+            az_mc1, az_mc2 = st.columns([1, 1])
+            with az_mc1:
+                use_az_matrix = st.checkbox(
+                    "Detailmatrix statt pauschaler Verteilung verwenden",
+                    value=params_zug["azubi"].get("use_takeover_matrix", False),
+                    help="Wenn aktiviert, wird die nachfolgende Matrix für die Verteilung der Übernahmen genutzt.",
+                    key="hy_chk_use_az_matrix"
+                )
+            with az_mc2:
+                az_dim = st.radio(
+                    "Dimension für Übernahme",
+                    options=["JobFamily", "OrgUnit"],
+                    index=0 if params_zug["azubi"].get("takeover_dimension", "JobFamily") == "JobFamily" else 1,
+                    format_func=lambda x: "Verteilen nach Jobfamily" if x == "JobFamily" else "Verteilen nach Org Unit",
+                    disabled=not use_az_matrix,
+                    horizontal=True,
+                    key="hy_rad_az_dim"
+                )
+
+            valid_units = sorted(df_ma["Organisationseinheit"].dropna().astype(str).unique())
+            valid_jfs = sorted(df_ma["Jobfamily"].dropna().astype(str).unique())
+            az_matrix_vals = valid_units if az_dim == "OrgUnit" else valid_jfs
+
+            az_takeover_matrix = render_distribution_matrix(
+                label=f"Matrix: {az_dim} (Gewichtung für Übernahme)",
+                dimension=az_dim,
+                current_matrix=params_zug["azubi"].get("takeover_matrix", {}),
+                valid_vals=az_matrix_vals,
+                key_prefix="hy_az_takeover_matrix",
+                disabled=not use_az_matrix
+            )
+
+            az_tc1, az_tc2 = st.columns(2)
+            az_tarif = az_tc1.selectbox("Übernahme-Tarif", TARIFF_GROUPS, index=TARIFF_GROUPS.index(params_zug["azubi"]["entry_tariff_group"]) if params_zug["azubi"]["entry_tariff_group"] in TARIFF_GROUPS else 5, key="hy_az_tarif")
+            az_step = az_tc2.number_input("Übernahme-Stufe", 1, 6, params_zug["azubi"]["entry_step"], key="hy_az_step")
+
+            render_orgunit_mode_hint(use_az_matrix, az_dim)
+
+            st.divider()
+
             tr1, tr2, tr3 = st.columns(3)
             trainee_count = tr1.number_input("Neue Trainees pro Jahr", 0, 100, params_zug["trainee"]["new_cases_per_year"], key="hy_tra_count")
             trainee_dur = tr2.number_input("Trainee-Dauer (Jahre)", 0.5, 3.0, params_zug["trainee"]["duration_years"], 0.5, key="hy_tra_dur")
@@ -517,15 +561,19 @@ def main():
     
     final_params_zug = {
         "azubi": {
-            "active": comp_azubi, 
-            "retention_rate": retention, 
-            "duration_years": duration, 
-            "strategy": az_strat, 
-            "target_org_unit": None, 
-            "entry_tariff_group": "E 5", 
-            "entry_step": 1, 
+            "active": comp_azubi,
+            "retention_rate": retention,
+            "duration_years": duration,
+            "strategy": az_strat,
+            "target_org_unit": None,
+            "entry_tariff_group": az_tarif,
+            "entry_step": az_step,
             "new_cases_per_year": azubi_count,
-            "exclude_baseline_azubis": azu_isolated
+            "exclude_baseline_azubis": azu_isolated,
+            "use_takeover_matrix": use_az_matrix,
+            "takeover_dimension": az_dim,
+            "takeover_matrix": az_takeover_matrix,
+            "jf_to_cluster_map": build_jf_to_cluster_map(df_ma),
         },
         "trainee": {"active": comp_trainee, "new_cases_per_year": trainee_count, "duration_years": trainee_dur, "salary_group": "E 12", "strategy": tr_strat, "target_org_unit": None},
         "new_hires": {"active": comp_hires, "count_per_year": hire_count, "strategy": hire_strat, "target_org_unit": None, "distribution": hire_distribution},
@@ -578,7 +626,7 @@ def main():
             snap_lookup = df_ma.set_index("PersNr")
             for _, row in exits.iterrows():
                 pid = str(row["persnr"]).strip().replace(".0", "")
-                d_jf, d_oe_c = "Angestellte", "Unclustered"
+                d_jf, d_oe_c = "Angestellte", "Sonstiges"
                 if pid in snap_lookup.index:
                     d_row = snap_lookup.loc[pid]
                     if isinstance(d_row, pd.DataFrame): d_row = d_row.iloc[0]
@@ -596,6 +644,11 @@ def main():
                 params=final_params_zug,
                 vacancies=vacancies
             )
+            # Enrichment: shared pipeline (same as Page 4)
+            zug_events = zug_res["events"]
+            if not zug_events.empty:
+                zug_events = enrich_zugaenge_events(zug_events, df_ma, final_params_zug)
+                zug_res["events"] = zug_events
             st.session_state["hybrid_zug_res"] = zug_res
             st.session_state["hybrid_zug_params"] = final_params_zug
     else:
@@ -2109,6 +2162,12 @@ def main():
                     with zc2:
                         _render_debug_aggregation(filt_zug_events, ["OE-Cluster"], "Nach OE-Cluster", count_col="count", mak_col="mak", key_prefix="zug_debug")
                         _render_debug_aggregation(filt_zug_events, ["Organisationseinheit"], "Nach Organisationseinheit (Top 20)", count_col="count", mak_col="mak", key_prefix="zug_debug")
+
+                    # --- JF-Cluster Enrichment Debug (shared with Page 4) ---
+                    st.divider()
+                    st.markdown("#### JF-Cluster Enrichment Diagnose")
+                    zug_params = st.session_state.get("hybrid_zug_params", final_params_zug)
+                    render_zugaenge_debug_sections(filt_zug_events, zug_params, df_ma)
 
                 else:
                     st.write("Keine Zugangsdaten.")
