@@ -56,20 +56,35 @@ def load_hr_data(filepath: Optional[str] = None, auto_generate: bool = True) -> 
     if filepath is None:
         filepath = DATA_PATH
 
-    if not os.path.exists(filepath):
+    # Columns that MUST be present for correct operation.
+    # If any are missing the file is stale and must be regenerated.
+    _REQUIRED_COLS = {"BsGrd", "ist_atz_fr", "MitarbGruppenbez.", "Phase", "Ist_Azubi"}
+
+    needs_generate = not os.path.exists(filepath)
+
+    # Staleness check: detect old Excel files missing critical columns
+    if not needs_generate and auto_generate:
+        try:
+            probe = pd.read_excel(filepath, sheet_name="snapshot_detail", nrows=0)
+            missing = _REQUIRED_COLS - set(probe.columns)
+            if missing:
+                needs_generate = True
+                st.info(
+                    f"ℹ️ Synthetische Daten veraltet "
+                    f"(fehlende Spalten: {', '.join(sorted(missing))}). "
+                    f"Regeneriere…"
+                )
+        except Exception:
+            needs_generate = True
+
+    if needs_generate:
         if auto_generate:
-            st.warning("⚠️ Testdaten nicht gefunden. Generiere automatisch synthetische Daten...")
             try:
-                # Importiere Generator-Funktionen
                 from dataloader.synthetic import generate_synthetic_data, save_to_excel
 
-                # Erstelle Verzeichnis falls nicht vorhanden
                 os.makedirs(os.path.dirname(filepath), exist_ok=True)
 
-                # Generiere Daten
                 data_dict = generate_synthetic_data()
-
-                # Speichere in Excel
                 save_to_excel(data_dict, filepath)
 
                 st.success("✅ Testdaten erfolgreich generiert!")
@@ -274,15 +289,22 @@ def enrich_snapshot_data(df: pd.DataFrame, stichtag: Optional[pd.Timestamp] = No
         df.loc[austritt_year == 9999, "Austritt"] = pd.NaT
 
     # Alter berechnen (zum STICHTAG, nicht Systemdatum!)
-    df["Alter_Jahre"] = (stichtag - pd.to_datetime(df["GebDatum"], errors="coerce")).dt.days / 365.25
-    df["Alter_Jahre"] = df["Alter_Jahre"].fillna(0)
-    df["Alter"] = df["Alter_Jahre"].astype(int)
+    if "GebDatum" in df.columns:
+        df["Alter_Jahre"] = (stichtag - pd.to_datetime(df["GebDatum"], errors="coerce")).dt.days / 365.25
+        df["Alter_Jahre"] = df["Alter_Jahre"].fillna(0)
+        df["Alter"] = df["Alter_Jahre"].astype(int)
+    else:
+        df["Alter_Jahre"] = 0.0
+        df["Alter"] = 0
 
     # Betriebszugehörigkeit in Jahren (zum STICHTAG)
-    df["Betriebszugehörigkeit_Jahre"] = (
-        stichtag - pd.to_datetime(df["Eintritt"], errors="coerce")
-    ).dt.days / 365.25
-    df["Betriebszugehörigkeit_Jahre"] = df["Betriebszugehörigkeit_Jahre"].fillna(0)
+    if "Eintritt" in df.columns:
+        df["Betriebszugehörigkeit_Jahre"] = (
+            stichtag - pd.to_datetime(df["Eintritt"], errors="coerce")
+        ).dt.days / 365.25
+        df["Betriebszugehörigkeit_Jahre"] = df["Betriebszugehörigkeit_Jahre"].fillna(0)
+    else:
+        df["Betriebszugehörigkeit_Jahre"] = 0.0
 
     # Alterskohorten (aus session_state, falls verfügbar)
     if "cohort_definitions" in st.session_state:
@@ -295,10 +317,11 @@ def enrich_snapshot_data(df: pd.DataFrame, stichtag: Optional[pd.Timestamp] = No
     )
 
     # Geschlecht vereinfachen
-    df["Geschlecht"] = df["Text Gsch"].map({
-        "weiblich": "w",
-        "männlich": "m"
-    })
+    if "Text Gsch" in df.columns:
+        df["Geschlecht"] = df["Text Gsch"].map({
+            "weiblich": "w",
+            "männlich": "m"
+        })
 
     # Vollzeit/Teilzeit (Readme: 0 < BsGrd < 100 = Teilzeit)
     # Exkludiert Ruhend und ATZ-FR (BsGrd kann 0 sein)
@@ -325,7 +348,8 @@ def enrich_snapshot_data(df: pd.DataFrame, stichtag: Optional[pd.Timestamp] = No
     df["MAK"] = df.apply(lambda row: berechne_mak(row, atz_fr_persnr_set), axis=1)
 
     # Ist-Soll Abweichung
-    df["Abweichung_FTE"] = df["Soll_FTE"] - df["FTE_assigned"]
+    if "Soll_FTE" in df.columns and "FTE_assigned" in df.columns:
+        df["Abweichung_FTE"] = df["Soll_FTE"] - df["FTE_assigned"]
 
     return df
 
@@ -1004,8 +1028,11 @@ def calculate_mak_vectorized(df: pd.DataFrame, atz_fr_persnr_set: set = None) ->
     """
     df_out = df.copy()
     
-    # Baseline
-    df_out["MAK_Calculated"] = df_out["BsGrd"].fillna(0) / 100.0
+    # Baseline – guard against missing BsGrd (e.g. incomplete uploads)
+    if "BsGrd" in df_out.columns:
+        df_out["MAK_Calculated"] = df_out["BsGrd"].fillna(0) / 100.0
+    else:
+        df_out["MAK_Calculated"] = 1.0
     
     # Vacancy Mask
     if "Is_Vacant" in df_out.columns:
@@ -1075,9 +1102,10 @@ def combine_to_snapshot(mitarbeiter, planstellen, atz, ausbildung, stichtag=None
     df = df.merge(ausbildung[["Personalnummer", "BV Ausbildungsgruppentext"]], left_on="Personalnummer", right_on="Personalnummer", how="left", suffixes=("", "_ausb"))
     df = df.rename(columns={"BV Ausbildungsgruppentext": "Ausbildung"})
 
-    if "Ausbildung" in df.columns: df["Ausbildung"] = df["Ausbildung"].astype("string")
-    df["Bildungskategorie"] = df["Ausbildung"].map(EDUCATION_MAPPING)
-    df["Bildungsrang"] = df["Ausbildung"].map(EDUCATION_RANKING)
+    if "Ausbildung" in df.columns:
+        df["Ausbildung"] = df["Ausbildung"].astype("string")
+        df["Bildungskategorie"] = df["Ausbildung"].map(EDUCATION_MAPPING)
+        df["Bildungsrang"] = df["Ausbildung"].map(EDUCATION_RANKING)
 
     if "MitarbGruppenbez." in df.columns:
         df["Ist_Azubi"] = df["MitarbGruppenbez."] == "Auszubildende"
