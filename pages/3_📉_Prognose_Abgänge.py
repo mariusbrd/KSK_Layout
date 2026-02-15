@@ -41,7 +41,7 @@ from abgaenge import (
 from dataloader.loader import load_and_prepare_data, load_atz_data_cached
 from dataloader.cluster_manager import is_clustering_active
 from dataloader.jobfamily_service import JobFamilyService
-from components.sidebar import render_global_filters, apply_filters
+from components.sidebar import render_global_filters, apply_filters, apply_event_filters, render_filter_status, apply_robust_filter
 from utils.plot_helpers import apply_legend_bottom
 
 
@@ -275,7 +275,9 @@ def main():
             else:
                 atz_unique_vals = valid_jfs
             
-            current_atz_matrix = params["atz"].get("atz_matrix", {})
+            from utils.matrix_helpers import migrate_to_percent
+
+            current_atz_matrix = migrate_to_percent(params["atz"].get("atz_matrix", {}))
             atz_dim_items = ["Default"] + atz_unique_vals
             atz_editor_data = []
 
@@ -286,15 +288,15 @@ def main():
                     # Fallback to "alter_55_plus" if it was old matrix
                     rate = current_atz_matrix.get("alter_55_plus", {}).get(str(val))
                 if rate is None:
-                    rate = current_atz_matrix.get("Default", new_atz_base)
-                
+                    rate = current_atz_matrix.get("Default", new_atz_base * 100)
+
                 atz_editor_data.append({
                     atz_dim: val,
-                    "Wahrscheinlichkeit": float(rate)
+                    "Wahrscheinlichkeit (%)": float(rate)
                 })
-            
+
             df_atz_matrix = pd.DataFrame(atz_editor_data).set_index(atz_dim)
-            
+
             edited_atz_df = st.data_editor(
                 df_atz_matrix,
                 use_container_width=True,
@@ -302,16 +304,16 @@ def main():
                 key="atz_matrix_editor_live",
                 disabled=not use_atz_matrix,
                 column_config={
-                    "Wahrscheinlichkeit": st.column_config.NumberColumn(
-                        "Wahrscheinlichkeit",
-                        min_value=0.0, max_value=1.0, step=0.01, format="%.2f"
+                    "Wahrscheinlichkeit (%)": st.column_config.NumberColumn(
+                        "Wahrscheinlichkeit (%)",
+                        min_value=0.0, max_value=100.0, step=0.5, format="%.1f"
                     )
                 }
             )
-            
+
             new_atz_matrix = {}
             for dim_val, row in edited_atz_df.iterrows():
-                new_atz_matrix[str(dim_val)] = float(row["Wahrscheinlichkeit"])
+                new_atz_matrix[str(dim_val)] = float(row["Wahrscheinlichkeit (%)"])
             params["atz"]["atz_matrix"] = new_atz_matrix
 
         with st.expander("Renten-Parameter"):
@@ -374,34 +376,31 @@ def main():
             age_cohorts = ["alter_unter_30", "alter_30_45", "alter_45_55", "alter_55_plus"]
             age_labels = {"alter_unter_30": "u30", "alter_30_45": "30-45", "alter_45_55": "45-55", "alter_55_plus": "ü55"}
 
-            # 2. Build DataFrame
-            current_quit_matrix = params["quit"].get("quit_matrix", {})
+            # 2. Build DataFrame (percent scale)
+            current_quit_matrix = migrate_to_percent(params["quit"].get("quit_matrix", {}))
             dim_items = ["Default"] + unique_vals
             editor_data = []
 
             for val in dim_items:
                 row_data = {quit_dim: val}
                 for cohort in age_cohorts:
-                    # Access the nested dictionary for the cohort, then the value for the dimension item
-                    # Fallback to 'Default' for the cohort if item not found, then to quit_base
                     cohort_rates = current_quit_matrix.get(cohort, {})
-                    rate = cohort_rates.get(str(val), cohort_rates.get("Default", quit_base))
+                    rate = cohort_rates.get(str(val), cohort_rates.get("Default", quit_base * 100))
                     row_data[cohort] = float(rate)
                 editor_data.append(row_data)
-            
+
             df_matrix = pd.DataFrame(editor_data).set_index(quit_dim)
-            
+
             # 3. Render Editor
-            # Correct explicit syntax
             col_conf = {
                 quit_dim: st.column_config.TextColumn(f"{quit_dim}", disabled=True)
             }
             for c in age_cohorts:
                 col_conf[c] = st.column_config.NumberColumn(
-                    age_labels.get(c, c),
-                    min_value=0.0, max_value=1.0, step=0.01, format="%.2f"
+                    age_labels.get(c, c) + " (%)",
+                    min_value=0.0, max_value=100.0, step=0.5, format="%.1f"
                 )
-            
+
             edited_df = st.data_editor(
                 df_matrix,
                 use_container_width=True,
@@ -410,8 +409,8 @@ def main():
                 key="quit_matrix_editor_live_fixed",
                 column_config=col_conf
             )
-            
-            # 4. Save back
+
+            # 4. Save back (percent scale — conversion to weights in build_params_from_ui)
             new_quit_matrix = {c: {} for c in age_cohorts}
             for dim_val, row in edited_df.iterrows():
                 for c in age_cohorts:
@@ -563,163 +562,34 @@ def main():
                     params=params,
                 )
         
-            # P02: Apply Sidebar Filters (View Only)
-            # Use snapshot_df (Position Level) to allow filtering by position attributes
-            # (e.g. OrgUnit, Planstelle) even if aggregation picked "First".
-            df_filtered_rows = apply_filters(snapshot_df)
-
-            if df_filtered_rows.empty:
-                st.warning("⚠️ Keine Daten nach Filterung verfügbar.")
-                st.stop()
-
-            # P03: Re-Aggregate Filtered Data (Person Level for View)
-            view_agg_dict = {
-                "MAK_Calculated": "sum",
-                "GebDatum": "first",
-                "Eintritt": "first",
-                "Austritt": "first",
-                "Status kundenindividuell": "first",
-                "Sollarbeitszeit": "sum",
-                "Organisationseinheit": "first",
-            }
-            for col in ["Geschlecht", "Planstelle", "Kürzel OrgEinheit", "ATZ_Status", "Jobfamily", "TrfGr", "St"]:
-                 if col in df_filtered_rows.columns:
-                     view_agg_dict[col] = "first"
-
-            df_view_agg = df_filtered_rows.groupby("PersNr", as_index=False).agg(view_agg_dict)
-            
-            # Prepare for Aggregator (needs 'mak' column)
-            df_view_agg["mak"] = pd.to_numeric(df_view_agg["MAK_Calculated"], errors="coerce").fillna(0.0)
-
-            # P04: Filter Events – Direct Attribute Filtering ("Zoom")
+            # --- Enrichment: add OrgUnit/Clusters/UID to global events ---
             events_global = global_result["events_person_level"]
-            
-            if events_global.empty:
-                events_view = pd.DataFrame()
-            else:
-                events_view = events_global.copy()
-                
-                # 1. OrgUnit Filter: direct on event attribute
-                selected_orgs = st.session_state.get("selected_org_units", [])
-                if selected_orgs and "Organisationseinheit" in events_view.columns:
-                    events_view = events_view[events_view["Organisationseinheit"].isin(selected_orgs)]
-                
-                # 2. Jobfamily Filter: direct on event attribute
-                selected_jf = st.session_state.get("selected_jobfamilies", [])
-                if selected_jf and "Jobfamily" in events_view.columns:
-                    events_view = events_view[events_view["Jobfamily"].isin(selected_jf)]
-                
-                # 3. Other filters fall back to PersNr matching
-                has_non_attr_filters = any([
-                    st.session_state.get("selected_genders", []),
-                    st.session_state.get("selected_employment", []),
-                    st.session_state.get("selected_atz_status", []),
-                    st.session_state.get("selected_cohorts", []),
-                    st.session_state.get("selected_education", []),
-                ])
-                if has_non_attr_filters:
-                    valid_ids = set(df_view_agg["PersNr"].astype(str))
-                    events_view = events_view[events_view["persnr"].isin(valid_ids)]
-
-                # P13: SYNC WITH INITIAL WORKFORCE (TASK 1)
-                # Ensure events ONLY include persons present at start of prognosis.
-                # This aligns the event log with the KPI 'exit_count' (The 169 mystery).
-                if not events_view.empty and not df_view_agg.empty:
-                    initial_ids = set(df_view_agg["PersNr"].astype(str))
-                    events_view = events_view[events_view["persnr"].astype(str).isin(initial_ids)]
-
-            # P05: Adjust Events (Clamp MAK Loss to View Reality)
-            if not events_view.empty:
-                df_view_agg_indexed = df_view_agg.set_index("PersNr")
-                if "mak" in df_view_agg_indexed.columns:
-                    pmak_map = df_view_agg_indexed["mak"].to_dict()
-                    
-                    def adjust_mak_loss(row):
-                        pid = str(row["persnr"])
-                        if row["mak_change"] < 0: # Is a loss event
-                            current_view_mak = float(pmak_map.get(pid, 0.0))
-                            return -abs(current_view_mak)
-                        return row["mak_change"]
-
-                    events_view["mak_change"] = events_view.apply(adjust_mak_loss, axis=1)
-
-            # P06: Re-Aggregate KPIs
-            forecast_kpis = aggregate_forecast_results(
-                df_initial=df_view_agg,
-                events_df=events_view,
-                start_date=pd.Timestamp(ist_stichtag),
-                end_date=pd.Timestamp(forecast_end_date) + pd.Timedelta(hours=23, minutes=59, seconds=59),
-                freq=freq,
-                params=params
-            )
-            
-            # --- Enrichment (inside submit) ---
-            if not events_view.empty:
-                # Add OrgUnit if missing
-                if "Organisationseinheit" not in events_view.columns and "Organisationseinheit" in df_ma.columns:
+            if not events_global.empty:
+                if "Organisationseinheit" not in events_global.columns and "Organisationseinheit" in df_ma.columns:
                     lookup_oe = df_ma[["PersNr", "Organisationseinheit"]].drop_duplicates("PersNr").copy()
                     lookup_oe["PersNr"] = lookup_oe["PersNr"].astype(str)
-                    events_view = events_view.merge(lookup_oe, left_on="persnr", right_on="PersNr", how="left").drop(columns=["PersNr"])
-                
-                # Add Clusters
+                    events_global = events_global.merge(lookup_oe, left_on="persnr", right_on="PersNr", how="left").drop(columns=["PersNr"])
+
                 for cluster_col in ["OE-Cluster", "JF-Cluster"]:
-                    if cluster_col not in events_view.columns and cluster_col in df_ma.columns:
+                    if cluster_col not in events_global.columns and cluster_col in df_ma.columns:
                         lookup_c = df_ma[["PersNr", cluster_col]].drop_duplicates("PersNr").copy()
                         lookup_c["PersNr"] = lookup_c["PersNr"].astype(str)
-                        events_view = events_view.merge(lookup_c, left_on="persnr", right_on="PersNr", how="left").drop(columns=["PersNr"])
-                        events_view[cluster_col] = events_view[cluster_col].fillna("Unclustered")
+                        events_global = events_global.merge(lookup_c, left_on="persnr", right_on="PersNr", how="left").drop(columns=["PersNr"])
+                        events_global[cluster_col] = events_global[cluster_col].fillna("Sonstiges")
 
-                # P10: STABLE UID (Contract V4)
-                # Used for deterministic reconciliation across pages.
                 from abgaenge.schemas import build_event_uid
-                events_view["event_uid"] = build_event_uid(events_view)
+                events_global["event_uid"] = build_event_uid(events_global)
+                if "persnr" in events_global.columns:
+                    events_global["persnr"] = events_global["persnr"].astype(str)
 
-                if "persnr" in events_view.columns:
-                    events_view["persnr"] = events_view["persnr"].astype(str)
+                global_result["events_person_level"] = events_global
 
-            # --- Save Result Bundle ---
+            # --- Save (unfiltered) ---
             import datetime
-            current_filters = {
-                "org": st.session_state.get("selected_org_units", []),
-                "jf": st.session_state.get("selected_jobfamilies", []),
-                "gender": st.session_state.get("selected_genders", []),
-                "empl": st.session_state.get("selected_employment", []),
-                "atz": st.session_state.get("selected_atz_status", []),
-            }
-
-            # CONTRACT V3: Save Exact Chart View (100% KPI match)
-            events_chart_df = events_view[events_view["headcount_change"] < 0].copy() if not events_view.empty else pd.DataFrame()
-            
-            # --- TASK 1: COUNT VERIFICATION ---
-            kpi_exit_count = int(forecast_kpis["exit_count"].sum())
-            actual_event_count = len(events_chart_df)
-            
-            if kpi_exit_count != actual_event_count:
-                # Log to terminal for developer
-                print(f"DEBUG: Consistency Mismatch! KPI={kpi_exit_count} vs Events={actual_event_count}")
-                print(f"Candidates: Raw_Global={len(global_result['events_person_level'])}, View_Filt={len(events_view)}")
-                # Display warning in UI if debug active
-                if st.session_state.get("debug_active"):
-                    st.error(f"⚠️ Konsistenz-Fehler: KPI ({kpi_exit_count}) != Events ({actual_event_count}). Fix in Progress.")
-
-            st.session_state["abgaenge_results"] = {
-                "schema_version": 3,
-                "forecast_kpis": forecast_kpis,
-                "events_chart": events_chart_df,     # THE "169" DATAFRAME
-                "events_raw": events_view,           # Includes MAK-only changes
-                "events": events_view,               # Legacy compat
-                "params": ui_state,
-                "filters": current_filters, 
-                "meta": {
-                    "rows_chart": actual_event_count,
-                    "rows_raw": int(len(events_view)),
-                    "unique_persons_chart": int(events_chart_df["persnr"].nunique()) if not events_chart_df.empty else 0,
-                    "created_at": datetime.datetime.now().isoformat()
-                },
-                "timestamp": datetime.datetime.now().strftime("%d.%m.%Y, %H:%M:%S"),
-            }
             st.session_state["abgaenge_global_result"] = global_result
             st.session_state["abgaenge_params"] = params
+            st.session_state["abgaenge_ui_state"] = ui_state
+            st.session_state["abgaenge_timestamp"] = datetime.datetime.now().strftime("%d.%m.%Y, %H:%M:%S")
             st.success("Prognose erfolgreich berechnet.")
             st.rerun()
             
@@ -727,19 +597,100 @@ def main():
             st.error(f"Fehler in der Prognose calculation: {e}")
             st.stop()
 
-    # ── Rendering Logic (from Session State) ──
-    res = st.session_state.get("abgaenge_results")
-    if not res:
+    # ── Rendering Logic (View-Only Zoom from Global Result) ──
+    global_result = st.session_state.get("abgaenge_global_result")
+    if not global_result:
         st.info("ℹ️ Keine Prognose berechnet. Bitte stellen Sie die Parameter ein und klicken Sie auf 'Prognose berechnen'.")
         return
 
-    forecast_kpis = res["forecast_kpis"]
-    events = res["events"]
-    last_run_params = res["params"]
-    # Robust Reader (Schema normalization)
-    last_run_filters = res.get("filters", res.get("params", {}))
-    
-    # Current UI State for Drift Detection
+    last_run_params = st.session_state.get("abgaenge_ui_state", {})
+    timestamp = st.session_state.get("abgaenge_timestamp", "–")
+
+    # ── View-Only Zoom: apply current sidebar filters to global events ──
+    events_global = global_result["events_person_level"]
+
+    events_view, n_before, n_after = apply_event_filters(
+        events_global, snapshot_df, mode="attrition"
+    )
+
+    # Filtered snapshot for KPI re-aggregation
+    df_filtered_rows = apply_filters(snapshot_df)
+    if df_filtered_rows.empty:
+        st.warning("⚠️ Keine Daten nach Filterung verfügbar.")
+        return
+
+    # Re-aggregate filtered snapshot (person level)
+    view_agg_dict = {
+        "MAK_Calculated": "sum",
+        "GebDatum": "first",
+        "Eintritt": "first",
+        "Austritt": "first",
+        "Status kundenindividuell": "first",
+        "Sollarbeitszeit": "sum",
+        "Organisationseinheit": "first",
+    }
+    for col in ["Geschlecht", "Planstelle", "Kürzel OrgEinheit", "ATZ_Status", "Jobfamily", "TrfGr", "St"]:
+        if col in df_filtered_rows.columns:
+            view_agg_dict[col] = "first"
+
+    df_view_agg = df_filtered_rows.groupby("PersNr", as_index=False).agg(view_agg_dict)
+    df_view_agg["mak"] = pd.to_numeric(df_view_agg["MAK_Calculated"], errors="coerce").fillna(0.0)
+
+    # P05: Adjust Events (Clamp MAK Loss to View Reality)
+    if not events_view.empty:
+        df_view_agg_indexed = df_view_agg.set_index("PersNr")
+        if "mak" in df_view_agg_indexed.columns:
+            pmak_map = df_view_agg_indexed["mak"].to_dict()
+
+            def adjust_mak_loss(row):
+                pid = str(row["persnr"])
+                if row["mak_change"] < 0:
+                    current_view_mak = float(pmak_map.get(pid, 0.0))
+                    return -abs(current_view_mak)
+                return row["mak_change"]
+
+            events_view = events_view.copy()
+            events_view["mak_change"] = events_view.apply(adjust_mak_loss, axis=1)
+
+    # P06: Re-Aggregate KPIs for current view
+    forecast_kpis = aggregate_forecast_results(
+        df_initial=df_view_agg,
+        events_df=events_view,
+        start_date=pd.Timestamp(ist_stichtag),
+        end_date=pd.Timestamp(forecast_end_date) + pd.Timedelta(hours=23, minutes=59, seconds=59),
+        freq=freq,
+        params=build_params_from_ui(last_run_params) if last_run_params else None,
+    )
+
+    events = events_view
+
+    # Publish filtered bundle for Page 5 cross-reference (Contract V3 compat)
+    import datetime as _dt
+    events_chart_df = events[events["headcount_change"] < 0].copy() if not events.empty else pd.DataFrame()
+    st.session_state["abgaenge_results"] = {
+        "schema_version": 3,
+        "forecast_kpis": forecast_kpis,
+        "events_chart": events_chart_df,
+        "events_raw": events,
+        "events": events,
+        "params": last_run_params,
+        "filters": {
+            "org": st.session_state.get("selected_org_units", []),
+            "jf": st.session_state.get("selected_jobfamilies", []),
+            "gender": st.session_state.get("selected_genders", []),
+            "empl": st.session_state.get("selected_employment", []),
+            "atz": st.session_state.get("selected_atz_status", []),
+        },
+        "meta": {
+            "rows_chart": len(events_chart_df),
+            "rows_raw": len(events),
+            "unique_persons_chart": int(events_chart_df["persnr"].nunique()) if not events_chart_df.empty else 0,
+            "created_at": _dt.datetime.now().isoformat(),
+        },
+        "timestamp": timestamp,
+    }
+
+    # Drift Detection (forecast parameters only – sidebar filters are view-only)
     curr_ui_state = {
         "ist_stichtag": ist_stichtag.isoformat() if hasattr(ist_stichtag, "isoformat") else str(ist_stichtag),
         "forecast_end_date": forecast_end_date.isoformat() if hasattr(forecast_end_date, "isoformat") else str(forecast_end_date),
@@ -771,39 +722,32 @@ def main():
         },
         "random_seed": random_seed,
     }
-    
-    current_filters = {
-        "org": st.session_state.get("selected_org_units", []),
-        "jf": st.session_state.get("selected_jobfamilies", []),
-        "gender": st.session_state.get("selected_genders", []),
-        "empl": st.session_state.get("selected_employment", []),
-        "atz": st.session_state.get("selected_atz_status", []),
-    }
-    
+
     def dict_hash(d):
         return json.dumps(d, sort_keys=True, default=str)
 
-    drift = (dict_hash(curr_ui_state) != dict_hash(last_run_params)) or (dict_hash(current_filters) != dict_hash(last_run_filters))
-    
+    drift = dict_hash(curr_ui_state) != dict_hash(last_run_params)
+
     # Header Info
     c1, c2 = st.columns([2, 1])
     with c1:
-        st.write(f"⏱️ **Stand der Berechnung:** {res['timestamp']}")
+        st.write(f"⏱️ **Stand der Berechnung:** {timestamp}")
     with c2:
         if drift:
             st.warning("⚠️ Parameter geändert - bitte neu berechnen.")
         else:
             st.success("✅ Ergebnisse aktuell.")
 
-        # Feature: Ensure Clusters exist (populated by engine, fallback to Unclustered)
-        for cluster_col in ["OE-Cluster", "JF-Cluster", "Organisationseinheit", "Jobfamily"]:
-            if cluster_col not in events.columns:
-                events[cluster_col] = "Unbekannt"
-            else:
-                events[cluster_col] = events[cluster_col].fillna("Unbekannt")
-        # Fix Arrow Error: Mixed types in persnr
-        if "persnr" in events.columns:
-            events["persnr"] = events["persnr"].astype(str)
+    render_filter_status(n_before, n_after)
+
+    # Ensure columns exist for downstream charts
+    for cluster_col in ["OE-Cluster", "JF-Cluster", "Organisationseinheit", "Jobfamily"]:
+        if cluster_col not in events.columns:
+            events[cluster_col] = "Unbekannt"
+        else:
+            events[cluster_col] = events[cluster_col].fillna("Unbekannt")
+    if "persnr" in events.columns:
+        events["persnr"] = events["persnr"].astype(str)
 
     # ── Ergebnisse ──────────────────────────────────────────────────
     st.divider()

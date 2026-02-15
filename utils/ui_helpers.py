@@ -216,29 +216,31 @@ def render_distribution_matrix(
     valid_vals: list,
     key_prefix: str,
     disabled: bool = False,
-    default_value: float = 1.0,
-    column_label: str = "Anteil (0.0 - 1.0)"
+    default_value: float = 100.0,
+    column_label: str = "Anteil (%)",
+    show_sum: bool = True,
 ) -> dict:
-    """
-    Renders a reusable distribution matrix editor.
-    
+    """Render a reusable distribution-matrix editor (percent scale 0–100).
+
     Args:
         label: Caption for the matrix
         dimension: Name of the dimension (e.g. "JobFamily")
-        current_matrix: Current state dictionary {val: share}
+        current_matrix: Current state dictionary {val: percent} (0–100 scale)
         valid_vals: List of allowed values for the dimension
         key_prefix: Unique key prefix for streamlit components
         disabled: Whether the editor is disabled
-        default_value: Fallback if a value is missing
+        default_value: Fallback if a value is missing (percent scale)
         column_label: Label for the numeric column
-        
+        show_sum: Whether to show a sum indicator below the editor
+
     Returns:
-        Updated matrix dictionary
+        Updated matrix dictionary in **percent scale** (0–100).
     """
     import pandas as pd
-    
+    from utils.matrix_helpers import validate_percent_matrix
+
     st.caption(label)
-    
+
     items = ["Default"] + sorted(valid_vals)
     editor_data = []
 
@@ -246,14 +248,14 @@ def render_distribution_matrix(
         rate = current_matrix.get(str(val))
         if rate is None:
             rate = current_matrix.get("Default", default_value)
-        
+
         editor_data.append({
             dimension: val,
-            column_label: float(rate)
+            column_label: float(rate),
         })
-    
+
     df_matrix = pd.DataFrame(editor_data).set_index(dimension)
-    
+
     edited_df = st.data_editor(
         df_matrix,
         use_container_width=True,
@@ -263,20 +265,21 @@ def render_distribution_matrix(
         column_config={
             column_label: st.column_config.NumberColumn(
                 column_label,
-                min_value=0.0, max_value=1.0, step=0.01, format="%.2f"
+                min_value=0.0, max_value=100.0, step=1.0, format="%.1f"
             )
-        }
+        },
     )
-    
-    new_matrix = {}
+
+    new_matrix: dict = {}
     for dim_val, row in edited_df.iterrows():
         new_matrix[str(dim_val)] = float(row[column_label])
-        
-    # Visual check for sum
-    total_share = sum(new_matrix.values()) - new_matrix.get("Default", 0)
-    # Note: For ATZ this sum isn't necessarily 1.0, but for Azubi Takeover it should be.
-    # We leave validation to the caller or add a flag later.
-    
+
+    if show_sum and not disabled:
+        is_valid, msg = validate_percent_matrix(new_matrix)
+        if msg:
+            icon = "\u2705" if is_valid else "\u26a0\ufe0f"
+            st.caption(f"{icon} {msg}")
+
     return new_matrix
 
 

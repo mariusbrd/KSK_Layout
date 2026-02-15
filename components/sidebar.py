@@ -657,3 +657,136 @@ def get_filter_summary() -> str:
         return f"🎯 {len(active_filters)} Filter aktiv: " + ", ".join(active_filters)
     else:
         return "Alle Daten angezeigt (keine Filter aktiv)"
+
+
+# ---------------------------------------------------------------------------
+# Zentrale Event-Filter-Funktionen (View-Only Zoom)
+# ---------------------------------------------------------------------------
+
+def apply_robust_filter(df: pd.DataFrame, column: str, selected: list) -> pd.DataFrame:
+    """
+    Apply a single column filter with robust type normalization.
+
+    Handles mixed types (612 vs 612.0), whitespace, and trailing .0 floats.
+    Returns the original DataFrame unchanged if *selected* is empty or the
+    column does not exist.
+    """
+    if not selected or column not in df.columns:
+        return df
+    s_norm = df[column].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+    v_norm = [str(v).strip().replace(".0", "") for v in selected]
+    return df[s_norm.isin(v_norm)]
+
+
+def apply_event_filters(
+    events_df: pd.DataFrame,
+    snapshot_df: pd.DataFrame,
+    *,
+    mode: str = "accession",
+) -> tuple:
+    """
+    Apply all active sidebar view-filters to an events DataFrame.
+
+    This is the single entry-point for filtering forecast events by the
+    current sidebar selection.  It combines:
+      1. Attribute filters (OrgUnit, JF, OE-Cluster, JF-Cluster) applied
+         directly on event columns.
+      2. Demographic / PersNr-based filters (gender, employment, ATZ,
+         cohort, education) resolved via the filtered snapshot.
+
+    Args:
+        events_df:    Raw (unfiltered) events from the forecast engine.
+        snapshot_df:  Full (unfiltered) snapshot for PersNr matching.
+        mode:
+            ``"accession"`` – preserves new-hire events whose PersNr does
+            not appear in the original snapshot (Zugänge behaviour).
+            ``"attrition"`` – restricts **all** events to PersNr values
+            present in the filtered snapshot (Abgänge behaviour).
+
+    Returns:
+        ``(filtered_df, n_before, n_after)``
+    """
+    if events_df.empty:
+        return events_df, 0, 0
+
+    n_before = len(events_df)
+    result = events_df.copy()
+
+    # 1. Attribute filters (direct on event columns)
+    result = apply_robust_filter(result, "Organisationseinheit",
+                                 st.session_state.get("selected_org_units", []))
+    result = apply_robust_filter(result, "Jobfamily",
+                                 st.session_state.get("selected_jobfamilies", []))
+    result = apply_robust_filter(result, "OE-Cluster",
+                                 st.session_state.get("selected_oe_clusters", []))
+    result = apply_robust_filter(result, "JF-Cluster",
+                                 st.session_state.get("selected_jf_clusters", []))
+
+    # 2. Demographic / PersNr-based filters
+    if snapshot_df is None or snapshot_df.empty:
+        return result, n_before, len(result)
+
+    filtered_snapshot = apply_filters(snapshot_df)
+    if filtered_snapshot.empty:
+        return pd.DataFrame(columns=result.columns), n_before, 0
+
+    valid_ids = set(
+        filtered_snapshot["PersNr"].astype(str)
+        .str.strip().str.replace(r"\.0$", "", regex=True)
+    )
+
+    if "persnr" not in result.columns:
+        return result, n_before, len(result)
+
+    pid_clean = (
+        result["persnr"].astype(str)
+        .str.strip().str.replace(r"\.0$", "", regex=True)
+    )
+
+    if mode == "attrition":
+        # Restrict ALL events to persons in the filtered snapshot
+        result = result[pid_clean.isin(valid_ids)]
+    else:
+        # Accession: keep filtered-existing OR genuinely new hires
+        all_existing_ids = set(
+            snapshot_df["PersNr"].astype(str)
+            .str.strip().str.replace(r"\.0$", "", regex=True)
+        )
+        mask_is_filtered_existing = pid_clean.isin(valid_ids)
+        mask_is_new_hire = ~pid_clean.isin(all_existing_ids)
+        result = result[mask_is_filtered_existing | mask_is_new_hire]
+
+    n_after = len(result)
+    return result, n_before, n_after
+
+
+def render_filter_status(n_before: int, n_after: int) -> None:
+    """Show a compact filter-status caption in the UI."""
+    summary = get_filter_summary()
+    if n_before == n_after:
+        st.caption(f"🔍 {summary}")
+    else:
+        st.caption(f"🔍 Filter aktiv: {n_before} → {n_after} Events | {summary}")
+
+
+def get_active_view_filters(state: dict | None = None) -> dict:
+    """
+    Return a dict of currently active view-filter values.
+
+    Pure function – pass an explicit *state* dict for unit-testing without
+    Streamlit.  When *state* is ``None`` the function reads from
+    ``st.session_state``.
+    """
+    if state is None:
+        state = dict(st.session_state)
+    return {
+        "selected_org_units": state.get("selected_org_units", []),
+        "selected_jobfamilies": state.get("selected_jobfamilies", []),
+        "selected_oe_clusters": state.get("selected_oe_clusters", []),
+        "selected_jf_clusters": state.get("selected_jf_clusters", []),
+        "selected_genders": state.get("selected_genders", []),
+        "selected_employment": state.get("selected_employment", []),
+        "selected_atz_status": state.get("selected_atz_status", []),
+        "selected_cohorts": state.get("selected_cohorts", []),
+        "selected_education": state.get("selected_education", []),
+    }

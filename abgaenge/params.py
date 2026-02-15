@@ -55,9 +55,14 @@ def default_params() -> Dict[str, Any]:
 
 
 def build_params_from_ui(ui_state: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge UI state into default params.
+
+    Matrices are stored in **percent scale** (0–100) in the UI / session
+    state.  This function converts them to the **weight scale** (0–1)
+    expected by the forecast engine.
     """
-    Merge UI state into default params.
-    """
+    from utils.matrix_helpers import percent_to_weights, migrate_to_percent
+
     params = default_params()
 
     for key, value in ui_state.items():
@@ -66,5 +71,16 @@ def build_params_from_ui(ui_state: Dict[str, Any]) -> Dict[str, Any]:
                 params[key].update(value)
             else:
                 params[key] = value
+
+    # ── Convert percent → weights for forecast engine ──
+    atz_mat = params.get("atz", {}).get("atz_matrix")
+    if atz_mat:
+        atz_mat = migrate_to_percent(atz_mat)          # auto-upgrade old 0–1
+        params["atz"]["atz_matrix"] = percent_to_weights(atz_mat)
+
+    quit_mat = params.get("quit", {}).get("quit_matrix")
+    if quit_mat:
+        quit_mat = migrate_to_percent(quit_mat)        # auto-upgrade old 0–1
+        params["quit"]["quit_matrix"] = percent_to_weights(quit_mat)
 
     return params

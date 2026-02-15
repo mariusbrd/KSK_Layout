@@ -44,9 +44,10 @@ from zugaenge.enrichment import build_jf_to_cluster_map, enrich_zugaenge_events,
 # Shared Components
 from dataloader.loader import load_and_prepare_data, load_atz_data_cached, calculate_mak_vectorized, calculate_cost_vectorized
 from dataloader.cluster_manager import is_clustering_active
-from components.sidebar import render_global_filters, apply_filters
+from components.sidebar import render_global_filters, apply_filters, apply_event_filters, render_filter_status
 from utils.plot_helpers import apply_legend_bottom
 from utils.ui_helpers import render_distribution_matrix, render_orgunit_mode_hint
+from utils.matrix_helpers import migrate_to_percent, percent_to_weights
 
 
 def calculate_kpi_from_events(df_start_stats: pd.DataFrame, events_df: pd.DataFrame, start_date: pd.Timestamp, end_date: pd.Timestamp, freq: str) -> pd.DataFrame:
@@ -413,17 +414,24 @@ def main():
                 with bc2:
                     atz_dim = st.radio("Dimension für ATZ", options=["JobFamily", "OrgUnit"], index=0 if params_abg["atz"].get("atz_dimension", "JobFamily") == "JobFamily" else 1, horizontal=True, key="hy_atz_dim")
 
-                # Matrix Editor logic (Simplified for conciseness here, but needs to work)
+                # Matrix Editor logic (percent scale)
                 atz_col_name = "organisationseinheit" if atz_dim == "OrgUnit" else "Jobfamily"
                 atz_unique_vals = sorted([str(x) for x in df_ma[atz_col_name.capitalize() if atz_col_name == "Jobfamily" else "Organisationseinheit"].dropna().unique()])
                 atz_dim_items = ["Default"] + atz_unique_vals
+                atz_pct = migrate_to_percent(params_abg["atz"].get("atz_matrix", {}))
                 atz_editor_data = []
                 for val in atz_dim_items:
-                    rate = params_abg["atz"].get("atz_matrix", {}).get(str(val), new_atz_base)
-                    atz_editor_data.append({atz_dim: val, "Wahrscheinlichkeit": float(rate)})
+                    rate = atz_pct.get(str(val), new_atz_base * 100)
+                    atz_editor_data.append({atz_dim: val, "Wahrscheinlichkeit (%)": float(rate)})
                 df_atz_matrix = pd.DataFrame(atz_editor_data).set_index(atz_dim)
-                edited_atz_df = st.data_editor(df_atz_matrix, use_container_width=True, height=300, key="hy_atz_editor", disabled=not use_atz_matrix)
-                new_atz_matrix = {str(k): float(v["Wahrscheinlichkeit"]) for k, v in edited_atz_df.iterrows()}
+                edited_atz_df = st.data_editor(
+                    df_atz_matrix, use_container_width=True, height=300,
+                    key="hy_atz_editor", disabled=not use_atz_matrix,
+                    column_config={"Wahrscheinlichkeit (%)": st.column_config.NumberColumn(
+                        "Wahrscheinlichkeit (%)", min_value=0.0, max_value=100.0, step=0.5, format="%.1f"
+                    )},
+                )
+                new_atz_matrix = {str(k): float(v["Wahrscheinlichkeit (%)"]) for k, v in edited_atz_df.iterrows()}
 
             with st.expander("Renten-Parameter"):
                 rc1, rc2 = st.columns(2)
@@ -441,19 +449,30 @@ def main():
                 with c3:
                     quit_dim = st.radio("Dimension", options=["JobFamily", "OrgUnit"], index=0, horizontal=True, key="hy_quit_dim")
                 
-                # Simplified Quit Matrix Editor
+                # Quit Matrix Editor (percent scale)
                 q_col = "Organisationseinheit" if quit_dim == "OrgUnit" else "Jobfamily"
                 q_unique = sorted([str(x) for x in df_ma[q_col].dropna().unique()])
                 q_cohorts = ["alter_unter_30", "alter_30_45", "alter_45_55", "alter_55_plus"]
+                q_labels = {"alter_unter_30": "u30 (%)", "alter_30_45": "30-45 (%)", "alter_45_55": "45-55 (%)", "alter_55_plus": "ü55 (%)"}
                 q_items = ["Default"] + q_unique
+                q_pct = migrate_to_percent(params_abg["quit"].get("quit_matrix", {}))
                 q_editor_data = []
                 for val in q_items:
                     row = {quit_dim: val}
                     for c in q_cohorts:
-                        row[c] = float(params_abg["quit"].get("quit_matrix", {}).get(c, {}).get(str(val), quit_base))
+                        row[c] = float(q_pct.get(c, {}).get(str(val), quit_base * 100))
                     q_editor_data.append(row)
                 df_q_matrix = pd.DataFrame(q_editor_data).set_index(quit_dim)
-                edited_q_df = st.data_editor(df_q_matrix, use_container_width=True, height=300, key="hy_quit_editor", disabled=not use_quit_matrix)
+                q_col_conf = {}
+                for c in q_cohorts:
+                    q_col_conf[c] = st.column_config.NumberColumn(
+                        q_labels.get(c, c), min_value=0.0, max_value=100.0, step=0.5, format="%.1f"
+                    )
+                edited_q_df = st.data_editor(
+                    df_q_matrix, use_container_width=True, height=300,
+                    key="hy_quit_editor", disabled=not use_quit_matrix,
+                    column_config=q_col_conf,
+                )
                 new_quit_matrix = {c: {str(k): float(v[c]) for k, v in edited_q_df.iterrows()} for c in q_cohorts}
 
             with st.expander("Ruhend-Parameter"):
@@ -499,7 +518,7 @@ def main():
             az_takeover_matrix = render_distribution_matrix(
                 label=f"Matrix: {az_dim} (Gewichtung für Übernahme)",
                 dimension=az_dim,
-                current_matrix=params_zug["azubi"].get("takeover_matrix", {}),
+                current_matrix=migrate_to_percent(params_zug["azubi"].get("takeover_matrix", {})),
                 valid_vals=az_matrix_vals,
                 key_prefix="hy_az_takeover_matrix",
                 disabled=not use_az_matrix
@@ -572,7 +591,7 @@ def main():
             "exclude_baseline_azubis": azu_isolated,
             "use_takeover_matrix": use_az_matrix,
             "takeover_dimension": az_dim,
-            "takeover_matrix": az_takeover_matrix,
+            "takeover_matrix": percent_to_weights(az_takeover_matrix),
             "jf_to_cluster_map": build_jf_to_cluster_map(df_ma),
         },
         "trainee": {"active": comp_trainee, "new_cases_per_year": trainee_count, "duration_years": trainee_dur, "salary_group": "E 12", "strategy": tr_strat, "target_org_unit": None},
@@ -655,129 +674,49 @@ def main():
         abg_res = st.session_state["hybrid_abg_res"]
         zug_res = st.session_state["hybrid_zug_res"]
 
-    # 3. Filtering & View Preparation ──────────────────────────────
-    
-    # helper for robust attribute filtering
-    def _apply_robust_filter(df, column, selected):
-        if not selected or column not in df.columns: return df
-        s_norm = df[column].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
-        v_norm = [str(v).strip().replace(".0", "") for v in selected]
-        return df[s_norm.isin(v_norm)]
+    # 3. Filtering & View Preparation (View-Only Zoom) ─────────────
 
-    # A. Filter Standalone Results (for specific tabs)
-    # Abgänge
+    # A. Abgänge: attrition mode (restrict to filtered snapshot)
     raw_abg_events = abg_res["events_person_level"].copy()
-    filt_abg_events = _apply_robust_filter(raw_abg_events, "Organisationseinheit", st.session_state.get("selected_org_units", []))
-    filt_abg_events = _apply_robust_filter(filt_abg_events, "Jobfamily", st.session_state.get("selected_jobfamilies", []))
-    filt_abg_events = _apply_robust_filter(filt_abg_events, "OE-Cluster", st.session_state.get("selected_oe_clusters", []))
-    filt_abg_events = _apply_robust_filter(filt_abg_events, "JF-Cluster", st.session_state.get("selected_jf_clusters", []))
-    
+    filt_abg_events, n_abg_before, n_abg_after = apply_event_filters(
+        raw_abg_events, snapshot_df, mode="attrition"
+    )
+
     # --- Robustness Check: Abgänge ---
     abg_cols = ["period_label", "period_start", "period_end", "event_date", "persnr", "reason_code", "reason_label", "headcount_change", "mak_change", "Organisationseinheit", "Jobfamily", "OE-Cluster"]
     if any(c not in filt_abg_events.columns for c in ["persnr", "headcount_change", "Organisationseinheit"]):
         for c in abg_cols:
-            if c not in filt_abg_events.columns: 
+            if c not in filt_abg_events.columns:
                 filt_abg_events[c] = pd.NaT if "date" in c or "_start" in c or "_end" in c else None
-    
-    # Ensure event_date is datetime even if empty
-    filt_abg_events["event_date"] = pd.to_datetime(filt_abg_events["event_date"])
-    
-    # 📌 Fix 1: Explicitly Mark Source for Detail View Matching
+
+    if "event_date" in filt_abg_events.columns:
+        filt_abg_events["event_date"] = pd.to_datetime(filt_abg_events["event_date"])
+
     filt_abg_events["source_view"] = "Abgang_Detail"
 
-    # Enrichment: Ensure Cluster/JF are present in Abgänge by mapping from snapshot (to satisfy Fix B & C)
+    # Enrichment: Ensure Cluster/JF are present in Abgänge
     if "OE-Cluster" not in filt_abg_events.columns or filt_abg_events["OE-Cluster"].isna().all():
-        # Create map from Snapshot (PersNr -> Cluster)
-        # Note: df_view_agg is not yet built, but df_ma (aggregated) is available
-        # df_ma is indexed by 0..N, so we set index
         pm_lookup = df_ma.set_index("PersNr")
-        # Safety: Ensure index is string for robust mapping
         pm_lookup.index = pm_lookup.index.astype(str).str.replace(r"\.0$", "", regex=True)
-        
-        # Helper to safely map
-        def _safe_map(pid, col):
-            pid = str(pid).replace(".0", "")
-            return pm_lookup.loc[pid, col] if pid in pm_lookup.index else "Unclustered"
-
-        # Apply mapping vectorized-style if possible or map
-        # Convert IDs to match index
         filt_abg_events["_pid_clean"] = filt_abg_events["persnr"].astype(str).str.replace(r"\.0$", "", regex=True)
-        
-        # Create dictionary for faster lookup
         cluster_map = pm_lookup["OE-Cluster"].to_dict() if "OE-Cluster" in pm_lookup.columns else {}
         jf_map = pm_lookup["Jobfamily"].to_dict() if "Jobfamily" in pm_lookup.columns else {}
-        
-        filt_abg_events["OE-Cluster"] = filt_abg_events["_pid_clean"].map(cluster_map).fillna("Unclustered")
+        filt_abg_events["OE-Cluster"] = filt_abg_events["_pid_clean"].map(cluster_map).fillna("Sonstiges")
         if "Jobfamily" not in filt_abg_events.columns or filt_abg_events["Jobfamily"].isna().all():
-             filt_abg_events["Jobfamily"] = filt_abg_events["_pid_clean"].map(jf_map).fillna("Unbekannt")
-             
-        # Cleanup
-        if "_pid_clean" in filt_abg_events.columns:
-            del filt_abg_events["_pid_clean"]
+            filt_abg_events["Jobfamily"] = filt_abg_events["_pid_clean"].map(jf_map).fillna("Unbekannt")
+        filt_abg_events = filt_abg_events.drop(columns=["_pid_clean"], errors="ignore")
 
-    # --- Scope Filtering (mirror page-specific logic 1:1) ---
-    df_snapshot_filtered = apply_filters(snapshot_df)  # Position Level filters (Sidebar)
+    df_snapshot_filtered = apply_filters(snapshot_df)
     if df_snapshot_filtered.empty:
         st.warning("⚠️ Keine Daten nach Filterung verfügbar.")
 
-    valid_ids = set(df_snapshot_filtered["PersNr"].astype(str).str.replace(r"\.0$", "", regex=True)) if not df_snapshot_filtered.empty else set()
-
-    # Abgänge filtering aligned with Seite 3
-    filt_abg_events = raw_abg_events.copy()
-    if not filt_abg_events.empty:
-        filt_abg_events["_pid_clean"] = filt_abg_events["persnr"].astype(str).str.replace(r"\.0$", "", regex=True)
-
-        # direct attribute filtering
-        filt_abg_events = _apply_robust_filter(filt_abg_events, "Organisationseinheit", st.session_state.get("selected_org_units", []))
-        filt_abg_events = _apply_robust_filter(filt_abg_events, "Jobfamily", st.session_state.get("selected_jobfamilies", []))
-        filt_abg_events = _apply_robust_filter(filt_abg_events, "OE-Cluster", st.session_state.get("selected_oe_clusters", []))
-        filt_abg_events = _apply_robust_filter(filt_abg_events, "JF-Cluster", st.session_state.get("selected_jf_clusters", []))
-
-        has_non_attr_filters = any([
-            st.session_state.get("selected_genders", []),
-            st.session_state.get("selected_employment", []),
-            st.session_state.get("selected_atz_status", []),
-            st.session_state.get("selected_cohorts", []),
-            st.session_state.get("selected_education", []),
-        ])
-
-        if has_non_attr_filters and valid_ids:
-            filt_abg_events = filt_abg_events[filt_abg_events["_pid_clean"].isin(valid_ids)]
-
-        # P13 sync with initial workforce (same as Seite 3)
-        if valid_ids:
-            filt_abg_events = filt_abg_events[filt_abg_events["_pid_clean"].isin(valid_ids)]
-
-        filt_abg_events = filt_abg_events.drop(columns=["_pid_clean"], errors="ignore")
-
-    # Zugänge filtering aligned with Seite 4
+    # B. Zugänge: accession mode (preserve new hires)
     raw_zug_events = zug_res["events"].copy()
     if "org_unit" in raw_zug_events.columns:
         raw_zug_events = raw_zug_events.rename(columns={"org_unit": "Organisationseinheit"})
-    filt_zug_events = raw_zug_events.copy()
-    if not filt_zug_events.empty:
-        filt_zug_events["_pid_clean"] = filt_zug_events["persnr"].astype(str).str.replace(r"\.0$", "", regex=True)
-
-        # direct attribute filtering
-        filt_zug_events = _apply_robust_filter(filt_zug_events, "Organisationseinheit", st.session_state.get("selected_org_units", []))
-        filt_zug_events = _apply_robust_filter(filt_zug_events, "Jobfamily", st.session_state.get("selected_jobfamilies", []))
-        filt_zug_events = _apply_robust_filter(filt_zug_events, "OE-Cluster", st.session_state.get("selected_oe_clusters", []))
-        filt_zug_events = _apply_robust_filter(filt_zug_events, "JF-Cluster", st.session_state.get("selected_jf_clusters", []))
-
-        has_non_attr_filters = any([
-            st.session_state.get("selected_genders", []),
-            st.session_state.get("selected_employment", []),
-            st.session_state.get("selected_atz_status", []),
-            st.session_state.get("selected_cohorts", []),
-            st.session_state.get("selected_education", []),
-        ])
-        if has_non_attr_filters:
-            all_existing_ids = set(snapshot_df["PersNr"].astype(str).str.replace(r"\.0$", "", regex=True))
-            mask_is_filtered_existing = filt_zug_events["_pid_clean"].isin(valid_ids)
-            mask_is_new_hire = ~filt_zug_events["_pid_clean"].isin(all_existing_ids)
-            filt_zug_events = filt_zug_events[mask_is_filtered_existing | mask_is_new_hire]
-
-        filt_zug_events = filt_zug_events.drop(columns=["_pid_clean"], errors="ignore")
+    filt_zug_events, n_zug_before, n_zug_after = apply_event_filters(
+        raw_zug_events, snapshot_df, mode="accession"
+    )
     
     # --- Scope Filtering (Fix B: Harmonize Zugänge with Netto definition) ---
     if "date" in filt_zug_events.columns:
@@ -806,6 +745,11 @@ def main():
     filt_zug_events = filt_zug_events.loc[:, ~filt_zug_events.columns.duplicated()]
 
 
+
+    # Filter Status (combined view)
+    n_total_before = n_abg_before + n_zug_before
+    n_total_after = n_abg_after + n_zug_after
+    render_filter_status(n_total_before, n_total_after)
 
     # B. Combined Event Set (for Net View)
     # Standardize Zugänge to match Abgänge schema

@@ -26,6 +26,7 @@ from zugaenge.params import default_params as default_zugaenge_params, get_strat
 from zugaenge.forecast import run_forecast_zugaenge
 from zugaenge.enrichment import build_jf_to_cluster_map, enrich_zugaenge_events, render_zugaenge_debug_sections
 from utils.ui_helpers import render_distribution_matrix, render_orgunit_mode_hint
+from utils.matrix_helpers import migrate_to_percent, percent_to_weights
 
 def main():
     st.title("📈 Prognose: Zugänge")
@@ -36,7 +37,7 @@ def main():
         snapshot_df_raw, history_df, _, _ = load_and_prepare_data()
 
         # 2. Render Sidebar Filters (Output only, apply later)
-        from components.sidebar import render_global_filters, apply_filters
+        from components.sidebar import render_global_filters, apply_filters, apply_event_filters, render_filter_status
         render_global_filters(snapshot_df_raw, history_df)
         
         # 3. Global Preprocessing (Calc MAK etc. on FULL Dataset)
@@ -201,7 +202,7 @@ def main():
                 az_takeover_matrix = render_distribution_matrix(
                     label=f"Matrix: {az_dim} (Gewichtung für Übernahme)",
                     dimension=az_dim,
-                    current_matrix=params["azubi"].get("takeover_matrix", {}),
+                    current_matrix=migrate_to_percent(params["azubi"].get("takeover_matrix", {})),
                     valid_vals=az_matrix_vals,
                     key_prefix="az_takeover_matrix",
                     disabled=not use_az_matrix
@@ -386,7 +387,7 @@ def main():
                 "entry_step": az_step,
                 "use_takeover_matrix": use_az_matrix,
                 "takeover_dimension": az_dim,
-                "takeover_matrix": az_takeover_matrix,
+                "takeover_matrix": percent_to_weights(az_takeover_matrix),
                 "jf_to_cluster_map": build_jf_to_cluster_map(snapshot_df)
             },
             "trainee": {
@@ -520,85 +521,19 @@ def main():
             events_df["JF-Cluster"] = pd.Series(dtype="object")
 
 
-        # P01: Apply Sidebar Filters to Snapshot (to get PersNr list for non-attribute filters)
+        # P01: Apply Sidebar Filters (View-Only Zoom)
+        events_df, n_before, n_after = apply_event_filters(
+            events_df, snapshot_df, mode="accession"
+        )
+
         df_filtered_rows = apply_filters(snapshot_df)
-        
         if df_filtered_rows.empty:
             st.warning("⚠️ Keine Daten nach Filterung verfügbar.")
-            events_df = pd.DataFrame() # Clear events
-        else:
-            # P02: Filter Events
-            events_view = events_df.copy()
-            
-            # --- Attribute Filtering (OrgUnit, JF, Clusters) ---
-            # These attributes exist on generated events, so we can filter directly.
-            
-            # --- Attribute Filtering (OrgUnit, JF, Clusters) ---
-            # These attributes exist on generated events, so we can filter directly.
-            
-            # Helper for robust filtering (case-insensitive, strip, handles 123 vs 123.0)
-            def _apply_robust_filter(df, column, selected):
-                if not selected or column not in df.columns:
-                    return df
-                # Normalize data strings
-                s_norm = df[column].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
-                # Normalize filter strings
-                vals_norm = [str(v).strip().replace(".0", "") for v in selected]
-                return df[s_norm.isin(vals_norm)]
+            events_df = pd.DataFrame(columns=events_df.columns if hasattr(events_df, 'columns') else [])
 
-            # Org Unit
-            events_view = _apply_robust_filter(events_view, "Organisationseinheit", st.session_state.get("selected_org_units", []))
-            
-            # Job Family
-            events_view = _apply_robust_filter(events_view, "Jobfamily", st.session_state.get("selected_jobfamilies", []))
-
-            # OE-Cluster (Sync with sidebar plural key)
-            events_view = _apply_robust_filter(events_view, "OE-Cluster", st.session_state.get("selected_oe_clusters", []))
-                    
-            # JF-Cluster (Sync with sidebar plural key)
-            events_view = _apply_robust_filter(events_view, "JF-Cluster", st.session_state.get("selected_jf_clusters", []))
-                    
-            # --- Demographic Filtering (Gender, etc.) ---
-            # Fallback to Snapshot Matching for attributes NOT in events
-            
-            has_demographic_filters = any([
-                st.session_state.get("selected_genders", []),
-                st.session_state.get("selected_employment", []),
-                st.session_state.get("selected_atz_status", []),
-                st.session_state.get("selected_cohorts", []),
-                st.session_state.get("selected_education", []),
-            ])
-            
-            if has_demographic_filters:
-                # 1. Filter Existing People (Azubis, etc in Snapshot)
-                valid_ids = set(df_filtered_rows["PersNr"].astype(str))
-                
-                # 2. Handle New Hires?
-                # Keep if (In Filtered Snapshot) OR (Not In Original Snapshot at all)
-                all_existing_ids = set(snapshot_df["PersNr"].astype(str))
-                
-                mask_is_filtered_existing = events_view["persnr"].isin(valid_ids)
-                mask_is_new_hire = ~events_view["persnr"].isin(all_existing_ids)
-                
-                # Keep either matched existing OR new hires
-                events_view = events_view[mask_is_filtered_existing | mask_is_new_hire]
-                
-            events_df = events_view # Update View
+        render_filter_status(n_before, n_after)
 
         # P03: Re-Aggregate KPIs for View
-        # We need a base DF for aggregation.
-        # For Zugänge, "Brutto" view: Base is 0? 
-        # No, dashboard shows "Netto" effect usually?
-        # Page 4 currently shows:
-        # "Gesamt Zugänge" (Count from Events)
-        # "Evo Headcount" -> this implies adding events to a baseline.
-        # If we want to show ONLY Accretion, base is 0.
-        # If we want to show "Future State of Filtered Group", base is Filtered Snapshot.
-        
-        # Current logic (lines 245+):
-        # zug_kpis = res["forecast_kpis"] -> This was Global.
-        
-        # We must RE-CALCULATE KPIs based on Filtered Events + Filtered Baseline.
         if not df_filtered_rows.empty:
             # P04: Ensure 'event_date' exists (Accession events use 'date', aggregation expects 'event_date')
             if "event_date" not in events_df.columns and "date" in events_df.columns:
@@ -788,14 +723,14 @@ def main():
                 
                 # B) Echte Zugänge (Inflows): headcount_change > 0 -> Hire, Conversion_In, New_Hire, Trainee_Hire
                 valid_types = ["Azubi_Hire", "Azubi_Conversion_In", "New_Hire", "Trainee_Hire"]
-                if not events_pos.empty:
+                if not events_pos.empty and "type" in events_pos.columns:
                     events_inflows = events_pos[events_pos["type"].isin(valid_types)].copy()
                 else:
-                    events_inflows = pd.DataFrame()
+                    events_inflows = pd.DataFrame(columns=events_pos.columns if hasattr(events_pos, 'columns') else [])
 
                 # C) Teilmengen für Debug
                 # Externe Azubi-Einstellungen
-                events_external_azubi = events_inflows[events_inflows["type"] == "Azubi_Hire"]
+                events_external_azubi = events_inflows[events_inflows["type"] == "Azubi_Hire"] if "type" in events_inflows.columns else pd.DataFrame()
                 # Interne Übernahmen
                 events_internal = events_inflows[events_inflows["type"] == "Azubi_Conversion_In"]
                 # Neueinstellungen extern
