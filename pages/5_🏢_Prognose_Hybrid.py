@@ -150,7 +150,7 @@ def _render_debug_aggregation(df: pd.DataFrame, group_cols: list[str], label: st
         # 1. Fill NaNs to avoid dropping rows in groupby
         df_clean = df.copy()
         for c in group_cols:
-            df_clean[c] = df_clean[c].fillna("Unclustered").replace(r"^\s*$", "Unclustered", regex=True)
+            df_clean[c] = df_clean[c].fillna("Sonstiges").replace(r"^\s*$", "Sonstiges", regex=True).replace("Unclustered", "Sonstiges")
 
         # 2. Granular Aggregation
         # Rows: Count of records
@@ -896,13 +896,14 @@ def main():
         pass
 
      # C. Robust Cluster Enrichment (Fix Missing 118 Events)
-    # Ensure "OE-Cluster" and "JF-Cluster" have defaults
-    if "OE-Cluster" in combined_events_in_scope.columns:
-        combined_events_in_scope["OE-Cluster"] = combined_events_in_scope["OE-Cluster"].fillna("Unclustered")
-    
-    # Apply same to Zugänge specifically for its own charts
-    if "OE-Cluster" in filt_zug_events.columns:
-        filt_zug_events["OE-Cluster"] = filt_zug_events["OE-Cluster"].fillna("Unclustered")
+    # Ensure "OE-Cluster" and "JF-Cluster" have defaults – use "Sonstiges" (never "Unclustered")
+    for _df in [combined_events_in_scope, filt_zug_events]:
+        if "OE-Cluster" in _df.columns:
+            _mask = _df["OE-Cluster"].isna() | (_df["OE-Cluster"] == "Unclustered")
+            _df.loc[_mask, "OE-Cluster"] = "Sonstiges"
+        if "JF-Cluster" in _df.columns:
+            _mask = _df["JF-Cluster"].isna() | (_df["JF-Cluster"] == "Unclustered")
+            _df.loc[_mask, "JF-Cluster"] = "Sonstiges"
 
     # C. Re-Aggregate (View Level)
     df_snapshot_filtered = apply_filters(snapshot_df) # Position Level
@@ -1883,9 +1884,8 @@ def main():
                     # Cluster Chart
                     if is_clustering_active() and "OE-Cluster" in filt_zug_events.columns:
                         # Check for Unclustered
-                        unclustered_count = len(filt_zug_events[filt_zug_events["OE-Cluster"] == "Unclustered"])
-                        if unclustered_count > 0:
-                            st.warning(f"⚠️ {unclustered_count} Zugänge ohne Cluster (als 'Unclustered' gruppiert).")
+                        unclustered_count = len(filt_zug_events[(filt_zug_events["OE-Cluster"] == "Unclustered") | (filt_zug_events["OE-Cluster"] == "Sonstiges")])
+                        # Note: After fix, "Unclustered" should never appear.
 
                     st.divider()
                     st.markdown("#### 🚦 Treiber-Status Check")

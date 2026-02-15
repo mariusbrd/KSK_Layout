@@ -336,21 +336,27 @@ def _simulate_azubis(
         # Stable sort by PersNr to ensure deterministic assignment
         retained_info.sort(key=lambda x: str(x[0]))
         total_retained = len(retained_info)
-        
+
         # Prepare defaults (inherit from current row)
         assigned_units = [row.get("Organisationseinheit") for _, row, _, _ in retained_info]
         assigned_jfs = ["Angestellte"] * total_retained
-        assigned_clusters = [row.get("OE-Cluster", "Unclustered") for _, row, _, _ in retained_info]
+        assigned_clusters = [row.get("OE-Cluster", "Sonstiges") for _, row, _, _ in retained_info]
+
+        # Track whether OrgUnit dimension was used (affects JF interpretation)
+        _is_orgunit_mode = False
 
         if azubi_params.get("use_takeover_matrix", False):
             matrix = azubi_params.get("takeover_matrix", {})
             dim = azubi_params.get("takeover_dimension", "JobFamily")
-            
+
             if dim == "OrgUnit":
+                _is_orgunit_mode = True
                 new_units = distribute_deterministic(total_retained, matrix)
                 for i, unit in enumerate(new_units):
                     assigned_units[i] = unit
-                    assigned_clusters[i] = unit_to_cluster.get(unit, "Unclustered")
+                    assigned_clusters[i] = unit_to_cluster.get(unit, "Sonstiges")
+                    # OrgUnit mode: no JF distribution → explicit "Sonstige"
+                    assigned_jfs[i] = "Sonstige"
             else: # JobFamily
                 new_jfs = distribute_deterministic(total_retained, matrix)
                 for i, jf in enumerate(new_jfs):
@@ -361,10 +367,14 @@ def _simulate_azubis(
             new_unit = assigned_units[i]
             new_jf = assigned_jfs[i]
             new_cluster = assigned_clusters[i]
-            
+
             # id: 60 - Derive JF-Cluster for Takeovers
-            jf_to_cluster = azubi_params.get("jf_to_cluster_map", {})
-            new_jf_cluster = jf_to_cluster.get(str(new_jf).strip(), "Unclustered")
+            if _is_orgunit_mode:
+                # OrgUnit mode: JF-Cluster is deliberately "Sonstiges" (business rule)
+                new_jf_cluster = "Sonstiges"
+            else:
+                jf_to_cluster = azubi_params.get("jf_to_cluster_map", {})
+                new_jf_cluster = jf_to_cluster.get(str(new_jf).strip(), "Sonstiges")
 
             eintritt = pd.to_datetime(row.get("Eintritt", pd.NaT))
             audit_fields = {
@@ -398,12 +408,12 @@ def _simulate_azubis(
                 "org_unit": row.get("Organisationseinheit"),
                 "source": "Azubi",
                 "mak": -current_mak,
-                "OE-Cluster": row.get("OE-Cluster", "Unclustered"),
-                "JF-Cluster": row.get("JF-Cluster", "Unclustered"),
+                "OE-Cluster": row.get("OE-Cluster", "Sonstiges"),
+                "JF-Cluster": row.get("JF-Cluster", "Sonstiges"),
                 "comment": "Statuswechsel: Azubi Ende",
                 **audit_fields
             })
-            events.append({
+            _conv_in_event = {
                 "date": graduation_date,
                 "type": "Azubi_Conversion_In",
                 "reason_label": "Azubi-Abschluss: Übernahme (Umwandlung)",
@@ -420,7 +430,10 @@ def _simulate_azubis(
                 "JF-Cluster": new_jf_cluster,
                 "comment": "Statuswechsel: Reguläre Übernahme",
                 **audit_fields
-            })
+            }
+            if _is_orgunit_mode:
+                _conv_in_event["_jf_orgunit_mode"] = True
+            events.append(_conv_in_event)
 
     # --- Phase 4: Handle Exits ---
     for persnr, row, graduation_date, is_forecast in exited_info:
@@ -443,11 +456,11 @@ def _simulate_azubis(
             "persnr": persnr,
             "org_unit": row.get("Organisationseinheit"),
             "mak": -current_mak,
-            "OE-Cluster": row.get("OE-Cluster", "Unclustered"),
+            "OE-Cluster": row.get("OE-Cluster", "Sonstiges"),
             "source": "Azubi",
             **audit_fields
         })
-                
+
 def _simulate_new_azubis(
     df_state: pd.DataFrame,
     params: Dict[str, Any],
@@ -502,7 +515,7 @@ def _simulate_new_azubis(
         new_id = f"AZ_{entry_date.year}_N{i+1:02d}_{unique_suffix}"
         
         org_unit = _resolve_org_unit(strategy, target_unit, all_org_units, [], rng, valid_units)
-        new_cluster = unit_to_cluster.get(org_unit, "Unclustered")
+        new_cluster = unit_to_cluster.get(org_unit, "Sonstiges")
 
         # Graduation calc (id: 16) - Use August Rule respecting Duration
         grad_date = _estimate_baseline_graduation_date(entry_date, duration_years, conv_month, conv_day)
@@ -510,7 +523,7 @@ def _simulate_new_azubis(
         # id: 63 - Azubi Training -> "Sonstige" Job Family
         jf_to_cluster = azubi_params.get("jf_to_cluster_map", {})
         new_jf = "Sonstige"
-        new_jf_cluster = jf_to_cluster.get(new_jf, "Unclustered")
+        new_jf_cluster = jf_to_cluster.get(new_jf, "Sonstiges")
 
         # State Object
         new_row = {
@@ -684,7 +697,7 @@ def _simulate_hires(
         org_unit = "Unbekannt"
         plan_stelle = "Nachbesetzung" # Default
         jf = "Angestellte"
-        oe_c = "Unclustered"
+        oe_c = "Sonstiges"
         
         is_replacement = False
         
@@ -700,7 +713,7 @@ def _simulate_hires(
                 
                 # Inherit Attributes from Leaver
                 jf = vacancy.get("Jobfamily", "Angestellte")
-                oe_c = vacancy.get("OE-Cluster", "Unclustered")
+                oe_c = vacancy.get("OE-Cluster", "Sonstiges")
                 
                 is_replacement = True
             else:
@@ -720,7 +733,7 @@ def _simulate_hires(
                 choice = dist_choices[idx]
                 
                 jf = choice.get("Jobfamily", "Angestellte")
-                oe_c = choice.get("OE-Cluster", "Unclustered")
+                oe_c = choice.get("OE-Cluster", "Sonstiges")
             else:
                 # Fallback if no matrix: Keep defaults ("Angestellte", "Unclustered")
                 pass

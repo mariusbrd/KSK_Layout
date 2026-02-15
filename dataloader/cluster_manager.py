@@ -127,24 +127,31 @@ def load_cluster_mappings(uploaded_file: Optional[bytes] = None) -> Tuple[Dict[s
             oe_map = df_oe.set_index('Organisationseinheit')['Cluster'].to_dict()
         
         # Map JF based on structure
+        # Note: Empty cluster cells are skipped (not added to mapping).
+        # The downstream enrich_jf_clusters() will fall back to "Sonstiges".
         if not df_jf.empty:
             if 'Planstelle' in df_jf.columns and 'Jobfamily Cluster' in df_jf.columns:
                 # New structure: (Organisationseinheit, Planstelle) -> Jobfamily Cluster
                 if 'Organisationseinheit' in df_jf.columns:
                     df_jf['Organisationseinheit'] = df_jf['Organisationseinheit'].astype(str).str.strip()
                     df_jf['Planstelle'] = df_jf['Planstelle'].astype(str).str.strip()
-                    df_jf['Jobfamily Cluster'] = df_jf['Jobfamily Cluster'].fillna("Unclustered").astype(str).str.strip()
+                    df_jf['Jobfamily Cluster'] = df_jf['Jobfamily Cluster'].astype(str).str.strip()
                     for _, row in df_jf.iterrows():
+                        val = row['Jobfamily Cluster']
+                        if pd.isna(row.get('Jobfamily Cluster')) or val in ("", "nan", "Unclustered"):
+                            continue  # Skip empty/unclustered → let fallback handle it
                         key = (row['Organisationseinheit'], row['Planstelle'])
-                        jf_map[key] = row['Jobfamily Cluster']
+                        jf_map[key] = val
                 else:
                     df_jf['Planstelle'] = df_jf['Planstelle'].astype(str).str.strip()
-                    df_jf['Jobfamily Cluster'] = df_jf['Jobfamily Cluster'].fillna("Unclustered").astype(str).str.strip()
-                    jf_map = df_jf.set_index('Planstelle')['Jobfamily Cluster'].to_dict()
+                    df_jf['Jobfamily Cluster'] = df_jf['Jobfamily Cluster'].astype(str).str.strip()
+                    valid = df_jf[~df_jf['Jobfamily Cluster'].isin(["", "nan", "Unclustered"])]
+                    jf_map = valid.set_index('Planstelle')['Jobfamily Cluster'].to_dict()
             elif 'Jobfamily' in df_jf.columns and 'Cluster' in df_jf.columns:
                 # Legacy structure
-                df_jf['Cluster'] = df_jf['Cluster'].fillna("Unclustered").astype(str).str.strip()
-                jf_map = df_jf.set_index('Jobfamily')['Cluster'].to_dict()
+                df_jf['Cluster'] = df_jf['Cluster'].astype(str).str.strip()
+                valid = df_jf[~df_jf['Cluster'].isin(["", "nan", "Unclustered"])]
+                jf_map = valid.set_index('Jobfamily')['Cluster'].to_dict()
         
     except Exception as e:
         print(f"Error loading clusters: {e}")
@@ -152,21 +159,26 @@ def load_cluster_mappings(uploaded_file: Optional[bytes] = None) -> Tuple[Dict[s
     return oe_map, jf_map
 
 def enrich_jf_clusters(
-    df: pd.DataFrame, 
-    jf_map: Dict, 
+    df: pd.DataFrame,
+    jf_map: Dict,
     snapshot_jf_map: Optional[Dict] = None
 ) -> pd.Series:
     """
     Core logic for JF-Cluster derivation with normalization and aliases.
     id: 72 - Normalization & Fallbacks
+
+    Guarantee: Every row with a non-empty Jobfamily gets a deterministic
+    JF-Cluster.  If no mapping exists the fallback is "Sonstiges" (NOT
+    "Unclustered").  Only rows without ANY Jobfamily value remain
+    "Sonstiges" (safe default).
     """
     if "Jobfamily" not in df.columns:
-        return pd.Series("Unclustered", index=df.index)
+        return pd.Series("Sonstiges", index=df.index)
 
     # 1. Aliases & Fallbacks
     # id: 72 - Normalization & Permanent Fallbacks
-    # NOTE: DO NOT REMOVE the "sonstige" -> "Sonstiges" rule. 
-    # It ensures that Azubis in training (labeled as "Sonstige") are correctly clustered 
+    # NOTE: DO NOT REMOVE the "sonstige" -> "Sonstiges" rule.
+    # It ensures that Azubis in training (labeled as "Sonstige") are correctly clustered
     # even without an explicit mapping. "Trainee" follows the same logic.
     alias_map = {
         "sonstige": "Sonstiges",
@@ -174,27 +186,29 @@ def enrich_jf_clusters(
         "trainee": "Sonstiges",
         "azubi": "Sonstiges"
     }
-    
+
     # 2. Key Normalization
     # Normalize the lookup maps to lowercase for case-insensitive matching
     norm_jf_map = {str(k).strip().lower(): v for k, v in jf_map.items() if not isinstance(k, tuple)}
     norm_snap_map = {str(k).strip().lower(): v for k, v in snapshot_jf_map.items()} if snapshot_jf_map else {}
-    
+
     # 3. Apply Mapping Sequence
     s_jf_raw = df["Jobfamily"].astype(str).str.strip()
     s_jf_lower = s_jf_raw.str.lower()
-    
-    # Priority: 
+
+    # Priority:
     # A) Direct Map (External/Internal)
     # B) Snapshot Map (Inherited)
     # C) Alias Map (Fallback)
-    # D) "Unclustered"
-    
+    # D) "Sonstiges" (universal safety-net – NO "Unclustered" leak)
+
     res = s_jf_lower.map(norm_jf_map)
     res = res.fillna(s_jf_lower.map(norm_snap_map))
     res = res.fillna(s_jf_lower.map(alias_map))
-    
-    return res.fillna("Unclustered")
+
+    # Final fallback: "Sonstiges" for every row that still has no cluster.
+    # This guarantees JF-unclustered = 0 in all downstream charts.
+    return res.fillna("Sonstiges")
 
 def apply_clusters_to_snapshot(df: pd.DataFrame, uploaded_file: Optional[bytes] = None) -> pd.DataFrame:
     """
@@ -208,8 +222,6 @@ def apply_clusters_to_snapshot(df: pd.DataFrame, uploaded_file: Optional[bytes] 
     
     # Map JF Clusters
     if not jf_map:
-        # Even without a map, apply at least aliases? 
-        # Actually better to use the central function.
         df["JF-Cluster"] = enrich_jf_clusters(df, {})
     else:
         first_key = next(iter(jf_map.keys()))
@@ -227,7 +239,14 @@ def apply_clusters_to_snapshot(df: pd.DataFrame, uploaded_file: Optional[bytes] 
         else:
              # Standard string-based mapping
              df["JF-Cluster"] = enrich_jf_clusters(df, jf_map)
-        
+
+    # Safety-net: Replace any lingering "Unclustered" in JF-Cluster with "Sonstiges"
+    # This catches edge cases from tuple lookups or stale mapping values.
+    if "JF-Cluster" in df.columns:
+        mask_uncl = (df["JF-Cluster"] == "Unclustered") | df["JF-Cluster"].isna()
+        if mask_uncl.any():
+            df.loc[mask_uncl, "JF-Cluster"] = "Sonstiges"
+
     return df
 
 def is_clustering_active(uploaded_file: Optional[bytes] = None) -> bool:
