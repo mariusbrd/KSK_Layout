@@ -607,19 +607,22 @@ def main():
     timestamp = st.session_state.get("abgaenge_timestamp", "–")
 
     # ── View-Only Zoom: apply current sidebar filters to global events ──
+    # NOTE: Use df_ma (employee-level, with MAK_Calculated) — NOT snapshot_df
+    # (raw position-level without MAK_Calculated).
     events_global = global_result["events_person_level"]
 
     events_view, n_before, n_after = apply_event_filters(
-        events_global, snapshot_df, mode="attrition"
+        events_global, df_ma, mode="attrition"
     )
 
     # Filtered snapshot for KPI re-aggregation
-    df_filtered_rows = apply_filters(snapshot_df)
+    df_filtered_rows = apply_filters(df_ma)
     if df_filtered_rows.empty:
         st.warning("⚠️ Keine Daten nach Filterung verfügbar.")
         return
 
-    # Re-aggregate filtered snapshot (person level)
+    # df_ma is already employee-level (1 row per PersNr), so groupby is
+    # effectively a no-op but keeps the code path consistent.
     view_agg_dict = {
         "MAK_Calculated": "sum",
         "GebDatum": "first",
