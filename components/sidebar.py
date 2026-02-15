@@ -535,56 +535,6 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
             mask = s_norm.isin(filter_vals_norm)
             filtered = filtered.loc[mask]
 
-    # --- Gruppen-Ausschlüsse (konfiguriert in Einstellungen) ---
-    from utils.settings_loader import get_setting
-    ex_config = get_setting("exclusions", {})
-    
-    exclusion_mask = pd.Series(False, index=filtered.index)
-    
-    # 1. Status-basierte Ausschlüsse
-    if ex_config.get("vorstand"):
-        if "MitarbGruppenbez." in filtered.columns:
-            exclusion_mask |= (filtered["MitarbGruppenbez."] == "Vorstand")
-            
-    if ex_config.get("ruhend_bv"):
-        if "Status kundenindividuell" in filtered.columns:
-            exclusion_mask |= (filtered["Status kundenindividuell"] == "Ruhendes Beschäftigungsverhältnis")
-            
-    # 2. Bereichs-basierte Ausschlüsse (99XX)
-    ex_org_units = ex_config.get("org_units", [])
-    if ex_org_units and "Kürzel OrgEinheit" in filtered.columns:
-        # P07: Robust normalization (handle 9990.0 -> "9990")
-        s_ou = filtered["Kürzel OrgEinheit"].astype(str).str.strip()
-        # Remove trailing .0 if present (common pandas issue with mixed types)
-        s_ou = s_ou.str.replace(r"\.0$", "", regex=True)
-        exclusion_mask |= (s_ou.isin(ex_org_units))
-
-    # 3. "Treat as Vacant" Logik
-    # Wir löschen die Zeilen nicht, sondern "entfernen" die Person von der Planstelle.
-    # Dadurch bleibt die Soll-Kapa (Planstelle) erhalten, aber das Ist (Person) verschwindet.
-    if exclusion_mask.any():
-        person_fields = [
-            "Personalnummer", "PersNr", "Personalnachname", "Personalvorname", 
-            "Name", "Vorname", "Nachname", "GebDatum", "Eintritt", "Austritt", 
-            "Alter", "BsGrd", "Alter_Jahre", "Ist_Azubi"
-        ]
-        
-        # Vorhandene Spalten identifizieren
-        existing_fields = [f for f in person_fields if f in filtered.columns]
-        
-        # Auf Maske anwenden
-        if "Is_Vacant" not in filtered.columns:
-            filtered["Is_Vacant"] = False
-            
-        filtered["Is_Vacant"] = filtered["Is_Vacant"].astype("boolean")
-        filtered.loc[exclusion_mask, "Is_Vacant"] = True
-        filtered.loc[exclusion_mask, existing_fields] = pd.NA
-        
-        # Kennzahlen auf 0 setzen
-        for num_col in ["MAK", "FTE_person", "FTE_assigned", "Total_Cost_Year"]:
-            if num_col in filtered.columns:
-                filtered.loc[exclusion_mask, num_col] = 0.0
-
     return filtered
 
 

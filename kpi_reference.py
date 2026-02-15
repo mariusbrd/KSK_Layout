@@ -36,12 +36,9 @@ def get_current_stichtag() -> pd.Timestamp:
     return pd.Timestamp(STICHTAG_DEFAULT)
 
 
-# Abwärtskompatibilität: STICHTAG-Modul-Variable und get_stichtag()
-STICHTAG = get_current_stichtag()
-
-
+# Abwärtskompatibilität: Alias für get_current_stichtag()
 def get_stichtag() -> pd.Timestamp:
-    """Alias für get_current_stichtag() (Abwärtskompatibilität)."""
+    """Alias für get_current_stichtag()."""
     return get_current_stichtag()
 
 
@@ -80,9 +77,6 @@ def standardize_persnr(series: pd.Series) -> pd.Series:
     )
 
 
-def get_stichtag() -> pd.Timestamp:
-    """Gibt den fixen Stichtag zurück. KEIN Systemdatum."""
-    return STICHTAG
 
 
 # =============================================================================
@@ -177,7 +171,7 @@ def load_tvoed(filepath: Optional[Path] = None) -> Dict[Tuple[str, int], float]:
 # ATZ-FUNKTIONEN
 # =============================================================================
 
-def compute_atz_sets(df_atz: pd.DataFrame, stichtag: pd.Timestamp = STICHTAG) -> Dict[str, Set[str]]:
+def compute_atz_sets(df_atz: pd.DataFrame, stichtag: Optional[pd.Timestamp] = None) -> Dict[str, Set[str]]:
     """
     Berechnet ATZ-Sets am Stichtag.
 
@@ -187,6 +181,8 @@ def compute_atz_sets(df_atz: pd.DataFrame, stichtag: pd.Timestamp = STICHTAG) ->
         - "atz_ar": Set PersNr in Arbeitsphase am Stichtag
         - "atz_all": Alle unique PersNr in ATZ.xlsx
     """
+    if stichtag is None:
+        stichtag = get_current_stichtag()
     atz_fr = set(df_atz[
         (df_atz["Phase"] == "FR") &
         (df_atz["Beginn"] <= stichtag) &
@@ -346,17 +342,21 @@ def compute_planstellen_kpis(df_plan: pd.DataFrame) -> Dict:
 # DEMOGRAFIE
 # =============================================================================
 
-def compute_alter(df_ma: pd.DataFrame, stichtag: pd.Timestamp = STICHTAG) -> pd.Series:
+def compute_alter(df_ma: pd.DataFrame, stichtag: Optional[pd.Timestamp] = None) -> pd.Series:
     """Alter in Jahren als float (Readme: days / 365.25)."""
+    if stichtag is None:
+        stichtag = get_current_stichtag()
     return (stichtag - df_ma["GebDatum"]).dt.days / 365.25
 
 
-def compute_verrentung(df_ma: pd.DataFrame, stichtag: pd.Timestamp = STICHTAG) -> Dict:
+def compute_verrentung(df_ma: pd.DataFrame, stichtag: Optional[pd.Timestamp] = None) -> Dict:
     """
     Verrentungswelle: Regelaltersgrenze 67.
     Rentendatum = GebDatum + 67 Jahre.
     Zähle Rentendatum zwischen Stichtag und Jahresende des Horizonts.
     """
+    if stichtag is None:
+        stichtag = get_current_stichtag()
     renten_datum = df_ma["GebDatum"] + pd.DateOffset(years=67)
     # DateOffset funktioniert nicht vektorisiert, also einzeln:
     renten_datum = df_ma["GebDatum"].apply(lambda x: x + pd.DateOffset(years=67) if pd.notna(x) else pd.NaT)
@@ -459,11 +459,13 @@ def compute_tvoed_kosten(
 # HAUPTFUNKTION: Alle KPIs berechnen
 # =============================================================================
 
-def compute_all_kpis(stichtag: pd.Timestamp = STICHTAG) -> Dict:
+def compute_all_kpis(stichtag: Optional[pd.Timestamp] = None) -> Dict:
     """
     Berechnet alle KPIs aus den Original-Daten und gibt ein Dict zurück.
     Kein Streamlit erforderlich.
     """
+    if stichtag is None:
+        stichtag = get_current_stichtag()
     # Daten laden
     df_ma = load_mitarbeiter()
     df_atz = load_atz()
@@ -619,7 +621,8 @@ def validate_all(kpis: Dict) -> list:
 if __name__ == "__main__":
     print("=" * 70)
     print("KPI-Referenzberechnung (Readme-konform)")
-    print(f"Stichtag: {STICHTAG.strftime('%d.%m.%Y')}")
+    stichtag_val = get_current_stichtag()
+    print(f"Stichtag: {stichtag_val.strftime('%d.%m.%Y')}")
     print("=" * 70)
 
     kpis = compute_all_kpis()

@@ -20,15 +20,13 @@ from config.settings import BASE_SALARY, STEP_MULTIPLIER, EMPLOYER_COST_FACTOR
 def normalize_group_name(raw: str) -> str:
     """
     Normalisiert TVöD-Gruppennamen aus der Excel-Datei.
-
-    Beispiele:
-        "E9a"   → "E9A"
-        "E9b"   → "E9B"
-        "E 15U" → "E15U"
-        "E2U"   → "E2U"
+    Entfernt Leerzeichen (auch geschützte) und Sonderzeichen.
     """
     s = str(raw).strip()
-    s = re.sub(r"\s+", "", s)  # Alle Leerzeichen entfernen
+    # Entferne alle Arten von Whitespace (\s inkl. \xa0)
+    s = re.sub(r"\s+", "", s)
+    # Entferne alles, was kein Buchstabe oder Zahl ist (z.B. ? oder )
+    s = re.sub(r"[^a-zA-Z0-9]", "", s)
     s = s.upper()
     return s
 

@@ -359,52 +359,129 @@ def _zero_out_azubi_mak(df: pd.DataFrame) -> pd.DataFrame:
     - TrfGr containing "TVA" (TVÖD Azubi)
     - Jobfamily containing "Azubi" or "Ausbildung"
     """
-    if df.empty:
-        return df
+    if df.empty: return df
     
-    df = df.copy()
+    df_out = df.copy()
     
-    # 1. Robust Identification
-    # TrfGr contains "TVA" OR Jobfamily contains "Azubi"/"Ausbildung"
-    mask_azubi = pd.Series(False, index=df.index)
+    # Identify Azubis
+    if "TrfGr" not in df_out.columns: df_out["TrfGr"] = ""
+    if "Jobfamily" not in df_out.columns: df_out["Jobfamily"] = ""
     
-    if "TrfGr" in df.columns:
-        mask_azubi |= df["TrfGr"].astype(str).str.contains("TVA", na=False, case=False)
-        
-    if "Jobfamily" in df.columns:
-        mask_azubi |= df["Jobfamily"].astype(str).str.contains("Azubi|Ausbildung", regex=True, na=False, case=False)
-        
-    if not mask_azubi.any():
-        return df
-        
-    # 2. Columns to Zero out
-    # Priorities: MAK_Calculated (Hybrid), mak (Forecast), BsGrd (Source of MAK)
+    mask_azubi = (
+        (df_out["TrfGr"].astype(str).str.contains("TVA", case=False, na=False)) |
+        (df_out["Jobfamily"].astype(str).str.contains("Azubi|Ausbildung", case=False, na=False))
+    )
     
     # MAK_Calculated
-    if "MAK_Calculated" in df.columns:
-        if "MAK_Calculated_raw" not in df.columns:
-            df["MAK_Calculated_raw"] = df["MAK_Calculated"]
-        df.loc[mask_azubi, "MAK_Calculated"] = 0.0
+    if "MAK_Calculated" in df_out.columns:
+        if "MAK_Calculated_raw" not in df_out.columns:
+            df_out["MAK_Calculated_raw"] = df_out["MAK_Calculated"]
+        df_out.loc[mask_azubi, "MAK_Calculated"] = 0.0
         
     # MAK (Capitalized - often from enrich_snapshot)
-    if "MAK" in df.columns:
-        if "MAK_raw" not in df.columns:
-            df["MAK_raw"] = df["MAK"]
-        df.loc[mask_azubi, "MAK"] = 0.0
+    if "MAK" in df_out.columns:
+        if "MAK_raw" not in df_out.columns:
+            df_out["MAK_raw"] = df_out["MAK"]
+        df_out.loc[mask_azubi, "MAK"] = 0.0
 
     # mak (lowercase - used in forecast engine)
-    if "mak" in df.columns:
-        if "mak_raw" not in df.columns:
-            df["mak_raw"] = df["mak"]
-        df.loc[mask_azubi, "mak"] = 0.0
+    if "mak" in df_out.columns:
+        if "mak_raw" not in df_out.columns:
+            df_out["mak_raw"] = df_out["mak"]
+        df_out.loc[mask_azubi, "mak"] = 0.0
         
     # BsGrd (Occupancy Rate) - Root cause for MAK usually
-    if "BsGrd" in df.columns:
-         if "BsGrd_raw" not in df.columns:
-             df["BsGrd_raw"] = df["BsGrd"]
-         df.loc[mask_azubi, "BsGrd"] = 0
+    if "BsGrd" in df_out.columns:
+         if "BsGrd_raw" not in df_out.columns:
+             df_out["BsGrd_raw"] = df_out["BsGrd"]
+         df_out.loc[mask_azubi, "BsGrd"] = 0
          
-    return df
+    return df_out
+
+
+def apply_exclusions(df: pd.DataFrame, exclusions: Dict[str, Any]) -> pd.DataFrame:
+    """
+    Wendet Gruppen-Ausschlüsse auf den Snapshot an.
+    Exkludierte Personen werden als Vakanz markiert (Ist entfernt, Soll bleibt).
+    
+    ACHTUNG (v2.1):
+    - Ist-Werte (PersNr, MAK, BsGrd) werden genullt/leert.
+    - Soll-Werte (Soll_FTE, Sollarbeitszeit) bleiben erhalten (Bedarf).
+    
+    Criteria (UI-konform):
+    1. Vorstand: MitarbGruppenbez. == "Vorstand"
+    2. Ruhendes BV: Kürzel OrgEinheit == "9900"
+    3. PA-Bereiche: Kürzel OrgEinheit in org_units OR starts with "99" (if 99XX selected)
+    """
+    if df.empty: return df
+    
+    df_out = df.copy()
+    exclusion_mask = pd.Series(False, index=df_out.index)
+    
+    # 1. Vorstand
+    if exclusions.get("vorstand"):
+        if "MitarbGruppenbez." in df_out.columns:
+            exclusion_mask |= (df_out["MitarbGruppenbez."] == "Vorstand")
+            
+    # 2. Ruhendes BV (9900)
+    if exclusions.get("ruhend_bv"):
+        if "Kürzel OrgEinheit" in df_out.columns:
+            # P07: Robust normalization (handle 9990.0 -> "9990")
+            s_ou = df_out["Kürzel OrgEinheit"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+            exclusion_mask |= (s_ou == "9900")
+            
+    # 3. Spezifische PA-Bereiche (und 99XX-Logik)
+    ex_org_units = exclusions.get("org_units", [])
+    if ex_org_units and "Kürzel OrgEinheit" in df_out.columns:
+        s_ou = df_out["Kürzel OrgEinheit"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+        
+        # Normale Liste
+        exclusion_mask |= (s_ou.isin(ex_org_units))
+        
+        # 99XX Spezialregel: Alles was mit 99 beginnt
+        if "99XX" in ex_org_units:
+            exclusion_mask |= (s_ou.str.startswith("99"))
+            
+    # --- Anwendung der Exklusion (Vacating) ---
+    if exclusion_mask.any():
+        try:
+            import streamlit as st
+            st.session_state["last_exclusion_count"] = int(exclusion_mask.sum())
+        except Exception:
+            pass
+        
+        # Felder, die zur PERSON gehören (Ist-Identifier)
+        person_fields = [
+            "Personalnummer", "PersNr", "Personalnachname", "Personalvorname", 
+            "Name", "Vorname", "Nachname", "GebDatum", "Eintritt", "Austritt", 
+            "Alter", "Alter_Jahre", "Ist_Azubi", 
+            "MAK_raw", "mak_raw", "MAK_Calculated_raw", "BsGrd_raw"
+        ]
+        
+        # Kennzahlen, die das IST-Volumen beschreiben
+        ist_metrics = [
+            "MAK", "mak", "MAK_Calculated", "BsGrd", 
+            "FTE_person", "FTE_assigned", "Total_Cost_Year"
+        ]
+        
+        # Markiere als Vakanz
+        if "Is_Vacant" not in df_out.columns:
+            df_out["Is_Vacant"] = False
+        
+        df_out["Is_Vacant"] = df_out["Is_Vacant"].astype("boolean")
+        df_out.loc[exclusion_mask, "Is_Vacant"] = True
+        
+        # Leere Personendaten
+        existing_person_fields = [f for f in person_fields if f in df_out.columns]
+        df_out.loc[exclusion_mask, existing_person_fields] = pd.NA
+        
+        # Nulle Ist-Volumen
+        existing_ist_metrics = [f for f in ist_metrics if f in df_out.columns]
+        df_out.loc[exclusion_mask, existing_ist_metrics] = 0.0
+        
+        # HINWEIS: Soll_FTE und Sollarbeitszeit werden NICHT angefasst.
+                
+    return df_out
 
 
 def load_and_prepare_data(
@@ -468,6 +545,10 @@ def load_and_prepare_data(
             # Centralized Azubi MAK Zeroing (Single Source of Truth)
             snapshot_df = _zero_out_azubi_mak(snapshot_df)
 
+            # --- Centralized UI Exclusions ---
+            exclusions = get_setting("exclusions", {})
+            snapshot_df = apply_exclusions(snapshot_df, exclusions)
+
             summary = get_data_summary(snapshot_df)
             summary["data_source_type"] = "Eigene Daten (Upload)"
             return snapshot_df, history_df, org_df, summary
@@ -527,6 +608,10 @@ def load_and_prepare_data(
                 # Centralized Azubi MAK Zeroing (Single Source of Truth)
                 snapshot_df = _zero_out_azubi_mak(snapshot_df)
 
+                # --- Centralized UI Exclusions ---
+                exclusions = get_setting("exclusions", {})
+                snapshot_df = apply_exclusions(snapshot_df, exclusions)
+
                 # 6. Generiere History
                 history_df = generate_history_from_snapshot(snapshot_df)
 
@@ -555,6 +640,16 @@ def load_and_prepare_data(
     # Fallback: Lade synthetische Daten
     data = load_hr_data()
 
+    # Auch hier: TVÖD laden wenn vorhanden (für Korrektheit der Kosten in Testdaten)
+    if "tvoed_lookup" not in st.session_state or not st.session_state.get("tvoed_available"):
+        tvoed_lookup = {}
+        if os.path.exists(TVOED_FILE):
+             from dataloader.tvoed_loader import load_tvoed_table
+             tvoed_lookup = load_tvoed_table(TVOED_FILE)
+        
+        st.session_state["tvoed_lookup"] = tvoed_lookup
+        st.session_state["tvoed_available"] = len(tvoed_lookup) > 0
+
     # Reichere Snapshot an
     snapshot_df = enrich_snapshot_data(data["snapshot_detail"], stichtag=get_current_stichtag())
 
@@ -573,6 +668,10 @@ def load_and_prepare_data(
 
     # Centralized Azubi MAK Zeroing (Single Source of Truth)
     snapshot_df = _zero_out_azubi_mak(snapshot_df)
+
+    # --- Centralized UI Exclusions ---
+    exclusions = get_setting("exclusions", {})
+    snapshot_df = apply_exclusions(snapshot_df, exclusions)
 
     # Berechne Summary
     summary = get_data_summary(snapshot_df)
@@ -603,7 +702,23 @@ ORIGINAL_FILES = {
     "ausbildung": os.path.join(ORIGINAL_DATA_DIR, "Ausbildung.xlsx"),
 }
 
-TVOED_FILE = os.path.join(ORIGINAL_DATA_DIR, "TVÖD.xlsx")
+# Robust TVOED File Path detection (Handles Umlaut variations)
+def get_tvoed_path(data_dir):
+    possible_names = ["TVÖD.xlsx", "TVOED.xlsx", "TVÖD.XLSX", "TVOED.XLSX", "TVOED.XLS", "TVOE.xlsx"]
+    for name in possible_names:
+        path = os.path.join(data_dir, name)
+        if os.path.exists(path):
+            return path
+    
+    # Fallback search
+    if os.path.exists(data_dir):
+        for f in os.listdir(data_dir):
+            if f.upper().startswith("TVO") and f.lower().endswith(".xlsx"):
+                return os.path.join(data_dir, f)
+    
+    return os.path.join(data_dir, "TVÖD.xlsx") # Default
+
+TVOED_FILE = get_tvoed_path(ORIGINAL_DATA_DIR)
 
 EDUCATION_MAPPING = {
     "Bachelor FH": "Bachelor",
@@ -1052,7 +1167,7 @@ def create_combined_snapshot(
     Kombiniert die 4 Dateien zu einem Snapshot (ETL-Logik).
     """
     if stichtag is None:
-        stichtag = pd.Timestamp.today()
+        stichtag = get_current_stichtag()
     
     df = planstellen.copy()
     
@@ -1235,7 +1350,7 @@ def process_uploaded_data(uploaded_files: Dict[str, Any]) -> Dict[str, pd.DataFr
         dfs["Planstellen"],
         dfs["ATZ"],
         dfs["Ausbildung"],
-        stichtag=pd.Timestamp.today()
+        stichtag=get_current_stichtag()
     )
     
     # 3. Create Org Structure
