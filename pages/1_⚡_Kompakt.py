@@ -3826,8 +3826,8 @@ def main():
 
             # Scroll-Navigation einfügen (falls verfügbar)
             if SCROLL_NAV_AVAILABLE:
-                anchor_ids = ["deckblatt", "ist-mak", "ist-koepfe", "ist-eur", "ist-vs-soll-mak", "ist-vs-soll-eur"]
-                anchor_labels = ["🎯 Executive Summary", "📊 IST-MAK", "👥 IST-Köpfe", "💰 IST-EUR", "🎯 IST vs SOLL MAK", "💶 IST vs SOLL EUR"]
+                anchor_ids = ["deckblatt", "ist-koepfe", "ist-mak", "ist-eur", "ist-vs-soll-koepfe", "ist-vs-soll-mak", "ist-vs-soll-eur"]
+                anchor_labels = ["🎯 Executive Summary", "👥 IST-Köpfe", "📊 IST-MAK", "💰 IST-EUR", "🔢 IST vs SOLL Köpfe", "🎯 IST vs SOLL MAK", "💶 IST vs SOLL EUR"]
 
                 # Helles, professionelles Styling für vertikale Sidebar am rechten Rand
                 # override_styles erfordert spezifische Keys
@@ -3887,16 +3887,20 @@ def main():
             render_cover_page_and_toc(filter_summary, filtered_df)
 
             # Druckansicht: Alle Tabs untereinander mit professionellen Seitenumbrüchen
-            section_title("IST-MAK Analyse", "📊", anchor="ist-mak")
-            render_ist_mak_tab(filtered_df, print_mode=True)
-            page_break()
-
             section_title("IST-Köpfe Analyse", "👥", anchor="ist-koepfe")
             render_ist_koepfe_tab(filtered_df, print_mode=True)
             page_break()
 
+            section_title("IST-MAK Analyse", "📊", anchor="ist-mak")
+            render_ist_mak_tab(filtered_df, print_mode=True)
+            page_break()
+
             section_title("IST-EUR Analyse", "💰", anchor="ist-eur")
             render_ist_eur_tab(filtered_df, print_mode=True)
+            page_break()
+
+            section_title("IST vs SOLL Köpfe", "🔢", anchor="ist-vs-soll-koepfe")
+            render_ist_soll_koepfe_tab(prepared_df, print_mode=True)
             page_break()
 
             section_title("IST vs SOLL MAK Vergleich", "🎯", anchor="ist-vs-soll-mak")
@@ -3905,10 +3909,6 @@ def main():
 
             section_title("IST vs SOLL EUR Vergleich", "💶", anchor="ist-vs-soll-eur")
             render_ist_vs_soll_eur_tab(filtered_df, print_mode=True)
-            page_break()
-
-            section_title("IST vs SOLL Köpfe", "🔢", anchor="ist-vs-soll-koepfe")
-            render_ist_soll_koepfe_tab(prepared_df, print_mode=True)
 
             st.markdown('</div>', unsafe_allow_html=True)
 
@@ -3919,34 +3919,34 @@ def main():
         else:
             # Standardansicht: Tabs
             tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-                "📊 IST-MAK",
                 "👥 IST-Köpfe",
+                "📊 IST-MAK",
                 "💰 IST-EUR",
+                "🔢 IST vs SOLL Köpfe",
                 "🎯 IST vs SOLL MAK",
                 "💶 IST vs SOLL EUR",
-                "🔢 IST vs SOLL Köpfe",
             ])
 
             with tab1:
-                render_ist_mak_tab(filtered_df)
+                render_ist_koepfe_tab(filtered_df)
 
             with tab2:
-                render_ist_koepfe_tab(filtered_df)
+                render_ist_mak_tab(filtered_df)
 
             with tab3:
                 render_ist_eur_tab(filtered_df)
 
             with tab4:
-                render_ist_vs_soll_mak_tab(filtered_df)
-
-            with tab5:
-                render_ist_vs_soll_eur_tab(filtered_df)
-
-            with tab6:
                 # prepared_df (not filtered_df) wird verwendet, damit vakante
                 # Planstellen enthalten sind (Geschlecht-/Arbeitszeit-Filter
                 # wuerden leere Person-Zeilen herausfiltern).
                 render_ist_soll_koepfe_tab(prepared_df)
+
+            with tab5:
+                render_ist_vs_soll_mak_tab(filtered_df)
+
+            with tab6:
+                render_ist_vs_soll_eur_tab(filtered_df)
 
     except FileNotFoundError as e:
         st.error(f"Datenfehler: {str(e)}")
