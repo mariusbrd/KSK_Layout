@@ -97,7 +97,7 @@ def main():
             st.Page("pages/4_📈_Prognose_Zugänge.py", title="Prognose: Zugänge"),
             st.Page("pages/5_🏢_Prognose_Hybrid.py", title="Prognose: Hybrid"),
             st.Page("pages/2_⚙️_Einstellungen.py", title="Einstellungen"),
-            st.Page("pages/6_🔎_Deep_Dive_Exklusionsgruppen.py", title="🔎 Exklusionsgruppen"),
+            st.Page("pages/6_🔎_Deep_Dive_Exklusionsgruppen.py", title="Exklusionsgruppen"),
         ],
     }
     pg = st.navigation(pages)
