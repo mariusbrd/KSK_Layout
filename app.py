@@ -14,6 +14,20 @@ from components.setup_wizard import render_setup_wizard, needs_setup
 
 st.set_page_config(**PAGE_CONFIG)
 
+# Wide Mode erzwingen (überschreibt Browser-Präferenz und Cloud-Defaults)
+st.markdown(
+    """
+    <style>
+    section.main > div.block-container {
+        max-width: 100% !important;
+        padding-left: 2.5rem !important;
+        padding-right: 2.5rem !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 # Cache einmalig leeren nach KPI-Engine-Update (kann nach erstem Start entfernt werden)
 if "kpi_engine_cache_cleared" not in st.session_state:
     st.cache_data.clear()
