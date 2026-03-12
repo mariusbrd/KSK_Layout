@@ -17,6 +17,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import sys
 import os
+import io
+from datetime import datetime
 from typing import Dict
 
 # Path setup
@@ -386,25 +388,25 @@ def create_breakdown_table(df: pd.DataFrame, dimension_col: str, value_col: str,
         emp_df = df[~df["Is_Vacant"]] if "Is_Vacant" in df.columns else df
         id_col = "PersNr" if "PersNr" in emp_df.columns else "Personalnummer"
         if id_col in emp_df.columns:
-            agg_df = emp_df.groupby(dimension_col)[id_col].nunique().reset_index()
+            agg_df = emp_df.groupby(dimension_col, observed=True)[id_col].nunique().reset_index()
             agg_df.columns = [dimension_col, "IST"]
         else:
-            agg_df = emp_df.groupby(dimension_col).size().reset_index(name="IST")
+            agg_df = emp_df.groupby(dimension_col, observed=True).size().reset_index(name="IST")
     elif value_col in ("MAK", "FTE_person") and "PersNr" in df.columns:
         # Person-level Metriken: Deduplizieren nach PersNr (erste Planstelle)
         from dataloader.kpi_engine import get_unique_employees
         emp_unique = get_unique_employees(df)
         if dimension_col in emp_unique.columns and value_col in emp_unique.columns:
-            agg_df = emp_unique.groupby(dimension_col)[value_col].sum().reset_index()
+            agg_df = emp_unique.groupby(dimension_col, observed=True)[value_col].sum().reset_index()
         else:
-            agg_df = df.groupby(dimension_col)[value_col].sum().reset_index()
+            agg_df = df.groupby(dimension_col, observed=True)[value_col].sum().reset_index()
         agg_df.columns = [dimension_col, "IST"]
     else:
-        agg_df = df.groupby(dimension_col)[value_col].sum().reset_index()
+        agg_df = df.groupby(dimension_col, observed=True)[value_col].sum().reset_index()
         agg_df.columns = [dimension_col, "IST"]
 
     if include_soll and soll_col and soll_col in df.columns:
-        soll_agg = df.groupby(dimension_col)[soll_col].sum().reset_index()
+        soll_agg = df.groupby(dimension_col, observed=True)[soll_col].sum().reset_index()
         soll_agg.columns = [dimension_col, "SOLL"]
         agg_df = agg_df.merge(soll_agg, on=dimension_col, how="outer").fillna(0)
         agg_df["Delta"] = agg_df["IST"] - agg_df["SOLL"]
@@ -430,8 +432,164 @@ def create_breakdown_table(df: pd.DataFrame, dimension_col: str, value_col: str,
     return agg_df
 
 
-def export_to_csv(df: pd.DataFrame) -> bytes:
-    return df.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig")
+def _build_filter_meta_rows() -> list:
+    """Liest aktive Filter aus session_state und gibt strukturierte Zeilen zurück."""
+    from utils.settings_loader import get_setting
+    rows = []
+
+    def _add(label, val):
+        rows.append([label, str(val) if val else "—"])
+
+    org = st.session_state.get("selected_org_units", [])
+    _add("Organisationseinheiten", ", ".join(org) if org else "alle")
+
+    jf = st.session_state.get("selected_jobfamilies", [])
+    _add("Job Families", ", ".join(jf) if jf else "alle")
+
+    cohorts = st.session_state.get("selected_cohorts", [])
+    _add("Altersgruppen (Kohorten)", ", ".join(str(c) for c in cohorts) if cohorts else "alle")
+
+    genders = st.session_state.get("selected_genders", [])
+    _add("Geschlecht", ", ".join(genders) if genders else "alle")
+
+    emp = st.session_state.get("selected_employment", [])
+    _add("Arbeitszeit", ", ".join(emp) if emp else "alle")
+
+    edu = st.session_state.get("selected_education", [])
+    _add("Qualifikation", ", ".join(edu) if edu else "alle")
+
+    atz = st.session_state.get("selected_atz_status", [])
+    _add("ATZ-Status", ", ".join(atz) if atz else "alle")
+
+    oe_cl = st.session_state.get("selected_oe_clusters", [])
+    _add("OE-Cluster", ", ".join(oe_cl) if oe_cl else "alle")
+
+    jf_cl = st.session_state.get("selected_jf_clusters", [])
+    _add("JF-Cluster", ", ".join(jf_cl) if jf_cl else "alle")
+
+    ex = get_setting("exclusions", {})
+    _add("Exkludiert: Vorstand",    "ja" if ex.get("vorstand") else "nein")
+    _add("Exkludiert: Ruhendes BV", "ja" if ex.get("ruhend_bv") else "nein")
+    units = ex.get("org_units", [])
+    if units:
+        _add("Exkludiert: PA-Bereiche (Anzahl)", str(len(units)))
+        _add("Exkludiert: PA-Bereiche (vollständig)", ", ".join(sorted(units)))
+    else:
+        _add("Exkludiert: PA-Bereiche", "keine")
+
+    return rows
+
+
+_COL_DESCRIPTIONS = {
+    # KPI-Spalten
+    "IST":            "IST-Wert (tatsächlicher Bestand zum Stichtag)",
+    "SOLL":           "SOLL-Wert (Planbedarf laut Stellenplanung)",
+    "Delta":          "Differenz IST minus SOLL (negativ = Unterbesetzung)",
+    "Erfüllungsgrad": "IST / SOLL in Prozent",
+    "Anteil":         "Prozentualer Anteil am Gesamtwert der Auswertung",
+    "MAK":            "Mitarbeiterkapazität (FTE-Äquivalent, effektiv)",
+    "MAK_Calculated": "Berechneter MAK-Wert (vektorisiert)",
+    "Köpfe":          "Headcount – Anzahl unique Mitarbeitende",
+    "EUR":            "Jahreskosten in Euro (inkl. Arbeitgeberanteil)",
+    "Soll_FTE":       "Planstellen-Sollkapazität (Sollarbeitszeit / 39)",
+    "BsGrd":          "Beschäftigungsgrad in Prozent (100 = Vollzeit)",
+    # Entgelt / Stellenplan
+    "Entgeltgruppe":  "TVöD-Entgeltgruppe / Vergütungsklasse",
+    "Planstelle":     "Bezeichnung der Planstelle / Qualifikationsstufe",
+    "min_label":      "Minimum-Entgeltgruppe im Bereich",
+    "max_label":      "Maximum-Entgeltgruppe im Bereich",
+    "n_min":          "Anzahl Mitarbeitende auf Minimum-Stufe",
+    "n_max":          "Anzahl Mitarbeitende auf Maximum-Stufe",
+    "mean_label":     "Durchschnittliche Entgeltgruppe (gewichtet)",
+    "count":          "Gesamtanzahl Mitarbeitende in diesem Bereich",
+    # Dimensions-/Gruppierungsspalten
+    "Geschlecht":          "Geschlecht des Mitarbeitenden (M / W / D)",
+    "Jobfamily":           "Jobfamilie (fachliche Eingruppierung der Stelle)",
+    "JF_Cluster":          "Jobfamily-Cluster (aggregierte Jobfamiliengruppe)",
+    "OE_Cluster":          "Organisationseinheiten-Cluster (aggregierte OE-Gruppe)",
+    "Kürzel OrgEinheit":   "Kürzel der Organisationseinheit",
+    "OrgEinheit":          "Name der Organisationseinheit",
+    "Altersgruppe":        "Altersgruppe des Mitarbeitenden (z. B. <30, 30–39, …)",
+    "Qualifikation":       "Qualifikationsstufe / Ausbildungsprofil",
+    "Standort":            "Standort / Filiale des Mitarbeitenden",
+    "Status":              "Beschäftigungsstatus (z. B. Aktiv, Ruhend, ATZ-FR)",
+    "Beschäftigungsart":   "Art des Beschäftigungsverhältnisses",
+    "Teilzeit_Vollzeit":   "Teilzeit- oder Vollzeitstatus",
+}
+
+_VALUE_TYPE_LABEL = {
+    "mak":    "Mitarbeiterkapazität (MAK / FTE)",
+    "koepfe": "Köpfe (Headcount)",
+    "eur":    "Kosten (EUR/Jahr)",
+}
+
+_KEY_PREFIX_LABEL = {
+    "ist_mak":   "IST-MAK",
+    "ist_koepfe":"IST-Köpfe",
+    "ist_eur":   "IST-EUR",
+    "soll_mak":  "IST vs. SOLL MAK",
+    "soll_eur":  "IST vs. SOLL EUR",
+}
+
+
+def export_to_excel(
+    df: pd.DataFrame,
+    table_title: str = "",
+    dimension_name: str = "",
+    value_type: str = "",
+    key_prefix: str = "",
+) -> bytes:
+    """
+    Exportiert eine Tabelle als Excel-Datei (XLSX) mit zwei Sheets:
+    - 'Daten':          Die eigentliche Datentabelle (identisch zum bisherigen CSV)
+    - 'Dokumentation':  Tabellenkontext, aktive Filter und Spalten-Erklärungen
+    """
+    from utils.settings_loader import get_setting
+
+    stichtag = get_setting("stichtag", "—")
+    tab_label = _KEY_PREFIX_LABEL.get(key_prefix, key_prefix)
+    val_label = _VALUE_TYPE_LABEL.get(value_type, value_type)
+    title = table_title or (
+        f"{tab_label} — {dimension_name}" if dimension_name else tab_label
+    )
+
+    # Dokumentations-Sheet aufbauen
+    meta_rows = [
+        ["Exportzeitpunkt",   datetime.now().strftime("%d.%m.%Y %H:%M:%S")],
+        ["Tabelle",           title],
+        ["Tab / Thema",       tab_label],
+        ["Kennzahl",          val_label],
+        ["Stichtag",          stichtag],
+        ["", ""],
+        ["── AKTIVE FILTER ──", ""],
+    ]
+    meta_rows += _build_filter_meta_rows()
+    meta_rows += [
+        ["", ""],
+        ["── SPALTEN-ERKLÄRUNG ──", ""],
+    ]
+    for col in df.columns:
+        desc = _COL_DESCRIPTIONS.get(col, f"Gruppierungsmerkmal / Dimensionsspalte: {col}")
+        meta_rows.append([col, desc])
+
+    meta_df = pd.DataFrame(meta_rows, columns=["Feld", "Wert"])
+
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="Daten", index=False)
+        meta_df.to_excel(writer, sheet_name="Dokumentation", index=False)
+
+        # Spaltenbreiten anpassen
+        for sheet_name in writer.sheets:
+            ws = writer.sheets[sheet_name]
+            for col_cells in ws.columns:
+                max_len = max((len(str(c.value or "")) for c in col_cells), default=10)
+                ws.column_dimensions[col_cells[0].column_letter].width = min(max_len + 4, 60)
+
+    return output.getvalue()
+
+
+_EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 # =============================================================================
@@ -1142,15 +1300,17 @@ def render_education_range_section(df: pd.DataFrame,
         display_df.columns = ["Planstelle", "Min", "n(Min)", "Mittel", "Max", "n(Max)", "Gesamt"]
         dataframe_compat(display_df, width="stretch", hide_index=True)
 
-        csv_data = export_to_csv(
+        excel_data = export_to_excel(
             range_df[["Planstelle", "min_label", "n_min", "max_label", "n_max",
-                       "mean_label", "min_ord", "max_ord", "mean_ord", "count"]]
+                       "mean_label", "min_ord", "max_ord", "mean_ord", "count"]],
+            dimension_name="Qualifikationsspannweite pro Planstelle",
+            key_prefix=key_prefix,
         )
         download_button_compat(
-            label="CSV Download",
-            data=csv_data,
-            file_name=f"{key_prefix}_qualifikation_spannweite.csv",
-            mime="text/csv",
+            label="Excel Download",
+            data=excel_data,
+            file_name=f"{key_prefix}_qualifikation_spannweite.xlsx",
+            mime=_EXCEL_MIME,
             key=f"download_{key_prefix}_edu_range",
             width="stretch",
         )
@@ -1272,12 +1432,17 @@ def render_single_breakdown(df: pd.DataFrame, dimension_name: str, dimension_col
 
             dataframe_compat(display_df, width="stretch", hide_index=True)
 
-            csv_data = export_to_csv(breakdown_df)
+            excel_data = export_to_excel(
+                breakdown_df,
+                dimension_name=dimension_name,
+                value_type=value_type,
+                key_prefix=key_prefix,
+            )
             download_button_compat(
-                label="CSV Download",
-                data=csv_data,
-                file_name=f"{key_prefix}_verguetungsklassen.csv",
-                mime="text/csv",
+                label="Excel Download",
+                data=excel_data,
+                file_name=f"{key_prefix}_verguetungsklassen.xlsx",
+                mime=_EXCEL_MIME,
                 key=f"download_{key_prefix}_{dimension_col}",
                 width="stretch",
             )
@@ -1308,12 +1473,17 @@ def render_single_breakdown(df: pd.DataFrame, dimension_name: str, dimension_col
             display_df = format_dataframe_for_display(breakdown_df, value_type)
             dataframe_compat(display_df, width="stretch", hide_index=True)
 
-            csv_data = export_to_csv(breakdown_df)
+            excel_data = export_to_excel(
+                breakdown_df,
+                dimension_name=dimension_name,
+                value_type=value_type,
+                key_prefix=key_prefix,
+            )
             download_button_compat(
-                label="CSV Download",
-                data=csv_data,
-                file_name=f"{key_prefix}_{dimension_name.lower().replace(' ', '_')}.csv",
-                mime="text/csv",
+                label="Excel Download",
+                data=excel_data,
+                file_name=f"{key_prefix}_{dimension_name.lower().replace(' ', '_')}.xlsx",
+                mime=_EXCEL_MIME,
                 key=f"download_{key_prefix}_{dimension_col}",
                 width="stretch",
             )
@@ -1379,12 +1549,17 @@ def render_single_comparison(df: pd.DataFrame, dimension_name: str, dimension_co
 
             dataframe_compat(display_df, width="stretch", hide_index=True)
 
-            csv_data = export_to_csv(breakdown_df)
+            excel_data = export_to_excel(
+                breakdown_df,
+                dimension_name=dimension_name,
+                value_type=value_type,
+                key_prefix=key_prefix,
+            )
             download_button_compat(
-                label="CSV Download",
-                data=csv_data,
-                file_name=f"{key_prefix}_verguetungsklassen.csv",
-                mime="text/csv",
+                label="Excel Download",
+                data=excel_data,
+                file_name=f"{key_prefix}_verguetungsklassen.xlsx",
+                mime=_EXCEL_MIME,
                 key=f"download_{key_prefix}_{dimension_col}",
                 width="stretch",
             )
@@ -1409,12 +1584,17 @@ def render_single_comparison(df: pd.DataFrame, dimension_name: str, dimension_co
             display_df = format_dataframe_for_display(breakdown_df, value_type)
             dataframe_compat(display_df, width="stretch", hide_index=True)
 
-            csv_data = export_to_csv(breakdown_df)
+            excel_data = export_to_excel(
+                breakdown_df,
+                dimension_name=dimension_name,
+                value_type=value_type,
+                key_prefix=key_prefix,
+            )
             download_button_compat(
-                label="CSV Download",
-                data=csv_data,
-                file_name=f"{key_prefix}_{dimension_name.lower().replace(' ', '_')}.csv",
-                mime="text/csv",
+                label="Excel Download",
+                data=excel_data,
+                file_name=f"{key_prefix}_{dimension_name.lower().replace(' ', '_')}.xlsx",
+                mime=_EXCEL_MIME,
                 key=f"download_{key_prefix}_{dimension_col}",
                 width="stretch",
             )
@@ -1468,7 +1648,7 @@ def render_ist_mak_tab(df: pd.DataFrame, print_mode: bool = False):
 
             render_single_breakdown(
                 emp_df, dimension_name, dimension_col,
-                value_col="MAK" if "MAK" in emp_df.columns else "FTE_assigned",
+                value_col=next((c for c in ("MAK_Calculated", "mak", "MAK") if c in emp_df.columns), "FTE_assigned"),
                 value_type="mak",
                 key_prefix="ist_mak",
                 print_mode=print_mode
@@ -2749,6 +2929,796 @@ def analyze_ist_vs_soll_eur_data(df: pd.DataFrame) -> dict:
 
 
 # =============================================================================
+# IST vs SOLL KÖPFE
+# =============================================================================
+
+def _build_soll_ist_pivot(df: pd.DataFrame, use_max_eg: bool = True):
+    """
+    Baut die Soll-Ist-Matrix fuer den Koepfe-Vergleich.
+
+    use_max_eg=True  → Soll-EG aus Spalte I "Text Gehaltsband" (Maximalwert), Fallback Spalte H
+    use_max_eg=False → Soll-EG ausschließlich aus Spalte H "Bewertung Tarifgruppe" (Basiswert)
+
+    Returns (pivot, soll_order, ist_eg_cols, IST_UNBESETZT, IST_NOT_FOUND)
+    """
+    from config.settings import TARIFF_GROUPS
+    from utils.settings_loader import get_setting
+
+    IST_UNBESETZT  = "Unbesetzt"
+    IST_NOT_FOUND  = "Nicht gefunden"
+
+    # Nur inkludierte OEs
+    ex = get_setting("exclusions", {})
+    ex_units = ex.get("org_units", [])
+    work = df.copy()
+    if ex_units and "Kürzel OrgEinheit" in work.columns:
+        s_ou = work["Kürzel OrgEinheit"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+        explicit = [u for u in ex_units if u != "99XX"]
+        mask_excl = s_ou.isin(explicit)
+        if "99XX" in ex_units:
+            mask_excl = mask_excl | (s_ou.str.startswith("99") & ~s_ou.isin(set(explicit)))
+        work = work[~mask_excl]
+
+    # Soll-EG aus Planstellen
+    # Vorrang: Spalte I "Text Gehaltsband" (oberes Ende des Gehaltsbandes, z. B. "bis E11")
+    # Fallback: Spalte H "Bewertung Tarifgruppe" (Basisbewertung)
+    if "Bewertung Tarifgruppe" not in work.columns:
+        return None, [], [], IST_UNBESETZT, IST_NOT_FOUND
+
+    def _normalize_eg_raw(s) -> str:
+        """Bereinigt einen EG-Rohwert: strip, upper, Leerzeichen weg, 'BIS'-Präfix entfernen."""
+        if pd.isna(s):
+            return ""
+        v = str(s).strip().upper().replace(" ", "")
+        if v.startswith("BIS"):
+            v = v[3:].strip()   # "BISE11" → "E11"
+        return v
+
+    work = work.copy()
+    _invalid = {"", "NAN", "NONE"}
+
+    col_h = work["Bewertung Tarifgruppe"].map(_normalize_eg_raw)
+    col_i = work["Text Gehaltsband"].map(_normalize_eg_raw) if "Text Gehaltsband" in work.columns else pd.Series("", index=work.index)
+
+    # Basis- und Maximalwert immer mitführen (für Band-Vergleich im Detailbereich)
+    work["_Soll_EG_H"] = col_h                                           # Basiswert (Spalte H)
+    work["_Soll_EG_I"] = col_i.where(~col_i.isin(_invalid), other=col_h)  # Maximalwert (I), Fallback H
+
+    if use_max_eg:
+        # Spalte I (Maximalwert) hat Vorrang; Fallback auf Spalte H
+        work["_Soll_EG"] = work["_Soll_EG_I"]
+    else:
+        # Ausschließlich Spalte H (Basiswert)
+        work["_Soll_EG"] = col_h
+
+    # Anzahl Planstellen ohne verwertbare Soll-EG festhalten (vor dem Filter)
+    n_no_soll_eg = int(work["_Soll_EG"].isin(_invalid).sum())
+    # Planstellen ohne verwertbare Soll-EG in beiden Spalten ausschließen
+    work = work[~work["_Soll_EG"].isin(_invalid)]
+
+    # Ist-Kategorie
+    def _ist_kat(row):
+        if row.get("Is_Vacant", True):
+            return IST_UNBESETZT
+        trfgr = row.get("TrfGr")
+        if pd.isna(trfgr) or str(trfgr).strip().lower() in ("", "nan"):
+            return IST_NOT_FOUND
+        return str(trfgr).strip().upper().replace(" ", "")
+
+    work["_Ist_EG"] = work.apply(_ist_kat, axis=1)
+
+    # Pivot
+    pivot = work.groupby(["_Soll_EG", "_Ist_EG"]).size().unstack(fill_value=0)
+
+    eg_order = {g: i for i, g in enumerate(TARIFF_GROUPS)}
+    ist_eg_cols = sorted(
+        [c for c in pivot.columns if c not in (IST_UNBESETZT, IST_NOT_FOUND)],
+        key=lambda g: eg_order.get(g, 999),
+    )
+    special_cols = [c for c in (IST_UNBESETZT, IST_NOT_FOUND) if c in pivot.columns]
+    pivot = pivot[ist_eg_cols + special_cols]
+    pivot["Gesamt"] = pivot.sum(axis=1)
+
+    soll_order = sorted(pivot.index.tolist(), key=lambda g: eg_order.get(g, 999))
+    pivot = pivot.loc[soll_order]
+    pivot.index.name = "Soll-EG"
+
+    return pivot, soll_order, ist_eg_cols, IST_UNBESETZT, IST_NOT_FOUND, work, n_no_soll_eg
+
+
+def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
+    """
+    Rendert den 'IST vs SOLL Köpfe'-Tab.
+
+    Zeigt je Soll-Entgeltgruppe (Planstellen-Bewertung), in welchen tatsaechlichen
+    Tarifgruppen die besetzenden Mitarbeitenden eingruppiert sind.
+    """
+    IST_UNBESETZT = "Unbesetzt"
+    IST_NOT_FOUND = "Nicht gefunden"
+
+    # ── Toggle: Maximalwert (Spalte I) vs. Basiswert (Spalte H) ──────────────
+    if not print_mode:
+        use_max_eg = st.toggle(
+            "Soll-EG: Maximalwert verwenden (Spalte I – Text Gehaltsband)",
+            value=True,
+            key="soll_ist_koepfe_use_max_eg",
+            help=(
+                "**Ein:** Soll-EG = oberes Ende des Gehaltsbandes aus Spalte I "
+                "(z. B. 'bis E11' → E11). Falls Spalte I leer, Fallback auf Spalte H.\n\n"
+                "**Aus:** Soll-EG = Basisbewertung der Planstelle aus Spalte H."
+            ),
+        )
+    else:
+        use_max_eg = True  # Im Druckbericht immer Maximalwert
+
+    pivot, soll_order, ist_eg_cols, IST_UNBESETZT, IST_NOT_FOUND, work_df, n_no_soll_eg = _build_soll_ist_pivot(df, use_max_eg=use_max_eg)
+
+    if pivot is None:
+        st.warning("⚠️ Spalte 'Bewertung Tarifgruppe' nicht im Datensatz vorhanden. "
+                   "Bitte Planstellen-Datei mit Spalte H prüfen.")
+        return
+
+    # ── KPI-Karten ────────────────────────────────────────────────────────────
+    total_pl  = int(pivot["Gesamt"].sum())
+    unbesetzt = int(pivot[IST_UNBESETZT].sum()) if IST_UNBESETZT in pivot.columns else 0
+    not_found = int(pivot[IST_NOT_FOUND].sum()) if IST_NOT_FOUND in pivot.columns else 0
+    besetzt   = total_pl - unbesetzt - not_found
+
+    # Übereinstimmende: Soll-EG == Ist-EG (Diagonale)
+    diagonal = sum(
+        int(pivot.loc[eg, eg]) if eg in pivot.index and eg in pivot.columns else 0
+        for eg in soll_order
+    )
+    match_pct = diagonal / besetzt * 100 if besetzt > 0 else 0.0
+
+    kpis = [
+        {
+            "title": "Planstellen gesamt",
+            "value": f"{total_pl:,}".replace(",", "."),
+            "subtitle": "inkludierte OEs",
+            "icon": "📋",
+            "status": "default",
+        },
+        {
+            "title": "Besetzt",
+            "value": f"{besetzt:,}".replace(",", "."),
+            "subtitle": f"{besetzt / total_pl * 100:.1f}% der Planstellen".replace(".", ",") if total_pl else "—",
+            "icon": "👤",
+            "status": "good",
+        },
+        {
+            "title": "Unbesetzt",
+            "value": f"{unbesetzt:,}".replace(",", "."),
+            "subtitle": f"{unbesetzt / total_pl * 100:.1f}% der Planstellen".replace(".", ",") if total_pl else "—",
+            "icon": "🔲",
+            "status": "warning" if unbesetzt > 0 else "good",
+        },
+        {
+            "title": "Eingruppierung korrekt",
+            "value": f"{match_pct:.1f}%".replace(".", ","),
+            "subtitle": f"{diagonal} von {besetzt} besetzten Planstellen",
+            "icon": "✅",
+            "status": "good" if match_pct >= 80 else "warning",
+        },
+    ]
+    render_kpi_cards_styled(kpis)
+
+    if n_no_soll_eg > 0 and not print_mode:
+        st.info(
+            f"ℹ️ **Hinweis zur Datenbasis:** Ca. {n_no_soll_eg} Planstellen in inkludierten OEs "
+            f"sind hier **nicht enthalten**, weil weder Spalte H (Bewertung Tarifgruppe) noch "
+            f"Spalte I (Text Gehaltsband) eine verwertbare Soll-EG enthält (z. B. Werkstudenten-, "
+            f"Reserve- oder Zusatzstellen). Die Deep-Dive-Exklusionsseite weist daher eine höhere "
+            f"Planstellenzahl aus – sie wendet zusätzlich eine personenbezogene Exklusionslogik an, "
+            f"weshalb die Zahlen nicht direkt vergleichbar sind."
+        )
+
+    if not print_mode:
+        st.markdown("---")
+
+    # ── Tabelle ───────────────────────────────────────────────────────────────
+    st.subheader("📋 Soll-Ist-Matrix — Köpfe je Entgeltgruppe")
+    st.caption(
+        "**Zeilen:** Soll-Entgeltgruppe der Planstelle (Spalte I/H Planstellen-Excel)  "
+        "| **Spalten:** tatsächliche Tarifgruppe der besetzenden Person (Spalte Q Mitarbeiter-Excel)"
+    )
+
+    # Summenzeile anhängen
+    total_row = pivot.sum(axis=0).rename("Gesamt")
+    pivot_display = pd.concat([pivot, total_row.to_frame().T])
+
+    # Integer-Formatierung
+    def _fmt_int(v):
+        try:
+            i = int(v)
+            return f"{i:,}".replace(",", ".") if i > 0 else "–"
+        except (ValueError, TypeError):
+            return "–"
+
+    display_df = pivot_display.applymap(_fmt_int)
+
+    # Spaltenbreite angepasst
+    column_config = {col: st.column_config.TextColumn(col, width="small")
+                     for col in display_df.columns}
+    column_config["Gesamt"] = st.column_config.TextColumn("Gesamt", width="small")
+
+    st.dataframe(
+        display_df,
+        use_container_width=True,
+        column_config=column_config,
+    )
+
+    # Excel-Download
+    try:
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            pivot_display.to_excel(writer, sheet_name="Soll-Ist-Köpfe")
+        buf.seek(0)
+        download_button_compat(
+            label="📥 Excel Download",
+            data=buf.getvalue(),
+            file_name="ist_soll_koepfe.xlsx",
+            mime=_EXCEL_MIME,
+            key="download_ist_soll_koepfe",
+        )
+    except Exception:
+        pass
+
+    if not print_mode:
+        st.markdown("---")
+    else:
+        st.markdown("<div style='page-break-after: always;'></div>", unsafe_allow_html=True)
+
+    # ── Gestapeltes Balkendiagramm ────────────────────────────────────────────
+    st.subheader("📊 Soll-Ist-Verteilung — Köpfe je Soll-Entgeltgruppe")
+    st.caption("X-Achse: Anzahl Planstellen | Y-Achse: Soll-Entgeltgruppe | Segmente: tatsächliche Eingruppierung")
+
+    chart_cols = ist_eg_cols + (
+        [IST_UNBESETZT] if IST_UNBESETZT in pivot.columns else []
+    ) + (
+        [IST_NOT_FOUND] if IST_NOT_FOUND in pivot.columns else []
+    )
+    chart_pivot = pivot[chart_cols] if chart_cols else pivot.drop(columns=["Gesamt"], errors="ignore")
+
+    # Farbpalette: je Ist-EG eine Farbe (blau-Spektrum), Sonder-Spalten separat
+    _BLUE_PALETTE = [
+        "#B3E0FF", "#99D6FF", "#66C2FF", "#33AAFF",
+        "#0088DE", "#0070BE", "#005A9E", "#004A80",
+        "#003D6B", "#003058", "#10b981", "#06b6d4",
+        "#8b5cf6", "#f59e0b", "#ec4899", "#0d9488",
+    ]
+    color_map = {}
+    for i, eg in enumerate(ist_eg_cols):
+        color_map[eg] = _BLUE_PALETTE[i % len(_BLUE_PALETTE)]
+    color_map[IST_UNBESETZT] = "#cbd5e1"   # neutrales Grau
+    color_map[IST_NOT_FOUND] = "#E94D3A"   # Rot
+
+    fig = go.Figure()
+    # Zeilen: SOLL-EG von oben (höchste EG oben → umkehren)
+    y_order = list(reversed(soll_order))
+
+    for col in chart_cols:
+        values = [
+            int(chart_pivot.loc[eg, col]) if eg in chart_pivot.index and col in chart_pivot.columns else 0
+            for eg in y_order
+        ]
+        fig.add_trace(go.Bar(
+            y=y_order,
+            x=values,
+            name=col,
+            orientation="h",
+            marker=dict(
+                color=color_map.get(col, "#94a3b8"),
+                line=dict(color="white", width=0.5),
+            ),
+            hovertemplate=f"<b>%{{y}}</b> — Ist: {col}<br>Planstellen: %{{x:,.0f}}<extra></extra>",
+        ))
+
+    n_rows = len(soll_order)
+    height  = max(350, n_rows * 42)
+    if print_mode:
+        height = min(height, 700)
+
+    fig.update_layout(
+        barmode="stack",
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#64748b", size=11),
+        margin=dict(l=10, r=20, t=30, b=30),
+        height=height,
+        xaxis=dict(
+            showgrid=True,
+            gridcolor="rgba(226,232,240,0.8)",
+            zeroline=False,
+            tickformat=",d",
+        ),
+        yaxis=dict(
+            showgrid=False,
+            categoryorder="array",
+            categoryarray=y_order,
+        ),
+    )
+    from utils.plot_helpers import apply_legend_bottom
+    fig = apply_legend_bottom(fig)
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    # ── Detailbereich: eine Soll-EG tiefer analysieren ────────────────────────
+    if not print_mode:
+        st.markdown("---")
+        st.subheader("🔍 Detailanalyse — Soll-Entgeltgruppe")
+
+        selected_soll = st.selectbox(
+            "Soll-Entgeltgruppe auswählen",
+            options=soll_order,
+            key="soll_ist_detail_eg",
+            label_visibility="collapsed",
+        )
+
+        # Zeilen für die gewählte Soll-EG
+        detail = work_df[work_df["_Soll_EG"] == selected_soll].copy()
+        n_total = len(detail)
+
+        if n_total == 0:
+            st.info("Keine Planstellen für diese Soll-Entgeltgruppe.")
+        else:
+            # ── Klassifizierung jeder Planstelle ──────────────────────────────
+            # Band-Logik: Soll-EG_H (Spalte H) = untere Grenze,
+            #             Soll-EG_I (Spalte I, Fallback H) = obere Grenze.
+            # Ist-EG liegt im Band → "Passend im Band"
+            # Ist-EG == Soll-EG (Toggle-Wert) → "Passend (exakt)"
+            # Ist-EG < Soll-EG_H → Untergruppiert
+            # Ist-EG > Soll-EG_I → Übergruppiert
+            from config.settings import TARIFF_GROUPS as _TG
+            _EG_RANK = {g: i for i, g in enumerate(_TG)}
+
+            # Für die gewählte Soll-EG: Band aus erster Zeile auslesen
+            _soll_h = detail["_Soll_EG_H"].iloc[0] if "_Soll_EG_H" in detail.columns else selected_soll
+            _soll_i = detail["_Soll_EG_I"].iloc[0] if "_Soll_EG_I" in detail.columns else selected_soll
+            _rank_h = _EG_RANK.get(_soll_h, 999)
+            _rank_i = _EG_RANK.get(_soll_i, 999)
+            _soll_rank = _EG_RANK.get(selected_soll, 999)  # aktiver Toggle-Wert
+            _has_band = _rank_h != _rank_i                  # Band hat Breite (H ≠ I)
+
+            def _classify(ist_eg: str) -> str:
+                if ist_eg == IST_UNBESETZT:
+                    return "Unbesetzt"
+                if ist_eg == IST_NOT_FOUND:
+                    return "Nicht gefunden"
+                ist_rank = _EG_RANK.get(ist_eg, 999)
+                if ist_rank == _soll_rank:
+                    return "Passend (exakt)"
+                if _has_band and _rank_h <= ist_rank <= _rank_i:
+                    return "Passend im Band"
+                if ist_rank > _rank_i:
+                    return "Übergruppiert"
+                return "Untergruppiert"
+
+            detail["_Klasse"] = detail["_Ist_EG"].map(_classify)
+
+            n_unbesetzt       = int((detail["_Klasse"] == "Unbesetzt").sum())
+            n_passend_exakt   = int((detail["_Klasse"] == "Passend (exakt)").sum())
+            n_passend_band    = int((detail["_Klasse"] == "Passend im Band").sum())
+            n_ueber           = int((detail["_Klasse"] == "Übergruppiert").sum())
+            n_unter           = int((detail["_Klasse"] == "Untergruppiert").sum())
+            n_not_found       = int((detail["_Klasse"] == "Nicht gefunden").sum())
+            n_besetzt         = n_total - n_unbesetzt - n_not_found
+            n_passend_gesamt  = n_passend_exakt + n_passend_band  # exakt + im Band
+
+            passungs_pct      = n_passend_exakt   / n_besetzt * 100 if n_besetzt > 0 else 0.0
+            band_pct          = n_passend_gesamt  / n_besetzt * 100 if n_besetzt > 0 else 0.0
+            ueber_pct         = n_ueber           / n_besetzt * 100 if n_besetzt > 0 else 0.0
+            unbesetzt_pct     = n_unbesetzt        / n_total  * 100 if n_total   > 0 else 0.0
+
+            # ── KPI-Kacheln ────────────────────────────────────────────────────
+            # Kachel "Passend im Band" nur anzeigen, wenn das Band Breite hat
+            detail_kpis = [
+                {
+                    "title":    "Passend (exakt)",
+                    "value":    f"{passungs_pct:.1f}%".replace(".", ","),
+                    "subtitle": f"{n_passend_exakt} Planstellen — Ist-EG = Soll-EG",
+                    "icon":     "✅",
+                    "status":   "good" if passungs_pct >= 70 else "warning",
+                },
+                {
+                    "title":    f"Passend im Band ({_soll_h}–{_soll_i})" if _has_band else "Passend im Band",
+                    "value":    f"{band_pct:.1f}%".replace(".", ","),
+                    "subtitle": (
+                        f"{n_passend_gesamt} Planstellen — exakt + im Band"
+                        if _has_band else
+                        f"{n_passend_gesamt} (kein Band in Spalte I)"
+                    ),
+                    "icon":     "🎯",
+                    "status":   "good" if band_pct >= 70 else "warning",
+                },
+                {
+                    "title":    "Übergruppierungsquote",
+                    "value":    f"{ueber_pct:.1f}%".replace(".", ","),
+                    "subtitle": f"{n_ueber} Planstellen — Ist-EG > {_soll_i}",
+                    "icon":     "⬆️",
+                    "status":   "warning" if ueber_pct > 20 else "default",
+                },
+                {
+                    "title":    "Unbesetztquote",
+                    "value":    f"{unbesetzt_pct:.1f}%".replace(".", ","),
+                    "subtitle": f"{n_unbesetzt} von {n_total} Planstellen",
+                    "icon":     "🔲",
+                    "status":   "warning" if unbesetzt_pct > 10 else "good",
+                },
+            ]
+            render_kpi_cards_styled(detail_kpis)
+
+            st.markdown("")
+
+            col_donut, col_bar = st.columns([1, 1], gap="large")
+
+            # ── Chart 1: Klassifizierungs-Donut ───────────────────────────────
+            with col_donut:
+                _band_label = f"Passend im Band ({_soll_h}–{_soll_i})" if _has_band else "Passend im Band"
+                st.caption(
+                    f"**Verteilung** — Soll-EG {selected_soll}"
+                    + (f"  |  Band: {_soll_h} – {_soll_i}" if _has_band else "")
+                )
+                _KL_COLOR = {
+                    "Passend (exakt)":  "#10b981",   # grün
+                    _band_label:        "#34d399",   # hellgrün
+                    "Passend im Band":  "#34d399",
+                    "Übergruppiert":    "#0088DE",   # blau
+                    "Untergruppiert":   "#f59e0b",   # amber
+                    "Unbesetzt":        "#cbd5e1",   # grau
+                    "Nicht gefunden":   "#E94D3A",   # rot
+                }
+                klasse_counts = detail["_Klasse"].value_counts()
+                kl_order = ["Passend (exakt)", "Passend im Band",
+                            "Übergruppiert", "Untergruppiert",
+                            "Unbesetzt", "Nicht gefunden"]
+                kl_labels = [k for k in kl_order if k in klasse_counts.index]
+                kl_values = [int(klasse_counts[k]) for k in kl_labels]
+                kl_colors = [_KL_COLOR.get(k, "#94a3b8") for k in kl_labels]
+
+                # Legende-Labels mit Band-Info anreichern
+                kl_display = []
+                for k in kl_labels:
+                    if k == "Passend im Band" and _has_band:
+                        kl_display.append(f"Im Band ({_soll_h}–{_soll_i})")
+                    else:
+                        kl_display.append(k)
+
+                fig_donut = go.Figure(go.Pie(
+                    labels=kl_display,
+                    values=kl_values,
+                    marker=dict(colors=kl_colors, line=dict(color="white", width=2)),
+                    hole=0.52,
+                    textinfo="label+percent",
+                    textfont=dict(size=11),
+                    hovertemplate="%{label}: %{value} (%{percent})<extra></extra>",
+                ))
+                fig_donut.update_layout(
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    margin=dict(l=10, r=10, t=10, b=10),
+                    height=280,
+                    showlegend=False,
+                )
+                st.plotly_chart(fig_donut, use_container_width=True)
+
+            # ── Chart 2: Ist-EG-Balken für gewählte Soll-EG ───────────────────
+            with col_bar:
+                st.caption(f"**Ist-Eingruppierung** — Planstellen auf Soll-EG {selected_soll}")
+                ist_counts = (
+                    detail.groupby("_Ist_EG").size()
+                    .reset_index(name="n")
+                )
+                # Reihenfolge: EG-Spalten nach Rang, dann Sonderkategorien
+                def _ist_sort_key(eg):
+                    if eg in (IST_UNBESETZT, IST_NOT_FOUND):
+                        return (1, eg)
+                    return (0, _EG_RANK.get(eg, 999))
+                ist_counts = ist_counts.sort_values(
+                    "_Ist_EG", key=lambda s: s.map(_ist_sort_key)
+                )
+
+                # Balken-Farbe nach Band-Klassifizierung + Rahmen für Band-Bereich
+                bar_colors = [
+                    _KL_COLOR.get(_classify(eg), "#94a3b8")
+                    for eg in ist_counts["_Ist_EG"]
+                ]
+                # Rahmen: Stellen innerhalb des Bandes [H..I] hervorheben
+                bar_line_colors = []
+                bar_line_widths = []
+                for eg in ist_counts["_Ist_EG"]:
+                    r = _EG_RANK.get(eg, 999)
+                    if _has_band and _rank_h <= r <= _rank_i:
+                        bar_line_colors.append("#1a1a2e")
+                        bar_line_widths.append(2)
+                    else:
+                        bar_line_colors.append("white")
+                        bar_line_widths.append(0.5)
+                fig_bar = go.Figure(go.Bar(
+                    x=ist_counts["_Ist_EG"],
+                    y=ist_counts["n"],
+                    marker=dict(
+                        color=bar_colors,
+                        line=dict(color=bar_line_colors, width=bar_line_widths),
+                    ),
+                    hovertemplate="Ist-EG: %{x}<br>Planstellen: %{y}<extra></extra>",
+                ))
+                fig_bar.update_layout(
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color="#64748b", size=11),
+                    margin=dict(l=10, r=10, t=10, b=30),
+                    height=280,
+                    xaxis=dict(showgrid=False, title=None),
+                    yaxis=dict(
+                        showgrid=True,
+                        gridcolor="rgba(226,232,240,0.8)",
+                        zeroline=False,
+                        title=None,
+                        dtick=1,
+                    ),
+                )
+                st.plotly_chart(fig_bar, use_container_width=True)
+
+    # ── Analyse Überhänge ─────────────────────────────────────────────────────
+    if not print_mode:
+        st.markdown("---")
+        st.subheader("⚠️ Analyse Überhänge")
+        st.caption(
+            "Planstellen mit Sollarbeitszeit = 0 oder 0,1 (Spalte G) und befüllter "
+            "Personalnummer (Spalte J) — d. h. Personen auf Phantomstellen ohne reale Arbeitszeit."
+        )
+
+        # OE-Exklusion auf Rohdaten anwenden (gleiche Logik wie _build_soll_ist_pivot)
+        from utils.settings_loader import get_setting as _get_setting
+        _ex       = _get_setting("exclusions", {})
+        _ex_units = _ex.get("org_units", [])
+        ueb_base  = df.copy()
+        if _ex_units and "Kürzel OrgEinheit" in ueb_base.columns:
+            _s_ou     = ueb_base["Kürzel OrgEinheit"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+            _explicit = [u for u in _ex_units if u != "99XX"]
+            _mask_ex  = _s_ou.isin(_explicit)
+            if "99XX" in _ex_units:
+                _mask_ex = _mask_ex | (_s_ou.str.startswith("99") & ~_s_ou.isin(set(_explicit)))
+            ueb_base = ueb_base[~_mask_ex]
+
+        # Spalte G: Sollarbeitszeit robust als Zahl lesen
+        # Schwellenwert <= 0.1 erfasst: 0, 0.01 (Systemplatzhalter), 0.1
+        # Leere Werte werden NICHT als 0 interpretiert (errors="coerce" → NaN)
+        if "Sollarbeitszeit" in ueb_base.columns:
+            _soll_az = pd.to_numeric(
+                ueb_base["Sollarbeitszeit"].astype(str)
+                    .str.strip()
+                    .str.replace(",", ".", regex=False),
+                errors="coerce",
+            )
+            _mask_low_az  = _soll_az.notna() & (_soll_az <= 0.1)
+
+            # Spalte J: Personalnummer nicht leer
+            if "Personalnummer" in ueb_base.columns:
+                _pnr_raw = ueb_base["Personalnummer"].astype(str).str.strip()
+                _mask_has_pnr = ~_pnr_raw.isin(["", "nan", "None", "NaN"])
+            else:
+                _mask_has_pnr = pd.Series(False, index=ueb_base.index)
+
+            n_low_az    = int(_mask_low_az.sum())
+            n_ueberhang = int((_mask_low_az & _mask_has_pnr).sum())
+
+            # Überhang-Datensatz für Detailanalysen A / B / C
+            ueb_df = ueb_base[_mask_low_az & _mask_has_pnr].copy()
+
+            # ── Option B: Mehrfachplanstellen-Analyse ─────────────────────────
+            # "Echte Stelle" = Planstelle derselben Person in inkludierten OEs mit Soll > 0.1
+            _az_all = pd.to_numeric(
+                ueb_base["Sollarbeitszeit"].astype(str).str.strip().str.replace(",", ".", regex=False),
+                errors="coerce",
+            )
+            _ueb_persnr = set(ueb_df["Personalnummer"].astype(str).str.strip())
+            _all_for_ueb = ueb_base[
+                ueb_base["Personalnummer"].astype(str).str.strip().isin(_ueb_persnr)
+            ]
+            _has_real_set = set(
+                _all_for_ueb.loc[_az_all.reindex(_all_for_ueb.index).gt(0.1), "Personalnummer"]
+                .astype(str).str.strip()
+            )
+            n_nur_ueberhang = int(
+                ueb_df["Personalnummer"].astype(str).str.strip()
+                .apply(lambda p: p not in _has_real_set).sum()
+            )
+            n_mit_echter = n_ueberhang - n_nur_ueberhang
+
+            # ── KPI-Kacheln (mit Option B) ────────────────────────────────────
+            ueb_kpis = [
+                {
+                    "title":    "Sollarbeitszeit ≤ 0,1",
+                    "value":    f"{n_low_az:,}".replace(",", "."),
+                    "subtitle": "Planstellen mit Platzhalter-Arbeitszeit",
+                    "icon":     "⏱️",
+                    "status":   "warning" if n_low_az > 0 else "good",
+                },
+                {
+                    "title":    "Überhänge gesamt",
+                    "value":    f"{n_ueberhang:,}".replace(",", "."),
+                    "subtitle": "Sollarbeitszeit ≤ 0,1 UND Personalnummer befüllt",
+                    "icon":     "🔴",
+                    "status":   "warning" if n_ueberhang > 0 else "good",
+                },
+                {
+                    "title":    "Nur Überhang",
+                    "value":    f"{n_nur_ueberhang:,}".replace(",", "."),
+                    "subtitle": "Person ausschließlich über Überhang geführt – keine aktive Stelle zugeordnet",
+                    "icon":     "⚠️",
+                    "status":   "warning" if n_nur_ueberhang > 0 else "good",
+                },
+                {
+                    "title":    "Überhang + echte Stelle",
+                    "value":    f"{n_mit_echter:,}".replace(",", "."),
+                    "subtitle": "Restzeile neben einer aktiven Planstelle – Datenpflege prüfen",
+                    "icon":     "🔗",
+                    "status":   "default",
+                },
+            ]
+            render_kpi_cards_styled(ueb_kpis)
+
+            if n_ueberhang > 0:
+                st.markdown("")
+                col_oe, col_eg = st.columns([1, 1], gap="large")
+
+                # ── Option A: OE-Verteilung ───────────────────────────────────
+                with col_oe:
+                    st.caption("**Option A — Verteilung nach Organisationseinheit**")
+                    _oe_col = "Organisationseinheit" if "Organisationseinheit" in ueb_df.columns else "Kürzel OrgEinheit"
+                    oe_counts = (
+                        ueb_df.groupby([_oe_col, "Kürzel OrgEinheit"]).size()
+                        .reset_index(name="n")
+                        .sort_values("n", ascending=False)
+                        .head(10)
+                        .sort_values("n", ascending=True)   # Plotly zeigt unten→oben
+                    )
+                    # Label: "Kürzel — Name"
+                    oe_counts["_label"] = (
+                        oe_counts["Kürzel OrgEinheit"].astype(str)
+                        + " — "
+                        + oe_counts[_oe_col].astype(str)
+                    )
+                    fig_oe = go.Figure(go.Bar(
+                        y=oe_counts["_label"],
+                        x=oe_counts["n"],
+                        orientation="h",
+                        marker=dict(color="#0088DE", line=dict(color="white", width=0.5)),
+                        hovertemplate="%{y}<br>Überhänge: %{x}<extra></extra>",
+                        text=oe_counts["n"],
+                        textposition="outside",
+                    ))
+                    fig_oe.update_layout(
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        font=dict(color="#64748b", size=11),
+                        margin=dict(l=10, r=40, t=10, b=10),
+                        height=max(250, len(oe_counts) * 34),
+                        xaxis=dict(showgrid=True, gridcolor="rgba(226,232,240,0.8)", zeroline=False),
+                        yaxis=dict(showgrid=False),
+                    )
+                    st.plotly_chart(fig_oe, use_container_width=True)
+
+                # ── Option C: Ist-EG Verteilung ───────────────────────────────
+                with col_eg:
+                    st.caption("**Option C — Ist-Entgeltgruppe der betroffenen Personen**")
+                    if "TrfGr" in ueb_df.columns:
+                        from config.settings import TARIFF_GROUPS as _TG_UEB
+                        _EG_RANK_UEB = {g: i for i, g in enumerate(_TG_UEB)}
+                        eg_counts = (
+                            ueb_df["TrfGr"].fillna("Unbekannt")
+                            .value_counts()
+                            .reset_index(name="n")
+                            .rename(columns={"TrfGr": "eg"})
+                        )
+                        eg_counts = eg_counts.sort_values(
+                            "eg",
+                            key=lambda s: s.map(lambda v: (_EG_RANK_UEB.get(v, 998), v)),
+                        )
+                        fig_eg = go.Figure(go.Bar(
+                            x=eg_counts["eg"],
+                            y=eg_counts["n"],
+                            marker=dict(color="#0088DE", line=dict(color="white", width=0.5)),
+                            hovertemplate="Ist-EG: %{x}<br>Überhänge: %{y}<extra></extra>",
+                            text=eg_counts["n"],
+                            textposition="outside",
+                        ))
+                        fig_eg.update_layout(
+                            plot_bgcolor="rgba(0,0,0,0)",
+                            paper_bgcolor="rgba(0,0,0,0)",
+                            font=dict(color="#64748b", size=11),
+                            margin=dict(l=10, r=10, t=10, b=30),
+                            height=300,
+                            xaxis=dict(showgrid=False, title=None),
+                            yaxis=dict(
+                                showgrid=True,
+                                gridcolor="rgba(226,232,240,0.8)",
+                                zeroline=False,
+                                title=None,
+                                dtick=5,
+                            ),
+                        )
+                        st.plotly_chart(fig_eg, use_container_width=True)
+                    else:
+                        st.info("Spalte 'TrfGr' nicht im Datensatz.")
+
+            # ── Detailtabelle Überhänge ───────────────────────────────────
+            st.markdown("---")
+            st.subheader("🔍 Detailansicht Überhänge")
+
+            col_exp_a, col_exp_b = st.columns(2, gap="medium")
+            with col_exp_a:
+                st.markdown(
+                    "**⚠️ Nur Überhang**  \n"
+                    "Die Person ist im System ausschließlich über diese eine Planstelle geführt "
+                    "– und die hat eine Sollarbeitszeit von ≤ 0,1. Es existiert **keine weitere "
+                    "aktive Planstelle** in den inkludierten OEs. Das bedeutet: Die Person hat "
+                    "formal keine reguläre Stellenzuordnung. Mögliche Ursachen sind ein noch "
+                    "nicht abgeschlossener Versetzungsprozess, ein vergessener Altdatensatz oder "
+                    "eine fehlende Nacherfassung der echten Stelle."
+                )
+            with col_exp_b:
+                st.markdown(
+                    "**🔗 Überhang + echte Stelle**  \n"
+                    "Die Person hat **zusätzlich** zu dieser Überhang-Planstelle mindestens eine "
+                    "weitere Planstelle mit einer regulären Sollarbeitszeit (> 0,1) in den "
+                    "inkludierten OEs. Der Überhang-Eintrag ist damit ein **Zusatzeintrag**, der "
+                    "neben der echten Stelle existiert. Typische Ursachen sind ein nicht "
+                    "bereinigter Rest nach einer Versetzung, ein SAP-Artefakt oder ein bewusst "
+                    "angelegter Platzhalter. Handlungsbedarf: Prüfen, ob der Eintrag gelöscht "
+                    "oder korrigiert werden kann."
+                )
+            st.markdown("")
+
+            # Typ-Spalte: Nur Überhang vs. Überhang + echte Stelle
+            _ueb_detail = ueb_df.copy()
+            _ueb_detail["_Typ"] = _ueb_detail["Personalnummer"].astype(str).str.strip().apply(
+                lambda p: "Überhang + echte Stelle" if p in _has_real_set else "Nur Überhang"
+            )
+
+            _filter_opts = ["Alle", "Nur Überhang", "Überhang + echte Stelle"]
+            _filter_sel = st.radio(
+                "Anzeigen:",
+                options=_filter_opts,
+                horizontal=True,
+                key="ueb_detail_filter",
+            )
+            if _filter_sel != "Alle":
+                _ueb_detail = _ueb_detail[_ueb_detail["_Typ"] == _filter_sel]
+
+            # Anzuzeigende Spalten (nur vorhandene)
+            _display_cols_pref = [
+                "Personalnummer",
+                "Kürzel OrgEinheit",
+                "Organisationseinheit",
+                "TrfGr",
+                "Bewertung Tarifgruppe",
+                "Text Gehaltsband",
+                "Sollarbeitszeit",
+                "_Typ",
+            ]
+            _display_cols = [c for c in _display_cols_pref if c in _ueb_detail.columns]
+            _rename_map = {
+                "TrfGr": "Ist-EG",
+                "Bewertung Tarifgruppe": "Soll-EG (Basis)",
+                "Text Gehaltsband": "Soll-EG (Max)",
+                "Sollarbeitszeit": "Soll-AZ",
+                "_Typ": "Typ",
+            }
+            _show_df = (
+                _ueb_detail[_display_cols]
+                .rename(columns=_rename_map)
+                .reset_index(drop=True)
+            )
+            st.caption(f"{len(_show_df)} Einträge")
+            st.dataframe(_show_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("Spalte 'Sollarbeitszeit' nicht im Datensatz vorhanden.")
+
+
+# =============================================================================
 # HAUPTFUNKTION
 # =============================================================================
 
@@ -2935,6 +3905,10 @@ def main():
 
             section_title("IST vs SOLL EUR Vergleich", "💶", anchor="ist-vs-soll-eur")
             render_ist_vs_soll_eur_tab(filtered_df, print_mode=True)
+            page_break()
+
+            section_title("IST vs SOLL Köpfe", "🔢", anchor="ist-vs-soll-koepfe")
+            render_ist_soll_koepfe_tab(prepared_df, print_mode=True)
 
             st.markdown('</div>', unsafe_allow_html=True)
 
@@ -2944,12 +3918,13 @@ def main():
             
         else:
             # Standardansicht: Tabs
-            tab1, tab2, tab3, tab4, tab5 = st.tabs([
+            tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
                 "📊 IST-MAK",
                 "👥 IST-Köpfe",
                 "💰 IST-EUR",
                 "🎯 IST vs SOLL MAK",
-                "💶 IST vs SOLL EUR"
+                "💶 IST vs SOLL EUR",
+                "🔢 IST vs SOLL Köpfe",
             ])
 
             with tab1:
@@ -2966,6 +3941,12 @@ def main():
 
             with tab5:
                 render_ist_vs_soll_eur_tab(filtered_df)
+
+            with tab6:
+                # prepared_df (not filtered_df) wird verwendet, damit vakante
+                # Planstellen enthalten sind (Geschlecht-/Arbeitszeit-Filter
+                # wuerden leere Person-Zeilen herausfiltern).
+                render_ist_soll_koepfe_tab(prepared_df)
 
     except FileNotFoundError as e:
         st.error(f"Datenfehler: {str(e)}")

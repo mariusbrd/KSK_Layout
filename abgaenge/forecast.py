@@ -302,9 +302,9 @@ def _schedule_new_atz_cases(
     probs = []
     for _, row in eligible.iterrows():
         annual_rate = _select_atz_prob(row, params)
-        probs.append(annual_rate * period_fraction)
+        probs.append(max(0.0, annual_rate * period_fraction))
     
-    probs = np.array(probs)
+    probs = np.array(probs, dtype=float)
     expected = float(np.sum(probs))
     
     if expected <= 0:
@@ -314,10 +314,25 @@ def _schedule_new_atz_cases(
     if count <= 0:
         return atz_pivot
 
-    # Sample individuals based on their relative weights (probabilities)
-    # p = probs / sum(probs)
-    p_normalized = probs / expected
-    chosen = eligible.sample(n=min(count, len(eligible)), replace=False, weights=p_normalized, random_state=rng).index.tolist()
+    # Sample only from strictly positive probabilities to avoid:
+    # "Fewer non-zero entries in p than size" when many weights are zero.
+    positive_mask = probs > 0
+    if not positive_mask.any():
+        return atz_pivot
+
+    eligible_pos = eligible.loc[positive_mask]
+    probs_pos = probs[positive_mask]
+    count = min(count, len(eligible_pos))
+    if count <= 0:
+        return atz_pivot
+
+    p_normalized = probs_pos / float(np.sum(probs_pos))
+    chosen = eligible_pos.sample(
+        n=count,
+        replace=False,
+        weights=p_normalized,
+        random_state=rng,
+    ).index.tolist()
 
     new_rows = []
     for persnr in chosen:

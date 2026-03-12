@@ -37,32 +37,58 @@ def _next_august_conversion_date(entry_date: pd.Timestamp, conversion_month: int
     else:
         return pd.Timestamp(year + 1, conversion_month, conversion_day)
 
-def _estimate_baseline_graduation_date(entry_date: pd.Timestamp, duration_years: float, conversion_month: int = 8, conversion_day: int = 1) -> pd.Timestamp:
+def _estimate_baseline_graduation_date(
+    entry_date: pd.Timestamp,
+    duration_years: float,
+    conversion_month: int = 8,
+    conversion_day: int = 1,
+    graduation_mode: str = "next_cycle",
+    nearest_cycle_grace_days: Optional[int] = None,
+) -> pd.Timestamp:
     """
-    Calculates estimated graduation for Baseline Azubis (missing graduation date).
-    Logic:
-    1. Estimate end based on Entry + Duration.
-    2. Snap to NEXT valid August cycle (same year if end <= August, else next year).
-    
-    This ensures baseline Azubis are distributed across years based on their entry date,
-    instead of all bunching up in the next immediate August.
+    Calculates estimated graduation for Azubis.
+
+    graduation_mode:
+      "next_cycle"    (default, backward-compatible): snap to same-year cycle
+                      if estimated_end <= cycle date, else NEXT year. Can add
+                      up to ~11 months for late-year entrants. Strictly respects
+                      minimum training duration (I10).
+      "nearest_cycle": snap to the NEAREST cycle date (before or after
+                      estimated_end). Reduces systematic bias for post-August
+                      entrants (e.g. Sept entry + 3y -> Aug same year, not +1).
+                      Trade-off: may graduate a few days before estimated_end
+                      when the nearest August is just before the training end.
+
+    nearest_cycle_grace_days:
+      Only used with "nearest_cycle". Controls max days of early graduation:
+        None (default): no constraint — full nearest-cycle bias reduction.
+        0:  strict I10 — no early graduation; if august_same < estimated_end,
+            force to august_next (equivalent to next_cycle for late entries).
+        N>0: allow backward snap only when gap <= N days.
     """
     if pd.isna(entry_date):
         return pd.NaT
-        
-    # 1. Estimated Finish
+
     years = int(duration_years)
     months = int((duration_years % 1) * 12)
     estimated_end = entry_date + pd.DateOffset(years=years, months=months)
-    
-    # 2. August Candidate in same year
-    august_candidate = pd.Timestamp(estimated_end.year, conversion_month, conversion_day)
-    
-    # 3. Decision
-    if estimated_end <= august_candidate:
-        return august_candidate
-    else:
-        return pd.Timestamp(estimated_end.year + 1, conversion_month, conversion_day)
+
+    august_same = pd.Timestamp(estimated_end.year, conversion_month, conversion_day)
+    august_next = pd.Timestamp(estimated_end.year + 1, conversion_month, conversion_day)
+
+    if graduation_mode == "nearest_cycle":
+        if estimated_end <= august_same:
+            return august_same
+        dist_past = (estimated_end - august_same).days
+        # Apply grace constraint if set
+        if nearest_cycle_grace_days is not None and dist_past > nearest_cycle_grace_days:
+            return august_next
+        dist_future = (august_next - estimated_end).days
+        return august_same if dist_past <= dist_future else august_next
+    else:  # "next_cycle"
+        if estimated_end <= august_same:
+            return august_same
+        return august_next
 
 def _annual_to_period_count(annual_count: float, period_days: float, rng: np.random.RandomState, debt: float = 0.0) -> (int, float):
     """
@@ -261,7 +287,10 @@ def _simulate_azubis(
     mak_after = float(azubi_params.get("azubi_mak_after_takeover", 1.0))
     conv_month = int(azubi_params.get("azubi_conversion_month", 8))
     conv_day = int(azubi_params.get("azubi_conversion_day", 1))
-    
+    graduation_mode = azubi_params.get("graduation_mode", "next_cycle")
+    _raw_grace = azubi_params.get("nearest_cycle_grace_days", None)
+    grace_days = int(_raw_grace) if _raw_grace is not None else None
+
     # Pre-compute cluster map for lookups
     unit_to_cluster = _get_unit_to_cluster_map(df_state)
     valid_units = list(unit_to_cluster.keys()) if unit_to_cluster else all_org_units
@@ -273,12 +302,19 @@ def _simulate_azubis(
         (df_state["Jobfamily"].astype(str).str.contains("Azubi", na=False, case=False)) |
         (df_state["Jobfamily"].astype(str).str.contains("Ausbildung", na=False, case=False))
     )
-    
+
     # id: 63 - Label training phase as "Sonstige" for charts
     training_label = "Sonstige"
     if "Jobfamily" not in df_state.columns:
         df_state["Jobfamily"] = "Unbekannt"
-    
+
+    # Fix 4: Save original Jobfamily once before overwriting (audit/export only)
+    if "Jobfamily_pre_azubi" not in df_state.columns:
+        df_state["Jobfamily_pre_azubi"] = pd.NA
+    first_time_mask = mask_azubi & df_state["Jobfamily_pre_azubi"].isna()
+    if first_time_mask.any():
+        df_state.loc[first_time_mask, "Jobfamily_pre_azubi"] = df_state.loc[first_time_mask, "Jobfamily"]
+
     df_state.loc[mask_azubi, "Jobfamily"] = training_label
 
     current_azubis = df_state[
@@ -305,7 +341,7 @@ def _simulate_azubis(
         graduation_date = row.get("GraduationDate", pd.NaT)
         
         if pd.isna(graduation_date) and pd.notna(eintritt):
-             graduation_date = _estimate_baseline_graduation_date(eintritt, duration_years, conv_month, conv_day)
+             graduation_date = _estimate_baseline_graduation_date(eintritt, duration_years, conv_month, conv_day, graduation_mode, grace_days)
         
         if pd.isna(graduation_date):
             continue
@@ -317,11 +353,13 @@ def _simulate_azubis(
             if pd.notna(fixed_destiny):
                 should_retain = (fixed_destiny == "Takeover")
             else:
+                # Baseline Azubi (no pre-assigned destiny): use isolated baseline debt pool
+                # so that fluctuations in forecast hire volume do not affect baseline outcomes.
                 success_chance = retention_rate
                 if debts is not None:
-                    expected_success = success_chance + debts.get("takeover", 0.0)
+                    expected_success = success_chance + debts.get("takeover_baseline", 0.0)
                     takeover_count = int(expected_success)
-                    debts["takeover"] = expected_success - takeover_count
+                    debts["takeover_baseline"] = expected_success - takeover_count
                     should_retain = takeover_count >= 1
                 else:
                     should_retain = rng.random() < success_chance
@@ -411,6 +449,7 @@ def _simulate_azubis(
                 "OE-Cluster": row.get("OE-Cluster", "Sonstiges"),
                 "JF-Cluster": row.get("JF-Cluster", "Sonstiges"),
                 "comment": "Statuswechsel: Azubi Ende",
+                "is_internal_transition": True,
                 **audit_fields
             })
             _conv_in_event = {
@@ -425,10 +464,14 @@ def _simulate_azubis(
                 "TrfGr": entry_tariff,
                 "St": entry_step,
                 "Jobfamily": new_jf,
+                # Carry original JF (saved by Fix 4) for audit/export; enables tracing
+                # which original Jobfamily each converted Azubi came from.
+                "Jobfamily_pre_azubi": row.get("Jobfamily_pre_azubi"),
                 "Planstelle": str(row.get("Planstelle", "Nachbesetzung")),
                 "OE-Cluster": new_cluster,
                 "JF-Cluster": new_jf_cluster,
                 "comment": "Statuswechsel: Reguläre Übernahme",
+                "is_internal_transition": True,
                 **audit_fields
             }
             if _is_orgunit_mode:
@@ -489,7 +532,10 @@ def _simulate_new_azubis(
     mak_during = float(azubi_params.get("azubi_mak_during_training", 0.0))
     conv_month = int(azubi_params.get("azubi_conversion_month", 8))
     conv_day = int(azubi_params.get("azubi_conversion_day", 1))
-    
+    graduation_mode = azubi_params.get("graduation_mode", "next_cycle")
+    _raw_grace = azubi_params.get("nearest_cycle_grace_days", None)
+    grace_days = int(_raw_grace) if _raw_grace is not None else None
+
     # Pre-compute cluster map for lookups
     unit_to_cluster = _get_unit_to_cluster_map(df_state)
     valid_units = list(unit_to_cluster.keys()) if unit_to_cluster else all_org_units
@@ -505,20 +551,19 @@ def _simulate_new_azubis(
     eff_days = (period.end - eff_start).days
     if eff_days < 0: eff_days = 0
 
-    import uuid
     for i in range(num_cases):
         # Random start date in allowed period segment
         entry_date = eff_start + pd.Timedelta(days=rng.integers(0, eff_days + 1))
-        
-        # Professional unique ID (id: 16)
-        unique_suffix = str(uuid.uuid4())[:4]
+
+        # Deterministic unique ID derived from rng (seed-reproducible, I9)
+        unique_suffix = format(rng.integers(0, 0xFFFF), "04x")
         new_id = f"AZ_{entry_date.year}_N{i+1:02d}_{unique_suffix}"
         
         org_unit = _resolve_org_unit(strategy, target_unit, all_org_units, [], rng, valid_units)
         new_cluster = unit_to_cluster.get(org_unit, "Sonstiges")
 
         # Graduation calc (id: 16) - Use August Rule respecting Duration
-        grad_date = _estimate_baseline_graduation_date(entry_date, duration_years, conv_month, conv_day)
+        grad_date = _estimate_baseline_graduation_date(entry_date, duration_years, conv_month, conv_day, graduation_mode, grace_days)
         
         # id: 63 - Azubi Training -> "Sonstige" Job Family
         jf_to_cluster = azubi_params.get("jf_to_cluster_map", {})
@@ -547,11 +592,13 @@ def _simulate_new_azubis(
         }
         
         # --- Prepare Future Graduation Destiny (Fix id: 13) ---
+        # Uses isolated forecast debt pool so baseline Azubi decisions do not
+        # interfere with the user-configured retention_rate for new hires.
         success_chance = retention_rate
         if debts is not None:
-            expected_success = success_chance + debts.get("takeover", 0.0)
+            expected_success = success_chance + debts.get("takeover_forecast", 0.0)
             takeover_count = int(expected_success)
-            debts["takeover"] = expected_success - takeover_count
+            debts["takeover_forecast"] = expected_success - takeover_count
             should_retain = takeover_count >= 1
         else:
             should_retain = rng.random() < success_chance
@@ -559,6 +606,11 @@ def _simulate_new_azubis(
         # Mark destiny in new_row so _simulate_azubis picks it up later
         new_row["GraduationModus"] = "Takeover" if should_retain else "Exit"
         
+        # Design decision: Azubi_Hire carries mak=0.0 intentionally.
+        # Headcount (+1) rises immediately at hire; capacity (MAK) only increases
+        # at takeover (Azubi_Conversion_In, mak=mak_after). This means HC and MAK
+        # diverge during training — do NOT use abs(count)==abs(mak) as a test invariant
+        # for Azubi events. See tests F01-F05 for the correct assertions.
         events.append({
             "date": entry_date,
             "type": "Azubi_Hire",
@@ -567,7 +619,7 @@ def _simulate_new_azubis(
             "persnr": new_id,
             "org_unit": org_unit,
             "source": "Azubi (New)",
-            "mak": mak_during, # 0.0
+            "mak": mak_during, # 0.0 by design — capacity counted at takeover, not at hire
             "TrfGr": entry_tariff,
             "St": 1,
             "Jobfamily": new_jf,
@@ -814,8 +866,12 @@ def run_forecast_zugaenge(
     # Mutable vacancy list
     current_vacancies = sorted(vacancies, key=lambda x: x["date"]) if vacancies else []
 
-    # Debt tracking for deterministic counts
-    debts = {"azubi": 0.0, "trainee": 0.0, "new_hires": 0.0, "takeover": 0.0}
+    # Debt tracking for deterministic counts.
+    # takeover_baseline: retention decisions for existing (snapshot) Azubis without pre-assigned destiny.
+    # takeover_forecast: destiny pre-assignment for newly hired forecast Azubis.
+    # Keeping them separate ensures user-controlled retention_rate only drives forecast Azubis,
+    # not baseline Azubis whose graduation timing is already determined by HR data.
+    debts = {"azubi": 0.0, "trainee": 0.0, "new_hires": 0.0, "takeover_baseline": 0.0, "takeover_forecast": 0.0}
 
     for p in period_range:
         # Clip to effective start/end (pro-rata support)
@@ -863,12 +919,17 @@ def run_forecast_zugaenge(
         if new_rows:
             df_new = pd.DataFrame(new_rows)
             df_new.set_index("PersNr", drop=False, inplace=True) # Ensure Index matches
-            # Align columns
-            for col in df_state.columns:
-                if col not in df_new.columns:
-                    df_new[col] = pd.NA
-            
-            df_state = pd.concat([df_state, df_new])
+            # Expand df_state with any new columns from df_new (fill existing rows with NA)
+            for col in df_new.columns:
+                if col not in df_state.columns:
+                    df_state[col] = pd.NA
+            df_new = df_new.reindex(columns=df_state.columns)
+            # Both frames now share identical columns; suppress FutureWarning about all-NA
+            # column dtype inference (pandas >=2.1 interim behaviour, not a logic error).
+            import warnings as _w
+            with _w.catch_warnings():
+                _w.filterwarnings("ignore", message=".*empty or all-NA.*", category=FutureWarning)
+                df_state = pd.concat([df_state, df_new])
             
         # Cleanup _new_row from events before saving
         for e in period_events:
@@ -971,7 +1032,8 @@ def run_forecast_zugaenge(
     # Calculate Time Series KPIs (Headcount/MAK Evolution)
     # Start Stats
     start_hc = df_snapshot["active"].sum() if "active" in df_snapshot.columns else len(df_snapshot)
-    start_mak = df_snapshot["mak"].sum() if "mak" in df_snapshot.columns else start_hc # Fallback
+    _mak_col = next((c for c in ("MAK_Calculated", "mak", "MAK") if c in df_snapshot.columns), None)
+    start_mak = float(df_snapshot[_mak_col].fillna(0).sum()) if _mak_col else 0.0
 
     # We need a monthly stats dataframe
     # Iterate periods and sum up events

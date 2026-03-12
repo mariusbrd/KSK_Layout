@@ -19,6 +19,8 @@ def default_params() -> Dict[str, Any]:
             "azubi_mak_after_takeover": 1.0,
             "azubi_conversion_month": 8,
             "azubi_conversion_day": 1,
+            "graduation_mode": "nearest_cycle",  # "nearest_cycle" | "next_cycle" (nearest reduces late-year entry bias)
+            "nearest_cycle_grace_days": None,  # None = no constraint (full bias reduction); 0 = strict I10 (no early grad)
             "use_takeover_matrix": False,
             "takeover_dimension": "JobFamily", # "JobFamily" or "OrgUnit"
             "takeover_matrix": {}, # {val: weight}

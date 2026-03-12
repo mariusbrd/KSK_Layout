@@ -247,87 +247,14 @@ def render_settings_page():
 
     st.divider()
 
-    # --- Gruppen-Ausschlüsse ---
+    # --- Gruppen-Ausschlüsse (verschoben) ---
     st.subheader("Gruppen-Ausschlüsse")
-    st.caption(
-        "Bestimmte Personengruppen können ausgeklammert werden. "
-        "WICHTIG: Ausgeschlossene Personen zählen nicht zum Headcount (Ist), "
-        "die Soll-Kapa der Planstelle bleibt aber als Bedarf erhalten (Vakanz)."
+    st.info(
+        "Die Konfiguration der Exklusionsgruppen wurde in die neue Deep-Dive-Seite verschoben. "
+        "Dort können alle Gruppen mit Checkboxen ein- und ausgeschlossen werden — "
+        "inklusive Planstellen-Übersicht, Kapazitätsanalyse und Drilldown pro Gruppe.\n\n"
+        "👉 **Navigiere zu: 🔎 Exklusionsgruppen**"
     )
-
-    from config.settings import EXCLUSION_ORG_UNITS
-    
-    # Persistierte Exclusions laden
-    current_ex = get_setting("exclusions", {
-        "vorstand": False,
-        "ruhend_bv": False,
-        "org_units": []
-    })
-
-    col_ex1, col_ex2 = st.columns(2)
-    with col_ex1:
-        new_ex_vorstand = st.checkbox(
-            "Vorstandsmitglieder ausschließen", 
-            value=current_ex.get("vorstand", False),
-            help="Basiert auf MitarbGruppenbez. = 'Vorstand'"
-        )
-    with col_ex2:
-        new_ex_ruhend = st.checkbox(
-            "Ruhendes BV ausschließen", 
-            value=current_ex.get("ruhend_bv", False),
-            help="Basiert auf Status = 'Ruhendes Beschäftigungsverhältnis'"
-        )
-
-    with st.expander("📁 Spezifische PA-Bereiche ausschließen (99XX)"):
-        st.info("Markierte Bereiche werden als Vakanzen behandelt (Soll-Kapa bleibt erhalten).")
-        
-        btn_col1, btn_col2, _ = st.columns([1, 1, 2])
-        if btn_col1.button("Alle auswählen", key="btn_select_all_99"):
-            current_ex["org_units"] = list(EXCLUSION_ORG_UNITS.keys())
-            for code in EXCLUSION_ORG_UNITS.keys():
-                st.session_state[f"chk_ex_{code}"] = True
-            set_setting("exclusions", current_ex)
-            st.session_state["exclude_org_units"] = current_ex["org_units"]
-            st.rerun()
-        if btn_col2.button("Alle abwählen", key="btn_deselect_all_99"):
-            current_ex["org_units"] = []
-            for code in EXCLUSION_ORG_UNITS.keys():
-                st.session_state[f"chk_ex_{code}"] = False
-            set_setting("exclusions", current_ex)
-            st.session_state["exclude_org_units"] = []
-            st.rerun()
-            
-        cols_99 = st.columns(2)
-        ex_99_list = current_ex.get("org_units", [])
-        new_ex_99 = []
-        
-        for i, (code, label) in enumerate(EXCLUSION_ORG_UNITS.items()):
-            c_idx = i % 2
-            # Initialisiere session_state key falls nicht vorhanden, um Konsistenz zu wahren
-            key = f"chk_ex_{code}"
-            if key not in st.session_state:
-                st.session_state[key] = code in ex_99_list
-                
-            with cols_99[c_idx]:
-                if st.checkbox(f"{code} ({label})", key=key):
-                    new_ex_99.append(code)
-
-    # Speichern-Logik für Exclusions
-    if (new_ex_vorstand != current_ex.get("vorstand") or 
-        new_ex_ruhend != current_ex.get("ruhend_bv") or 
-        set(new_ex_99) != set(ex_99_list)):
-        
-        updated_ex = {
-            "vorstand": new_ex_vorstand,
-            "ruhend_bv": new_ex_ruhend,
-            "org_units": new_ex_99
-        }
-        set_setting("exclusions", updated_ex)
-        # Session state für Sidebar-Logik (Sofort-Wirkung ohne Full Reload wenn möglich)
-        st.session_state["exclude_vorstand"] = new_ex_vorstand
-        st.session_state["exclude_ruhend"] = new_ex_ruhend
-        st.session_state["exclude_org_units"] = new_ex_99
-        st.rerun()
 
     st.divider()
 

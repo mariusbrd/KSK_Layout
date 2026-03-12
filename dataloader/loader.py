@@ -447,12 +447,16 @@ def apply_exclusions(df: pd.DataFrame, exclusions: Dict[str, Any]) -> pd.DataFra
         if "MitarbGruppenbez." in df_out.columns:
             exclusion_mask |= (df_out["MitarbGruppenbez."] == "Vorstand")
             
-    # 2. Ruhendes BV (9900)
+    # 2. Ruhendes BV (via Status-Feld — identisch mit build_group_masks() in exclusion_groups.py)
+    # Frühere Version nutzte OE=="9900"; das wich von build_group_masks() ab und schloss
+    # Personen mit Status "Ruhendes BV" in anderen OEs nicht aus.
+    # OE 9900 wird weiterhin separat über org_units erfasst (PA Ruhendes BV).
     if exclusions.get("ruhend_bv"):
-        if "Kürzel OrgEinheit" in df_out.columns:
-            # P07: Robust normalization (handle 9990.0 -> "9990")
-            s_ou = df_out["Kürzel OrgEinheit"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
-            exclusion_mask |= (s_ou == "9900")
+        if "Status kundenindividuell" in df_out.columns:
+            exclusion_mask |= (
+                df_out["Status kundenindividuell"].astype(str).str.strip()
+                == "Ruhendes Beschäftigungsverhältnis"
+            )
             
     # 3. Spezifische PA-Bereiche (und 99XX-Logik)
     ex_org_units = exclusions.get("org_units", [])
@@ -462,9 +466,11 @@ def apply_exclusions(df: pd.DataFrame, exclusions: Dict[str, Any]) -> pd.DataFra
         # Normale Liste
         exclusion_mask |= (s_ou.isin(ex_org_units))
         
-        # 99XX Spezialregel: Alles was mit 99 beginnt
+        # 99XX Spezialregel: Alles was mit 99 beginnt, aber NICHT bereits explizit gelistete Codes
+        # (konsistent mit build_group_masks() in exclusion_groups.py)
         if "99XX" in ex_org_units:
-            exclusion_mask |= (s_ou.str.startswith("99"))
+            explicit_pa_codes = {c for c in ex_org_units if c != "99XX"}
+            exclusion_mask |= s_ou.str.startswith("99") & ~s_ou.isin(explicit_pa_codes)
             
     # --- Anwendung der Exklusion (Vacating) ---
     if exclusion_mask.any():
@@ -497,6 +503,11 @@ def apply_exclusions(df: pd.DataFrame, exclusions: Dict[str, Any]) -> pd.DataFra
         
         # Leere Personendaten
         existing_person_fields = [f for f in person_fields if f in df_out.columns]
+        # Bool-Spalten (z.B. Ist_Azubi) müssen vor der pd.NA-Zuweisung auf
+        # nullable "boolean" gecastet werden — sonst FutureWarning "incompatible dtype".
+        for f in existing_person_fields:
+            if df_out[f].dtype == bool:
+                df_out[f] = df_out[f].astype("boolean")
         df_out.loc[exclusion_mask, existing_person_fields] = pd.NA
         
         # Nulle Ist-Volumen
@@ -852,12 +863,12 @@ def derive_atz_fields(atz_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def clean_step(step) -> int:
-    """Bereinigt Stufen-Werte wie '2+' zu 2."""
+    """Bereinigt Stufen-Werte wie '2+', '6.0' zu 2, 6."""
     if pd.isna(step):
         return 4
     step_str = str(step).strip().replace("+", "").replace("-", "")
     try:
-        return int(step_str)
+        return int(float(step_str))
     except (ValueError, TypeError):
         return 4
 
@@ -981,7 +992,7 @@ def calculate_cost_vectorized(df: pd.DataFrame, tvoed_lookup: Dict) -> pd.DataFr
     fallback_annual = fallback_base * fallback_mult
     
     # Fill NaN lookup values with fallback
-    df_out["Annual_Final"] = df_out["Annual_L"].fillna(fallback_annual)
+    df_out["Annual_Final"] = df_out["Annual_L"].fillna(fallback_annual).infer_objects(copy=False)
     
     # 5. Helper: Special Salaries
     # Azubi (Progressiv)
@@ -1029,10 +1040,12 @@ def calculate_mak_vectorized(df: pd.DataFrame, atz_fr_persnr_set: set = None) ->
     df_out = df.copy()
     
     # Baseline – guard against missing BsGrd (e.g. incomplete uploads)
+    # Konservativ: ohne BsGrd wird MAK = 0.0 gesetzt (nicht 1.0),
+    # um künstliche IST-MAK-Inflation zu verhindern (Bug K2 aus MAK-Dossier).
     if "BsGrd" in df_out.columns:
         df_out["MAK_Calculated"] = df_out["BsGrd"].fillna(0) / 100.0
     else:
-        df_out["MAK_Calculated"] = 1.0
+        df_out["MAK_Calculated"] = 0.0
     
     # Vacancy Mask
     if "Is_Vacant" in df_out.columns:
@@ -1118,6 +1131,12 @@ def combine_to_snapshot(mitarbeiter, planstellen, atz, ausbildung, stichtag=None
     df["Is_Vacant"] = df["Personalnummer"].isna()
     df["FTE_person"] = df["BsGrd"].fillna(0) / 100.0
     df["Soll_FTE"] = df["Sollarbeitszeit"].fillna(0) / 39.0
+    # Systemartefakt: Soll_FTE ≈ 0.01 ist ein Platzhalterwert für 0
+    # (Quellsystem kann Soll-MAK = 0 nicht verbuchen → wird als 0,01 geliefert)
+    # Toleranzbasierter Vergleich (< 0.015) statt exakter Gleichheit, da Excel-Floats
+    # leicht von 0.01 abweichen können (z.B. 0.38999.../39 = 0.009999...).
+    # Untergrenze: 0.015 entspricht ~0,585h Sollarbeitszeit — kein realer Wert.
+    df.loc[(df["Soll_FTE"] > 0) & (df["Soll_FTE"] < 0.015), "Soll_FTE"] = 0.0
     df["FTE_assigned"] = df["FTE_person"] * df["Soll_FTE"]
 
     # Optimized Step Cleaning (Vectorized)
@@ -1313,15 +1332,13 @@ def create_combined_snapshot(
 
     df["FTE_person"] = df["BsGrd"].fillna(0) / 100.0
     df["Soll_FTE"] = df["Sollarbeitszeit"].fillna(39.0) / 39.0
+    # Systemartefakt: Soll_FTE ≈ 0.01 ist ein Platzhalterwert für 0
+    # Toleranzbasierter Vergleich (< 0.015) — identisch zu Stelle 1 oben.
+    df.loc[(df["Soll_FTE"] > 0) & (df["Soll_FTE"] < 0.015), "Soll_FTE"] = 0.0
     df["FTE_assigned"] = df["FTE_person"] * df["Soll_FTE"]
 
     # Clean Step
     if "St" in df.columns:
-        def clean_step(step):
-            if pd.isna(step): return 4
-            s = str(step).strip().replace("+", "").replace("-", "")
-            try: return int(s)
-            except: return 4
         df["St"] = df["St"].apply(clean_step)
         
     # Derive ATZ fields (function defined in this file)

@@ -196,15 +196,15 @@ def enrich_jf_clusters(
     s_jf_raw = df["Jobfamily"].astype(str).str.strip()
     s_jf_lower = s_jf_raw.str.lower()
 
-    # Priority:
-    # A) Direct Map (External/Internal)
+    # Priority (höchste zuletzt im merge, damit sie überschreiben):
+    # A) Direct Map (External/Internal)  — höchste Priorität
     # B) Snapshot Map (Inherited)
     # C) Alias Map (Fallback)
     # D) "Sonstiges" (universal safety-net – NO "Unclustered" leak)
-
-    res = s_jf_lower.map(norm_jf_map)
-    res = res.fillna(s_jf_lower.map(norm_snap_map))
-    res = res.fillna(s_jf_lower.map(alias_map))
+    # Einzelner map()-Aufruf vermeidet fillna-Kette und pandas FutureWarning
+    # (Downcasting object dtype arrays on .fillna is deprecated).
+    combined_map = {**alias_map, **norm_snap_map, **norm_jf_map}
+    res = s_jf_lower.map(combined_map)
 
     # Final fallback: "Sonstiges" for every row that still has no cluster.
     # This guarantees JF-unclustered = 0 in all downstream charts.

@@ -169,7 +169,30 @@ def main():
                 c5, c6 = st.columns(2)
                 az_tarif = c5.selectbox("Übernahme-Tarif", TARIFF_GROUPS, index=TARIFF_GROUPS.index(params["azubi"]["entry_tariff_group"]) if params["azubi"]["entry_tariff_group"] in TARIFF_GROUPS else 5, key="az_tarif")
                 az_step = c6.number_input("Übernahme-Stufe", 1, 6, params["azubi"]["entry_step"], key="az_step")
-                
+
+                # Graduation Mode Selector
+                cg1, cg2 = st.columns([1, 2])
+                with cg1:
+                    az_graduation_mode = st.radio(
+                        "Abschluss-Modus",
+                        options=["nearest_cycle", "next_cycle"],
+                        index=0 if params["azubi"].get("graduation_mode", "nearest_cycle") == "nearest_cycle" else 1,
+                        format_func=lambda x: "Nächster Zyklus ✓" if x == "nearest_cycle" else "Nächster Folgezyklus",
+                        horizontal=True,
+                        key="az_graduation_mode"
+                    )
+                with cg2:
+                    if az_graduation_mode == "nearest_cycle":
+                        st.info(
+                            "**Nächster Zyklus (empfohlen):** Abschluss am nächstgelegenen August. "
+                            "Eintritt Sep 2026 + 3 J. → Aug **2029**. Kein systematischer Verzug für Späteinsteigende."
+                        )
+                    else:
+                        st.warning(
+                            "**Nächster Folgezyklus (veraltet):** Abschluss immer im August *nach* dem berechneten Enddatum. "
+                            "Eintritt Sep 2026 + 3 J. → Aug **2030** (+11 Monate Latenz). Nur für Abwärtskompatibilität."
+                        )
+
                 st.divider()
 
                 # --- Azubi Takeover Matrix (Refined) ---
@@ -198,14 +221,22 @@ def main():
                 valid_units = sorted(snapshot_df["Organisationseinheit"].dropna().astype(str).unique())
                 valid_jfs = sorted(snapshot_df["Jobfamily"].dropna().astype(str).unique())
                 az_matrix_vals = valid_units if az_dim == "OrgUnit" else valid_jfs
-                
+
+                # Initialize matrix: if empty, start with an even distribution (100/n each)
+                current_az_matrix_pct = migrate_to_percent(params["azubi"].get("takeover_matrix", {}))
+                if not current_az_matrix_pct and az_matrix_vals:
+                    n = len(az_matrix_vals)
+                    even_share = round(100.0 / n, 1)
+                    current_az_matrix_pct = {str(v): even_share for v in az_matrix_vals}
+
                 az_takeover_matrix = render_distribution_matrix(
-                    label=f"Matrix: {az_dim} (Gewichtung für Übernahme)",
+                    label=f"Anteil der Übernahmen nach {az_dim} – Summe sollte 100 % ergeben",
                     dimension=az_dim,
-                    current_matrix=migrate_to_percent(params["azubi"].get("takeover_matrix", {})),
+                    current_matrix=current_az_matrix_pct,
                     valid_vals=az_matrix_vals,
                     key_prefix="az_takeover_matrix",
-                    disabled=not use_az_matrix
+                    disabled=not use_az_matrix,
+                    default_value=0.0,
                 )
 
                 render_orgunit_mode_hint(use_az_matrix, az_dim)
@@ -385,10 +416,16 @@ def main():
                 "target_org_unit": azubi_target,
                 "entry_tariff_group": az_tarif,
                 "entry_step": az_step,
+                "graduation_mode": az_graduation_mode,
                 "use_takeover_matrix": use_az_matrix,
                 "takeover_dimension": az_dim,
                 "takeover_matrix": percent_to_weights(az_takeover_matrix),
-                "jf_to_cluster_map": build_jf_to_cluster_map(snapshot_df)
+                "jf_to_cluster_map": build_jf_to_cluster_map(snapshot_df),
+                "exclude_baseline_azubis": params["azubi"].get("exclude_baseline_azubis", False),
+                "azubi_mak_during_training": params["azubi"].get("azubi_mak_during_training", 0.0),
+                "azubi_mak_after_takeover": params["azubi"].get("azubi_mak_after_takeover", 1.0),
+                "azubi_conversion_month": params["azubi"].get("azubi_conversion_month", 8),
+                "azubi_conversion_day": params["azubi"].get("azubi_conversion_day", 1)
             },
             "trainee": {
                 "active": use_trainees,
@@ -574,10 +611,21 @@ def main():
             start_hc = int(df_filtered_rows["active"].sum() if "active" in df_filtered_rows.columns else len(df_filtered_rows))
             end_hc = int(last["headcount_end"])
             # 3. Calculate Gross Metrics (Entries only, ignore internal exits like Azubi_Exit)
-            # "Zugänge" page should show who IS COMING (Gross), even if it's an internal takeover.
+            # gross_entries = all positive-count events (includes Azubi_Conversion_In which is
+            # an internal status change but adds capacity). Azubi_Conversion_Out is excluded
+            # because its count=-1. Net HC from conversion pairs = 0 (correct).
             mask_pos = events_df["count"] > 0
             gross_entries = int(events_df.loc[mask_pos, "count"].sum())
             gross_mak_add = events_df.loc[mask_pos, "mak"].sum()
+
+            # Distinguish external new entries from internal transitions for KPI tooltip.
+            if "is_internal_transition" in events_df.columns:
+                _mask_ext = mask_pos & (events_df["is_internal_transition"].ne(True))
+                gross_entries_external = int(events_df.loc[_mask_ext, "count"].sum())
+                gross_entries_internal = gross_entries - gross_entries_external
+            else:
+                gross_entries_external = gross_entries
+                gross_entries_internal = 0
             
             # KPI: Net Change (Headcount Delta) vs Gross Entries ("Zugänge")
             total_net_hc_change = int(events_df["count"].sum()) # For delta metric
@@ -605,7 +653,10 @@ def main():
             m1, m2, m3 = st.columns(3)
             with m1:
                 # Show Gross Entries as "Zugänge"
-                st.metric("Gesamt Zugänge (Köpfe)", f"{gross_entries}")
+                _tooltip = f"Gesamt: {gross_entries}"
+                if gross_entries_internal > 0:
+                    _tooltip += f" | davon {gross_entries_external} externe Neueinstellungen + {gross_entries_internal} interne Übernahmen (Azubis)"
+                st.metric("Gesamt Zugänge (Köpfe)", f"{gross_entries}", help=_tooltip)
             with m2:
                 # Show Net Growth as Delta
                 st.metric("Δ Personalvolumen (Ende)", f"{last['mak_end'] - first['mak_start']:+.1f} FTE")
@@ -986,7 +1037,33 @@ def main():
 
             with tab_details:
                 st.markdown("### 📋 Detaillierte Liste der Zugänge")
-                st.dataframe(events_df, use_container_width=True)
+
+                # Separate internal status-change pairs from external new entries.
+                # Azubi_Conversion_Out (-1) + Azubi_Conversion_In (+1) are a matched pair
+                # for the same person on the same date — net HC=0. Showing them in a raw
+                # table without context causes "apparent drop+rise" confusion.
+                _has_internal_flag = "is_internal_transition" in events_df.columns
+                if _has_internal_flag:
+                    _mask_internal = events_df["is_internal_transition"] == True
+                    _n_internal = int(_mask_internal.sum())
+                    if _n_internal > 0:
+                        st.caption(
+                            f"ℹ️ {_n_internal} interne Statuswechsel-Zeilen enthalten "
+                            f"(Azubi-Übernahme: je 1× Conv_Out + 1× Conv_In pro Person). "
+                            "Diese sind HC-neutral (netto 0) und kein echter Personalzugang."
+                        )
+                        _show_internal = st.checkbox(
+                            "Interne Statuswechsel einblenden (Conv_Out / Conv_In Paare)",
+                            value=False,
+                            key="chk_show_internal_events"
+                        )
+                        _display_df = events_df if _show_internal else events_df[~_mask_internal]
+                    else:
+                        _display_df = events_df
+                else:
+                    _display_df = events_df
+
+                st.dataframe(_display_df, use_container_width=True)
                 
             with tab_cost:
                 st.markdown("### 💰 Kosten-Impact")

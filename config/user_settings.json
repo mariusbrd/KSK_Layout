@@ -5,8 +5,27 @@
     },
     "include_future_hires": true,
     "exclusions": {
-        "vorstand": false,
-        "ruhend_bv": false,
-        "org_units": []
+        "vorstand": true,
+        "ruhend_bv": true,
+        "org_units": [
+            "9900",
+            "9910",
+            "9920",
+            "9921",
+            "9940",
+            "9941",
+            "9945",
+            "9960",
+            "9970",
+            "9971",
+            "9972",
+            "9973",
+            "9975",
+            "9980",
+            "9981",
+            "9990",
+            "9999",
+            "99XX"
+        ]
     }
 }

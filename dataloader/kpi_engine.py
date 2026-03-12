@@ -40,24 +40,26 @@ def get_unique_employees(snapshot_df: pd.DataFrame) -> pd.DataFrame:
     Ein Mitarbeiter kann auf mehreren Planstellen stehen.
     Für personenbezogene KPIs (Headcount, FTE, Teilzeit, Alter)
     brauchen wir eine deduplizierte Sicht.
-    
-    WICHTIG: Sollarbeitszeit und Soll_FTE werden SUMMIERT über alle
-    Planstellen einer Person, bevor dedupliziert wird.
+
+    WICHTIG: Kapazitätsspalten (Sollarbeitszeit, Soll_FTE, MAK_Calculated,
+    MAK, mak, BsGrd) werden SUMMIERT über alle Planstellen einer Person.
     (Readme_Planstellen_Excel.md: "Bei Kapazitätsberechnungen: Planstellen summieren")
+    Beispiel: 1 Person mit 2× MAK=0,5 → dedup ergibt MAK=1,0.
 
     Returns:
-        DataFrame mit einer Zeile pro Person, Sollarbeitszeit/Soll_FTE summiert.
+        DataFrame mit einer Zeile pro Person, alle Kapazitätsspalten summiert.
     """
     besetzt = snapshot_df[~snapshot_df["Is_Vacant"]].copy() if "Is_Vacant" in snapshot_df.columns else snapshot_df.copy()
     if "PersNr" not in besetzt.columns or besetzt.empty:
         return besetzt
 
-    # Felder die summiert werden müssen (Planstellen-basiert)
+    # Felder die summiert werden müssen (Planstellen-basiert).
+    # MAK-Spalten müssen ebenso summiert werden, sonst wird bei Mehrfachplanstellen
+    # nur die erste Zeile gewertet → IST-MAK Unterzählung (Bug K1 aus MAK-Dossier).
     sum_cols = []
-    if "Sollarbeitszeit" in besetzt.columns:
-        sum_cols.append("Sollarbeitszeit")
-    if "Soll_FTE" in besetzt.columns:
-        sum_cols.append("Soll_FTE")
+    for col in ("Sollarbeitszeit", "Soll_FTE", "MAK_Calculated", "MAK", "mak", "BsGrd"):
+        if col in besetzt.columns:
+            sum_cols.append(col)
     
     # Wenn es Felder zum Summieren gibt, aggregiere pro Person
     if sum_cols:
@@ -95,10 +97,12 @@ def compute_fte_effektiv(snapshot_df: pd.DataFrame) -> float:
     """
     FTE effektiv = Sum(MAK) aller unique Mitarbeitenden.
     MAK berücksichtigt bereits Ruhend und ATZ-FR = 0.
+    Spalten-Priorität: MAK_Calculated → mak → MAK → manuell aus BsGrd.
     """
     emp = get_unique_employees(snapshot_df)
-    if "MAK" in emp.columns:
-        return round(emp["MAK"].sum(), 2)
+    for col in ("MAK_Calculated", "mak", "MAK"):
+        if col in emp.columns:
+            return round(float(emp[col].fillna(0).sum()), 2)
     # Fallback: manuell berechnen
     fte = emp["BsGrd"].fillna(0) / 100.0
     if "Status kundenindividuell" in emp.columns:
