@@ -3938,36 +3938,42 @@ def main():
 
             
         else:
-            # Standardansicht: Tabs
-            tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-                "👥 IST-Köpfe",
-                "📊 IST-MAK",
-                "💰 IST-EUR",
-                "🔢 IST vs SOLL Köpfe",
-                "🎯 IST vs SOLL MAK",
-                "💶 IST vs SOLL EUR",
+            # Standardansicht: Verschachtelte Tabs (Hauptbereich → Unterkategorie)
+            main_tab_ist, main_tab_soll = st.tabs([
+                "📈 IST-Analyse",
+                "🎯 IST vs SOLL",
             ])
 
-            with tab1:
-                render_ist_koepfe_tab(filtered_df)
+            # ── Hauptbereich: IST-Analyse ─────────────────────────────────────
+            with main_tab_ist:
+                sub1, sub2, sub3 = st.tabs([
+                    "👥 Köpfe",
+                    "📊 MAK",
+                    "💰 EUR",
+                ])
+                with sub1:
+                    render_ist_koepfe_tab(filtered_df)
+                with sub2:
+                    render_ist_mak_tab(filtered_df)
+                with sub3:
+                    render_ist_eur_tab(filtered_df)
 
-            with tab2:
-                render_ist_mak_tab(filtered_df)
-
-            with tab3:
-                render_ist_eur_tab(filtered_df)
-
-            with tab4:
-                # prepared_df (not filtered_df) wird verwendet, damit vakante
-                # Planstellen enthalten sind (Geschlecht-/Arbeitszeit-Filter
-                # wuerden leere Person-Zeilen herausfiltern).
-                render_ist_soll_koepfe_tab(prepared_df)
-
-            with tab5:
-                render_ist_vs_soll_mak_tab(filtered_df)
-
-            with tab6:
-                render_ist_vs_soll_eur_tab(filtered_df)
+            # ── Hauptbereich: IST vs SOLL ─────────────────────────────────────
+            with main_tab_soll:
+                sub4, sub5, sub6 = st.tabs([
+                    "🔢 Köpfe",
+                    "🎯 MAK",
+                    "💶 EUR",
+                ])
+                with sub4:
+                    # prepared_df (not filtered_df) wird verwendet, damit vakante
+                    # Planstellen enthalten sind (Geschlecht-/Arbeitszeit-Filter
+                    # wuerden leere Person-Zeilen herausfiltern).
+                    render_ist_soll_koepfe_tab(prepared_df)
+                with sub5:
+                    render_ist_vs_soll_mak_tab(filtered_df)
+                with sub6:
+                    render_ist_vs_soll_eur_tab(filtered_df)
 
     except FileNotFoundError as e:
         st.error(f"Datenfehler: {str(e)}")
