@@ -3064,18 +3064,26 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
     not_found = int(pivot[IST_NOT_FOUND].sum()) if IST_NOT_FOUND in pivot.columns else 0
     besetzt   = total_pl - unbesetzt - not_found
 
-    # Übereinstimmende: Soll-EG == Ist-EG (Diagonale)
-    diagonal = sum(
-        int(pivot.loc[eg, eg]) if eg in pivot.index and eg in pivot.columns else 0
-        for eg in soll_order
-    )
-    match_pct = diagonal / besetzt * 100 if besetzt > 0 else 0.0
+    # Band-aware Passungsquote über alle Planstellen
+    from config.settings import TARIFF_GROUPS as _TG_KPI
+    _eg_rank_kpi = {g: i for i, g in enumerate(_TG_KPI)}
+    _rank_ist  = work_df["_Ist_EG"].map(lambda e: _eg_rank_kpi.get(e, 999))
+    _rank_h_kpi = work_df["_Soll_EG_H"].map(lambda e: _eg_rank_kpi.get(e, 999)) if "_Soll_EG_H" in work_df.columns else work_df["_Soll_EG"].map(lambda e: _eg_rank_kpi.get(e, 999))
+    _rank_i_kpi = work_df["_Soll_EG_I"].map(lambda e: _eg_rank_kpi.get(e, 999)) if "_Soll_EG_I" in work_df.columns else work_df["_Soll_EG"].map(lambda e: _eg_rank_kpi.get(e, 999))
+    _rank_soll_kpi = work_df["_Soll_EG"].map(lambda e: _eg_rank_kpi.get(e, 999))
+    _occupied  = ~work_df["_Ist_EG"].isin([IST_UNBESETZT, IST_NOT_FOUND])
+    _exakt     = _occupied & (_rank_ist == _rank_soll_kpi)
+    _im_band   = _occupied & ~_exakt & (_rank_h_kpi <= _rank_ist) & (_rank_ist <= _rank_i_kpi)
+    n_passend_exakt   = int(_exakt.sum())
+    n_passend_band    = int(_im_band.sum())
+    n_passend_gesamt  = n_passend_exakt + n_passend_band
+    passend_pct       = n_passend_gesamt / besetzt * 100 if besetzt > 0 else 0.0
 
     kpis = [
         {
             "title": "Planstellen gesamt",
             "value": f"{total_pl:,}".replace(",", "."),
-            "subtitle": "inkludierte OEs",
+            "subtitle": "inkludierte OEs (mit gültiger Soll-EG)",
             "icon": "📋",
             "status": "default",
         },
@@ -3094,11 +3102,18 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
             "status": "warning" if unbesetzt > 0 else "good",
         },
         {
-            "title": "Eingruppierung korrekt",
-            "value": f"{match_pct:.1f}%".replace(".", ","),
-            "subtitle": f"{diagonal} von {besetzt} besetzten Planstellen",
+            "title": "Passend eingruppiert",
+            "value": f"{passend_pct:.1f}%".replace(".", ","),
+            "subtitle": f"{n_passend_gesamt} Stellen — exakt ({n_passend_exakt}) + im Band ({n_passend_band})",
             "icon": "✅",
-            "status": "good" if match_pct >= 80 else "warning",
+            "status": "good" if passend_pct >= 75 else "warning",
+        },
+        {
+            "title": "Nicht zuordenbar",
+            "value": f"{not_found:,}".replace(",", "."),
+            "subtitle": "Besetzt, aber keine EG im Mitarbeiterdatensatz",
+            "icon": "❓",
+            "status": "warning" if not_found > 0 else "good",
         },
     ]
     render_kpi_cards_styled(kpis)
