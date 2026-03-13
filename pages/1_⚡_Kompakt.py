@@ -3206,7 +3206,7 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
     for i, eg in enumerate(ist_eg_cols):
         color_map[eg] = _BLUE_PALETTE[i % len(_BLUE_PALETTE)]
     color_map[IST_UNBESETZT] = "#cbd5e1"   # neutrales Grau
-    color_map[IST_NOT_FOUND] = "#E94D3A"   # Rot
+    color_map[IST_NOT_FOUND] = "#fcd9bd"   # gedämpftes Orange — Datenpflegesignal, kein Alarm
 
     fig = go.Figure()
     # Zeilen: SOLL-EG von oben (höchste EG oben → umkehren)
@@ -3257,6 +3257,12 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
     fig = apply_legend_bottom(fig)
 
     st.plotly_chart(fig, use_container_width=True)
+    if not_found > 0:
+        st.caption(
+            f"ℹ️ **„Nicht gefunden" ({not_found} Planstellen):** Besetzt, aber im Mitarbeiterdatensatz "
+            f"ohne Eingruppierung (TrfGr leer). Kein Eingruppierungsfehler — Datenpflegebedarf. "
+            f"Ausgewiesen in der Kachel „Nicht zuordenbar" oben."
+        )
 
     # ── Detailbereich: eine Soll-EG tiefer analysieren ────────────────────────
     if not print_mode:
