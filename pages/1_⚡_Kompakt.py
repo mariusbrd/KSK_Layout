@@ -3259,9 +3259,9 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
     st.plotly_chart(fig, use_container_width=True)
     if not_found > 0:
         st.caption(
-            f"ℹ️ **„Nicht gefunden" ({not_found} Planstellen):** Besetzt, aber im Mitarbeiterdatensatz "
+            f"ℹ️ **'Nicht gefunden' ({not_found} Planstellen):** Besetzt, aber im Mitarbeiterdatensatz "
             f"ohne Eingruppierung (TrfGr leer). Kein Eingruppierungsfehler — Datenpflegebedarf. "
-            f"Ausgewiesen in der Kachel „Nicht zuordenbar" oben."
+            f"Ausgewiesen in der Kachel 'Nicht zuordenbar' oben."
         )
 
     # ── Detailbereich: eine Soll-EG tiefer analysieren ────────────────────────
