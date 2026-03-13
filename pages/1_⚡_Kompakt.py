@@ -2991,12 +2991,7 @@ def _build_soll_ist_pivot(df: pd.DataFrame, use_max_eg: bool = True):
         # Ausschließlich Spalte H (Basiswert)
         work["_Soll_EG"] = col_h
 
-    # Anzahl Planstellen ohne verwertbare Soll-EG festhalten (vor dem Filter)
-    n_no_soll_eg = int(work["_Soll_EG"].isin(_invalid).sum())
-    # Planstellen ohne verwertbare Soll-EG in beiden Spalten ausschließen
-    work = work[~work["_Soll_EG"].isin(_invalid)]
-
-    # Ist-Kategorie
+    # Ist-Kategorie (vor dem Filter, damit auch Planstellen ohne Soll-EG erfasst werden)
     def _ist_kat(row):
         if row.get("Is_Vacant", True):
             return IST_UNBESETZT
@@ -3006,6 +3001,17 @@ def _build_soll_ist_pivot(df: pd.DataFrame, use_max_eg: bool = True):
         return str(trfgr).strip().upper().replace(" ", "")
 
     work["_Ist_EG"] = work.apply(_ist_kat, axis=1)
+
+    # Planstellen ohne Soll-EG, die dennoch besetzt sind → Sonderzeile (Option C)
+    _no_soll_mask = work["_Soll_EG"].isin(_invalid)
+    _no_soll_occupied = work[
+        _no_soll_mask & ~work["_Ist_EG"].isin([IST_UNBESETZT, IST_NOT_FOUND])
+    ]
+    no_soll_eg_row = _no_soll_occupied["_Ist_EG"].value_counts()  # Series {ist_eg: count}
+
+    # Anzahl Planstellen ohne verwertbare Soll-EG festhalten und ausschließen
+    n_no_soll_eg = int(_no_soll_mask.sum())
+    work = work[~_no_soll_mask]
 
     # Pivot
     pivot = work.groupby(["_Soll_EG", "_Ist_EG"]).size().unstack(fill_value=0)
@@ -3023,7 +3029,7 @@ def _build_soll_ist_pivot(df: pd.DataFrame, use_max_eg: bool = True):
     pivot = pivot.loc[soll_order]
     pivot.index.name = "Soll-EG"
 
-    return pivot, soll_order, ist_eg_cols, IST_UNBESETZT, IST_NOT_FOUND, work, n_no_soll_eg
+    return pivot, soll_order, ist_eg_cols, IST_UNBESETZT, IST_NOT_FOUND, work, n_no_soll_eg, no_soll_eg_row
 
 
 def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
@@ -3051,7 +3057,7 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
     else:
         use_max_eg = True  # Im Druckbericht immer Maximalwert
 
-    pivot, soll_order, ist_eg_cols, IST_UNBESETZT, IST_NOT_FOUND, work_df, n_no_soll_eg = _build_soll_ist_pivot(df, use_max_eg=use_max_eg)
+    pivot, soll_order, ist_eg_cols, IST_UNBESETZT, IST_NOT_FOUND, work_df, n_no_soll_eg, no_soll_eg_row = _build_soll_ist_pivot(df, use_max_eg=use_max_eg)
 
     if pivot is None:
         st.warning("⚠️ Spalte 'Bewertung Tarifgruppe' nicht im Datensatz vorhanden. "
@@ -3163,6 +3169,29 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
         column_config=column_config,
     )
 
+    # ── Sonderzeile: Planstellen ohne Soll-EG, aber besetzt ───────────────────
+    if len(no_soll_eg_row) > 0:
+        st.caption(
+            "**Sonderfall: Planstellen ohne Soll-EG (besetzt)** — "
+            "Diese Planstellen haben weder in Spalte H noch I eine Bewertung, "
+            "sind aber mit einer Person besetzt, der eine Entgeltgruppe zugewiesen ist. "
+            "Sie sind nicht Teil der Matrix oben."
+        )
+        _nosoll_display = pd.Series(0, index=ist_eg_cols)
+        for eg, cnt in no_soll_eg_row.items():
+            if eg in _nosoll_display.index:
+                _nosoll_display[eg] = cnt
+        _nosoll_display["Gesamt"] = int(no_soll_eg_row.sum())
+        _nosoll_df = _nosoll_display.rename("(Keine Soll-EG)").to_frame().T
+        _nosoll_df.index.name = "Soll-EG"
+        _nosoll_fmt = _nosoll_df.applymap(_fmt_int)
+        st.dataframe(
+            _nosoll_fmt,
+            use_container_width=True,
+            column_config={col: st.column_config.TextColumn(col, width="small")
+                           for col in _nosoll_fmt.columns},
+        )
+
     # Excel-Download
     try:
         buf = io.BytesIO()
@@ -3208,31 +3237,54 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
     color_map[IST_UNBESETZT] = "#cbd5e1"   # neutrales Grau
     color_map[IST_NOT_FOUND] = "#fcd9bd"   # gedämpftes Orange — Datenpflegesignal, kein Alarm
 
+    _NOSOLL_LABEL = "(Keine Soll-EG)"
+    _has_nosoll_chart = len(no_soll_eg_row) > 0
+
     fig = go.Figure()
     # Zeilen: SOLL-EG von oben (höchste EG oben → umkehren)
+    # Sonderzeile am unteren Ende (wird zuerst in y_order eingefügt → erscheint ganz unten)
     y_order = list(reversed(soll_order))
+    if _has_nosoll_chart:
+        y_order = [_NOSOLL_LABEL] + y_order  # ganz unten im Chart
 
     for col in chart_cols:
-        values = [
-            int(chart_pivot.loc[eg, col]) if eg in chart_pivot.index and col in chart_pivot.columns else 0
-            for eg in y_order
-        ]
+        values = []
+        for eg in y_order:
+            if eg == _NOSOLL_LABEL:
+                values.append(int(no_soll_eg_row.get(col, 0)))
+            else:
+                values.append(
+                    int(chart_pivot.loc[eg, col]) if eg in chart_pivot.index and col in chart_pivot.columns else 0
+                )
+        # Sonderzeile: gedämpfte Farbe (Opacity 0.45) für alle Segmente
+        _color = color_map.get(col, "#94a3b8")
+        _marker = dict(
+            color=[f"rgba(160,160,160,0.35)" if eg == _NOSOLL_LABEL else _color for eg in y_order],
+            line=dict(color="white", width=0.5),
+        )
         fig.add_trace(go.Bar(
             y=y_order,
             x=values,
             name=col,
             orientation="h",
-            marker=dict(
-                color=color_map.get(col, "#94a3b8"),
-                line=dict(color="white", width=0.5),
-            ),
+            marker=_marker,
             hovertemplate=f"<b>%{{y}}</b> — Ist: {col}<br>Planstellen: %{{x:,.0f}}<extra></extra>",
         ))
 
-    n_rows = len(soll_order)
+    n_rows = len(soll_order) + (1 if _has_nosoll_chart else 0)
     height  = max(350, n_rows * 42)
     if print_mode:
         height = min(height, 700)
+
+    # Trennlinie im Chart zwischen regulären Zeilen und Sonderzeile
+    shapes = []
+    if _has_nosoll_chart:
+        shapes.append(dict(
+            type="line",
+            x0=0, x1=1, xref="paper",
+            y0=0.5, y1=0.5, yref="y",   # zwischen Index 0 (Sonderzeile) und 1 (erste reguläre EG)
+            line=dict(color="#94a3b8", width=1.5, dash="dot"),
+        ))
 
     fig.update_layout(
         barmode="stack",
@@ -3241,6 +3293,7 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
         font=dict(color="#64748b", size=11),
         margin=dict(l=10, r=20, t=30, b=30),
         height=height,
+        shapes=shapes,
         xaxis=dict(
             showgrid=True,
             gridcolor="rgba(226,232,240,0.8)",
