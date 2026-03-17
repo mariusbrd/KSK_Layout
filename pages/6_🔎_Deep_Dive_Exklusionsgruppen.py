@@ -63,15 +63,24 @@ def _fmt_pct(v: float) -> str:
     return f"{v:.1f} %"
 
 
-def _persist_exclusions(vorstand: bool, ruhend_bv: bool, org_units: list):
+def _persist_exclusions(vorstand: bool, ruhend_bv: bool, org_units: list, planstellen_follow_person: bool = False):
     """Speichert Exklusions-Einstellungen in Settings und Session State."""
     # dict.fromkeys: dedupliziert und erhält Reihenfolge (verhindert T3c-Inkonsistenz)
     org_units_clean = list(dict.fromkeys(org_units))
-    updated = {"vorstand": vorstand, "ruhend_bv": ruhend_bv, "org_units": org_units_clean}
+    updated = {
+        "vorstand": vorstand,
+        "ruhend_bv": ruhend_bv,
+        "planstellen_follow_person": planstellen_follow_person,
+        "org_units": org_units_clean,
+    }
     set_setting("exclusions", updated)
     st.session_state["exclude_vorstand"] = vorstand
     st.session_state["exclude_ruhend"] = ruhend_bv
     st.session_state["exclude_org_units"] = org_units_clean
+    # Cache leeren: prepare_compact_data() ist @st.cache_data und würde sonst veraltete
+    # Exklusions-Stände zurückliefern, da apply_exclusions() in load_and_prepare_data()
+    # neue Settings erst nach Cache-Invalidierung wirksam werden.
+    st.cache_data.clear()
 
 
 def _load_current_exclusions() -> dict:
@@ -368,12 +377,14 @@ def main():
         "🟡 Amber = Gruppe hat natürlich IST-MAK = 0, aber ist nicht explizit ausgeschlossen."
     )
 
-    # ── Bestätigungs-Button ───────────────────────────────────────────────────
+    # ── Bestätigungs-Buttons ──────────────────────────────────────────────────
     # Aktuelle Checkbox-Zustände aus session_state lesen
     pending_vorstand = st.session_state.get(f"ex_chk_{VORSTAND_KEY}", current_ex.get("vorstand", False))
     pending_ruhend = st.session_state.get(f"ex_chk_{RUHEND_KEY}", current_ex.get("ruhend_bv", False))
     pending_org = [key for key, _l, cat in GROUP_ORDER
                    if cat == "pa" and st.session_state.get(f"ex_chk_{key}", False)]
+
+    current_follow = current_ex.get("planstellen_follow_person", False)
 
     has_pending = (
         pending_vorstand != current_ex.get("vorstand", False)
@@ -384,15 +395,41 @@ def main():
     if has_pending:
         st.info("Nicht gespeicherte Änderungen — bitte unten bestätigen.")
 
-    if st.button(
-        "✅ Änderungen übernehmen" if has_pending else "Keine ausstehenden Änderungen",
-        type="primary" if has_pending else "secondary",
-        disabled=not has_pending,
-        use_container_width=True,
-        key="btn_apply_exclusions",
-    ):
-        _persist_exclusions(pending_vorstand, pending_ruhend, pending_org)
-        st.rerun()
+    # Aktuellen Scope anzeigen
+    scope_label = "Gesamtes Dashboard (inkl. Planstellen)" if current_follow else "Nur Mitarbeiter & Prognose"
+    scope_color = "#0d6efd" if current_follow else "#6c757d"
+    st.markdown(
+        f"<div style='margin:8px 0 12px 0;font-size:0.85rem;color:#757575;'>"
+        f"Aktiver Scope: <span style='background:{scope_color};color:#fff;"
+        f"padding:2px 8px;border-radius:4px;font-size:0.8rem;'>{scope_label}</span></div>",
+        unsafe_allow_html=True,
+    )
+
+    btn_col_a, btn_col_b = st.columns(2, gap="medium")
+    with btn_col_a:
+        if st.button(
+            "👥 Auf Mitarbeiter & Prognose anwenden",
+            type="primary" if (has_pending or current_follow) else "secondary",
+            use_container_width=True,
+            key="btn_apply_excl_ma",
+            help="Exklusionen wirken nur auf die Mitarbeiter-Ist-Werte und die Prognose. "
+                 "Die Planstellen-Matrix zeigt alle Planstellen unabhängig von den Exklusionsgruppen.",
+        ):
+            _persist_exclusions(pending_vorstand, pending_ruhend, pending_org, planstellen_follow_person=False)
+            st.rerun()
+
+    with btn_col_b:
+        if st.button(
+            "🏢 Auf gesamtes Dashboard anwenden",
+            type="primary" if (has_pending or not current_follow) else "secondary",
+            use_container_width=True,
+            key="btn_apply_excl_all",
+            help="Exklusionen wirken zusätzlich auf die Planstellen-Matrix (IST vs. SOLL Köpfe). "
+                 "Vorstand- und Ruhend-BV-Planstellen werden aus der Matrix entfernt. "
+                 "Vakante Planstellen in denselben OEs bleiben sichtbar.",
+        ):
+            _persist_exclusions(pending_vorstand, pending_ruhend, pending_org, planstellen_follow_person=True)
+            st.rerun()
 
     st.markdown("---")
 

@@ -27,6 +27,18 @@ from dataloader.source_service import SourceService, DataSourceOrigin
 from config.settings import BASE_DIR
 
 
+SALARY_AUTOMATION_DEFAULTS = {
+    "enabled": False,
+    "scope": "new_hires_only",
+    "fallback_step": 4,
+    "e1_entry_step": 2,
+    "e2_plus_default_entry_step": 1,
+    "e1_progression_years": [4, 4, 4, 4],
+    "e2_plus_progression_years": [1, 2, 3, 4, 5],
+    "use_tenure_as_step_proxy_for_existing_staff": False,
+}
+
+
 def render_settings_page():
     st.header("Einstellungen")
     st.caption("Loader-spezifische Parameter für Kostenberechnung")
@@ -250,7 +262,8 @@ def render_settings_page():
     # --- Gruppen-Ausschlüsse (verschoben) ---
     st.subheader("Gruppen-Ausschlüsse")
     st.info(
-        "Die Konfiguration der Exklusionsgruppen wurde in die neue Deep-Dive-Seite verschoben. "
+        "Die Konfiguration der Exklusionsgruppen (inkl. Scope Mitarbeiter vs. gesamtes Dashboard) "
+        "wurde in die Deep-Dive-Seite verschoben. "
         "Dort können alle Gruppen mit Checkboxen ein- und ausgeschlossen werden — "
         "inklusive Planstellen-Übersicht, Kapazitätsanalyse und Drilldown pro Gruppe.\n\n"
         "👉 **Navigiere zu: 🔎 Exklusionsgruppen**"
@@ -280,6 +293,183 @@ def render_settings_page():
             "Legen Sie die Datei TVÖD.xlsx im Ordner Original-Daten ab, "
             "um exakte Werte zu verwenden."
         )
+
+    st.markdown("##### Stufenautomatik / Gehaltsautomatik")
+    st.caption(
+        "Transparenz über die aktuelle TVöD-Stufenlogik und vorbereitende "
+        "Konfiguration für eine explizite Stufenautomatik."
+    )
+
+    salary_automation = get_setting("salary_automation", {})
+    salary_automation = {**SALARY_AUTOMATION_DEFAULTS, **salary_automation}
+
+    current_source = "TVöD-Tabelle" if tvoed_available else "Fallback-Werte"
+    scope_label = {
+        "new_hires_only": "nur simulierte Zugänge",
+        "all_staff": "simulierte Zugänge und Bestand",
+    }.get(salary_automation.get("scope"), "nur simulierte Zugänge")
+
+    sa_info_col1, sa_info_col2 = st.columns(2)
+    with sa_info_col1:
+        st.markdown("**Aktuelle Berechnungslogik**")
+        st.markdown(f"- **Gehaltsquelle**: {current_source}")
+        st.markdown("- **Stufenquelle**: vorhandener Datenwert aus `St`")
+        st.markdown(
+            f"- **Technischer System-Fallback bei fehlender Stufe**: aktuell Stufe {salary_automation['fallback_step']}"
+        )
+        st.markdown(
+            "- **Automatische Stufenfortschreibung**: wird in `Kompakt plus Simulation` "
+            "bei aktivierter Konfiguration für TVöD-Stufen innerhalb derselben Entgeltgruppe berücksichtigt"
+        )
+    with sa_info_col2:
+        st.markdown("**Vorbereitete Automatik-Konfiguration**")
+        st.markdown(
+            f"- **Konfigurationsstatus**: {'aktiviert' if salary_automation['enabled'] else 'deaktiviert'}"
+        )
+        st.markdown(f"- **Vorgesehener Scope**: {scope_label}")
+        st.markdown(
+            f"- **E1 Einstieg**: Stufe {salary_automation['e1_entry_step']} | "
+            f"**E2-E15 Einstieg**: Stufe {salary_automation['e2_plus_default_entry_step']}"
+        )
+        st.markdown(
+            "- **Hinweis**: Die Parameter wirken aktuell auf die Zukunftsfortschreibung "
+            "der TVöD-Stufen in `Kompakt plus Simulation`. "
+            "Entgeltgruppenwechsel werden dabei noch nicht simuliert."
+        )
+
+    rules_df = pd.DataFrame(
+        [
+            {
+                "Bereich": "E1",
+                "Einstieg": "Stufe 2",
+                "Stufenlaufzeit": "4 / 4 / 4 / 4 Jahre",
+                "Status im System": "fachliche Referenz",
+            },
+            {
+                "Bereich": "E2-E15",
+                "Einstieg": "im Regelfall Stufe 1",
+                "Stufenlaufzeit": "1 / 2 / 3 / 4 / 5 Jahre",
+                "Status im System": "fachliche Referenz",
+            },
+            {
+                "Bereich": "Bestand heute",
+                "Einstieg": "aus Datenbestand",
+                "Stufenlaufzeit": "keine automatische Fortschreibung",
+                "Status im System": "aktiver Rechenmodus",
+            },
+            {
+                "Bereich": "Simulation",
+                "Einstieg": "teilweise parametriert",
+                "Stufenlaufzeit": "optional aktivierbar",
+                "Status im System": "wirkt auf TVöD-Stufenfortschreibung innerhalb der Entgeltgruppe",
+            },
+        ]
+    )
+
+    with st.expander("TVöD-Regeln und heutiger Systemstatus"):
+        st.dataframe(rules_df, use_container_width=True, hide_index=True)
+        st.info(
+            "Die TVöD-Regeln werden hier explizit dokumentiert. "
+            "Die operative Nutzung für eine automatische Stufenfortschreibung "
+            "folgt in einem separaten Implementierungsschritt."
+        )
+
+    with st.form("salary_automation_form"):
+        sa_col1, sa_col2 = st.columns(2)
+
+        with sa_col1:
+            sa_enabled = st.checkbox(
+                "Stufenautomatik vorbereiten",
+                value=bool(salary_automation["enabled"]),
+                help="Speichert die gewünschte Konfiguration für eine explizite Stufenautomatik.",
+            )
+            sa_scope_label = st.selectbox(
+                "Automatik anwenden auf",
+                options=["nur simulierte Zugänge", "simulierte Zugänge und Bestand"],
+                index=0 if salary_automation["scope"] == "new_hires_only" else 1,
+                help="Der zweite Modus wäre für den Bestand nur als vereinfachende Heuristik belastbar.",
+            )
+            sa_fallback_step = st.number_input(
+                "Technischer System-Fallback bei fehlender Stufe",
+                min_value=1,
+                max_value=6,
+                value=int(salary_automation["fallback_step"]),
+                step=1,
+                help="Kein TVöD-Regelwert, sondern nur der aktuelle System-Fallback bei fehlender oder unklarer Stufe.",
+            )
+            sa_existing_proxy = st.checkbox(
+                "Betriebszugehörigkeit als Proxy für Bestands-Stufenlaufzeit vormerken",
+                value=bool(salary_automation["use_tenure_as_step_proxy_for_existing_staff"]),
+                help="Nur vorbereitend. Würde im Bestand eine vereinfachende Heuristik bedeuten.",
+            )
+
+        with sa_col2:
+            st.text_input(
+                "E1 Einstieg (TVöD-Referenz)",
+                value=f"Stufe {salary_automation['e1_entry_step']}",
+                disabled=True,
+                help="Für E1 gilt tariflich der Einstieg in Stufe 2. Dieser Wert wird hier bewusst nur referenziert.",
+            )
+            sa_e2_entry = st.number_input(
+                "E2-E15 Standard-Einstieg (Regelfall)",
+                min_value=1,
+                max_value=6,
+                value=int(salary_automation["e2_plus_default_entry_step"]),
+                step=1,
+                help="Regelfall ohne explizit anrechenbare Berufserfahrung.",
+            )
+            st.caption("Stufenlaufzeiten in Jahren")
+            e1_cols = st.columns(4)
+            e1_progression_years = []
+            for idx, col in enumerate(e1_cols):
+                with col:
+                    e1_progression_years.append(
+                        int(
+                            st.number_input(
+                                f"E1 -> {idx + 3}",
+                                min_value=1,
+                                max_value=10,
+                                value=int(salary_automation["e1_progression_years"][idx]),
+                                step=1,
+                                key=f"salary_auto_e1_{idx}",
+                            )
+                        )
+                    )
+
+            e2_cols = st.columns(5)
+            e2_progression_years = []
+            for idx, col in enumerate(e2_cols):
+                with col:
+                    e2_progression_years.append(
+                        int(
+                            st.number_input(
+                                f"E2+ -> {idx + 2}",
+                                min_value=1,
+                                max_value=10,
+                                value=int(salary_automation["e2_plus_progression_years"][idx]),
+                                step=1,
+                                key=f"salary_auto_e2_{idx}",
+                            )
+                        )
+                    )
+
+        if st.form_submit_button("Stufenautomatik-Konfiguration speichern"):
+            new_salary_automation = {
+                "enabled": sa_enabled,
+                "scope": "new_hires_only" if sa_scope_label == "nur simulierte Zugänge" else "all_staff",
+                "fallback_step": int(sa_fallback_step),
+                "e1_entry_step": int(salary_automation["e1_entry_step"]),
+                "e2_plus_default_entry_step": int(sa_e2_entry),
+                "e1_progression_years": e1_progression_years,
+                "e2_plus_progression_years": e2_progression_years,
+                "use_tenure_as_step_proxy_for_existing_staff": bool(sa_existing_proxy),
+            }
+            set_setting("salary_automation", new_salary_automation)
+            st.success(
+                "Stufenautomatik-Konfiguration gespeichert. "
+                "Die Parameter werden jetzt in `Kompakt plus Simulation` "
+                "für die TVöD-Stufenfortschreibung berücksichtigt."
+            )
     
     st.markdown("##### Arbeitgeber-Kostenfaktor (Lohnnebenkosten)")
     st.caption("Dieser Faktor wird auf das Bruttogehalt aufgeschlagen, um die tatsächlichen Arbeitgeberkosten abzubilden (z. B. 1,25 = +25%).")

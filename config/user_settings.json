@@ -7,6 +7,7 @@
     "exclusions": {
         "vorstand": true,
         "ruhend_bv": true,
+        "planstellen_follow_person": true,
         "org_units": [
             "9900",
             "9910",

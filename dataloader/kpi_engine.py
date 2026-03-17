@@ -57,7 +57,7 @@ def get_unique_employees(snapshot_df: pd.DataFrame) -> pd.DataFrame:
     # MAK-Spalten müssen ebenso summiert werden, sonst wird bei Mehrfachplanstellen
     # nur die erste Zeile gewertet → IST-MAK Unterzählung (Bug K1 aus MAK-Dossier).
     sum_cols = []
-    for col in ("Sollarbeitszeit", "Soll_FTE", "MAK_Calculated", "MAK", "mak", "BsGrd"):
+    for col in ("Sollarbeitszeit", "Soll_FTE", "MAK_Calculated", "MAK", "mak", "BsGrd", "Total_Cost_Year"):
         if col in besetzt.columns:
             sum_cols.append(col)
     

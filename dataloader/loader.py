@@ -20,7 +20,8 @@ import os
 # Import settings
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.settings import (
-    DATA_PATH, DEFAULT_COHORTS, BASE_SALARY, STEP_MULTIPLIER, EMPLOYER_COST_FACTOR, BASE_DIR
+    DATA_PATH, DEFAULT_COHORTS, BASE_SALARY, STEP_MULTIPLIER, EMPLOYER_COST_FACTOR, BASE_DIR,
+    EDUCATION_GROUPS,
 )
 from utils.settings_loader import get_setting
 from dataloader.cluster_manager import apply_clusters_to_snapshot
@@ -785,6 +786,15 @@ EDUCATION_RANKING = {
     "ohne Berufsabschluss": 1,
 }
 
+EDUCATION_NORMALIZATION_MAP = {
+    "bankfachwirt/-in": "Bankfachwirt",
+    "sparkassen/bankfachwirt": "Bankfachwirt",
+    "spk/bankfachwirt": "Bankfachwirt",
+    "bankbetriebswirt/-in": "Bankbetriebswirt",
+    "sparkassen/bankbetriebswirt": "Bankbetriebswirt",
+    "spk/bankbetriebswirt": "Bankbetriebswirt",
+}
+
 # =============================================================================
 # HILFSFUNKTIONEN (aus original_loader.py)
 # =============================================================================
@@ -817,6 +827,31 @@ def safe_parse_austritt(series: pd.Series) -> pd.Series:
 
     cleaned = series.map(_to_na_if_out_of_bounds)
     return pd.to_datetime(cleaned, errors="coerce")
+
+
+def normalize_education_value(value: Any) -> Any:
+    """Normalisiert Ausbildungslabels auf den zentralen Kanon aus settings.py."""
+    if pd.isna(value):
+        return pd.NA
+
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return pd.NA
+
+    if text in EDUCATION_GROUPS:
+        return text
+
+    normalized = EDUCATION_NORMALIZATION_MAP.get(text.lower())
+    if normalized:
+        return normalized
+
+    return text
+
+
+def normalize_education_series(series: pd.Series) -> pd.Series:
+    """Wendet die Ausbildungsnormalisierung vektorisiert auf eine Series an."""
+    normalized = series.map(normalize_education_value)
+    return normalized.astype("string")
 
 
 def derive_atz_fields(atz_df: pd.DataFrame) -> pd.DataFrame:
@@ -1116,7 +1151,7 @@ def combine_to_snapshot(mitarbeiter, planstellen, atz, ausbildung, stichtag=None
     df = df.rename(columns={"BV Ausbildungsgruppentext": "Ausbildung"})
 
     if "Ausbildung" in df.columns:
-        df["Ausbildung"] = df["Ausbildung"].astype("string")
+        df["Ausbildung"] = normalize_education_series(df["Ausbildung"])
         df["Bildungskategorie"] = df["Ausbildung"].map(EDUCATION_MAPPING)
         df["Bildungsrang"] = df["Ausbildung"].map(EDUCATION_RANKING)
 
@@ -1279,7 +1314,7 @@ def create_combined_snapshot(
 
     # Ausbildung-Mapping
     if "Ausbildung" in df.columns:
-        df["Ausbildung"] = df["Ausbildung"].astype("string")
+        df["Ausbildung"] = normalize_education_series(df["Ausbildung"])
         # EDUCATION_MAPPING defined in this file
         df["Bildungskategorie"] = df["Ausbildung"].map(EDUCATION_MAPPING)
         df["Bildungsrang"] = df["Ausbildung"].map(EDUCATION_RANKING)

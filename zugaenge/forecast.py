@@ -7,6 +7,9 @@ import numpy as np
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 
+from config.settings import EDUCATION_GROUPS
+from dataloader.loader import normalize_education_value
+
 # Re-use Abgaenge constants/logic where useful
 # But clean separation is better.
 # We expect df_ma to have columns: PersNr, Eintritt, TrfGr, Organisationseinheit, Jobfamily.
@@ -16,6 +19,99 @@ class PeriodInfo:
     start: pd.Timestamp
     end: pd.Timestamp
     label: str
+
+
+GENDER_TEXT_MAP = {
+    "m": "männlich",
+    "w": "weiblich",
+    "d": "divers",
+}
+
+AZUBI_TRAINING_EDUCATION = "derzeit Berufsausbildung"
+DEFAULT_NEW_HIRE_EDUCATION = "kfm Berufsabschluss"
+DEFAULT_TRAINEE_EDUCATION = "Bachelor FH"
+DEFAULT_AZUBI_CONVERSION_EDUCATION = "Bankberufsabschluss"
+
+
+def _build_gender_distribution(df: pd.DataFrame) -> tuple[list[str], list[float]]:
+    """
+    Derive a stable sampling distribution for forecast hires from the current
+    state. Falls back to a 50/50 split if no usable gender data exists.
+    """
+    if "Geschlecht" not in df.columns or df.empty:
+        return ["m", "w"], [0.5, 0.5]
+
+    genders = df["Geschlecht"].astype(str).str.strip().str.lower()
+    genders = genders[genders.isin(["m", "w", "d"])]
+    if genders.empty:
+        return ["m", "w"], [0.5, 0.5]
+
+    counts = genders.value_counts(normalize=True)
+    return counts.index.tolist(), counts.values.astype(float).tolist()
+
+
+def _sample_gender(
+    rng: np.random.Generator,
+    gender_choices: list[str],
+    gender_weights: list[float],
+) -> tuple[str, str]:
+    if not gender_choices or not gender_weights:
+        code = "m" if float(rng.random()) < 0.5 else "w"
+    else:
+        code = str(rng.choice(gender_choices, p=gender_weights))
+    return code, GENDER_TEXT_MAP.get(code, code)
+
+
+def _build_education_distribution(
+    df: pd.DataFrame,
+    *,
+    allowed_values: Optional[List[str]] = None,
+    excluded_values: Optional[List[str]] = None,
+    fallback_choices: Optional[List[str]] = None,
+) -> tuple[list[str], list[float]]:
+    """
+    Derive a stable education sampling distribution from the current state.
+    Only canonical values from settings.py are retained.
+    """
+    fallback = [normalize_education_value(v) for v in (fallback_choices or [DEFAULT_NEW_HIRE_EDUCATION])]
+    fallback = [str(v) for v in fallback if pd.notna(v)]
+    if not fallback:
+        fallback = [DEFAULT_NEW_HIRE_EDUCATION]
+
+    if "Ausbildung" not in df.columns or df.empty:
+        return fallback, [1.0 / len(fallback)] * len(fallback)
+
+    education = df["Ausbildung"].map(normalize_education_value)
+    education = education.dropna().astype(str).str.strip()
+    education = education[education.isin(EDUCATION_GROUPS)]
+
+    if allowed_values:
+        allowed = {str(normalize_education_value(v)) for v in allowed_values if pd.notna(normalize_education_value(v))}
+        education = education[education.isin(allowed)]
+    if excluded_values:
+        excluded = {str(normalize_education_value(v)) for v in excluded_values if pd.notna(normalize_education_value(v))}
+        education = education[~education.isin(excluded)]
+
+    if education.empty:
+        return fallback, [1.0 / len(fallback)] * len(fallback)
+
+    counts = education.value_counts(normalize=True)
+    return counts.index.tolist(), counts.values.astype(float).tolist()
+
+
+def _sample_education(
+    rng: np.random.Generator,
+    education_choices: list[str],
+    education_weights: list[float],
+    fallback: str,
+) -> str:
+    canonical_fallback = normalize_education_value(fallback)
+    if not education_choices or not education_weights:
+        return str(canonical_fallback if pd.notna(canonical_fallback) else DEFAULT_NEW_HIRE_EDUCATION)
+
+    choice = rng.choice(education_choices, p=education_weights)
+    choice = normalize_education_value(choice)
+    return str(choice if pd.notna(choice) else canonical_fallback)
 
 def _next_august_conversion_date(entry_date: pd.Timestamp, conversion_month: int = 8, conversion_day: int = 1) -> pd.Timestamp:
     """
@@ -294,6 +390,18 @@ def _simulate_azubis(
     # Pre-compute cluster map for lookups
     unit_to_cluster = _get_unit_to_cluster_map(df_state)
     valid_units = list(unit_to_cluster.keys()) if unit_to_cluster else all_org_units
+    gender_choices, gender_weights = _build_gender_distribution(df_state)
+    conversion_edu_choices, conversion_edu_weights = _build_education_distribution(
+        df_state,
+        allowed_values=[
+            "kfm Berufsabschluss",
+            "Bankberufsabschluss",
+            "Bankfachwirt",
+            "Bankbetriebswirt",
+        ],
+        excluded_values=[AZUBI_TRAINING_EDUCATION],
+        fallback_choices=[DEFAULT_AZUBI_CONVERSION_EDUCATION],
+    )
     valid_jfs = sorted(df_state["Jobfamily"].dropna().unique().tolist()) if "Jobfamily" in df_state.columns else []
 
     # Identify Azubis
@@ -405,6 +513,16 @@ def _simulate_azubis(
             new_unit = assigned_units[i]
             new_jf = assigned_jfs[i]
             new_cluster = assigned_clusters[i]
+            current_education = normalize_education_value(row.get("Ausbildung", pd.NA))
+            if pd.notna(current_education) and str(current_education) != AZUBI_TRAINING_EDUCATION:
+                new_education = str(current_education)
+            else:
+                new_education = _sample_education(
+                    rng,
+                    conversion_edu_choices,
+                    conversion_edu_weights,
+                    DEFAULT_AZUBI_CONVERSION_EDUCATION,
+                )
 
             # id: 60 - Derive JF-Cluster for Takeovers
             if _is_orgunit_mode:
@@ -435,6 +553,7 @@ def _simulate_azubis(
             df_state.loc[persnr, "TrfGr"] = entry_tariff
             df_state.loc[persnr, "St"] = entry_step
             df_state.loc[persnr, "mak"] = mak_after
+            df_state.loc[persnr, "Ausbildung"] = new_education
             
             # Events
             events.append({
@@ -464,6 +583,7 @@ def _simulate_azubis(
                 "TrfGr": entry_tariff,
                 "St": entry_step,
                 "Jobfamily": new_jf,
+                "Ausbildung": new_education,
                 # Carry original JF (saved by Fix 4) for audit/export; enables tracing
                 # which original Jobfamily each converted Azubi came from.
                 "Jobfamily_pre_azubi": row.get("Jobfamily_pre_azubi"),
@@ -539,6 +659,8 @@ def _simulate_new_azubis(
     # Pre-compute cluster map for lookups
     unit_to_cluster = _get_unit_to_cluster_map(df_state)
     valid_units = list(unit_to_cluster.keys()) if unit_to_cluster else all_org_units
+    gender_choices, gender_weights = _build_gender_distribution(df_state)
+    azubi_edu = AZUBI_TRAINING_EDUCATION
 
     period_days = (period.end - period.start).days + 1
     # num_cases is passed from caller for determinism
@@ -561,6 +683,7 @@ def _simulate_new_azubis(
         
         org_unit = _resolve_org_unit(strategy, target_unit, all_org_units, [], rng, valid_units)
         new_cluster = unit_to_cluster.get(org_unit, "Sonstiges")
+        gender_code, gender_text = _sample_gender(rng, gender_choices, gender_weights)
 
         # Graduation calc (id: 16) - Use August Rule respecting Duration
         grad_date = _estimate_baseline_graduation_date(entry_date, duration_years, conv_month, conv_day, graduation_mode, grace_days)
@@ -583,6 +706,11 @@ def _simulate_new_azubis(
             "GraduationDate": grad_date, # id: 16
             "is_forecast": True,        # id: 16
             "GebDatum": entry_date - pd.DateOffset(years=16), # Young
+            "Geschlecht": gender_code,
+            "Text Gsch": gender_text,
+            "Ausbildung": azubi_edu,
+            "Vertragsart": "Auszubildende",
+            "Status kundenindividuell": "Aktives Beschäftigungsverhältnis",
             "Planstelle": "Azubi",
             "age": 16.0,
             "tenure": 0.0,
@@ -624,6 +752,9 @@ def _simulate_new_azubis(
             "St": 1,
             "Jobfamily": new_jf,
             "Planstelle": "Azubi",
+            "Geschlecht": gender_code,
+            "Text Gsch": gender_text,
+            "Ausbildung": azubi_edu,
             "OE-Cluster": new_cluster,
             "JF-Cluster": new_jf_cluster,
             "is_forecast": True,
@@ -649,6 +780,20 @@ def _simulate_trainees(
     salary_group = trainee_params.get("salary_group", "E13")
     strategy = trainee_params.get("strategy", "Random")
     target_unit = trainee_params.get("target_org_unit", None)
+    gender_choices, gender_weights = _build_gender_distribution(df_state)
+    trainee_edu_choices, trainee_edu_weights = _build_education_distribution(
+        df_state,
+        allowed_values=[
+            "Bachelor FH",
+            "Bachelor Universität",
+            "Master FH",
+            "Studium Lehrinstitut",
+            "Master Universität",
+            "Bankbetriebswirt",
+        ],
+        excluded_values=[AZUBI_TRAINING_EDUCATION],
+        fallback_choices=[DEFAULT_TRAINEE_EDUCATION],
+    )
     
     # Effective start for random entry date (to avoid filter loss in first month)
     eff_start = period.start
@@ -665,6 +810,13 @@ def _simulate_trainees(
         
         org_unit = _resolve_org_unit(strategy, target_unit, all_org_units, [], rng)
         entry_date = eff_start + pd.Timedelta(days=rng.integers(0, eff_days + 1))
+        gender_code, gender_text = _sample_gender(rng, gender_choices, gender_weights)
+        education = _sample_education(
+            rng,
+            trainee_edu_choices,
+            trainee_edu_weights,
+            DEFAULT_TRAINEE_EDUCATION,
+        )
         
         # Add to State
         # We assume df_state structure matches
@@ -677,6 +829,11 @@ def _simulate_trainees(
             "Organisationseinheit": org_unit,
             "Eintritt": entry_date,
             "GebDatum": entry_date - pd.DateOffset(years=25), # Approx simple age
+            "Geschlecht": gender_code,
+            "Text Gsch": gender_text,
+            "Ausbildung": education,
+            "Vertragsart": "Zeitvertrag",
+            "Status kundenindividuell": "Aktives Beschäftigungsverhältnis",
             "Planstelle": "Trainee",
             "age": 25.0,
             "tenure": 0.0,
@@ -696,6 +853,9 @@ def _simulate_trainees(
             "St": 1,
             "Jobfamily": "Trainee",
             "Planstelle": "Trainee",
+            "Geschlecht": gender_code,
+            "Text Gsch": gender_text,
+            "Ausbildung": education,
             "_new_row": new_row # Marker to add to DF later
         })
 
@@ -732,6 +892,12 @@ def _simulate_hires(
             dist_weights = [w / total_w for w in dist_weights]
         else:
             dist_list = [] # Invalid distribution
+    gender_choices, gender_weights = _build_gender_distribution(df_state)
+    hire_edu_choices, hire_edu_weights = _build_education_distribution(
+        df_state,
+        excluded_values=[AZUBI_TRAINING_EDUCATION],
+        fallback_choices=[DEFAULT_NEW_HIRE_EDUCATION],
+    )
     
     # Effective start for random entry date (to avoid filter loss in first month)
     eff_start = period.start
@@ -744,6 +910,13 @@ def _simulate_hires(
     for _ in range(num_cases):
         new_id = f"NH_{rng.integers(10000, 99999)}"
         entry_date = eff_start + pd.Timedelta(days=rng.integers(0, eff_days + 1))
+        gender_code, gender_text = _sample_gender(rng, gender_choices, gender_weights)
+        education = _sample_education(
+            rng,
+            hire_edu_choices,
+            hire_edu_weights,
+            DEFAULT_NEW_HIRE_EDUCATION,
+        )
         
         # Determine Attributes
         org_unit = "Unbekannt"
@@ -800,6 +973,11 @@ def _simulate_hires(
             "Organisationseinheit": org_unit,
             "Eintritt": entry_date,
             "GebDatum": entry_date - pd.DateOffset(years=30),
+            "Geschlecht": gender_code,
+            "Text Gsch": gender_text,
+            "Ausbildung": education,
+            "Vertragsart": "Unbefristet",
+            "Status kundenindividuell": "Aktives Beschäftigungsverhältnis",
             "Planstelle": plan_stelle,
             "age": 30.0,
             "tenure": 0.0,
@@ -820,6 +998,9 @@ def _simulate_hires(
             "Jobfamily": jf,
             "OE-Cluster": oe_c, 
             "Planstelle": plan_stelle,
+            "Geschlecht": gender_code,
+            "Text Gsch": gender_text,
+            "Ausbildung": education,
             "_new_row": new_row # Marker to add to DF later
         })
 
