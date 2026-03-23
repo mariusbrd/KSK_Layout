@@ -47,7 +47,7 @@ from utils.plot_helpers import apply_legend_bottom
 
 def main():
     st.title("📉 Prognose: Abgänge")
-    st.caption("Prognose von Abgaengen (ATZ, Rente, Kuendigung, Ruhend) mit klarer Trennung von MAK und Headcount.")
+    st.caption("Prognose von Abgaengen (ATZ, Rente, Kuendigung) mit klarer Trennung von MAK und Headcount.")
     metric_choice, metric_hint = get_effective_metric_view(["Köpfe", "MAK"], fallback="MAK")
     if metric_hint:
         set_metric_page_hint("EUR ist auf dieser Seite derzeit nicht verfügbar. Die Seite verwendet stattdessen MAK.")
@@ -191,6 +191,12 @@ def main():
 
     # ── Parametrierung (Form) ──
     params = default_params()
+    # Ruhend bleibt auf dieser Seite vorerst fachlich deaktiviert.
+    params["components"]["ruhend"] = False
+    ruhend_new = int(params["ruhend"]["ruhend_new_cases_per_year"])
+    ruhend_return = float(params["ruhend"]["ruhend_return_rate"])
+    ruhend_duration = int(params["ruhend"]["ruhend_avg_duration_months"])
+    comp_ruhend = False
 
     with st.form("abgaenge_forecast_form", clear_on_submit=False):
         st.markdown("### ⚙️ Prognose-Einstellungen")
@@ -211,15 +217,13 @@ def main():
 
         # ── Row 2: Component Toggles (horizontal) ──
         st.markdown("##### 🧩 Aktive Komponenten")
-        cc1, cc2, cc3, cc4 = st.columns(4)
+        cc1, cc2, cc3 = st.columns(3)
         with cc1:
             comp_atz = st.checkbox("ATZ (inkl. Renteneintritt nach ATZ)", value=params["components"]["atz"])
         with cc2:
             comp_ret = st.checkbox("Rente", value=params["components"]["retirement"])
         with cc3:
             comp_quit = st.checkbox("Kündigung", value=params["components"]["quit"])
-        with cc4: # Corrected col index
-            comp_ruhend = st.checkbox("Ruhend", value=params["components"]["ruhend"])
 
         st.markdown("---")
         st.info("💡 **Hinweis zu ATZ:** Wenn 'ATZ' aktiv ist, werden auch die ATZ-Endereignisse automatisch modelliert. Diese erscheinen als 'Rente (nach ATZ)' – unabhängig davon, ob die Komponente 'Rente' separat aktiviert ist.")
@@ -486,18 +490,6 @@ def main():
                 "less": less_years_map
             }
             params["quit"]["quit_adjustments"] = quit_adjustments
-
-        with st.expander("Ruhend-Parameter"):
-            hc1, hc2, hc3 = st.columns(3)
-            with hc1:
-                ruhend_new = st.number_input("Neue Fälle / Jahr", value=int(params["ruhend"]["ruhend_new_cases_per_year"]), step=1, key="num_ruhend_new")
-                params["ruhend"]["ruhend_new_cases_per_year"] = ruhend_new
-            with hc2:
-                ruhend_return = st.slider("Rückkehrquote p.a.: 0.50 (Range 0.00–1.00)", min_value=0.0, max_value=1.0, value=float(params["ruhend"]["ruhend_return_rate"]), step=0.05, key="slide_ruhend_ret_live")
-                params["ruhend"]["ruhend_return_rate"] = ruhend_return
-            with hc3:
-                ruhend_duration = st.number_input("Ø Dauer (Monate)", value=int(params["ruhend"]["ruhend_avg_duration_months"]), step=1, key="num_ruhend_dur_live")
-                params["ruhend"]["ruhend_avg_duration_months"] = ruhend_duration
 
     # ── Action Button ──
         st.write("")
