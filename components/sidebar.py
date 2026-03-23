@@ -11,11 +11,15 @@ from datetime import datetime
 import sys
 import os
 import re
+import html
 
 # Import settings
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.settings import DEFAULT_COHORTS, COLORS, DATA_PATH, BASE_DIR
 from dataloader.source_service import SourceService, DataSourceOrigin
+from components.ui_shell import inject_ui_theme
+
+GLOBAL_METRIC_OPTIONS = ["Köpfe", "MAK", "EUR"]
 
 
 # -----------------------------
@@ -70,20 +74,29 @@ def _segmented_single(label: str, options: list[str], value: str, key: str):
     Fallback: st.radio
     """
     if hasattr(st, "segmented_control"):
+        widget_kwargs = {
+            "key": key,
+            "label_visibility": "collapsed",
+        }
+        if key not in st.session_state and value in options:
+            widget_kwargs["default"] = value
         return st.segmented_control(
             label,
             options=options,
-            default=value,
-            key=key,
-            label_visibility="collapsed",
+            **widget_kwargs,
         )
+
+    radio_kwargs = {
+        "horizontal": True,
+        "key": key,
+        "label_visibility": "collapsed",
+    }
+    if key not in st.session_state and value in options:
+        radio_kwargs["index"] = options.index(value)
     return st.radio(
         label,
         options=options,
-        index=options.index(value) if value in options else 0,
-        horizontal=True,
-        key=key,
-        label_visibility="collapsed",
+        **radio_kwargs,
     )
 
 
@@ -113,6 +126,28 @@ def _segmented_multi_gender(label: str, options: list[str], default: list[str], 
         default=default,
         key=key,
         label_visibility="collapsed",
+    )
+
+
+def _render_sidebar_heading(text: str):
+    st.markdown(f'<div class="dashboard-sidebar-heading">{html.escape(text)}</div>', unsafe_allow_html=True)
+
+
+def _render_sidebar_section(text: str):
+    st.markdown(f'<div class="dashboard-sidebar-section">{html.escape(text)}</div>', unsafe_allow_html=True)
+
+
+def _render_sidebar_summary(text: str):
+    st.markdown(
+        f'<div class="dashboard-sidebar-summary">{html.escape(text)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_sidebar_note(text: str):
+    st.markdown(
+        f'<div class="dashboard-sidebar-note">{html.escape(text)}</div>',
+        unsafe_allow_html=True,
     )
 
 
@@ -159,6 +194,120 @@ def render_data_status():
     st.markdown("".join(html), unsafe_allow_html=True)
 
 
+def _sync_legacy_view_mode():
+    """Keep the legacy MAK/EUR session key aligned for older consumers."""
+    metric_view = st.session_state.get("global_metric_view", "MAK")
+    if metric_view in ("MAK", "EUR"):
+        st.session_state["view_mode"] = metric_view
+    else:
+        st.session_state["view_mode"] = "MAK"
+
+
+def initialize_global_metric_view():
+    """Initialize the global metric pill with backward compatibility."""
+    if "global_metric_view" not in st.session_state:
+        legacy_mode = st.session_state.get("view_mode", "MAK")
+        if legacy_mode in GLOBAL_METRIC_OPTIONS:
+            st.session_state["global_metric_view"] = legacy_mode
+        elif legacy_mode == "Euro":
+            st.session_state["global_metric_view"] = "EUR"
+        else:
+            st.session_state["global_metric_view"] = "MAK"
+    _sync_legacy_view_mode()
+
+
+def render_global_metric_selector():
+    """Render the native 3-state metric pill in the sidebar."""
+    inject_ui_theme()
+    initialize_global_metric_view()
+    metric_view = _segmented_single(
+        "Darstellungsart",
+        options=GLOBAL_METRIC_OPTIONS,
+        value=st.session_state.get("global_metric_view", "MAK"),
+        key="global_metric_view_toggle",
+    )
+    st.session_state["global_metric_view"] = metric_view
+    _sync_legacy_view_mode()
+    page_hint = st.session_state.get("metric_page_hint")
+    if page_hint:
+        _render_sidebar_note(page_hint)
+    return metric_view
+
+
+def get_global_metric_view(default: str = "MAK") -> str:
+    """Return the currently selected global metric view."""
+    initialize_global_metric_view()
+    return st.session_state.get("global_metric_view", default)
+
+
+def get_effective_metric_view(
+    supported_views: list[str] | tuple[str, ...],
+    fallback: str | None = None,
+) -> tuple[str, str | None]:
+    """
+    Resolve the global metric view against the subset a page supports.
+    """
+    selected_view = get_global_metric_view()
+    supported = list(supported_views)
+    if not supported:
+        return selected_view, None
+
+    if selected_view in supported:
+        return selected_view, None
+
+    effective = fallback or ("MAK" if "MAK" in supported else supported[0])
+    supported_label = " / ".join(supported)
+    hint = (
+        f"Die globale Ansicht ist auf `{selected_view}` gesetzt. "
+        f"Diese Seite unterstützt derzeit `{supported_label}`. "
+        f"Angezeigt wird daher `{effective}`."
+    )
+    return effective, hint
+
+
+def render_metric_hint(
+    *,
+    supported_views: list[str] | tuple[str, ...],
+    page_scope: str,
+    note: str | None = None,
+    fallback: str | None = None,
+) -> str:
+    """
+    Render a page-specific note below the title if the selected view is not
+    fully available on the current page. Returns the effective view.
+    """
+    effective_view, hint = get_effective_metric_view(supported_views, fallback=fallback)
+    if hint:
+        extra = f" {note}" if note else ""
+        st.info(f"Ansichtshinweis für {page_scope}: {hint}{extra}")
+    elif note:
+        st.info(f"Ansichtshinweis für {page_scope}: {note}")
+    return effective_view
+
+
+def render_metric_selector_only(caption_text: str | None = None):
+    """
+    Render only the global metric pill in the sidebar. Useful on pages without
+    the full filter sidebar.
+    """
+    inject_ui_theme()
+    initialize_global_metric_view()
+    with st.sidebar:
+        st.markdown("### 💡 Ansicht")
+        render_global_metric_selector()
+        if caption_text:
+            _render_sidebar_note(caption_text)
+        st.markdown("---")
+
+
+def set_metric_page_hint(hint_text: str | None):
+    """Set or clear the page-specific note shown below the global metric pill."""
+    if hint_text:
+        st.session_state["metric_page_hint"] = hint_text
+    else:
+        st.session_state.pop("metric_page_hint", None)
+
+
 # -----------------------------
 # Public API
 # -----------------------------
@@ -170,6 +319,8 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
         snapshot_df: Snapshot DataFrame (für Filter-Optionen)
         history_df: History DataFrame (für Datumsbereich)
     """
+    inject_ui_theme()
+
     # Initialize session state defaults BEFORE rendering
     if "cohort_definitions" not in st.session_state:
         st.session_state["cohort_definitions"] = DEFAULT_COHORTS.copy()
@@ -211,6 +362,8 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
     if "view_mode" not in st.session_state:
         st.session_state["view_mode"] = "MAK"
 
+    initialize_global_metric_view()
+
     with st.sidebar:
         # -----------------------------
         # Data Source Status
@@ -223,19 +376,13 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
         # Header / Summary
         # -----------------------------
         st.markdown("## 🎛️ Dashboard Steuerung")
-        st.caption(get_filter_summary())
+        _render_sidebar_summary(get_filter_summary())
 
         # -----------------------------
-        # View Mode (MAK/EUR) - compact pills
+        # View Mode (Köpfe/MAK/EUR) - compact pills
         # -----------------------------
         st.markdown("### 💡 Ansicht")
-        view_mode = _segmented_single(
-            "Darstellungsart",
-            options=["MAK", "EUR"],
-            value=st.session_state.get("view_mode", "MAK"),
-            key="view_mode_toggle",
-        )
-        st.session_state["view_mode"] = view_mode
+        render_global_metric_selector()
 
         st.markdown("---")
 

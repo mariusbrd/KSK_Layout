@@ -546,6 +546,15 @@ def _resolve_atz_status_map(atz_pivot: pd.DataFrame, target_date: pd.Timestamp) 
     atz.loc[ar_mask, "ATZ_Status"] = "Arbeitsphase"
     atz.loc[fr_mask, "ATZ_Status"] = "Freistellungsphase"
     atz["ist_atz_fr"] = atz["ATZ_Status"].eq("Freistellungsphase")
+    atz["status_rank"] = atz["ATZ_Status"].map({
+        "Kein ATZ": 0,
+        "Arbeitsphase": 1,
+        "Freistellungsphase": 2,
+    }).fillna(0)
+    atz = (
+        atz.sort_values(["PersNr", "status_rank"], ascending=[True, False])
+        .drop_duplicates(subset=["PersNr"], keep="first")
+    )
     return atz[["PersNr", "ATZ_Status", "ist_atz_fr"]]
 
 
@@ -594,7 +603,10 @@ def _update_existing_rows(
     final_df = final_df.drop_duplicates(subset=["PersNr"], keep="last")
     final_df = final_df.set_index("PersNr")
 
-    atz_map = atz_status_df.set_index("PersNr") if not atz_status_df.empty else pd.DataFrame()
+    if not atz_status_df.empty:
+        atz_map = atz_status_df.drop_duplicates(subset=["PersNr"], keep="last").set_index("PersNr")
+    else:
+        atz_map = pd.DataFrame()
 
     occupied_mask = future_df["PersNr_norm"].ne("")
     existing_ids = set(future_df.loc[occupied_mask, "PersNr_norm"])

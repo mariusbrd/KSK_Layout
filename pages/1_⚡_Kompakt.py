@@ -25,8 +25,10 @@ from typing import Dict
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from components.ui_compat import dataframe_compat, download_button_compat
+from components.ui_shell import render_active_filter_banner, render_context_box, render_section_intro
 from dataloader.loader import load_and_prepare_data
-from components.sidebar import render_global_filters, apply_filters, get_filter_summary
+from dataloader.soll_ist_koepfe_engine import build_soll_ist_koepfe_result
+from components.sidebar import render_global_filters, apply_filters, get_filter_summary, get_global_metric_view, set_metric_page_hint
 from config.settings import (
     COLORS, COLOR_SEQUENCE, CHART_HEIGHTS,
     format_number, format_currency, format_percent,
@@ -186,20 +188,20 @@ def render_kpi_cards_styled(kpis: list):
             st.markdown(
                 f"""
                 <div style="
-                    background: linear-gradient(to bottom, #f8fafc, #ffffff);
-                    border-radius: 12px;
-                    padding: 1.25rem;
-                    border: 1px solid #e2e8f0;
+                    background: linear-gradient(180deg, #f8fbff 0%, #ffffff 100%);
+                    border-radius: 14px;
+                    padding: 1rem 1.05rem;
+                    border: 1px solid #dce8f5;
                     border-top: 4px solid {border_color};
-                    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+                    box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
                 ">
-                    <div style="font-size: 0.8rem; color: #64748b; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px;">
+                    <div style="font-size: 0.76rem; color: #64748b; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;">
                         {kpi.get('icon', '📊')} {kpi['title']}
                     </div>
-                    <div style="font-size: 1.75rem; font-weight: 700; color: #1e293b; margin: 0.5rem 0;">
+                    <div style="font-size: 1.72rem; font-weight: 700; color: #0f172a; margin: 0.45rem 0 0.35rem 0; line-height: 1.15;">
                         {kpi['value']}
                     </div>
-                    <div style="font-size: 0.85rem; color: #94a3b8;">
+                    <div style="font-size: 0.84rem; color: #64748b; line-height: 1.35;">
                         {kpi.get('subtitle', '')}
                     </div>
                 </div>
@@ -3148,6 +3150,28 @@ def _build_soll_ist_pivot(df: pd.DataFrame, use_max_eg: bool = True):
     return pivot, soll_order, ist_eg_cols, IST_UNBESETZT, IST_NOT_FOUND, work, n_no_soll_eg, no_soll_eg_row
 
 
+def _build_soll_ist_pivot_raw_logic(use_max_eg: bool = True):
+    """
+    Roh-nahe Soll-Ist-Logik fuer den Koepfe-Vergleich.
+
+    Sollkapa 0,01 bleibt fuer diesen Tab unveraendert. Deep-Dive-Exklusionen
+    werden in Variante B angewendet: ausgeschlossene Personen/OEs entfallen
+    zusammen mit ihrer Planstelle vollstaendig aus der Analyse.
+    """
+    result = build_soll_ist_koepfe_result(use_max_eg=use_max_eg)
+    return (
+        result["pivot"],
+        result["soll_order"],
+        result["ist_eg_cols"],
+        result["IST_UNBESETZT"],
+        result["IST_NOT_FOUND"],
+        result["work_df"],
+        result["n_no_soll_eg"],
+        result["no_soll_eg_row"],
+        result["summary"],
+    )
+
+
 def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
     """
     Rendert den 'IST vs SOLL Köpfe'-Tab.
@@ -3173,7 +3197,7 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
     else:
         use_max_eg = True  # Im Druckbericht immer Maximalwert
 
-    pivot, soll_order, ist_eg_cols, IST_UNBESETZT, IST_NOT_FOUND, work_df, n_no_soll_eg, no_soll_eg_row = _build_soll_ist_pivot(df, use_max_eg=use_max_eg)
+    pivot, soll_order, ist_eg_cols, IST_UNBESETZT, IST_NOT_FOUND, work_df, n_no_soll_eg, no_soll_eg_row, summary = _build_soll_ist_pivot_raw_logic(use_max_eg=use_max_eg)
 
     if pivot is None:
         st.warning("⚠️ Spalte 'Bewertung Tarifgruppe' nicht im Datensatz vorhanden. "
@@ -3193,6 +3217,16 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
     not_found = int(pivot[IST_NOT_FOUND].sum()) if IST_NOT_FOUND in pivot.columns else 0
     besetzt   = total_pl - unbesetzt - not_found
 
+    # Roh-nahe Fachlogik fuer diesen Tab:
+    # regulÃ¤re Sollstellen (ohne 0,01) als KPI-Basis,
+    # 0,01-SonderfÃ¤lle separat ausweisen.
+    total_pl = int(summary["regular_total"])
+    besetzt = int(summary["regular_occupied"])
+    unbesetzt = int(summary["regular_vacant"])
+    not_found = int(summary["matrix_not_found"])
+    technical_in_work = int(summary["technical_non9xxx_occupied"])
+    matrix_besetzt = int(summary["matrix_occupied"])
+
     # Band-aware Passungsquote über alle Planstellen
     from config.settings import TARIFF_GROUPS as _TG_KPI
     _eg_rank_kpi = {g: i for i, g in enumerate(_TG_KPI)}
@@ -3206,7 +3240,7 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
     n_passend_exakt   = int(_exakt.sum())
     n_passend_band    = int(_im_band.sum())
     n_passend_gesamt  = n_passend_exakt + n_passend_band
-    passend_pct       = n_passend_gesamt / besetzt * 100 if besetzt > 0 else 0.0
+    passend_pct       = n_passend_gesamt / matrix_besetzt * 100 if matrix_besetzt > 0 else 0.0
 
     kpis = [
         {
@@ -3245,12 +3279,55 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
             "status": "warning" if not_found > 0 else "good",
         },
     ]
+    kpis = [
+        {
+            "title": "Soll-Stellen (regulaer)",
+            "value": f"{total_pl:,}".replace(",", "."),
+            "subtitle": "Regulaere Planstellen ohne Sollkapa 0,01",
+            "icon": "📋",
+            "status": "default",
+        },
+        {
+            "title": "Regulaer besetzt",
+            "value": f"{besetzt:,}".replace(",", "."),
+            "subtitle": f"{besetzt / total_pl * 100:.1f}% der Planstellen".replace(".", ",") if total_pl else "—",
+            "icon": "👤",
+            "status": "good",
+        },
+        {
+            "title": "Regulaer unbesetzt",
+            "value": f"{unbesetzt:,}".replace(",", "."),
+            "subtitle": f"{unbesetzt / total_pl * 100:.1f}% der Planstellen".replace(".", ",") if total_pl else "—",
+            "icon": "🔲",
+            "status": "warning" if unbesetzt > 0 else "good",
+        },
+        {
+            "title": "Nicht definierte Sollstelle in Arbeit",
+            "value": f"{technical_in_work:,}".replace(",", "."),
+            "subtitle": "Sollkapa 0,01, nicht 9XXX/99XX, mit Personalnummer",
+            "icon": "🧩",
+            "status": "warning" if technical_in_work > 0 else "good",
+        },
+        {
+            "title": "Passend oder im Band",
+            "value": f"{passend_pct:.1f}%".replace(".", ","),
+            "subtitle": f"{n_passend_gesamt} matrixfaehige Stellen — exakt ({n_passend_exakt}) + im Band ({n_passend_band})",
+            "icon": "✅",
+            "status": "good" if passend_pct >= 75 else "warning",
+        },
+    ]
     st.markdown("### Management-Zusammenfassung")
     render_kpi_cards_styled(kpis)
     st.caption(
         f"Von {total_pl:,} regulär auswertbaren Planstellen sind {besetzt:,} besetzt und "
         f"{unbesetzt:,} unbesetzt. {n_passend_gesamt:,} besetzte Stellen liegen exakt oder "
         f"innerhalb des vorgesehenen Entgeltbandes.".replace(",", ".")
+    )
+
+    st.caption(
+        f"Roh-nahe Kontrolllogik: {total_pl:,} regulaere Sollstellen | {besetzt:,} regulaer besetzt | "
+        f"{unbesetzt:,} regulaer unbesetzt | {technical_in_work:,} Personen auf nicht definierter "
+        f"Sollstelle in Arbeit.".replace(",", ".")
     )
 
     if n_no_soll_eg > 0 and not print_mode:
@@ -3262,6 +3339,12 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
         )
 
     if not print_mode:
+        st.caption(
+            f"Kontrollsummen 0,01-Faelle: {summary['technical_total']:,} gesamt | "
+            f"{summary['technical_9xxx_total']:,} auf 9XXX/99XX | "
+            f"{summary['technical_non9xxx_total']:,} ausserhalb 9XXX/99XX | "
+            f"{summary['technical_non9xxx_occupied']:,} davon in Arbeit.".replace(",", ".")
+        )
         st.markdown("---")
 
     st.markdown("### Fachliche Soll-Ist-Analyse")
@@ -3975,7 +4058,7 @@ def main():
     """Hauptfunktion für die Kompakt-Seite."""
 
     st.title("⚡ Kompakt-Dashboard")
-    st.caption("Alle wichtigen IST und IST vs SOLL Auswertungen auf einen Blick")
+    st.caption("Alle wichtigen IST- und IST-vs-SOLL-Auswertungen auf einen Blick.")
 
     # CSS für helles Scroll-Navigation Template
     if SCROLL_NAV_AVAILABLE:
@@ -4039,6 +4122,7 @@ def main():
         # Daten laden
         snapshot_df, history_df, org_df, summary = load_and_prepare_data()
         prepared_df = prepare_compact_data(snapshot_df)
+        set_metric_page_hint(None)
 
         # Filter rendern
         # Hinweis: Job Family Filter ist jetzt global in Sidebar (render_global_filters)
@@ -4059,7 +4143,7 @@ def main():
         # Filter-Summary (inkl. Job Families)
         filter_summary = get_filter_summary()
 
-        st.info(f"🎯 {filter_summary}")
+        render_active_filter_banner(filter_summary)
 
         # Prüfe Daten
         if len(filtered_df) == 0:
@@ -4166,62 +4250,41 @@ def main():
 
             
         else:
-            # Standardansicht: Verschachtelte Tabs (Hauptbereich → Unterkategorie)
-            main_options = ["📈 IST-Analyse", "🎯 IST vs SOLL"]
-            if "compact_main_view" not in st.session_state:
-                st.session_state["compact_main_view"] = main_options[0]
-
-            main_view = st.radio(
-                "Analysebereich",
-                options=main_options,
-                horizontal=True,
-                key="compact_main_view",
-                label_visibility="collapsed",
+            render_section_intro(
+                "Auswertungsmodus",
+                "Zwischen Analysebereich und Kennzahlensicht wechseln. Die Inhalte darunter reagieren auf die aktiven Sichtfilter.",
+            )
+            metric_view = get_global_metric_view()
+            render_context_box(
+                "Kennzahlensicht",
+                f"Steuerung ueber die Sidebar: {metric_view}",
+                tone="neutral",
+                compact=True,
             )
 
-            if main_view == "📈 IST-Analyse":
-                ist_options = ["👥 Köpfe", "📊 MAK", "💰 EUR"]
-                if "compact_ist_view" not in st.session_state:
-                    st.session_state["compact_ist_view"] = ist_options[0]
+            ist_tab, ist_soll_tab = st.tabs([
+                "📈 IST-Analyse",
+                "🎯 IST vs SOLL",
+            ])
 
-                ist_view = st.radio(
-                    "IST-Unteransicht",
-                    options=ist_options,
-                    horizontal=True,
-                    key="compact_ist_view",
-                    label_visibility="collapsed",
-                )
-
-                if ist_view == "👥 Köpfe":
+            with ist_tab:
+                if metric_view == "Köpfe":
                     render_ist_koepfe_tab(filtered_df)
-                elif ist_view == "📊 MAK":
+                elif metric_view == "MAK":
                     render_ist_mak_tab(filtered_df)
                 else:
                     render_ist_eur_tab(filtered_df)
 
-                return
-
-            soll_options = ["🔢 Köpfe", "🎯 MAK", "💶 EUR"]
-            if "compact_soll_view" not in st.session_state:
-                st.session_state["compact_soll_view"] = soll_options[0]
-
-            soll_view = st.radio(
-                "SOLL-Unteransicht",
-                options=soll_options,
-                horizontal=True,
-                key="compact_soll_view",
-                label_visibility="collapsed",
-            )
-
-            if soll_view == "🔢 Köpfe":
-                # prepared_df (not filtered_df) wird verwendet, damit vakante
-                # Planstellen enthalten sind (Geschlecht-/Arbeitszeit-Filter
-                # wuerden leere Person-Zeilen herausfiltern).
-                render_ist_soll_koepfe_tab(prepared_df)
-            elif soll_view == "🎯 MAK":
-                render_ist_vs_soll_mak_tab(filtered_df)
-            else:
-                render_ist_vs_soll_eur_tab(filtered_df)
+            with ist_soll_tab:
+                if metric_view == "Köpfe":
+                    # prepared_df (not filtered_df) wird verwendet, damit vakante
+                    # Planstellen enthalten sind (Geschlecht-/Arbeitszeit-Filter
+                    # wuerden leere Person-Zeilen herausfiltern).
+                    render_ist_soll_koepfe_tab(prepared_df)
+                elif metric_view == "MAK":
+                    render_ist_vs_soll_mak_tab(filtered_df)
+                else:
+                    render_ist_vs_soll_eur_tab(filtered_df)
 
             return
 

@@ -44,7 +44,7 @@ from zugaenge.enrichment import build_jf_to_cluster_map, enrich_zugaenge_events,
 # Shared Components
 from dataloader.loader import load_and_prepare_data, load_atz_data_cached, calculate_mak_vectorized, calculate_cost_vectorized
 from dataloader.cluster_manager import is_clustering_active
-from components.sidebar import render_global_filters, apply_filters, apply_event_filters, render_filter_status
+from components.sidebar import render_global_filters, apply_filters, apply_event_filters, render_filter_status, set_metric_page_hint
 from utils.plot_helpers import apply_legend_bottom
 from utils.ui_helpers import render_distribution_matrix, render_orgunit_mode_hint
 from utils.matrix_helpers import migrate_to_percent, percent_to_weights
@@ -221,7 +221,11 @@ def main():
     current_filter_hash = dict_hash(get_filter_bundle())
 
     st.title("🏢 Prognose: Hybrid")
-    st.write("Prognose von Hybrid-Szenarien (Abgänge & Zugänge) mit klarer Trennung von MAK und Headcount.")
+    st.caption("Prognose von Hybrid-Szenarien (Abgaenge und Zugaenge) mit klarer Trennung von MAK und Headcount.")
+    set_metric_page_hint(
+        "Diese Seite zeigt derzeit ein kombiniertes Netto-Cockpit. "
+        "Die globale Pille schaltet hier noch nicht die gesamte Seite zwischen Köpfe / MAK / EUR um."
+    )
 
     try:
         # 1. Load Central Data (Consistent with Kompakt)

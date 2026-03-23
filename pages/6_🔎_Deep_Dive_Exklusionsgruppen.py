@@ -17,7 +17,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dataloader.loader import load_and_prepare_data
-from components.sidebar import render_global_filters, apply_filters
+from components.sidebar import render_global_filters, apply_filters, set_metric_page_hint
 from config.settings import COLORS, EXCLUSION_ORG_UNITS
 from utils.exclusion_groups import (
     build_group_masks,
@@ -40,11 +40,12 @@ from utils.plot_helpers import apply_legend_bottom
 def _metric_card(label: str, value: str, sub: str = "", color: str = "#0088DE"):
     st.markdown(
         f"""
-        <div style="background:#F5F5F5;border-radius:8px;padding:14px 18px;
-                    border-left:4px solid {color};margin-bottom:4px;">
-            <div style="font-size:0.78rem;color:#757575;margin-bottom:2px;">{label}</div>
-            <div style="font-size:1.55rem;font-weight:700;color:#1a1a2e;">{value}</div>
-            {"<div style='font-size:0.75rem;color:#A9A9A9;margin-top:2px;'>" + sub + "</div>" if sub else ""}
+        <div style="background:linear-gradient(180deg,#f8fbff 0%,#ffffff 100%);
+                    border-radius:14px;padding:14px 16px;border:1px solid #dce8f5;
+                    border-left:4px solid {color};margin-bottom:8px;box-shadow:0 6px 18px rgba(15,23,42,0.05);">
+            <div style="font-size:0.74rem;color:#64748b;margin-bottom:4px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">{label}</div>
+            <div style="font-size:1.55rem;font-weight:700;color:#0f172a;line-height:1.15;">{value}</div>
+            {"<div style='font-size:0.82rem;color:#64748b;margin-top:4px;line-height:1.35;'>" + sub + "</div>" if sub else ""}
         </div>
         """,
         unsafe_allow_html=True,
@@ -139,6 +140,11 @@ def main():
     )
 
     # ── Daten laden ──────────────────────────────────────────────────────────
+    set_metric_page_hint(
+        "Diese Seite ist eine Steuerungs- und Transparenzseite. "
+        "Die globale Pille hat hier derzeit keine fachliche Wirkung."
+    )
+
     try:
         snapshot_df, history_df, org_df, summary = load_and_prepare_data()
         render_global_filters(snapshot_df, history_df)

@@ -19,7 +19,8 @@ else:
     sys.path.append(str(BASE_PATH))
 
 from abgaenge.params import default_params as default_abgaenge_params
-from components.sidebar import apply_filters, get_filter_summary, render_global_filters
+from components.sidebar import apply_filters, get_filter_summary, render_global_filters, get_global_metric_view, set_metric_page_hint
+from components.ui_shell import render_active_filter_banner, render_context_box, render_section_intro
 from dataloader.compact_simulation_engine import simulate_compact_snapshot
 from dataloader.loader import load_and_prepare_data, load_atz_data_cached
 from kpi_reference import get_current_stichtag
@@ -88,20 +89,29 @@ def _clear_simulation_cache():
 
 def _segmented_single(label: str, options: list[str], value: str, key: str):
     if hasattr(st, "segmented_control"):
+        widget_kwargs = {
+            "key": key,
+            "label_visibility": "collapsed",
+        }
+        if key not in st.session_state and value in options:
+            widget_kwargs["default"] = value
         return st.segmented_control(
             label,
             options=options,
-            default=value,
-            key=key,
-            label_visibility="collapsed",
+            **widget_kwargs,
         )
+
+    radio_kwargs = {
+        "horizontal": True,
+        "key": key,
+        "label_visibility": "collapsed",
+    }
+    if key not in st.session_state and value in options:
+        radio_kwargs["index"] = options.index(value)
     return st.radio(
         label,
         options=options,
-        index=options.index(value) if value in options else 0,
-        horizontal=True,
-        key=key,
-        label_visibility="collapsed",
+        **radio_kwargs,
     )
 
 
@@ -109,23 +119,13 @@ def _inject_page_styles():
     st.markdown(
         """
         <style>
-        .sim-header-note {
-            background: #f8fbff;
-            border: 1px solid #d6e9fb;
-            border-radius: 14px;
-            color: #475569;
-            font-size: 0.92rem;
-            line-height: 1.4;
-            padding: 10px 12px;
-            margin: 8px 0 16px 0;
-        }
         .sim-panel {
             background: #ffffff;
             border: 1px solid #dce8f5;
-            border-radius: 18px;
-            padding: 18px;
+            border-radius: 14px;
+            padding: 16px 18px;
             margin-bottom: 16px;
-            box-shadow: 0 10px 28px rgba(15, 23, 42, 0.05);
+            box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
         }
         .sim-panel-title {
             color: #0f172a;
@@ -142,7 +142,7 @@ def _inject_page_styles():
         .sim-control-card {
             background: #f8fbff;
             border: 1px solid #dce8f5;
-            border-radius: 14px;
+            border-radius: 12px;
             padding: 14px;
             min-height: 112px;
         }
@@ -195,7 +195,7 @@ def _inject_page_styles():
         .sim-summary-card {
             background: linear-gradient(180deg, #f8fbff 0%, #ffffff 100%);
             border: 1px solid #dce8f5;
-            border-radius: 14px;
+            border-radius: 12px;
             padding: 12px 14px;
         }
         .sim-summary-label {
@@ -261,15 +261,11 @@ def _inject_page_styles():
 
 def _render_hero():
     st.title("⚡ Kompakt plus Simulation")
-    st.caption("Kompakt-Auswertung auf einem bis zum Zukunftsdatum fortgeschriebenen Personalbestand")
-    st.markdown(
-        """
-        <div class="sim-header-note">
-            Fortschreibung des Personalbestands bis zu einem gewaehlten Zukunftsdatum
-            auf Basis der bestehenden Prognose-Logik fuer Abgaenge und Zugaenge.
-        </div>
-        """,
-        unsafe_allow_html=True,
+    st.caption("Kompakt-Auswertung auf einem bis zum Zukunftsdatum fortgeschriebenen Personalbestand.")
+    render_context_box(
+        "Simulationslogik",
+        "Fortschreibung des Personalbestands bis zu einem gewaehlten Zukunftsdatum auf Basis der bestehenden Prognose-Logik fuer Abgaenge und Zugaenge.",
+        tone="info",
     )
 
 
@@ -344,18 +340,6 @@ def _render_summary_cards(base_date: pd.Timestamp, display_target: pd.Timestamp,
     )
 
 
-def _render_filter_box(filter_summary: str):
-    st.markdown(
-        f"""
-        <div class="sim-filter-box">
-            <div class="sim-filter-title">Aktive Sichtfilter</div>
-            <div class="sim-filter-text">{filter_summary}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
 def main():
     _inject_page_styles()
     _render_hero()
@@ -370,8 +354,10 @@ def main():
         (base_date + pd.Timedelta(days=365)).date(),
     )
 
-    st.subheader("Simulation steuern", divider=True)
-    st.caption("Ziel-Datum waehlen, Bestand berechnen und anschliessend wie in der Kompaktseite auswerten.")
+    render_section_intro(
+        "Simulation steuern",
+        "Ziel-Datum waehlen, Bestand berechnen und anschliessend wie in der Kompaktseite auswerten.",
+    )
 
     control_col1, control_col2, control_col3 = st.columns([2.2, 1.1, 1.15])
     with control_col1:
@@ -450,7 +436,10 @@ def main():
         cached_target = st.session_state.get("compact_sim_target_date_cached")
         display_target = pd.Timestamp(cached_target).normalize() if cached_target is not None else target_date
 
-        st.subheader("Simulationsstatus", divider=True)
+        render_section_intro(
+            "Simulationsstatus",
+            "Aktualitaet der Berechnung und Kernergebnisse des fortgeschriebenen Bestands.",
+        )
         _render_status_box(
             is_stale=is_stale,
             target_date=target_date,
@@ -461,29 +450,51 @@ def main():
             display_target=display_target,
             meta=st.session_state.get("compact_sim_metadata", {}),
         )
+        set_metric_page_hint(None)
         render_global_filters(prepared_df, history_df)
 
         filtered_df = apply_filters(prepared_df)
         filter_summary = get_filter_summary()
-        _render_filter_box(filter_summary)
+        render_active_filter_banner(filter_summary)
 
         if filtered_df.empty:
             st.warning("Keine Daten fuer die gewaehlten Filter.")
             return
 
-        st.subheader("Auswertung", divider=True)
-        st.caption("Zwischen Analysebereich und Kennzahlensicht wechseln. Die Auswertungen darunter reagieren auf die aktiven Sichtfilter.")
-
-        main_options = ["IST-Analyse", "IST vs SOLL"]
-        if "compact_sim_main_view" not in st.session_state:
-            st.session_state["compact_sim_main_view"] = main_options[0]
-
-        main_view = _segmented_single(
-            "Analysebereich",
-            options=main_options,
-            value=st.session_state["compact_sim_main_view"],
-            key="compact_sim_main_view",
+        render_section_intro(
+            "Auswertung",
+            "Zwischen Analysebereich und Kennzahlensicht wechseln. Die Auswertungen darunter reagieren auf die aktiven Sichtfilter.",
         )
+
+        metric_view = get_global_metric_view()
+        render_context_box(
+            "Kennzahlensicht",
+            f"Steuerung ueber die Sidebar: {metric_view}",
+            tone="neutral",
+            compact=True,
+        )
+
+        ist_tab, ist_soll_tab = st.tabs([
+            "IST-Analyse",
+            "IST vs SOLL",
+        ])
+
+        with ist_tab:
+            if metric_view == "Köpfe":
+                compact.render_ist_koepfe_tab(filtered_df)
+            elif metric_view == "MAK":
+                compact.render_ist_mak_tab(filtered_df)
+            else:
+                compact.render_ist_eur_tab(filtered_df)
+
+        with ist_soll_tab:
+            if metric_view == "Köpfe":
+                compact.render_ist_soll_koepfe_tab(prepared_df)
+            elif metric_view == "MAK":
+                compact.render_ist_vs_soll_mak_tab(filtered_df)
+            else:
+                compact.render_ist_vs_soll_eur_tab(filtered_df)
+        return
 
         if main_view == "IST-Analyse":
             ist_options = ["Köpfe", "MAK", "EUR"]

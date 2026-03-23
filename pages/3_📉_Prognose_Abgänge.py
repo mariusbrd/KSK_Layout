@@ -41,13 +41,18 @@ from abgaenge import (
 from dataloader.loader import load_and_prepare_data, load_atz_data_cached
 from dataloader.cluster_manager import is_clustering_active
 from dataloader.jobfamily_service import JobFamilyService
-from components.sidebar import render_global_filters, apply_filters, apply_event_filters, render_filter_status, apply_robust_filter
+from components.sidebar import render_global_filters, apply_filters, apply_event_filters, render_filter_status, apply_robust_filter, get_effective_metric_view, set_metric_page_hint
 from utils.plot_helpers import apply_legend_bottom
 
 
 def main():
     st.title("📉 Prognose: Abgänge")
-    st.write("Prognose von Abgängen (ATZ, Rente, Kündigung, Ruhend) mit klarer Trennung von MAK und Headcount.")
+    st.caption("Prognose von Abgaengen (ATZ, Rente, Kuendigung, Ruhend) mit klarer Trennung von MAK und Headcount.")
+    metric_choice, metric_hint = get_effective_metric_view(["Köpfe", "MAK"], fallback="MAK")
+    if metric_hint:
+        set_metric_page_hint("EUR ist auf dieser Seite derzeit nicht verfügbar. Die Seite verwendet stattdessen MAK.")
+    else:
+        set_metric_page_hint(None)
 
     try:
         # 1. Load Central Data (Consistent with Kompakt)
@@ -866,15 +871,7 @@ def main():
 
     # --- Choice of Metric for Charts ---
     st.write("")
-    col_toggle1, col_toggle2 = st.columns([2, 3])
-    with col_toggle1:
-        metric_choice = st.radio(
-            "Dimension für Abgangs-Charts:",
-            options=["Köpfe", "MAK"],
-            index=0,
-            horizontal=True,
-            help="Wählen Sie, ob die Charts die Anzahl der Personen oder den Kapazitätsverlust (MAK) anzeigen sollen."
-        )
+    st.caption(f"Kennzahlensicht aus der Sidebar: `{metric_choice}`")
 
     charts = build_charts(forecast_kpis, events, metric_type=metric_choice)
     

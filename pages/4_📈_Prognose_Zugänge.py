@@ -27,10 +27,15 @@ from zugaenge.forecast import run_forecast_zugaenge
 from zugaenge.enrichment import build_jf_to_cluster_map, enrich_zugaenge_events, render_zugaenge_debug_sections
 from utils.ui_helpers import render_distribution_matrix, render_orgunit_mode_hint
 from utils.matrix_helpers import migrate_to_percent, percent_to_weights
+from components.sidebar import set_metric_page_hint
 
 def main():
     st.title("📈 Prognose: Zugänge")
-    st.write("Prognose von Neueinstellungen (Azubis, Trainees, Externe) und deren Auswirkung auf Headcount/MAK.")
+    st.caption("Prognose von Neueinstellungen (Azubis, Trainees, Externe) und deren Auswirkung auf Headcount und MAK.")
+    set_metric_page_hint(
+        "Diese Seite zeigt derzeit eine kombinierte Zugangsansicht. "
+        "Die globale Pille schaltet hier noch nicht die gesamte Seite zwischen Köpfe / MAK / EUR um."
+    )
 
     try:
         # 1. Load Central Data (Consistent with Abgänge/Kompakt)

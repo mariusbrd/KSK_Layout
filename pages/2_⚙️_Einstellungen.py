@@ -25,6 +25,7 @@ from dataloader.jobfamily_matcher import load_jobfamily_definitions
 from dataloader.cluster_manager import generate_template_bytes, validate_and_save_clusters, load_cluster_mappings
 from dataloader.source_service import SourceService, DataSourceOrigin
 from config.settings import BASE_DIR
+from components.sidebar import render_metric_selector_only, set_metric_page_hint
 
 
 SALARY_AUTOMATION_DEFAULTS = {
@@ -40,7 +41,13 @@ SALARY_AUTOMATION_DEFAULTS = {
 
 
 def render_settings_page():
-    st.header("Einstellungen")
+    set_metric_page_hint(
+        "Diese Seite dient der Konfiguration. "
+        "Die globale Pille hat hier derzeit keine fachliche Wirkung."
+    )
+    render_metric_selector_only()
+
+    st.title("Einstellungen")
     st.caption("Loader-spezifische Parameter für Kostenberechnung")
 
     st.divider()
