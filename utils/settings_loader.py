@@ -7,6 +7,44 @@ from pathlib import Path
 # Speicherort für User-Settings
 SETTINGS_FILE = Path(__file__).parent.parent / "config" / "user_settings.json"
 
+
+def _migrate_exclusions_schema(exclusions: Any) -> tuple[Dict[str, Any], bool]:
+    """Hebt ältere Exclusions-Schemata minimalinvasiv auf den aktuellen Stand."""
+    if not isinstance(exclusions, dict):
+        return {}, False
+
+    migrated = dict(exclusions)
+    changed = False
+
+    if "planstellen_follow_person" not in migrated:
+        # Rueckwaertskompatibel: Das neue Verhalten bleibt opt-in.
+        migrated["planstellen_follow_person"] = False
+        changed = True
+
+    if "org_units" not in migrated or migrated.get("org_units") is None:
+        migrated["org_units"] = []
+        changed = True
+
+    return migrated, changed
+
+
+def _migrate_settings_schema(settings: Any) -> tuple[Dict[str, Any], bool]:
+    """Normalisiert geladene Settings auf ein kompatibles Basisschema."""
+    if not isinstance(settings, dict):
+        return {}, False
+
+    migrated = dict(settings)
+    changed = False
+
+    exclusions, exclusions_changed = _migrate_exclusions_schema(
+        migrated.get("exclusions", {})
+    )
+    if exclusions_changed or "exclusions" not in migrated:
+        migrated["exclusions"] = exclusions
+        changed = True
+
+    return migrated, changed
+
 def load_user_settings() -> Dict[str, Any]:
     """Lädt Benutzereinstellungen aus JSON-Datei."""
     if not SETTINGS_FILE.exists():
@@ -14,7 +52,11 @@ def load_user_settings() -> Dict[str, Any]:
     
     try:
         with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            settings = json.load(f)
+        migrated, changed = _migrate_settings_schema(settings)
+        if changed:
+            save_user_settings(migrated)
+        return migrated
     except Exception as e:
         print(f"Fehler beim Laden der Settings: {e}")
         return {}
