@@ -36,7 +36,7 @@ from config.settings import (
     EDUCATION_GROUPS, EDUCATION_HIERARCHY,
 )
 from dataloader.jobfamily_matcher import assign_jobfamilies, load_jobfamily_definitions
-from utils.i18n import t
+from utils.i18n import get_language, t
 from utils.plot_helpers import apply_legend_bottom
 
 # Scroll Navigation
@@ -3491,6 +3491,256 @@ def analyze_ist_vs_soll_mak_data(df: pd.DataFrame) -> dict:
         "insights": insights,
         "handlungsempfehlungen": handlungsempfehlungen
     }
+
+
+def _render_education_range_section_clean(df: pd.DataFrame,
+                                          key_prefix: str = "",
+                                          print_mode: bool = False):
+    """Saubere, lokalisierte Variante der Qualifikations-Spannweite."""
+    language = get_language()
+
+    title = "📊 Qualifikation pro Planstelle" if language == "de" else "📊 Qualification by position"
+    empty_text = (
+        "Keine Planstellen mit ausreichend Daten gefunden. "
+        "(Mindestens {min_persons} Personen mit bekannter Ausbildung pro Stelle nötig.)"
+        if language == "de"
+        else "No positions with sufficient data were found. "
+        "(At least {min_persons} people with known qualification per position are required.)"
+    )
+    unknown_note = (
+        "Hinweis: {count} Personen mit unbekanntem Ausbildungsabschluss wurden bei der Berechnung ausgeschlossen."
+        if language == "de"
+        else "Note: {count} employees with an unknown qualification were excluded from the calculation."
+    )
+    table_columns = (
+        ["Planstelle", "Min", "n(Min)", "Mittel", "Max", "n(Max)", "Gesamt"]
+        if language == "de"
+        else ["Position", "Min", "n(Min)", "Mean", "Max", "n(Max)", "Total"]
+    )
+    export_dimension_name = (
+        "Qualifikationsspannweite pro Planstelle"
+        if language == "de"
+        else "Qualification range by position"
+    )
+
+    if print_mode:
+        st.markdown('<div class="print-block">', unsafe_allow_html=True)
+
+    st.subheader(title)
+
+    min_persons = 2
+    range_df = create_education_range_data(df, min_persons=min_persons)
+
+    if range_df.empty:
+        st.warning(empty_text.format(min_persons=min_persons))
+        if print_mode:
+            st.markdown('</div>', unsafe_allow_html=True)
+        return
+
+    n_unknown = range_df.attrs.get("n_unknown", 0)
+    col_chart, col_table = st.columns([3, 2])
+
+    with col_chart:
+        fig = create_education_range_chart(range_df, print_mode=print_mode)
+        st.plotly_chart(fig, use_container_width=True)
+        if n_unknown > 0:
+            st.caption(unknown_note.format(count=n_unknown))
+
+    with col_table:
+        st.markdown(f"**{t('compact.common.data_table')}**")
+        display_df = range_df[[
+            "Planstelle", "min_label", "n_min", "mean_label", "max_label", "n_max", "count"
+        ]].copy()
+        display_df.columns = table_columns
+        dataframe_compat(display_df, width="stretch", hide_index=True)
+
+        excel_data = export_to_excel(
+            range_df[["Planstelle", "min_label", "n_min", "max_label", "n_max",
+                      "mean_label", "min_ord", "max_ord", "mean_ord", "count"]],
+            dimension_name=export_dimension_name,
+            key_prefix=key_prefix,
+        )
+        download_button_compat(
+            label="Excel Download",
+            data=excel_data,
+            file_name=f"{key_prefix}_qualifikation_spannweite.xlsx",
+            mime=_EXCEL_MIME,
+            key=f"download_{key_prefix}_edu_range",
+            width="stretch",
+        )
+
+    if print_mode:
+        st.markdown('</div>', unsafe_allow_html=True)
+
+
+def _analyze_ist_vs_soll_mak_data_clean(df: pd.DataFrame) -> dict:
+    """Saubere, lokalisierte Variante der Summary für IST vs SOLL MAK."""
+    language = get_language()
+    emp_df = df[~df["Is_Vacant"]] if "Is_Vacant" in df.columns else df
+
+    total_ist = get_ist_mak(emp_df)
+    total_soll = get_soll_mak(df)
+    delta = total_ist - total_soll
+    erfuellungsgrad = total_ist / total_soll if total_soll > 0 else 0
+
+    if language == "de":
+        kennzahlen = [
+            {"label": "IST-MAK", "value": format_number(total_ist, 1), "status": "good"},
+            {"label": "SOLL-MAK", "value": format_number(total_soll, 1), "status": "good"},
+            {"label": "Delta", "value": f"{delta:+.1f}".replace(".", ","), "status": "good" if abs(delta) < 10 else "warning"},
+            {"label": "Erfüllungsgrad", "value": format_percent(erfuellungsgrad), "status": "good" if erfuellungsgrad >= 0.95 else ("warning" if erfuellungsgrad >= 0.85 else "critical")},
+        ]
+    else:
+        kennzahlen = [
+            {"label": "Current MAK", "value": format_number(total_ist, 1), "status": "good"},
+            {"label": "Target MAK", "value": format_number(total_soll, 1), "status": "good"},
+            {"label": "Delta", "value": f"{delta:+.1f}".replace(".", ","), "status": "good" if abs(delta) < 10 else "warning"},
+            {"label": "Fulfillment rate", "value": format_percent(erfuellungsgrad), "status": "good" if erfuellungsgrad >= 0.95 else ("warning" if erfuellungsgrad >= 0.85 else "critical")},
+        ]
+
+    insights = []
+    vakanzen = int(df["Is_Vacant"].sum()) if "Is_Vacant" in df.columns else 0
+    if language == "de":
+        if erfuellungsgrad < 0.85:
+            insights.append({"type": "warning", "text": f"Kritische Unterbesetzung: Nur {format_percent(erfuellungsgrad)} der Soll-Kapazität besetzt!"})
+            if vakanzen > 0:
+                insights.append({"type": "warning", "text": f"{vakanzen} offene Stellen identifiziert - Recruiting beschleunigen!"})
+        elif erfuellungsgrad < 0.95:
+            insights.append({"type": "warning", "text": f"Moderate Unterbesetzung bei {format_percent(erfuellungsgrad)} - {abs(delta):.1f} MAK fehlen."})
+        elif erfuellungsgrad > 1.05:
+            insights.append({"type": "info", "text": f"Überbesetzung bei {format_percent(erfuellungsgrad)} - {delta:+.1f} MAK über Soll."})
+        else:
+            insights.append({"type": "good", "text": f"Optimale Besetzung bei {format_percent(erfuellungsgrad)} Erfüllungsgrad."})
+    else:
+        if erfuellungsgrad < 0.85:
+            insights.append({"type": "warning", "text": f"Critical understaffing: only {format_percent(erfuellungsgrad)} of target capacity is filled."})
+            if vakanzen > 0:
+                insights.append({"type": "warning", "text": f"{vakanzen} open positions identified - accelerate recruiting."})
+        elif erfuellungsgrad < 0.95:
+            insights.append({"type": "warning", "text": f"Moderate understaffing at {format_percent(erfuellungsgrad)} - {abs(delta):.1f} MAK are missing."})
+        elif erfuellungsgrad > 1.05:
+            insights.append({"type": "info", "text": f"Overstaffing at {format_percent(erfuellungsgrad)} - {delta:+.1f} MAK above target."})
+        else:
+            insights.append({"type": "good", "text": f"Optimal staffing at a fulfillment rate of {format_percent(erfuellungsgrad)}."})
+
+    if language == "de":
+        if erfuellungsgrad < 0.85:
+            handlungsempfehlungen = [
+                "SOFORT: Recruiting-Offensive starten, Zeitarbeit prüfen",
+                "Prioritäten setzen: Welche Positionen sind kritisch?",
+                "Überstunden/Mehrarbeit in kritischen Bereichen genehmigen",
+            ]
+        elif erfuellungsgrad < 0.95:
+            handlungsempfehlungen = [
+                "Recruiting beschleunigen, Time-to-Hire reduzieren",
+                "Interne Umbesetzungen prüfen",
+            ]
+        elif erfuellungsgrad > 1.05:
+            handlungsempfehlungen = [
+                "Überkapazitäten analysieren - sind alle Stellen notwendig?",
+                "Budget-Einsparungspotenziale prüfen",
+            ]
+        else:
+            handlungsempfehlungen = ["Aktuelle Besetzung halten, Fluktuation minimieren"]
+    else:
+        if erfuellungsgrad < 0.85:
+            handlungsempfehlungen = [
+                "IMMEDIATE: launch a recruiting push and review temporary staffing",
+                "Set priorities: which roles are business-critical?",
+                "Approve overtime/additional work in critical areas",
+            ]
+        elif erfuellungsgrad < 0.95:
+            handlungsempfehlungen = [
+                "Accelerate recruiting and reduce time-to-hire",
+                "Review internal redeployment options",
+            ]
+        elif erfuellungsgrad > 1.05:
+            handlungsempfehlungen = [
+                "Analyze excess capacity - are all roles still required?",
+                "Review budget savings potential",
+            ]
+        else:
+            handlungsempfehlungen = ["Maintain the current staffing level and minimize attrition"]
+
+    return {
+        "kennzahlen": kennzahlen,
+        "insights": insights,
+        "handlungsempfehlungen": handlungsempfehlungen,
+    }
+
+
+def _render_ist_vs_soll_mak_tab_clean(df: pd.DataFrame, print_mode: bool = False):
+    """Saubere, lokalisierte Rendering-Variante für IST vs SOLL MAK."""
+    language = get_language()
+    if "Soll_FTE" not in df.columns:
+        st.warning("SOLL-FTE nicht verfügbar." if language == "de" else "Target FTE is not available.")
+        return
+
+    emp_df = df[~df["Is_Vacant"]] if "Is_Vacant" in df.columns else df
+    total_ist = get_ist_mak(emp_df)
+    total_soll = get_soll_mak(df)
+    delta = total_ist - total_soll
+    erfuellungsgrad = total_ist / total_soll if total_soll > 0 else 0
+    status = "good" if erfuellungsgrad >= 0.95 else ("warning" if erfuellungsgrad >= 0.85 else "critical")
+
+    if language == "de":
+        kpis = [
+            {"title": "IST-MAK", "value": format_number(total_ist, 1), "subtitle": "Tatsächliche Kapazität", "icon": "📊", "status": "default"},
+            {"title": "SOLL-MAK", "value": format_number(total_soll, 1), "subtitle": "Geplante Kapazität", "icon": "📊", "status": "default"},
+            {"title": "Delta", "value": f"{delta:+.1f}".replace(".", ","), "subtitle": "IST - SOLL", "icon": "📉" if delta < 0 else "📈", "status": status},
+            {"title": "Erfüllungsgrad", "value": format_percent(erfuellungsgrad), "subtitle": "IST / SOLL", "icon": "📊", "status": status},
+        ]
+    else:
+        kpis = [
+            {"title": "Current MAK", "value": format_number(total_ist, 1), "subtitle": "Actual capacity", "icon": "📊", "status": "default"},
+            {"title": "Target MAK", "value": format_number(total_soll, 1), "subtitle": "Planned capacity", "icon": "📊", "status": "default"},
+            {"title": "Delta", "value": f"{delta:+.1f}".replace(".", ","), "subtitle": "Current - target", "icon": "📉" if delta < 0 else "📈", "status": status},
+            {"title": "Fulfillment rate", "value": format_percent(erfuellungsgrad), "subtitle": "Current / target", "icon": "📊", "status": status},
+        ]
+    render_kpi_cards_styled(kpis)
+
+    if print_mode:
+        st.markdown("<div style='page-break-after: always;'></div>", unsafe_allow_html=True)
+    else:
+        st.markdown("---")
+
+    for themenfeld, dimensionen in THEMENFELDER_SOLL.items():
+        if not print_mode:
+            st.markdown(f"### {themenfeld}")
+
+        for dimension_name, dimension_col in dimensionen:
+            if print_mode:
+                st.caption(f"IST vs SOLL MAK > {themenfeld}")
+
+            if dimension_col == "Ausbildung":
+                _render_education_range_section_clean(
+                    df,
+                    key_prefix="ist_vs_soll_mak",
+                    print_mode=print_mode,
+                )
+            else:
+                render_single_comparison(
+                    df,
+                    dimension_name,
+                    dimension_col,
+                    ist_col="FTE_assigned",
+                    soll_col="Soll_FTE",
+                    value_type="mak",
+                    key_prefix="ist_vs_soll_mak",
+                    print_mode=print_mode,
+                )
+            if print_mode:
+                st.markdown("<div style='page-break-after: always;'></div>", unsafe_allow_html=True)
+            else:
+                st.markdown("---")
+
+    summary_data = _analyze_ist_vs_soll_mak_data_clean(df)
+    render_management_summary("IST vs SOLL MAK", summary_data, print_mode)
+
+
+render_education_range_section = _render_education_range_section_clean
+analyze_ist_vs_soll_mak_data = _analyze_ist_vs_soll_mak_data_clean
+render_ist_vs_soll_mak_tab = _render_ist_vs_soll_mak_tab_clean
 
 
 def analyze_ist_vs_soll_eur_data(df: pd.DataFrame) -> dict:

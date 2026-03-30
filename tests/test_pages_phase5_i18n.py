@@ -319,6 +319,55 @@ def test_compact_management_summary_mak_is_clean_in_german(monkeypatch):
     assert not any(marker in combined for marker in ("Ã", "â", "ƒ", "Æ"))
 
 
+def test_compact_ist_vs_soll_mak_path_is_clean_in_german(monkeypatch):
+    import streamlit as st
+
+    module = _load_page_module("*_Kompakt.py", "compact_page_phase5_ist_vs_soll_mak_clean")
+    captured: dict[str, list] = {"kpis": [], "summary": []}
+    st.session_state[i18n.LANGUAGE_SESSION_KEY] = "de"
+
+    df = pd.DataFrame(
+        {
+            "PersNr": ["1", "2", "3"],
+            "Is_Vacant": [False, False, True],
+            "BsGrd": [100, 50, 0],
+            "FTE_assigned": [1.0, 0.5, 0.0],
+            "Soll_FTE": [1.0, 1.0, 1.0],
+            "Ausbildung": ["A", "B", None],
+            "Vergütungsklasse": ["9/2", "9/3", "9/2"],
+        }
+    )
+
+    monkeypatch.setattr(module, "render_kpi_cards_styled", lambda kpis: captured["kpis"].extend(kpis))
+    monkeypatch.setattr(module, "render_single_comparison", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "_render_education_range_section_clean", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "render_management_summary", lambda title, summary_data, print_mode=False: captured["summary"].append((title, summary_data)))
+    monkeypatch.setattr(module.st, "markdown", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.st, "caption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.st, "warning", lambda *args, **kwargs: None)
+
+    module.render_ist_vs_soll_mak_tab(df, print_mode=False)
+
+    flat_kpi_texts = [value for kpi in captured["kpis"] for value in kpi.values() if isinstance(value, str)]
+    assert "Tatsächliche Kapazität" in flat_kpi_texts
+    assert "Geplante Kapazität" in flat_kpi_texts
+    assert "Erfüllungsgrad" in flat_kpi_texts
+    assert not any(marker in text for text in flat_kpi_texts for marker in ("Ãƒ", "Ã¢", "Æ’", "Ã†"))
+
+    summary_title, summary_data = captured["summary"][0]
+    assert summary_title == "IST vs SOLL MAK"
+    summary_texts = []
+    for item in summary_data["kennzahlen"]:
+        summary_texts.extend(str(value) for value in item.values() if isinstance(value, str))
+    for item in summary_data["insights"]:
+        summary_texts.extend(str(value) for value in item.values() if isinstance(value, str))
+    summary_texts.extend(summary_data["handlungsempfehlungen"])
+    assert "Erfüllungsgrad" in summary_texts
+    assert "Kritische Unterbesetzung: Nur 50,0% der Soll-Kapazität besetzt!" in summary_texts
+    assert "SOFORT: Recruiting-Offensive starten, Zeitarbeit prüfen" in summary_texts
+    assert not any(marker in text for text in summary_texts for marker in ("Ãƒ", "Ã¢", "Æ’", "Ã†"))
+
+
 def test_prepare_compact_data_creates_clean_dimension_columns(monkeypatch):
     module = _load_page_module("*_Kompakt.py", "compact_page_phase5_prepare_clean")
 

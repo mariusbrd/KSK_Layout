@@ -357,6 +357,8 @@ def test_hiring_settings_form_has_clean_german_labels(monkeypatch):
         "infos": [],
         "warnings": [],
         "matrix_labels": [],
+        "expanders": [],
+        "captions": [],
     }
 
     class CapturingColumn(DummyContext):
@@ -374,8 +376,9 @@ def test_hiring_settings_form_has_clean_german_labels(monkeypatch):
                 return args[0]
             return min_value
 
-        def selectbox(self, label, options, index=0, **kwargs):
-            captured["selectboxes"].append((label, list(options)))
+        def selectbox(self, label, options, index=0, format_func=None, **kwargs):
+            rendered = [format_func(opt) if format_func else opt for opt in options]
+            captured["selectboxes"].append((label, rendered))
             return options[index]
 
         def slider(self, label, *args, value=None, **kwargs):
@@ -427,7 +430,7 @@ def test_hiring_settings_form_has_clean_german_labels(monkeypatch):
     monkeypatch.setattr(sidebar, "render_filter_status", lambda *args, **kwargs: None)
 
     monkeypatch.setattr(module.st, "sidebar", SimpleNamespace(button=lambda *args, **kwargs: False))
-    monkeypatch.setattr(module.st, "expander", lambda *args, **kwargs: DummyContext())
+    monkeypatch.setattr(module.st, "expander", lambda label, *args, **kwargs: captured["expanders"].append(label) or DummyContext())
     monkeypatch.setattr(module.st, "form", lambda *args, **kwargs: DummyContext())
     monkeypatch.setattr(module.st, "tabs", lambda labels, **kwargs: [DummyContext() for _ in labels])
     monkeypatch.setattr(module.st, "columns", capturing_columns)
@@ -448,7 +451,7 @@ def test_hiring_settings_form_has_clean_german_labels(monkeypatch):
     monkeypatch.setattr(module.st, "form_submit_button", lambda *args, **kwargs: False)
     monkeypatch.setattr(module.st, "rerun", lambda *args, **kwargs: None)
     monkeypatch.setattr(module.st, "data_editor", lambda df, **kwargs: df)
-    monkeypatch.setattr(module.st, "caption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.st, "caption", lambda text, *args, **kwargs: captured["captions"].append(text))
     monkeypatch.setattr(module.st, "title", lambda *args, **kwargs: None)
 
     module.main()
@@ -458,9 +461,11 @@ def test_hiring_settings_form_has_clean_german_labels(monkeypatch):
     assert "Azubis" in captured["checkboxes"]
     assert "Neueinstellungen" in captured["checkboxes"]
     assert "Neue Azubis pro Jahr" in captured["number_inputs"]
+    assert "Einstellungen pro Jahr" in captured["number_inputs"]
     assert "Übernahmequote (%)" in captured["sliders"]
     assert "Ausbildungsdauer (Jahre)" in captured["number_inputs"]
     assert ("Verteilung", ["Random", "OrgUnit"]) in captured["selectboxes"]
+    assert ("Strategie", ["Zufällig", "Organisationseinheit", "Vakanzen auffüllen"]) in captured["selectboxes"]
     assert "Übernahme-Tarif" in [label for label, _options in captured["selectboxes"]]
     assert "Übernahme-Stufe" in captured["number_inputs"]
     assert ("Abschluss-Modus", ["Nächster Zyklus", "Nächster Folgezyklus"]) in captured["radios"]
@@ -471,6 +476,9 @@ def test_hiring_settings_form_has_clean_german_labels(monkeypatch):
     assert any(text.startswith("**Nächster Zyklus (empfohlen):**") for text in captured["infos"])
     assert "⬆️ Parameter einstellen und Prognose berechnen." in captured["infos"]
 
+    assert "🔊 Verteilung Neueinstellungen (Matrix)" in captured["expanders"]
+    assert "Steuern Sie, in welchen Bereichen neue Stellen (ohne Nachbesetzung) entstehen." in captured["captions"]
+
     joined = "\n".join(
         captured["date_inputs"]
         + captured["number_inputs"]
@@ -480,7 +488,10 @@ def test_hiring_settings_form_has_clean_german_labels(monkeypatch):
         + captured["infos"]
         + captured["warnings"]
         + captured["matrix_labels"]
+        + captured["expanders"]
+        + captured["captions"]
         + [label for label, _options in captured["selectboxes"]]
+        + [option for _label, options in captured["selectboxes"] for option in options]
         + [label for label, _options in captured["radios"]]
     )
     assert "Ã" not in joined

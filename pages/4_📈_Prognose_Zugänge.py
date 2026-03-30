@@ -1,4 +1,4 @@
-import streamlit as st
+﻿import streamlit as st
 import pandas as pd
 import plotly.express as px
 from datetime import date
@@ -294,13 +294,18 @@ def main():
                 # New Hires
                 st.subheader(t("hiring.settings.section.hires"))
                 h1, h2, h3 = st.columns(3)
-                hire_count = h1.number_input("Einstellungen pro Jahr", 0, 500, params["new_hires"]["count_per_year"])
+                hire_count = h1.number_input(t("hiring.hires.per_year"), 0, 500, params["new_hires"]["count_per_year"])
                 hire_strat = h2.selectbox(
-                    "Strategie", 
+                    t("hiring.hires.strategy"), 
                     ["Random", "OrgUnit", "Fill Vacancies"], 
                     index=2, # Default Fill Vacancies
                     help="'Fill Vacancies' nutzt die Abgangsprognose (Standard-Parameter), um LÃƒÆ’Ã‚Â¼cken zu fÃƒÆ’Ã‚Â¼llen.",
-                    key="hi_strat"
+                    key="hi_strat",
+                    format_func=lambda option: {
+                        "Random": t("hiring.hires.strategy.random"),
+                        "OrgUnit": t("hiring.hires.strategy.orgunit"),
+                        "Fill Vacancies": t("hiring.hires.strategy.fill_vacancies"),
+                    }.get(option, option)
                 )
                 
                 hire_target = None
@@ -309,8 +314,8 @@ def main():
                      hire_target = st.selectbox("Ziel-Einheit (Hire)", units, key="hi_unit")
 
                 # --- New Hire Distribution Matrix ---
-                with st.expander("ÃƒÂ°Ã…Â¸Ã¢â‚¬Å“Ã…Â  Verteilung Neueinstellungen (Matrix)", expanded=False):
-                    st.caption("Steuern Sie, in welchen Bereichen neue Stellen (ohne Nachbesetzung) entstehen.")
+                with st.expander(t("hiring.hires.distribution.heading"), expanded=False):
+                    st.caption(t("hiring.hires.distribution.caption"))
                     
                     # 1. Calculate Default Distribution from Snapshot
                     # Group by JobFamily and OE-Cluster
@@ -1120,3 +1125,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
