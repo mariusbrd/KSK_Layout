@@ -7,6 +7,8 @@ Wiederverwendbare Funktionen für Tooltips, Hilfe-Texte und UI-Elemente.
 import streamlit as st
 from typing import Optional
 
+from utils.i18n import t
+
 
 def metric_info(label: str, description: str, icon: str = "ℹ️"):
     """
@@ -303,3 +305,9 @@ def render_orgunit_mode_hint(use_matrix: bool, dimension: str) -> None:
     """Show an info hint when OrgUnit takeover mode is active."""
     if is_orgunit_mode_active(use_matrix, dimension):
         st.info(ORGUNIT_MODE_HINT)
+
+
+def render_orgunit_mode_hint(use_matrix: bool, dimension: str) -> None:
+    """Show an info hint when OrgUnit takeover mode is active."""
+    if is_orgunit_mode_active(use_matrix, dimension):
+        st.info(t("ui.orgunit_mode_hint"))

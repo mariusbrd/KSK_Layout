@@ -18,6 +18,14 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.settings import DEFAULT_COHORTS, COLORS, DATA_PATH, BASE_DIR
 from dataloader.source_service import SourceService, DataSourceOrigin
 from components.ui_shell import inject_ui_theme
+from utils.i18n import (
+    get_language,
+    get_language_name,
+    get_next_language,
+    initialize_language_state,
+    t,
+    toggle_language,
+)
 
 GLOBAL_METRIC_OPTIONS = ["Köpfe", "MAK", "EUR"]
 
@@ -38,34 +46,13 @@ def _smart_label(base: str, selected, total: int | None = None) -> str:
 
     if total is not None and total > 0:
         if n == 0 or n == total:
-            return f"{base} (Alle)"
-        return f"{base} ({n} gewählt)"
+            return f"{base} ({t('sidebar.value.all')})"
+        return f"{base} ({t('sidebar.value.selected_count', count=n)})"
 
     # If total unknown, use "Alle" when none selected
     if n == 0:
-        return f"{base} (Alle)"
-    return f"{base} ({n} gewählt)"
-
-
-def _render_select_all_reset_row(
-    *,
-    select_all_key: str,
-    reset_key: str,
-    on_select_all,
-    on_reset,
-):
-    """
-    Renders two small helper buttons side-by-side.
-    """
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("Alle auswählen", key=select_all_key, use_container_width=True):
-            on_select_all()
-            st.rerun()
-    with c2:
-        if st.button("Zurücksetzen", key=reset_key, use_container_width=True):
-            on_reset()
-            st.rerun()
+        return f"{base} ({t('sidebar.value.all')})"
+    return f"{base} ({t('sidebar.value.selected_count', count=n)})"
 
 
 def _segmented_single(label: str, options: list[str], value: str, key: str):
@@ -100,6 +87,52 @@ def _segmented_single(label: str, options: list[str], value: str, key: str):
     )
 
 
+def _render_select_all_reset_row(
+    *,
+    select_all_key: str,
+    reset_key: str,
+    on_select_all,
+    on_reset,
+):
+    """
+    Renders two small helper buttons side-by-side.
+    """
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button(t("sidebar.action.select_all"), key=select_all_key, use_container_width=True):
+            on_select_all()
+            st.rerun()
+    with c2:
+        if st.button(t("sidebar.action.reset"), key=reset_key, use_container_width=True):
+            on_reset()
+            st.rerun()
+
+
+def render_language_switcher() -> None:
+    """Render the global language switcher at the bottom of the sidebar."""
+    initialize_language_state()
+    current_language = get_language()
+    next_language = get_next_language(current_language)
+
+    st.markdown(f"### 🌐 {t('sidebar.language.section')}")
+    st.caption(
+        t(
+            "sidebar.language.current",
+            language_name=get_language_name(current_language),
+        )
+    )
+    if st.button(
+        t(
+            "sidebar.language.toggle",
+            language_name=get_language_name(next_language),
+        ),
+        key="global_language_switch",
+        use_container_width=True,
+    ):
+        toggle_language()
+        st.rerun()
+
+
 def _segmented_multi_gender(label: str, options: list[str], default: list[str], key: str):
     """
     Uses st.segmented_control in multi-select mode if available.
@@ -120,13 +153,51 @@ def _segmented_multi_gender(label: str, options: list[str], default: list[str], 
         except TypeError:
             pass
 
-    return st.multiselect(
+    return _multiselect_with_placeholder(
         label,
         options=options,
         default=default,
         key=key,
         label_visibility="collapsed",
     )
+
+
+def _multiselect_with_placeholder(label: str, options: list, default=None, **kwargs):
+    """Render a multiselect with localized placeholder where supported."""
+    placeholder = kwargs.pop("placeholder", t("sidebar.multiselect.placeholder"))
+    try:
+        return st.multiselect(
+            label,
+            options=options,
+            default=default,
+            placeholder=placeholder,
+            **kwargs,
+        )
+    except TypeError:
+        return st.multiselect(
+            label,
+            options=options,
+            default=default,
+            **kwargs,
+        )
+
+
+def _localized_working_time_option(value: str) -> str:
+    labels = {
+        "Vollzeit": t("sidebar.option.full_time"),
+        "Teilzeit": t("sidebar.option.part_time"),
+        "Inaktiv": t("sidebar.option.inactive"),
+    }
+    return labels.get(value, value)
+
+
+def _localized_atz_option(value: str) -> str:
+    labels = {
+        "Kein ATZ": t("sidebar.option.atz.none"),
+        "Arbeitsphase": t("sidebar.option.atz.work_phase"),
+        "Freistellungsphase": t("sidebar.option.atz.release_phase"),
+    }
+    return labels.get(value, value)
 
 
 def _render_sidebar_heading(text: str):
@@ -158,22 +229,24 @@ def render_data_status():
     cluster_dir = os.path.abspath(os.path.join(BASE_DIR, "..", "Cluster-Daten"))
     
     group_labels = {
-        "Mitarbeiterinformationen": "Mitarbeiter",
-        "Entgeltinformationen": "Entgelt",
-        "Clusterinformationen": "Cluster"
+        "Mitarbeiterinformationen": t("sidebar.data_group.staff"),
+        "Entgeltinformationen": t("sidebar.data_group.compensation"),
+        "Clusterinformationen": t("sidebar.data_group.cluster"),
     }
 
     # Ampel-Logic Mapping
     ampel_cfg = {
-        DataSourceOrigin.UPLOADED: ("#10b981", "Upload"),     # Green
-        DataSourceOrigin.ORIGINAL: ("#f59e0b", "Standard"),   # Yellow
-        DataSourceOrigin.SYNTHETIC: ("#ef4444", "synthetisch") # Red
+        DataSourceOrigin.UPLOADED: ("#10b981", t("sidebar.data_origin.upload")),
+        DataSourceOrigin.ORIGINAL: ("#f59e0b", t("sidebar.data_origin.standard")),
+        DataSourceOrigin.SYNTHETIC: ("#ef4444", t("sidebar.data_origin.synthetic")),
     }
 
     # Start HTML block
-    html = ["<div style='margin-bottom: 8px;'>"]
-    html.append("<div style='margin: 0 0 4px 0; font-size: 13px; font-weight: bold;'>📊 Datenstatus</div>")
-    html.append("<div style='border-left: 2px solid #e5e7eb; padding-left: 8px;'>")
+    html_parts = ["<div style='margin-bottom: 8px;'>"]
+    html_parts.append(
+        f"<div style='margin: 0 0 4px 0; font-size: 13px; font-weight: bold;'>📊 {html.escape(t('sidebar.data_status.title'))}</div>"
+    )
+    html_parts.append("<div style='border-left: 2px solid #e5e7eb; padding-left: 8px;'>")
     
     for group_name in SourceService.GROUPS.keys():
         status = SourceService.derive_group_status(group_name, uploads, original_dir, cluster_dir)
@@ -187,11 +260,11 @@ def render_data_status():
             f"<span style='color: #6b7280;' title='{status.completeness_label}'>{short_origin}</span>"
             f"</div>"
         )
-        html.append(row)
+        html_parts.append(row)
 
-    html.append("</div></div>")
+    html_parts.append("</div></div>")
     
-    st.markdown("".join(html), unsafe_allow_html=True)
+    st.markdown("".join(html_parts), unsafe_allow_html=True)
 
 
 def _sync_legacy_view_mode():
@@ -221,7 +294,7 @@ def render_global_metric_selector():
     inject_ui_theme()
     initialize_global_metric_view()
     metric_view = _segmented_single(
-        "Darstellungsart",
+        t("sidebar.metric.label"),
         options=GLOBAL_METRIC_OPTIONS,
         value=st.session_state.get("global_metric_view", "MAK"),
         key="global_metric_view_toggle",
@@ -279,25 +352,10 @@ def render_metric_hint(
     effective_view, hint = get_effective_metric_view(supported_views, fallback=fallback)
     if hint:
         extra = f" {note}" if note else ""
-        st.info(f"Ansichtshinweis für {page_scope}: {hint}{extra}")
+        st.info(t("sidebar.hint.view_scope", page_scope=page_scope, hint=hint, extra=extra))
     elif note:
-        st.info(f"Ansichtshinweis für {page_scope}: {note}")
+        st.info(t("sidebar.hint.view_scope", page_scope=page_scope, hint=note, extra=""))
     return effective_view
-
-
-def render_metric_selector_only(caption_text: str | None = None):
-    """
-    Render only the global metric pill in the sidebar. Useful on pages without
-    the full filter sidebar.
-    """
-    inject_ui_theme()
-    initialize_global_metric_view()
-    with st.sidebar:
-        st.markdown("### 💡 Ansicht")
-        render_global_metric_selector()
-        if caption_text:
-            _render_sidebar_note(caption_text)
-        st.markdown("---")
 
 
 def set_metric_page_hint(hint_text: str | None):
@@ -306,6 +364,23 @@ def set_metric_page_hint(hint_text: str | None):
         st.session_state["metric_page_hint"] = hint_text
     else:
         st.session_state.pop("metric_page_hint", None)
+
+
+def render_metric_selector_only(caption_text: str | None = None):
+    """
+    Render only the global metric pill in the sidebar. Useful on pages without
+    the full filter sidebar.
+    """
+    inject_ui_theme()
+    initialize_language_state()
+    initialize_global_metric_view()
+    with st.sidebar:
+        st.markdown(f"### 💡 {t('sidebar.view.section')}")
+        render_global_metric_selector()
+        if caption_text:
+            _render_sidebar_note(caption_text)
+        st.markdown("---")
+        render_language_switcher()
 
 
 # -----------------------------
@@ -320,6 +395,7 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
         history_df: History DataFrame (für Datumsbereich)
     """
     inject_ui_theme()
+    initialize_language_state()
 
     # Initialize session state defaults BEFORE rendering
     if "cohort_definitions" not in st.session_state:
@@ -375,13 +451,13 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
         # -----------------------------
         # Header / Summary
         # -----------------------------
-        st.markdown("## 🎛️ Dashboard Steuerung")
+        st.markdown(f"## 🎛️ {t('sidebar.control.heading')}")
         _render_sidebar_summary(get_filter_summary())
 
         # -----------------------------
         # View Mode (Köpfe/MAK/EUR) - compact pills
         # -----------------------------
-        st.markdown("### 💡 Ansicht")
+        st.markdown(f"### 💡 {t('sidebar.view.section')}")
         render_global_metric_selector()
 
         st.markdown("---")
@@ -389,16 +465,16 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
         # -----------------------------
         # Primary Filters (always visible)
         # -----------------------------
-        st.markdown("### 🎯 Primäre Filter")
+        st.markdown(f"### 🎯 {t('sidebar.primary_filters.section')}")
 
         # Zeitraum (aus History)
         if not history_df.empty and "Date" in history_df.columns:
             min_date = history_df["Date"].min().date()
             max_date = history_df["Date"].max().date()
 
-            st.markdown("**📅 Zeitraum**")
+            st.markdown(f"**📅 {t('sidebar.label.period')}**")
             date_range = st.date_input(
-                "Zeitraum auswählen",
+                t("sidebar.label.period_select"),
                 value=(min_date, max_date),
                 min_value=min_date,
                 max_value=max_date,
@@ -415,7 +491,7 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
         # Organisationseinheiten
         # FIX: Use Organisationseinheit (full name) as key, since Kürzel OrgEinheit
         # is NOT unique (e.g. 591 = "Beratungs-Center Herrenberg" AND "Akquisepool Herrenberg").
-        st.markdown("**🏢 Organisationseinheiten**")
+        st.markdown(f"**🏢 {t('sidebar.label.org_units')}**")
         if "Organisationseinheit" in snapshot_df.columns:
             org_units = sorted(snapshot_df["Organisationseinheit"].dropna().unique())
         else:
@@ -429,8 +505,8 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
                 for _, row in org_unit_pairs.iterrows()
             }
 
-        selected_orgs = st.multiselect(
-            "Einheiten auswählen",
+        selected_orgs = _multiselect_with_placeholder(
+            t("sidebar.label.org_units_select"),
             options=org_units,
             default=st.session_state.get("selected_org_units", []),
             format_func=lambda x: org_unit_display.get(x, x),
@@ -440,7 +516,7 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
         st.session_state["selected_org_units"] = selected_orgs
 
         # Job Families
-        st.markdown("**💼 Job Families**")
+        st.markdown(f"**💼 {t('sidebar.label.job_families')}**")
         if "Jobfamily" in snapshot_df.columns:
             jobfamilies = sorted(
                 snapshot_df[snapshot_df["Jobfamily"] != "UNMAPPED"]["Jobfamily"].dropna().unique()
@@ -451,16 +527,16 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
         # Helper row for jobfamily multiselect (Select all / reset)
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("Alle auswählen", key="jf_select_all", use_container_width=True):
+            if st.button(t("sidebar.action.select_all"), key="jf_select_all", use_container_width=True):
                 st.session_state["selected_jobfamilies"] = jobfamilies.copy()
                 st.rerun()
         with c2:
-            if st.button("Zurücksetzen", key="jf_reset", use_container_width=True):
+            if st.button(t("sidebar.action.reset"), key="jf_reset", use_container_width=True):
                 st.session_state["selected_jobfamilies"] = []
                 st.rerun()
 
-        selected_jf = st.multiselect(
-            "Job Families auswählen",
+        selected_jf = _multiselect_with_placeholder(
+            t("sidebar.label.job_families_select"),
             options=jobfamilies,
             default=st.session_state.get("selected_jobfamilies", []),
             key="jobfamily_select",
@@ -473,12 +549,12 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
         has_jf_clusters = "JF-Cluster" in snapshot_df.columns and snapshot_df["JF-Cluster"].nunique() > 1
         
         if has_oe_clusters or has_jf_clusters:
-            st.markdown("### 🧩 Cluster-Filter")
+            st.markdown(f"### 🧩 {t('sidebar.cluster.section')}")
             
             if has_oe_clusters:
                 oe_clusters = sorted(snapshot_df["OE-Cluster"].dropna().unique())
-                st.session_state["selected_oe_clusters"] = st.multiselect(
-                    "OE-Cluster auswählen",
+                st.session_state["selected_oe_clusters"] = _multiselect_with_placeholder(
+                    t("sidebar.label.oe_clusters_select"),
                     options=oe_clusters,
                     default=st.session_state.get("selected_oe_clusters", []),
                     key="oe_cluster_select"
@@ -486,30 +562,30 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
                 
             if has_jf_clusters:
                 jf_clusters = sorted(snapshot_df["JF-Cluster"].dropna().unique())
-                st.session_state["selected_jf_clusters"] = st.multiselect(
-                    "JF-Cluster auswählen",
+                st.session_state["selected_jf_clusters"] = _multiselect_with_placeholder(
+                    t("sidebar.label.jf_clusters_select"),
                     options=jf_clusters,
                     default=st.session_state.get("selected_jf_clusters", []),
                     key="jf_cluster_select"
                 )
 
         # Alterskohorten (Auswahl + Editor in Popover)
-        st.markdown("**👥 Alterskohorten**")
+        st.markdown(f"**👥 {t('sidebar.label.age_cohorts')}**")
         cohorts = list(st.session_state["cohort_definitions"].keys())
 
         # Helper row for cohort multiselect (Select all / reset)
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("Alle auswählen", key="cohorts_select_all", use_container_width=True):
+            if st.button(t("sidebar.action.select_all"), key="cohorts_select_all", use_container_width=True):
                 st.session_state["selected_cohorts"] = cohorts.copy()
                 st.rerun()
         with c2:
-            if st.button("Zurücksetzen", key="cohorts_reset", use_container_width=True):
+            if st.button(t("sidebar.action.reset"), key="cohorts_reset", use_container_width=True):
                 st.session_state["selected_cohorts"] = []
                 st.rerun()
 
-        selected_cohorts = st.multiselect(
-            "Kohorten auswählen",
+        selected_cohorts = _multiselect_with_placeholder(
+            t("sidebar.label.cohorts_select"),
             options=cohorts,
             default=st.session_state.get("selected_cohorts", []),
             key="cohorts_select",
@@ -519,10 +595,10 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
 
         # Cohort editor in popover (configuration, not daily filter)
         if hasattr(st, "popover"):
-            with st.popover("⚙️ Kohorten bearbeiten", use_container_width=True):
+            with st.popover(f"⚙️ {t('sidebar.action.edit_cohorts')}", use_container_width=True):
                 render_cohort_editor()
         else:
-            with st.expander("⚙️ Kohorten bearbeiten"):
+            with st.expander(f"⚙️ {t('sidebar.action.edit_cohorts')}"):
                 render_cohort_editor()
 
         st.markdown("---")
@@ -530,7 +606,7 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
         # -----------------------------
         # Demography (compact)
         # -----------------------------
-        st.markdown("### 👤 Demografie")
+        st.markdown(f"### 👤 {t('sidebar.demography.section')}")
 
         # Geschlecht - compact pills (multi)
         # Keep values "m"/"w" in session state, same as before.
@@ -545,7 +621,7 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
 
         default_gender_displays = [gender_code_to_display.get(x, x) for x in st.session_state.get("selected_genders", ["m", "w"])]
         selected_gender_displays = _segmented_multi_gender(
-            "Geschlecht",
+            t("sidebar.label.gender"),
             options=[gender_map["m"], gender_map["w"]],
             default=default_gender_displays,
             key="gender_segmented",
@@ -557,11 +633,12 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
         st.session_state["selected_genders"] = selected_genders
 
         # Arbeitszeit (kept as multiselect; still primary for many HR dashboards)
-        st.markdown("**⏰ Arbeitszeit**")
-        selected_employment = st.multiselect(
-            "Arbeitszeit auswählen",
+        st.markdown(f"**⏰ {t('sidebar.label.working_time')}**")
+        selected_employment = _multiselect_with_placeholder(
+            t("sidebar.label.working_time_select"),
             options=["Vollzeit", "Teilzeit", "Inaktiv"],
             default=st.session_state.get("selected_employment", ["Vollzeit", "Teilzeit", "Inaktiv"]),
+            format_func=_localized_working_time_option,
             key="employment_select",
             label_visibility="collapsed",
         )
@@ -572,7 +649,7 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
         # -----------------------------
         # Secondary Filters (accordion principle)
         # -----------------------------
-        st.markdown("### 🧩 Weitere Filter")
+        st.markdown(f"### 🧩 {t('sidebar.more_filters.section')}")
 
         # Qualifikation (Expander with smart label + buttons)
         education_options = []
@@ -580,7 +657,7 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
             education_options = sorted(snapshot_df["Ausbildung"].dropna().unique())
 
         edu_selected = st.session_state.get("selected_education", [])
-        edu_label = _smart_label("🎓 Qualifikation", edu_selected, total=len(education_options))
+        edu_label = _smart_label(f"🎓 {t('sidebar.label.education')}", edu_selected, total=len(education_options))
 
         with st.expander(edu_label, expanded=False):
             _render_select_all_reset_row(
@@ -590,8 +667,8 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
                 on_reset=lambda: st.session_state.__setitem__("selected_education", []),
             )
             
-            selected_education = st.multiselect(
-                "Abschluss auswählen",
+            selected_education = _multiselect_with_placeholder(
+                t("sidebar.label.education_select"),
                 options=education_options,
                 default=edu_selected,
                 key="education_select",
@@ -604,7 +681,7 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
         # ATZ-Status (Expander with smart label + buttons)
         atz_options = ["Kein ATZ", "Arbeitsphase", "Freistellungsphase"]
         atz_selected = st.session_state.get("selected_atz_status", atz_options)
-        atz_label = _smart_label("🔄 Altersteilzeit", atz_selected, total=len(atz_options))
+        atz_label = _smart_label(f"🔄 {t('sidebar.label.atz')}", atz_selected, total=len(atz_options))
 
         with st.expander(atz_label, expanded=False):
             _render_select_all_reset_row(
@@ -614,10 +691,11 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
                 on_reset=lambda: st.session_state.__setitem__("selected_atz_status", []),
             )
 
-            selected_atz = st.multiselect(
-                "ATZ-Status auswählen",
+            selected_atz = _multiselect_with_placeholder(
+                t("sidebar.label.atz_select"),
                 options=atz_options,
                 default=atz_selected,
+                format_func=_localized_atz_option,
                 key="atz_select",
                 label_visibility="collapsed",
             )
@@ -626,13 +704,14 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
         st.markdown("---")
 
         # Reset Button
-        if st.button("🔄 Alle Filter zurücksetzen", use_container_width=True):
+        if st.button(f"🔄 {t('sidebar.action.reset_all_filters')}", use_container_width=True):
             reset_filters()
             st.rerun()
 
         st.divider()
+        render_language_switcher()
         # Debug Mode Toggle (Hidden/Advanced)
-        if st.checkbox("🐞 Debug-Modus", value=False, key="debug_mode"):
+        if st.checkbox(f"🐞 {t('sidebar.label.debug_mode')}", value=False, key="debug_mode"):
             st.session_state["debug_active"] = True
         else:
             st.session_state["debug_active"] = False
@@ -643,7 +722,7 @@ def render_cohort_editor():
     Editor für Alterskohorten-Definitionen.
     Speichert Änderungen in Session State.
     """
-    st.write("**Kohorten-Definitionen**")
+    st.write(f"**{t('sidebar.label.cohort_definitions')}**")
 
     cohorts = st.session_state["cohort_definitions"]
     modified = False
@@ -673,12 +752,12 @@ def render_cohort_editor():
 
     if modified:
         st.session_state["cohort_definitions"] = cohorts
-        st.info("✓ Kohorten aktualisiert. Daten werden neu berechnet.")
+        st.info(f"✓ {t('sidebar.hint.cohorts_updated')}")
 
     # Reset zu Defaults
-    if st.button("Zurück zu Standard-Kohorten", key="reset_cohorts"):
+    if st.button(t("sidebar.action.reset_default_cohorts"), key="reset_cohorts"):
         st.session_state["cohort_definitions"] = DEFAULT_COHORTS.copy()
-        st.success("✓ Standard-Kohorten wiederhergestellt")
+        st.success(f"✓ {t('sidebar.hint.cohorts_restored')}")
         st.rerun()
 
 
@@ -760,50 +839,65 @@ def get_filter_summary() -> str:
     active_filters = []
 
     if st.session_state.get("selected_org_units"):
-        active_filters.append(f"{len(st.session_state['selected_org_units'])} Org-Einheiten")
+        active_filters.append(
+            t("sidebar.summary.org_units", count=len(st.session_state["selected_org_units"]))
+        )
 
     if st.session_state.get("selected_jobfamilies"):
-        active_filters.append(f"{len(st.session_state['selected_jobfamilies'])} Job Families")
+        active_filters.append(
+            t("sidebar.summary.job_families", count=len(st.session_state["selected_jobfamilies"]))
+        )
 
     if st.session_state.get("selected_cohorts"):
-        active_filters.append(f"{len(st.session_state['selected_cohorts'])} Kohorten")
+        active_filters.append(
+            t("sidebar.summary.cohorts", count=len(st.session_state["selected_cohorts"]))
+        )
 
     if len(st.session_state.get("selected_genders", [])) < 2:
-        active_filters.append("Geschlecht")
+        active_filters.append(t("sidebar.summary.gender"))
 
     if len(st.session_state.get("selected_employment", [])) < 2:
-        active_filters.append("Arbeitszeit")
+        active_filters.append(t("sidebar.summary.working_time"))
 
     if st.session_state.get("selected_education"):
-        active_filters.append("Qualifikation")
+        active_filters.append(t("sidebar.summary.education"))
 
     if len(st.session_state.get("selected_atz_status", [])) < 3:
-        active_filters.append("ATZ-Status")
+        active_filters.append(t("sidebar.summary.atz"))
 
     if st.session_state.get("selected_oe_clusters"):
-        active_filters.append(f"{len(st.session_state['selected_oe_clusters'])} OE-Cluster")
+        active_filters.append(
+            t("sidebar.summary.oe_clusters", count=len(st.session_state["selected_oe_clusters"]))
+        )
 
     if st.session_state.get("selected_jf_clusters"):
-        active_filters.append(f"{len(st.session_state['selected_jf_clusters'])} JF-Cluster")
+        active_filters.append(
+            t("sidebar.summary.jf_clusters", count=len(st.session_state["selected_jf_clusters"]))
+        )
 
     # Gruppen-Ausschlüsse (Neu: Aus JSON-Config)
     exclusion_labels = []
     if ex_config.get("vorstand"):
-        exclusion_labels.append("Vorstand")
+        exclusion_labels.append(t("sidebar.summary.exclusion_board"))
     if ex_config.get("ruhend_bv"):
-        exclusion_labels.append("Ruhend")
+        exclusion_labels.append(t("sidebar.summary.exclusion_dormant"))
     
     ex_units = ex_config.get("org_units", [])
     if ex_units:
-        exclusion_labels.append(f"{len(ex_units)} Bereiche")
+        exclusion_labels.append(t("sidebar.summary.exclusion_areas", count=len(ex_units)))
         
     if exclusion_labels:
-        active_filters.append(f"Ausschl.: {', '.join(exclusion_labels)}")
+        active_filters.append(
+            t("sidebar.summary.exclusions", labels=", ".join(exclusion_labels))
+        )
 
     if active_filters:
-        return f"🎯 {len(active_filters)} Filter aktiv: " + ", ".join(active_filters)
-    else:
-        return "Alle Daten angezeigt (keine Filter aktiv)"
+        return t(
+            "sidebar.summary.filter_prefix",
+            count=len(active_filters),
+            details=", ".join(active_filters),
+        )
+    return t("sidebar.summary.all_data")
 
 
 # ---------------------------------------------------------------------------
@@ -911,9 +1005,11 @@ def render_filter_status(n_before: int, n_after: int) -> None:
     """Show a compact filter-status caption in the UI."""
     summary = get_filter_summary()
     if n_before == n_after:
-        st.caption(f"🔍 {summary}")
+        st.caption(f"🔍 {t('sidebar.hint.filter_unchanged', summary=summary)}")
     else:
-        st.caption(f"🔍 Filter aktiv: {n_before} → {n_after} Events | {summary}")
+        st.caption(
+            f"🔍 {t('sidebar.hint.filter_changed', before=n_before, after=n_after, summary=summary)}"
+        )
 
 
 def get_active_view_filters(state: dict | None = None) -> dict:

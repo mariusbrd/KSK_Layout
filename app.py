@@ -1,13 +1,18 @@
 """
 HR Pulse Dashboard - Haupteinstiegspunkt
 
-Streamlit-basiertes HR-Analytics-Dashboard für Banken und Finanzdienstleister.
+Streamlit-basiertes HR-Analytics-Dashboard fuer Banken und Finanzdienstleister.
 """
 
 import streamlit as st
-from config.settings import PAGE_CONFIG, DEFAULT_COHORTS
-from components.setup_wizard import render_setup_wizard, needs_setup
+from pathlib import Path
+
+from components.setup_wizard import needs_setup, render_setup_wizard
 from components.ui_shell import inject_ui_theme
+from config.settings import DEFAULT_COHORTS, PAGE_CONFIG
+from utils.i18n import initialize_language_state, t
+
+SIDEBAR_BRAND_LOGO = Path(__file__).resolve().parent / "assets" / "sidebar_brand.svg"
 
 # =============================================================================
 # PAGE CONFIGURATION
@@ -15,13 +20,15 @@ from components.ui_shell import inject_ui_theme
 
 st.set_page_config(**PAGE_CONFIG)
 
-# Wide Mode erzwingen (überschreibt Browser-Präferenz und Cloud-Defaults)
+# Wide Mode erzwingen (ueberschreibt Browser-Praeferenz und Cloud-Defaults)
 inject_ui_theme()
+st.logo(str(SIDEBAR_BRAND_LOGO), size="large")
 
 # Cache einmalig leeren nach KPI-Engine-Update (kann nach erstem Start entfernt werden)
 if "kpi_engine_cache_cleared" not in st.session_state:
     st.cache_data.clear()
     st.session_state["kpi_engine_cache_cleared"] = True
+
 
 # =============================================================================
 # SESSION STATE INITIALIZATION
@@ -29,6 +36,8 @@ if "kpi_engine_cache_cleared" not in st.session_state:
 
 def initialize_session_state():
     """Initialisiert Session State mit Defaults."""
+
+    initialize_language_state()
 
     # Kohorten-Definitionen
     if "cohort_definitions" not in st.session_state:
@@ -62,6 +71,21 @@ def initialize_session_state():
         st.session_state["date_range"] = None
 
 
+def build_pages():
+    """Build the localized page navigation configuration."""
+    return {
+        t("navigation.section"): [
+            st.Page("pages/1_⚡_Kompakt.py", title=t("navigation.compact")),
+            st.Page("pages/7_⚡_Kompakt_plus_Simulation.py", title=t("navigation.compact_plus_simulation")),
+            st.Page("pages/3_📉_Prognose_Abgänge.py", title=t("navigation.attrition_forecast")),
+            st.Page("pages/4_📈_Prognose_Zugänge.py", title=t("navigation.hiring_forecast")),
+            st.Page("pages/5_🏢_Prognose_Hybrid.py", title=t("navigation.hybrid_forecast")),
+            st.Page("pages/2_⚙️_Einstellungen.py", title=t("navigation.settings")),
+            st.Page("pages/6_🔎_Deep_Dive_Exklusionsgruppen.py", title=t("navigation.exclusion_groups")),
+        ],
+    }
+
+
 # =============================================================================
 # MAIN APP
 # =============================================================================
@@ -72,41 +96,13 @@ def main():
     # Initialisiere Session State
     initialize_session_state()
 
-    # Prüfe ob Setup-Wizard benötigt wird
+    # Pruefe ob Setup-Wizard benoetigt wird
     if needs_setup():
-        # Setup-Wizard anzeigen (ohne Navigation)
         wizard_complete = render_setup_wizard()
         if not wizard_complete:
-            return  # Warte auf Wizard-Abschluss
+            return
 
-    # Navigation Setup mit st.navigation
-    pages = {
-        "Navigation": [
-            st.Page("pages/1_⚡_Kompakt.py", title="Kompakt"),
-            st.Page("pages/7_⚡_Kompakt_plus_Simulation.py", title="Kompakt plus Simulation"),
-            st.Page("pages/3_📉_Prognose_Abgänge.py", title="Prognose: Abgänge"),
-            st.Page("pages/4_📈_Prognose_Zugänge.py", title="Prognose: Zugänge"),
-            st.Page("pages/5_🏢_Prognose_Hybrid.py", title="Prognose: Hybrid"),
-            st.Page("pages/2_⚙️_Einstellungen.py", title="Einstellungen"),
-            st.Page("pages/6_🔎_Deep_Dive_Exklusionsgruppen.py", title="Exklusionsgruppen"),
-        ],
-    }
-    pg = st.navigation(pages)
-
-    # Header
-    st.markdown(
-        """
-        <div style='text-align: center; padding: 1rem 0 2rem 0;'>
-            <h1 style='color: #14b8a6; margin-bottom: 0.5rem;'>📊 HR Dashboard</h1>
-            <p style='color: #94a3b8; font-size: 1.1rem;'>
-                HR-Analytics Dashboard
-            </p>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-    # Führe aktuelle Seite aus
+    pg = st.navigation(build_pages())
     pg.run()
 
 

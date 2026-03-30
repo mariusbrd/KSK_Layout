@@ -5,6 +5,7 @@ import html
 import streamlit as st
 
 from config.settings import COLORS
+from utils.i18n import t
 
 
 def inject_ui_theme() -> None:
@@ -235,6 +236,60 @@ def inject_ui_theme() -> None:
             padding-right: 1rem;
         }}
 
+        section[data-testid="stSidebar"] .e3rr4jk4 {{
+            height: auto !important;
+            min-height: 0 !important;
+            align-items: flex-start !important;
+            gap: 0.5rem;
+            margin-bottom: 0.45rem !important;
+        }}
+
+        section[data-testid="stSidebar"] .e3rr4jk5,
+        section[data-testid="stSidebar"] .e3rr4jk6,
+        section[data-testid="stSidebar"] .e3rr4jk4 > div:first-child {{
+            flex: 1 1 auto;
+            max-width: calc(100% - 2.25rem);
+        }}
+
+        section[data-testid="stSidebar"] .e3rr4jk4 .stLogo {{
+            display: block;
+            width: 100% !important;
+            max-width: 100% !important;
+            height: auto !important;
+            min-height: 4.75rem !important;
+            max-height: none !important;
+            object-fit: contain;
+            object-position: left center;
+        }}
+
+        section[data-testid="stSidebar"] div:has(> [data-testid="stLogoLink"]),
+        section[data-testid="stSidebar"] div:has(> div > [data-testid="stLogo"]) {{
+            height: auto !important;
+            min-height: 0 !important;
+            align-items: flex-start !important;
+            margin-bottom: 0.35rem !important;
+        }}
+
+        section[data-testid="stSidebar"] [data-testid="stLogoLink"] {{
+            display: flex !important;
+            align-items: center;
+            width: 100% !important;
+            max-width: 100% !important;
+        }}
+
+        section[data-testid="stSidebar"] [data-testid="stLogo"] {{
+            display: block;
+            width: 100% !important;
+            max-width: 100% !important;
+            height: auto !important;
+            max-height: none !important;
+            min-height: 4.5rem !important;
+            margin-top: 0.15rem !important;
+            margin-bottom: 0.15rem !important;
+            object-fit: contain;
+            object-position: left center;
+        }}
+
         section[data-testid="stSidebar"] hr {{
             margin: 0.85rem 0;
         }}
@@ -413,4 +468,4 @@ def render_section_intro(title: str, subtitle: str | None = None) -> None:
 def render_active_filter_banner(filter_summary: str) -> None:
     """Render the active filter summary in the shared compact banner style."""
     inject_ui_theme()
-    st.info(f"🎯 {filter_summary}")
+    st.info(f"🎯 {t('ui.filter_banner.prefix')}: {filter_summary}")

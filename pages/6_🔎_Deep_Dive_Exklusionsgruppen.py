@@ -31,6 +31,7 @@ from utils.exclusion_groups import (
 from dataloader.kpi_engine import get_unique_employees
 from utils.settings_loader import get_setting, set_setting
 from utils.plot_helpers import apply_legend_bottom
+from utils.i18n import t
 
 
 # ---------------------------------------------------------------------------
@@ -127,33 +128,57 @@ def _bar_chart(df_stats: pd.DataFrame, y_col: str, title: str, y_label: str,
     return fig
 
 
+_GROUP_LABEL_KEYS = {
+    VORSTAND_KEY: "exclusion.group.vorstand",
+    RUHEND_KEY: "exclusion.group.ruhend_bv",
+    "9900": "exclusion.group.9900",
+    "9910": "exclusion.group.9910",
+    "9920": "exclusion.group.9920",
+    "9921": "exclusion.group.9921",
+    "9940": "exclusion.group.9940",
+    "9941": "exclusion.group.9941",
+    "9945": "exclusion.group.9945",
+    "9960": "exclusion.group.9960",
+    "9970": "exclusion.group.9970",
+    "9971": "exclusion.group.9971",
+    "9972": "exclusion.group.9972",
+    "9973": "exclusion.group.9973",
+    "9975": "exclusion.group.9975",
+    "9980": "exclusion.group.9980",
+    "9981": "exclusion.group.9981",
+    "9990": "exclusion.group.9990",
+    "9999": "exclusion.group.9999",
+    "99XX": "exclusion.group.99xx",
+}
+
+
+def _group_label(key: str, fallback: str) -> str:
+    label_key = _GROUP_LABEL_KEYS.get(key)
+    if not label_key:
+        return fallback
+    return t(label_key)
+
+
 # ---------------------------------------------------------------------------
 # Haupt-Rendering
 # ---------------------------------------------------------------------------
 
 def main():
-    st.title("🔎 Exklusionsgruppen")
-    st.caption(
-        "Transparenz und Steuerung für alle exkludierbaren Personengruppen. "
-        "Gruppen können direkt hier ein- oder ausgeschlossen werden — "
-        "die Änderung wirkt sofort auf alle anderen Seiten."
-    )
+    st.title(t("exclusion.title"))
+    st.caption(t("exclusion.subtitle"))
 
     # ── Daten laden ──────────────────────────────────────────────────────────
-    set_metric_page_hint(
-        "Diese Seite ist eine Steuerungs- und Transparenzseite. "
-        "Die globale Pille hat hier derzeit keine fachliche Wirkung."
-    )
+    set_metric_page_hint(t("exclusion.metric_hint"))
 
     try:
         snapshot_df, history_df, org_df, summary = load_and_prepare_data()
         render_global_filters(snapshot_df, history_df)
     except Exception as exc:
-        st.error(f"Fehler beim Laden der Daten: {exc}")
+        st.error(t("exclusion.error.load", error=exc))
         return
 
     if snapshot_df is None or snapshot_df.empty:
-        st.info("Keine Daten verfügbar. Bitte Datei hochladen.")
+        st.info(t("exclusion.info.no_data"))
         return
 
     # HINWEIS: apply_filters() wird hier NICHT auf snapshot_df angewendet.
@@ -170,8 +195,12 @@ def main():
     # ── Gruppen-Stats berechnen ───────────────────────────────────────────────
     df_stats = get_all_group_stats(snapshot_df)
     if df_stats.empty:
-        st.warning("Gruppen-Auswertung konnte nicht erstellt werden.")
+        st.warning(t("exclusion.warning.no_groups"))
         return
+    df_stats["gruppe_name"] = df_stats.apply(
+        lambda row: _group_label(str(row["gruppe_key"]), str(row["gruppe_name"])),
+        axis=1,
+    )
 
     # Soll-MAK Gesamt (Planstellen-Bedarf, immer erhalten)
     if "Soll_FTE" in snapshot_df.columns:
@@ -219,56 +248,53 @@ def main():
     active_ist_mak = float(resolve_mak_series(emp_active).sum())
 
     # ── BEREICH 1: Globale KPIs ───────────────────────────────────────────────
-    st.markdown("### Übersicht")
+    st.markdown(t("exclusion.section.overview"))
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        _metric_card("Gesamt Planstellen", _fmt_int(total_planstellen),
-                     sub="inkl. Vakanzen + exkl. Gruppen",
+        _metric_card(t("exclusion.metric.total_positions"), _fmt_int(total_planstellen),
+                     sub=t("exclusion.metric.total_positions.sub"),
                      color=COLORS["accent_blue"])
     with c2:
-        _metric_card("Gesamt Soll-MAK", _fmt_mak(total_soll_mak),
-                     sub="Planbedarf (Sollarbeitszeit/39)",
+        _metric_card(t("exclusion.metric.total_target_fte"), _fmt_mak(total_soll_mak),
+                     sub=t("exclusion.metric.total_target_fte.sub"),
                      color=COLORS["accent_blue"])
     with c3:
-        _metric_card("Exkl. Planstellen", _fmt_int(ex_planstellen),
-                     sub=f"{ex_planstellen / total_planstellen * 100:.1f} % des Bestands" if total_planstellen else "",
+        _metric_card(t("exclusion.metric.excluded_positions"), _fmt_int(ex_planstellen),
+                     sub=t("exclusion.metric.excluded_positions.sub", share=f"{ex_planstellen / total_planstellen * 100:.1f} %") if total_planstellen else "",
                      color=COLORS["accent_amber"])
     with c4:
-        _metric_card("Exkl. Soll-MAK", _fmt_mak(ex_soll_mak),
-                     sub=_fmt_pct(anteil_ex_pct) + " des Soll-MAK",
+        _metric_card(t("exclusion.metric.excluded_target_fte"), _fmt_mak(ex_soll_mak),
+                     sub=t("exclusion.metric.excluded_target_fte.sub", share=_fmt_pct(anteil_ex_pct)),
                      color=COLORS["accent_amber"])
 
     c5, c6, c7, _ = st.columns(4)
     with c5:
-        _metric_card("Aktiv Planstellen", _fmt_int(active_planstellen),
-                     sub="besetzt + vakant, nicht exkl.",
+        _metric_card(t("exclusion.metric.active_positions"), _fmt_int(active_planstellen),
+                     sub=t("exclusion.metric.active_positions.sub"),
                      color=COLORS["accent_green"])
     with c6:
-        _metric_card("Aktiv Soll-MAK", _fmt_mak(active_soll_mak),
-                     sub="Bedarf aktiver Gruppen",
+        _metric_card(t("exclusion.metric.active_target_fte"), _fmt_mak(active_soll_mak),
+                     sub=t("exclusion.metric.active_target_fte.sub"),
                      color=COLORS["accent_green"])
     with c7:
-        _metric_card("Aktiv IST-MAK", _fmt_mak(active_ist_mak),
-                     sub="≈ Kompakt IST-MAK (aktive Gruppen)",
+        _metric_card(t("exclusion.metric.active_current_fte"), _fmt_mak(active_ist_mak),
+                     sub=t("exclusion.metric.active_current_fte.sub"),
                      color=COLORS["accent_green"])
 
     st.markdown("---")
 
     # ── BEREICH 2: Gruppen-Tabelle mit Checkboxen ────────────────────────────
-    st.markdown("### Gruppen-Ausschlüsse")
-    st.caption(
-        "Ausgeschlossene Gruppen zählen nicht zum IST-Headcount. "
-        "Die Planstellen-Kapazität (Soll) bleibt als Bedarf erhalten."
-    )
+    st.markdown(t("exclusion.section.group_exclusions"))
+    st.caption(t("exclusion.group_exclusions.caption"))
 
     # Bulk-Aktionen (nur session state — kein Persist, Nutzer bestätigt unten)
     bulk_col1, bulk_col2 = st.columns(2)
-    if bulk_col1.button("Alle ausschließen", key="btn_ex_all", use_container_width=True):
+    if bulk_col1.button(t("exclusion.action.exclude_all"), key="btn_ex_all", use_container_width=True):
         for k, _l, _c in [(VORSTAND_KEY, "", "special"), (RUHEND_KEY, "", "special")] + \
                          [(code, "", "pa") for code, _ in PA_GROUPS]:
             st.session_state[f"ex_chk_{k}"] = True
         st.rerun()
-    if bulk_col2.button("Alle einschließen", key="btn_in_all", use_container_width=True):
+    if bulk_col2.button(t("exclusion.action.include_all"), key="btn_in_all", use_container_width=True):
         for k, _l, _c in [(VORSTAND_KEY, "", "special"), (RUHEND_KEY, "", "special")] + \
                          [(code, "", "pa") for code, _ in PA_GROUPS]:
             st.session_state[f"ex_chk_{k}"] = False
@@ -286,9 +312,9 @@ def main():
     # ── Feste Gruppen-Definitionen ────────────────────────────────────────────
     # Reihenfolge: Vorstand, Ruhendes BV, dann alle PA-Bereiche alphabetisch nach Code
     GROUP_ORDER = [
-        (VORSTAND_KEY,  "Vorstand",                         "special"),
-        (RUHEND_KEY,    "Ruhendes Beschäftigungsverhältnis","special"),
-    ] + [(code, label, "pa") for code, label in PA_GROUPS]
+        (VORSTAND_KEY, _group_label(VORSTAND_KEY, "Vorstand"), "special"),
+        (RUHEND_KEY, _group_label(RUHEND_KEY, "Ruhendes Beschäftigungsverhältnis"), "special"),
+    ] + [(code, _group_label(code, label), "pa") for code, label in PA_GROUPS]
 
     # Session-State für Checkboxen initialisieren (nur beim ersten Laden)
     for key, _label, _cat in GROUP_ORDER:
@@ -303,13 +329,13 @@ def main():
 
     # Tabellen-Header
     hdr = st.columns([3, 1, 1, 1, 1, 1, 1])
-    hdr[0].markdown("**Gruppe**")
-    hdr[1].markdown("**Planst.**")
-    hdr[2].markdown("**Soll-MAK**")
-    hdr[3].markdown("**IST-MAK**")
-    hdr[4].markdown("**Anteil**")
-    hdr[5].markdown("**Besetzt**")
-    hdr[6].markdown("**Ausschließen**")
+    hdr[0].markdown(f"**{t('exclusion.table.group')}**")
+    hdr[1].markdown(f"**{t('exclusion.table.positions')}**")
+    hdr[2].markdown(f"**{t('exclusion.table.target_fte')}**")
+    hdr[3].markdown(f"**{t('exclusion.table.current_fte')}**")
+    hdr[4].markdown(f"**{t('exclusion.table.share')}**")
+    hdr[5].markdown(f"**{t('exclusion.table.filled')}**")
+    hdr[6].markdown(f"**{t('exclusion.table.exclude')}**")
     st.markdown(
         "<hr style='margin:4px 0 8px 0;border-color:#E0E0E0;'>",
         unsafe_allow_html=True,
@@ -377,11 +403,7 @@ def main():
         "<hr style='margin:8px 0 4px 0;border-color:#E0E0E0;'>",
         unsafe_allow_html=True,
     )
-    st.caption(
-        "**Soll-MAK** = Planstellenbedarf (Sollarbeitszeit/39), unabhängig vom Exklusions-Status. "
-        "**IST-MAK** = Effektiver Beitrag (0 wenn exkludiert oder Ruhendes BV). "
-        "🟡 Amber = Gruppe hat natürlich IST-MAK = 0, aber ist nicht explizit ausgeschlossen."
-    )
+    st.caption(t("exclusion.table.legend"))
 
     # ── Bestätigungs-Buttons ──────────────────────────────────────────────────
     # Aktuelle Checkbox-Zustände aus session_state lesen
@@ -399,14 +421,14 @@ def main():
     )
 
     if has_pending:
-        st.info("Nicht gespeicherte Änderungen — bitte unten bestätigen.")
+        st.info(t("exclusion.info.unsaved"))
 
     # Aktuellen Scope anzeigen
-    scope_label = "Gesamtes Dashboard (inkl. Planstellen)" if current_follow else "Nur Mitarbeiter & Prognose"
+    scope_label = t("exclusion.scope.dashboard_full") if current_follow else t("exclusion.scope.employees_only")
     scope_color = "#0d6efd" if current_follow else "#6c757d"
     st.markdown(
         f"<div style='margin:8px 0 12px 0;font-size:0.85rem;color:#757575;'>"
-        f"Aktiver Scope: <span style='background:{scope_color};color:#fff;"
+        f"{t('exclusion.scope.active')} <span style='background:{scope_color};color:#fff;"
         f"padding:2px 8px;border-radius:4px;font-size:0.8rem;'>{scope_label}</span></div>",
         unsafe_allow_html=True,
     )
@@ -414,25 +436,22 @@ def main():
     btn_col_a, btn_col_b = st.columns(2, gap="medium")
     with btn_col_a:
         if st.button(
-            "👥 Auf Mitarbeiter & Prognose anwenden",
+            t("exclusion.action.apply_employees"),
             type="primary" if (has_pending or current_follow) else "secondary",
             use_container_width=True,
             key="btn_apply_excl_ma",
-            help="Exklusionen wirken nur auf die Mitarbeiter-Ist-Werte und die Prognose. "
-                 "Die Planstellen-Matrix zeigt alle Planstellen unabhängig von den Exklusionsgruppen.",
+            help=t("exclusion.action.apply_employees.help"),
         ):
             _persist_exclusions(pending_vorstand, pending_ruhend, pending_org, planstellen_follow_person=False)
             st.rerun()
 
     with btn_col_b:
         if st.button(
-            "🏢 Auf gesamtes Dashboard anwenden",
+            t("exclusion.action.apply_dashboard"),
             type="primary" if (has_pending or not current_follow) else "secondary",
             use_container_width=True,
             key="btn_apply_excl_all",
-            help="Exklusionen wirken zusätzlich auf die Planstellen-Matrix (IST vs. SOLL Köpfe). "
-                 "Vorstand- und Ruhend-BV-Planstellen werden aus der Matrix entfernt. "
-                 "Vakante Planstellen in denselben OEs bleiben sichtbar.",
+            help=t("exclusion.action.apply_dashboard.help"),
         ):
             _persist_exclusions(pending_vorstand, pending_ruhend, pending_org, planstellen_follow_person=True)
             st.rerun()
@@ -440,7 +459,7 @@ def main():
     st.markdown("---")
 
     # ── BEREICH 3: Charts ─────────────────────────────────────────────────────
-    st.markdown("### Visualisierung")
+    st.markdown(t("exclusion.section.visualization"))
 
     # Aktuelle ex_keys neu berechnen (nach möglichem rerun)
     fresh_ex = _load_current_exclusions()
@@ -451,81 +470,80 @@ def main():
         fresh_ex_keys.add(RUHEND_KEY)
     fresh_ex_keys.update(fresh_ex.get("org_units", []))
 
-    tab_planst, tab_mak = st.tabs(["📊 Planstellen je Gruppe", "📐 Soll-MAK je Gruppe"])
+    tab_planst, tab_mak = st.tabs([t("exclusion.tab.positions"), t("exclusion.tab.target_fte")])
 
     with tab_planst:
         fig_k = _bar_chart(
             df_stats, "planstellen",
-            "Planstellen je exkludierbarer Gruppe",
-            "Anzahl Planstellen",
+            t("exclusion.chart.positions.title"),
+            t("exclusion.chart.positions.axis"),
             COLORS["accent_blue"], "#C0C0C0", fresh_ex_keys,
         )
         if fig_k:
             st.plotly_chart(fig_k, use_container_width=True)
-            st.caption("Grau = aktuell ausgeschlossen. Blau = im Modell aktiv.")
+            st.caption(t("exclusion.chart.caption.blue"))
         else:
-            st.info("Keine Daten.")
+            st.info(t("exclusion.chart.no_data"))
 
     with tab_mak:
         fig_m = _bar_chart(
             df_stats, "soll_mak",
-            "Soll-MAK je exkludierbarer Gruppe",
-            "Soll-MAK (FTE)",
+            t("exclusion.chart.target_fte.title"),
+            t("exclusion.chart.target_fte.axis"),
             COLORS["accent_amber"], "#C0C0C0", fresh_ex_keys,
         )
         if fig_m:
             st.plotly_chart(fig_m, use_container_width=True)
-            st.caption("Grau = aktuell ausgeschlossen. Amber = im Modell aktiv.")
+            st.caption(t("exclusion.chart.caption.amber"))
         else:
-            st.info("Keine Daten.")
+            st.info(t("exclusion.chart.no_data"))
 
     st.markdown("---")
 
     # ── BEREICH 4: Drilldown ──────────────────────────────────────────────────
-    st.markdown("### Drilldown: Gruppe auswählen")
+    st.markdown(t("exclusion.section.drilldown"))
 
     all_group_opts = {label: key for key, label, _ in GROUP_ORDER}
-    selected_label = st.selectbox("Gruppe", options=list(all_group_opts.keys()),
+    selected_label = st.selectbox(t("exclusion.select.group"), options=list(all_group_opts.keys()),
                                   key="ex_drilldown_group")
     selected_key = all_group_opts[selected_label]
 
     dd_row = df_stats[df_stats["gruppe_key"] == selected_key]
     if dd_row.empty or dd_row.iloc[0]["planstellen"] == 0:
-        st.info("Keine Personen in dieser Gruppe im aktuellen Snapshot.")
+        st.info(t("exclusion.info.no_people"))
     else:
         r = dd_row.iloc[0]
         dc1, dc2, dc3, dc4 = st.columns(4)
         with dc1:
-            _metric_card("Planstellen", _fmt_int(int(r["planstellen"])),
+            _metric_card(t("exclusion.table.positions"), _fmt_int(int(r["planstellen"])),
                          color=COLORS["accent_blue"])
         with dc2:
-            _metric_card("Soll-MAK", _fmt_mak(r["soll_mak"]),
+            _metric_card(t("exclusion.table.target_fte"), _fmt_mak(r["soll_mak"]),
                          color=COLORS["accent_amber"])
         with dc3:
-            _metric_card("IST-MAK", _fmt_mak(r["ist_mak"]),
+            _metric_card(t("exclusion.table.current_fte"), _fmt_mak(r["ist_mak"]),
                          color=COLORS["accent_green"])
         with dc4:
-            status = "Ausgeschlossen" if selected_key in fresh_ex_keys else "Aktiv"
+            status = t("exclusion.status.excluded") if selected_key in fresh_ex_keys else t("exclusion.status.active")
             status_color = COLORS["accent_red"] if selected_key in fresh_ex_keys else COLORS["accent_green"]
-            _metric_card("Status", status, color=status_color)
+            _metric_card(t("exclusion.metric.status"), status, color=status_color)
 
         col_oe, col_jf = st.columns(2)
         with col_oe:
-            st.markdown("**Top Organisationseinheiten**")
-            st.caption(r["top_oes"] if r["top_oes"] != "—" else "Keine Daten")
+            st.markdown(f"**{t('exclusion.top_org_units')}**")
+            st.caption(r["top_oes"] if r["top_oes"] != "—" else t("exclusion.info.none"))
         with col_jf:
-            st.markdown("**Top Jobfamilies**")
-            st.caption(r["top_jfs"] if r["top_jfs"] != "—" else "Keine Daten")
+            st.markdown(f"**{t('exclusion.top_jobfamilies')}**")
+            st.caption(r["top_jfs"] if r["top_jfs"] != "—" else t("exclusion.info.none"))
 
-        with st.expander("🔍 Einzelzeilen anzeigen (anonymisiert)", expanded=False):
+        with st.expander(t("exclusion.expander.rows"), expanded=False):
             detail = get_group_detail(snapshot_df, selected_key)
             if detail.empty:
-                st.info("Keine Zeilen gefunden.")
+                st.info(t("exclusion.info.no_rows"))
             else:
                 st.dataframe(detail, use_container_width=True, hide_index=True)
-                st.caption(
-                    f"{len(detail)} Zeilen. Kein Klarname, kein Geburtsdatum."
-                )
+                st.caption(t("exclusion.caption.rows", count=len(detail)))
 
 
-main()
+if not globals().get("_UNIT_TESTING", False):
+    main()

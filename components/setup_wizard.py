@@ -51,19 +51,22 @@ from utils.import_export import (
     validate_import_file,
     OPENPYXL_AVAILABLE
 )
+from utils.i18n import t
 
 
 # =============================================================================
 # KONSTANTEN
 # =============================================================================
 
-WIZARD_STEPS = [
-    "Willkommen",
-    "Datenquelle waehlen",
-    "Job Families definieren",
-    "Zuordnung pruefen",
-    "Abschluss"
-]
+def get_wizard_steps() -> list[str]:
+    """Return localized wizard step names."""
+    return [
+        t("setup_wizard.step.welcome"),
+        t("setup_wizard.step.source"),
+        t("setup_wizard.step.define"),
+        t("setup_wizard.step.review"),
+        t("setup_wizard.step.complete"),
+    ]
 
 # Basis-Templates (werden in Phase 2 erweitert)
 BASE_TEMPLATES = {
@@ -224,7 +227,7 @@ def reset_wizard():
 def render_welcome_step():
     """Rendert den Willkommens-Schritt."""
 
-    st.markdown("## Willkommen beim HR Pulse Dashboard")
+    st.markdown(f"## {t('setup_wizard.step.welcome')} beim HR Pulse Dashboard")
 
     st.markdown("""
     Um Ihre Personalanalysen optimal zu strukturieren, benötigen wir
@@ -277,12 +280,12 @@ def render_welcome_step():
     col1, col2 = st.columns([3, 1])
 
     with col2:
-        if st.button("Weiter", type="primary", use_container_width=True):
+        if st.button(t("setup_wizard.action.next"), type="primary", use_container_width=True):
             st.session_state["wizard_step"] = 1
             st.rerun()
 
     with col1:
-        if st.button("Wizard überspringen", use_container_width=True):
+        if st.button(t("setup_wizard.action.skip"), use_container_width=True):
             st.session_state["skip_wizard"] = True
             # Leere Definitionen erstellen
             empty_definitions = {
@@ -1499,14 +1502,15 @@ def render_setup_wizard(df: Optional[pd.DataFrame] = None) -> bool:
 
     # Progress
     current_step = st.session_state.get("wizard_step", 0)
-    progress = current_step / (len(WIZARD_STEPS) - 1)
+    wizard_steps = get_wizard_steps()
+    progress = current_step / (len(wizard_steps) - 1)
 
     # Progress-Bar
     st.progress(progress)
 
     # Step-Indicator
-    cols = st.columns(len(WIZARD_STEPS))
-    for i, step_name in enumerate(WIZARD_STEPS):
+    cols = st.columns(len(wizard_steps))
+    for i, step_name in enumerate(wizard_steps):
         with cols[i]:
             if i < current_step:
                 st.markdown(f"✅ ~~{step_name}~~")

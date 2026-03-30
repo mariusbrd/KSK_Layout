@@ -25,6 +25,7 @@ from dataloader.compact_simulation_engine import simulate_compact_snapshot
 from dataloader.loader import load_and_prepare_data, load_atz_data_cached
 from kpi_reference import get_current_stichtag
 from utils.compact_page_loader import load_compact_page_module
+from utils.i18n import t
 from utils.settings_loader import get_setting
 from zugaenge.params import default_params as default_zugaenge_params
 
@@ -260,11 +261,11 @@ def _inject_page_styles():
 
 
 def _render_hero():
-    st.title("⚡ Kompakt plus Simulation")
-    st.caption("Kompakt-Auswertung auf einem bis zum Zukunftsdatum fortgeschriebenen Personalbestand.")
+    st.title(f"⚡ {t('sim.title')}")
+    st.caption(t("sim.subtitle"))
     render_context_box(
-        "Simulationslogik",
-        "Fortschreibung des Personalbestands bis zu einem gewaehlten Zukunftsdatum auf Basis der bestehenden Prognose-Logik fuer Abgaenge und Zugaenge.",
+        t("sim.logic.label"),
+        t("sim.logic.text"),
         tone="info",
     )
 
@@ -288,10 +289,8 @@ def _render_status_box(is_stale: bool, target_date: pd.Timestamp, cached_target:
         st.markdown(
             f"""
             <div class="sim-status warn">
-                <strong>Simulation nicht aktuell</strong>
-                Angezeigt wird noch der zuletzt berechnete Stand fuer <strong>{cached_label}</strong>.
-                Mit <strong>Simulation berechnen</strong> aktualisieren Sie den Bestand fuer
-                <strong>{target_date.strftime("%d.%m.%Y")}</strong>.
+                <strong>{t('sim.status.stale.title')}</strong>
+                {t('sim.status.stale.text', cached_date=cached_label, target_date=target_date.strftime("%d.%m.%Y"))}
             </div>
             """,
             unsafe_allow_html=True,
@@ -300,9 +299,8 @@ def _render_status_box(is_stale: bool, target_date: pd.Timestamp, cached_target:
         st.markdown(
             f"""
             <div class="sim-status ok">
-                <strong>Simulation aktuell</strong>
-                Der angezeigte Bestand ist fuer den Ziel-Stichtag
-                <strong>{target_date.strftime("%d.%m.%Y")}</strong> berechnet.
+                <strong>{t('sim.status.current.title')}</strong>
+                {t('sim.status.current.text', target_date=target_date.strftime("%d.%m.%Y"))}
             </div>
             """,
             unsafe_allow_html=True,
@@ -315,24 +313,24 @@ def _render_summary_cards(base_date: pd.Timestamp, display_target: pd.Timestamp,
         f"""
         <div class="sim-summary-grid">
             <div class="sim-summary-card">
-                <div class="sim-summary-label">Ziel-Stichtag</div>
+                <div class="sim-summary-label">{t('sim.summary.target_date')}</div>
                 <div class="sim-summary-value">{display_target.strftime("%d.%m.%Y")}</div>
-                <div class="sim-summary-note">Berechneter Zukunftsstand</div>
+                <div class="sim-summary-note">{t('sim.summary.target_note')}</div>
             </div>
             <div class="sim-summary-card">
-                <div class="sim-summary-label">Horizont</div>
-                <div class="sim-summary-value">{delta_days} Tage</div>
-                <div class="sim-summary-note">Differenz zum Basis-Stichtag</div>
+                <div class="sim-summary-label">{t('sim.summary.horizon')}</div>
+                <div class="sim-summary-value">{t('sim.summary.horizon_value', days=delta_days)}</div>
+                <div class="sim-summary-note">{t('sim.summary.horizon_note')}</div>
             </div>
             <div class="sim-summary-card">
-                <div class="sim-summary-label">Abgaenge</div>
+                <div class="sim-summary-label">{t('sim.summary.attrition')}</div>
                 <div class="sim-summary-value">{meta.get('abgaenge_events', 0)}</div>
-                <div class="sim-summary-note">Erfasste Forecast-Ereignisse</div>
+                <div class="sim-summary-note">{t('sim.summary.events_note')}</div>
             </div>
             <div class="sim-summary-card">
-                <div class="sim-summary-label">Zugaenge</div>
+                <div class="sim-summary-label">{t('sim.summary.hiring')}</div>
                 <div class="sim-summary-value">{meta.get('zugaenge_events', 0)}</div>
-                <div class="sim-summary-note">Erfasste Forecast-Ereignisse</div>
+                <div class="sim-summary-note">{t('sim.summary.events_note')}</div>
             </div>
         </div>
         """,
@@ -355,16 +353,16 @@ def main():
     )
 
     render_section_intro(
-        "Simulation steuern",
-        "Ziel-Datum waehlen, Bestand berechnen und anschliessend wie in der Kompaktseite auswerten.",
+        t("sim.controls.section"),
+        t("sim.controls.subtitle"),
     )
 
     control_col1, control_col2, control_col3 = st.columns([2.2, 1.1, 1.15])
     with control_col1:
-        st.markdown("**Simulationsdatum**")
-        st.caption("Dieses Datum wird auf der Seite als zukuenftiger Stichtag behandelt.")
+        st.markdown(f"**{t('sim.controls.date_label')}**")
+        st.caption(t("sim.controls.date_caption"))
         target_date_input = st.date_input(
-            "Simulationsdatum",
+            t("sim.controls.date_label"),
             value=default_target,
             min_value=base_date.date(),
             key="compact_sim_target_date",
@@ -372,18 +370,18 @@ def main():
         )
     with control_col2:
         _render_info_card(
-            "Basis-Stichtag",
+            t("sim.controls.base_date"),
             base_date.strftime("%d.%m.%Y"),
-            "Ausgangspunkt der Fortschreibung",
+            t("sim.controls.base_note"),
         )
     with control_col3:
-        st.markdown("**Berechnung**")
-        st.caption("Neu rechnen nur bei Bedarf. Filterwechsel bleiben schnell.")
+        st.markdown(f"**{t('sim.controls.compute')}**")
+        st.caption(t("sim.controls.compute_caption"))
         recalc_clicked = st.button(
-            "Simulation berechnen",
+            t("sim.controls.compute_button"),
             use_container_width=True,
             type="primary",
-            help="Berechnet den Zukunftsbestand nur bei Bedarf neu.",
+            help=t("sim.controls.compute_help"),
         )
 
     target_date = pd.Timestamp(target_date_input).normalize()
@@ -415,7 +413,7 @@ def main():
                 prepared_df = st.session_state["compact_sim_prepared_df"]
             else:
                 df_atz = _get_atz_input()
-                with st.spinner("Simuliere zukuenftigen Personalbestand..."):
+                with st.spinner(t("sim.controls.spinner")):
                     sim_result = simulate_compact_snapshot(
                         snapshot_df=snapshot_df,
                         df_atz=df_atz,
@@ -437,8 +435,8 @@ def main():
         display_target = pd.Timestamp(cached_target).normalize() if cached_target is not None else target_date
 
         render_section_intro(
-            "Simulationsstatus",
-            "Aktualitaet der Berechnung und Kernergebnisse des fortgeschriebenen Bestands.",
+            t("sim.status.section"),
+            t("sim.status.subtitle"),
         )
         _render_status_box(
             is_stale=is_stale,
@@ -458,25 +456,25 @@ def main():
         render_active_filter_banner(filter_summary)
 
         if filtered_df.empty:
-            st.warning("Keine Daten fuer die gewaehlten Filter.")
+            st.warning(t("sim.warning.no_data"))
             return
 
         render_section_intro(
-            "Auswertung",
-            "Zwischen Analysebereich und Kennzahlensicht wechseln. Die Auswertungen darunter reagieren auf die aktiven Sichtfilter.",
+            t("sim.evaluation.section"),
+            t("sim.evaluation.subtitle"),
         )
 
         metric_view = get_global_metric_view()
         render_context_box(
-            "Kennzahlensicht",
-            f"Steuerung ueber die Sidebar: {metric_view}",
+            t("sim.metric_view.label"),
+            t("sim.metric_view.text", metric_view=metric_view),
             tone="neutral",
             compact=True,
         )
 
         ist_tab, ist_soll_tab = st.tabs([
-            "IST-Analyse",
-            "IST vs SOLL",
+            t("sim.tabs.ist"),
+            t("sim.tabs.ist_soll"),
         ])
 
         with ist_tab:
@@ -533,9 +531,9 @@ def main():
             compact.render_ist_vs_soll_eur_tab(filtered_df)
 
     except FileNotFoundError as exc:
-        st.error(f"Datenfehler: {exc}")
+        st.error(t("sim.error.data", error=exc))
     except Exception as exc:
-        st.error(f"Fehler in Kompakt plus Simulation: {exc}")
+        st.error(t("sim.error.general", error=exc))
         st.exception(exc)
 
 

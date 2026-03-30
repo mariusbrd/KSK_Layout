@@ -42,15 +42,28 @@ from dataloader.loader import load_and_prepare_data, load_atz_data_cached
 from dataloader.cluster_manager import is_clustering_active
 from dataloader.jobfamily_service import JobFamilyService
 from components.sidebar import render_global_filters, apply_filters, apply_event_filters, render_filter_status, apply_robust_filter, get_effective_metric_view, set_metric_page_hint
+from utils.i18n import t
 from utils.plot_helpers import apply_legend_bottom
 
 
+def _render_page_intro():
+    st.title(t("attrition.title"))
+    st.caption(t("attrition.subtitle"))
+
+
+def _get_result_tab_labels() -> list[str]:
+    return [
+        t("attrition.tabs.overview"),
+        t("attrition.tabs.drivers"),
+        t("attrition.tabs.export"),
+    ]
+
+
 def main():
-    st.title("📉 Prognose: Abgänge")
-    st.caption("Prognose von Abgaengen (ATZ, Rente, Kuendigung) mit klarer Trennung von MAK und Headcount.")
+    _render_page_intro()
     metric_choice, metric_hint = get_effective_metric_view(["Köpfe", "MAK"], fallback="MAK")
     if metric_hint:
-        set_metric_page_hint("EUR ist auf dieser Seite derzeit nicht verfügbar. Die Seite verwendet stattdessen MAK.")
+        set_metric_page_hint(t("attrition.metric_hint"))
     else:
         set_metric_page_hint(None)
 
@@ -65,7 +78,7 @@ def main():
         # --- Sidebar Reset Button ---
         with st.sidebar:
             st.divider()
-            if st.button("♻️ Ergebnisse zurücksetzen", use_container_width=True, help="Löscht die aktuelle Prognose aus dem Speicher."):
+            if st.button(t("attrition.reset_results"), use_container_width=True, help=t("attrition.reset_results.help")):
                 for key in ["abgaenge_results", "abgaenge_global_result", "abgaenge_params"]:
                     if key in st.session_state:
                          del st.session_state[key]
@@ -181,7 +194,7 @@ def main():
         st.error(str(e))
         return
     except Exception as e:
-        st.error(f"Fehler beim Laden/Filtern der Daten: {e}")
+        st.error(t("attrition.error.load_filter", error=e))
         return
     
     # df_ma is now the GLOBAL Aggregated Dataset.
@@ -199,55 +212,59 @@ def main():
     comp_ruhend = False
 
     with st.form("abgaenge_forecast_form", clear_on_submit=False):
-        st.markdown("### ⚙️ Prognose-Einstellungen")
+        st.markdown(t("attrition.settings.section"))
         # ── Row 1: Base Settings (horizontal) ──
-        st.markdown("##### 📅 Zeitraum & Basis")
+        st.markdown(t("attrition.settings.period_basis"))
         submit = False
+        freq_options = {
+            t("attrition.settings.frequency.month"): "M",
+            t("attrition.settings.frequency.quarter"): "Q",
+        }
         bc1, bc2, bc3, bc4 = st.columns(4)
         with bc1:
-            ist_stichtag = st.date_input("Ist-Stichtag", value=default_start)
+            ist_stichtag = st.date_input(t("attrition.settings.actual_date"), value=default_start)
         with bc2:
-            forecast_end_date = st.date_input("Prognose-Ende", value=default_end)
+            forecast_end_date = st.date_input(t("attrition.settings.forecast_end"), value=default_end)
         with bc3:
-            freq_label = st.selectbox("Frequenz", options=["Monat", "Quartal"], index=0)
+            freq_label = st.selectbox(t("attrition.settings.frequency"), options=list(freq_options.keys()), index=0)
         with bc4:
-            random_seed = st.number_input("Random Seed", value=int(params["random_seed"]), step=1)
+            random_seed = st.number_input(t("attrition.settings.random_seed"), value=int(params["random_seed"]), step=1)
 
         st.markdown("---")
 
         # ── Row 2: Component Toggles (horizontal) ──
-        st.markdown("##### 🧩 Aktive Komponenten")
+        st.markdown(t("attrition.settings.components"))
         cc1, cc2, cc3 = st.columns(3)
         with cc1:
-            comp_atz = st.checkbox("ATZ (inkl. Renteneintritt nach ATZ)", value=params["components"]["atz"])
+            comp_atz = st.checkbox(t("attrition.settings.component.atz"), value=params["components"]["atz"])
         with cc2:
-            comp_ret = st.checkbox("Rente", value=params["components"]["retirement"])
+            comp_ret = st.checkbox(t("attrition.settings.component.retirement"), value=params["components"]["retirement"])
         with cc3:
-            comp_quit = st.checkbox("Kündigung", value=params["components"]["quit"])
+            comp_quit = st.checkbox(t("attrition.settings.component.quit"), value=params["components"]["quit"])
 
         st.markdown("---")
-        st.info("💡 **Hinweis zu ATZ:** Wenn 'ATZ' aktiv ist, werden auch die ATZ-Endereignisse automatisch modelliert. Diese erscheinen als 'Rente (nach ATZ)' – unabhängig davon, ob die Komponente 'Rente' separat aktiviert ist.")
+        st.info(t("attrition.settings.atz_note"))
 
         # ── Row 3: Detail Parameters (sub-expanders) - OUTSIDE FORM for interactivity ──
-        st.markdown("##### 🔧 Detail-Parameter")
+        st.markdown(t("attrition.settings.detail_params"))
 
-        with st.expander("ATZ-Parameter"):
+        with st.expander(t("attrition.expander.atz")):
             # ── ATZ Row 1: General Constraints ──
             ac1, ac2, ac3, ac4, ac5 = st.columns(5)
             with ac1:
-                new_atz_base = st.slider("Neue Fälle (Basis): 0.05 (Range 0.00–0.50)", min_value=0.0, max_value=0.5, value=float(params["atz"].get("new_atz_rate", 0.05)), step=0.005, format="%.3f", help="Basis-Anteil der berechtigten Mitarbeiter, die pro Jahr in ATZ gehen.", key="slide_atz_base")
+                new_atz_base = st.slider(t("attrition.atz.base_rate"), min_value=0.0, max_value=0.5, value=float(params["atz"].get("new_atz_rate", 0.05)), step=0.005, format="%.3f", help=t("attrition.atz.base_rate.help"), key="slide_atz_base")
                 params["atz"]["new_atz_rate"] = new_atz_base
             with ac2:
-                eligible_age = st.number_input("Mindestalter", value=int(params["atz"]["atz_eligible_age_min"]), step=1, key="num_atz_age_min")
+                eligible_age = st.number_input(t("attrition.atz.min_age"), value=int(params["atz"]["atz_eligible_age_min"]), step=1, key="num_atz_age_min")
                 params["atz"]["atz_eligible_age_min"] = eligible_age
             with ac3:
-                eligible_age_max = st.number_input("Höchstalter", value=int(params["atz"]["atz_eligible_age_max"]), step=1, key="num_atz_age_max")
+                eligible_age_max = st.number_input(t("attrition.atz.max_age"), value=int(params["atz"]["atz_eligible_age_max"]), step=1, key="num_atz_age_max")
                 params["atz"]["atz_eligible_age_max"] = eligible_age_max
             with ac4:
-                ar_years = st.number_input("AR-Dauer (Jahre)", value=float(params["atz"]["atz_duration_ar_years"]), step=0.5, key="num_atz_ar_years")
+                ar_years = st.number_input(t("attrition.atz.ar_years"), value=float(params["atz"]["atz_duration_ar_years"]), step=0.5, key="num_atz_ar_years")
                 params["atz"]["atz_duration_ar_years"] = ar_years
             with ac5:
-                fr_years = st.number_input("FR-Dauer (Jahre)", value=float(params["atz"]["atz_duration_fr_years"]), step=0.5, key="num_atz_fr_years")
+                fr_years = st.number_input(t("attrition.atz.fr_years"), value=float(params["atz"]["atz_duration_fr_years"]), step=0.5, key="num_atz_fr_years")
                 params["atz"]["atz_duration_fr_years"] = fr_years
 
             st.divider()
@@ -256,18 +273,18 @@ def main():
             bc1, bc2 = st.columns([1, 1])
             with bc1:
                 use_atz_matrix = st.checkbox(
-                    "Detaillierte ATZ-Matrix verwenden", 
+                    t("attrition.atz.use_matrix"),
                     value=params["atz"].get("use_atz_matrix", False),
-                    help="Wenn aktiviert, wird die nachfolgende Matrix für die Eintrittswahrscheinlichkeiten genutzt.",
+                    help=t("attrition.atz.use_matrix.help"),
                     key="chk_use_atz_matrix_live"
                 )
                 params["atz"]["use_atz_matrix"] = use_atz_matrix
             with bc2:
                 atz_dim = st.radio(
-                    "Dimension für ATZ",
+                    t("attrition.atz.dimension"),
                     options=["JobFamily", "OrgUnit"],
                     index=0 if params["atz"].get("atz_dimension", "JobFamily") == "JobFamily" else 1,
-                    help="Wählen Sie die Dimension für die ATZ-Eintrittswahrscheinlichkeiten.",
+                    help=t("attrition.atz.dimension.help"),
                     disabled=not use_atz_matrix,
                     horizontal=True,
                     key="rad_atz_dim_live"
@@ -275,7 +292,7 @@ def main():
                 params["atz"]["atz_dimension"] = atz_dim
 
             # ── ATZ Row 3: Matrix Editor ──
-            st.caption(f"Matrix: {atz_dim} (Eintrittswahrscheinlichkeit für berechtigte MA)")
+            st.caption(t("attrition.atz.matrix_caption", dimension=atz_dim))
             
             atz_unique_vals = []
             if atz_dim == "OrgUnit":
@@ -301,7 +318,7 @@ def main():
 
                 atz_editor_data.append({
                     atz_dim: val,
-                    "Wahrscheinlichkeit (%)": float(rate)
+                    t("attrition.atz.probability_pct"): float(rate)
                 })
 
             df_atz_matrix = pd.DataFrame(atz_editor_data).set_index(atz_dim)
@@ -313,8 +330,8 @@ def main():
                 key="atz_matrix_editor_live",
                 disabled=not use_atz_matrix,
                 column_config={
-                    "Wahrscheinlichkeit (%)": st.column_config.NumberColumn(
-                        "Wahrscheinlichkeit (%)",
+                    t("attrition.atz.probability_pct"): st.column_config.NumberColumn(
+                        t("attrition.atz.probability_pct"),
                         min_value=0.0, max_value=100.0, step=0.5, format="%.1f"
                     )
                 }
@@ -322,47 +339,47 @@ def main():
 
             new_atz_matrix = {}
             for dim_val, row in edited_atz_df.iterrows():
-                new_atz_matrix[str(dim_val)] = float(row["Wahrscheinlichkeit (%)"])
+                new_atz_matrix[str(dim_val)] = float(row[t("attrition.atz.probability_pct")])
             params["atz"]["atz_matrix"] = new_atz_matrix
 
-        with st.expander("Renten-Parameter"):
+        with st.expander(t("attrition.expander.retirement")):
             rc1, rc2 = st.columns(2)
             with rc1:
-                rent65 = st.slider("Renteneintritt 65+: 0.90 (Range 0.00–1.00)", min_value=0.0, max_value=1.0, value=float(params["retirement"]["rent_rate_65"]), step=0.05, key="slide_rent_65")
+                rent65 = st.slider(t("attrition.retirement.rate_65"), min_value=0.0, max_value=1.0, value=float(params["retirement"]["rent_rate_65"]), step=0.05, key="slide_rent_65")
                 params["retirement"]["rent_rate_65"] = rent65
             with rc2:
-                rent60 = st.slider("Frühverrentung 60-64: 0.10 (Range 0.00–1.00)", min_value=0.0, max_value=1.0, value=float(params["retirement"]["rent_rate_60_65"]), step=0.05, key="slide_rent_60")
+                rent60 = st.slider(t("attrition.retirement.rate_60_64"), min_value=0.0, max_value=1.0, value=float(params["retirement"]["rent_rate_60_65"]), step=0.05, key="slide_rent_60")
                 params["retirement"]["rent_rate_60_65"] = rent60
 
-        with st.expander("Kündigungs-Parameter", expanded=False):
+        with st.expander(t("attrition.expander.quit"), expanded=False):
             # ── Controls Row ──
             c1, c2, c3 = st.columns([3, 3, 2])
             
             with c1:
                 quit_base = st.slider(
-                    "Basisrate p.a.: 0.05 (Range 0.00–0.50)", 
+                    t("attrition.quit.base_rate"),
                     min_value=0.0, max_value=0.5, 
                     value=float(params["quit"]["quit_rate_base"]), 
                     step=0.01, 
-                    help="Globale Kündigungsrate pro Jahr.",
+                    help=t("attrition.quit.base_rate.help"),
                     key="slide_quit_base_live"
                 )
                 params["quit"]["quit_rate_base"] = quit_base
             with c2:
                 st.write("") # Alignment
                 use_quit_matrix = st.checkbox(
-                    "Detaillierte Kündigungsmatrix verwenden", 
+                    t("attrition.quit.use_matrix"),
                     value=params["quit"].get("use_quit_matrix", True),
-                    help="Wenn aktiviert, wird die nachfolgende Matrix für die Kündigungswahrscheinlichkeiten genutzt.",
+                    help=t("attrition.quit.use_matrix.help"),
                     key="chk_use_quit_matrix_live"
                 )
                 params["quit"]["use_quit_matrix"] = use_quit_matrix
             with c3:
                 quit_dim = st.radio(
-                    "Dimension",
+                    t("attrition.quit.dimension"),
                     options=["JobFamily", "OrgUnit"],
                     index=0 if params["quit"].get("quit_dimension", "JobFamily") == "JobFamily" else 1,
-                    help="Wählen Sie die Dimension für die Kündigungswahrscheinlichkeiten.",
+                    help=t("attrition.quit.dimension.help"),
                     disabled=not use_quit_matrix,
                     horizontal=True,
                     key="rad_quit_dim_live"
@@ -372,7 +389,7 @@ def main():
             st.divider()
 
             # ── Matrix Row ──
-            st.caption(f"Matrix: {quit_dim} × Alter")
+            st.caption(t("attrition.quit.matrix_caption", dimension=quit_dim))
             
             # 1. Determine dimension values
             unique_vals = []
@@ -427,8 +444,8 @@ def main():
             params["quit"]["quit_matrix"] = new_quit_matrix
 
             st.divider()
-            st.markdown("##### 📅 Jahresgenaue Anpassungen (Job-Families)")
-            st.info("Hier können Sie für spezifische Jahre und Job-Families eine Erhöhung (+50%) oder Reduktion (-50%) der Kündigungsrate festlegen.")
+            st.markdown(t("attrition.adjustments.section"))
+            st.info(t("attrition.adjustments.info"))
             
             # More/Less selections
             adj_col1, adj_col2 = st.columns(2)
@@ -437,9 +454,9 @@ def main():
             current_adj = params["quit"].get("quit_adjustments", {"more": {}, "less": {}})
             
             with adj_col1:
-                st.caption("📈 Mehr Kündigungen (+50%)")
+                st.caption(t("attrition.adjustments.more"))
                 selected_more_jf = st.multiselect(
-                    "Job-Families wählen", 
+                    t("attrition.adjustments.job_families"),
                     options=valid_jfs, 
                     default=list(current_adj.get("more", {}).keys()),
                     key="ms_quit_more_jf"
@@ -454,7 +471,7 @@ def main():
                     default_years = [y for y in default_years if y in available_years]
                     
                     years = st.multiselect(
-                        f"Jahre für {jf}", 
+                        t("attrition.adjustments.years_for", job_family=jf),
                         options=available_years,
                         default=default_years,
                         key=f"ms_more_years_{jf}"
@@ -463,9 +480,9 @@ def main():
                         more_years_map[jf] = years
             
             with adj_col2:
-                st.caption("📉 Weniger Kündigungen (-50%)")
+                st.caption(t("attrition.adjustments.less"))
                 selected_less_jf = st.multiselect(
-                    "Job-Families wählen", 
+                    t("attrition.adjustments.job_families"),
                     options=valid_jfs, 
                     default=list(current_adj.get("less", {}).keys()),
                     key="ms_quit_less_jf"
@@ -477,7 +494,7 @@ def main():
                     default_years = [y for y in default_years if y in available_years]
 
                     years = st.multiselect(
-                        f"Jahre für {jf}", 
+                        t("attrition.adjustments.years_for", job_family=jf),
                         options=available_years,
                         default=default_years,
                         key=f"ms_less_years_{jf}"
@@ -493,15 +510,15 @@ def main():
 
     # ── Action Button ──
         st.write("")
-        submit = st.form_submit_button("🚀 Prognose mit diesen Parametern berechnen", use_container_width=True)
+        submit = st.form_submit_button(t("attrition.action.compute"), use_container_width=True)
 
     # ── Rendering or Calculation Logic ──
-    freq = "M" if freq_label == "Monat" else "Q"
+    freq = freq_options[freq_label]
 
     if submit:
         # Pre-calculation checks
         if forecast_end_date <= ist_stichtag:
-            st.error("Prognose-Ende muss nach dem Ist-Stichtag liegen.")
+            st.error(t("attrition.error.invalid_date"))
             st.stop()
 
         ui_state = {
@@ -547,7 +564,7 @@ def main():
     
         # ── Calculation Block ──
         try:
-            with st.spinner("Berechne Prognose..."):
+            with st.spinner(t("attrition.spinner")):
                 # P01: Run Global Forecast
                 global_result = run_forecast_abgaenge(
                     df_ma=df_ma, 
@@ -587,17 +604,17 @@ def main():
             st.session_state["abgaenge_params"] = params
             st.session_state["abgaenge_ui_state"] = ui_state
             st.session_state["abgaenge_timestamp"] = datetime.datetime.now().strftime("%d.%m.%Y, %H:%M:%S")
-            st.success("Prognose erfolgreich berechnet.")
+            st.success(t("attrition.success.computed"))
             st.rerun()
             
         except Exception as e:
-            st.error(f"Fehler in der Prognose calculation: {e}")
+            st.error(t("attrition.error.calculation", error=e))
             st.stop()
 
     # ── Rendering Logic (View-Only Zoom from Global Result) ──
     global_result = st.session_state.get("abgaenge_global_result")
     if not global_result:
-        st.info("ℹ️ Keine Prognose berechnet. Bitte stellen Sie die Parameter ein und klicken Sie auf 'Prognose berechnen'.")
+        st.info(t("attrition.info.no_forecast"))
         return
 
     last_run_params = st.session_state.get("abgaenge_ui_state", {})
@@ -615,7 +632,7 @@ def main():
     # Filtered snapshot for KPI re-aggregation
     df_filtered_rows = apply_filters(df_ma)
     if df_filtered_rows.empty:
-        st.warning("⚠️ Keine Daten nach Filterung verfügbar.")
+        st.warning(t("attrition.warning.no_filtered_data"))
         return
 
     # df_ma is already employee-level (1 row per PersNr), so groupby is
@@ -731,12 +748,12 @@ def main():
     # Header Info
     c1, c2 = st.columns([2, 1])
     with c1:
-        st.write(f"⏱️ **Stand der Berechnung:** {timestamp}")
+        st.write(t("attrition.status.timestamp", timestamp=timestamp))
     with c2:
         if drift:
-            st.warning("⚠️ Parameter geändert - bitte neu berechnen.")
+            st.warning(t("attrition.status.params_changed"))
         else:
-            st.success("✅ Ergebnisse aktuell.")
+            st.success(t("attrition.status.current"))
 
     render_filter_status(n_before, n_after)
 
@@ -767,7 +784,7 @@ def main():
         years = max(0.1, forecast_days / 365.25)
         abgangsquote_annual = (1 - (1 - abgangsquote)**(1/years)) if abgangsquote < 1 else (abgangsquote / years)
 
-        st.markdown("### 🏆 Kennzahlen (Management-Summary)")
+        st.markdown(t("attrition.summary.section"))
         m1, m2, m3, m4 = st.columns([1, 1, 1, 1])
         with m1:
             st.metric("Abgänge gesamt (Köpfe)", f"{exits_total}")
@@ -863,7 +880,7 @@ def main():
 
     # --- Choice of Metric for Charts ---
     st.write("")
-    st.caption(f"Kennzahlensicht aus der Sidebar: `{metric_choice}`")
+    st.caption(t("attrition.caption.metric_view", metric=metric_choice))
 
     charts = build_charts(forecast_kpis, events, metric_type=metric_choice)
     
@@ -872,7 +889,7 @@ def main():
         if fig:
             charts[key] = apply_legend_bottom(fig)
 
-    tab1, tab2, tab3 = st.tabs(["📊 Überblick & Trends", "🎯 Treiber Details", "📋 Personenlisten / Export"])
+    tab1, tab2, tab3 = st.tabs(_get_result_tab_labels())
 
     # Helper for Debug Metrics
     def _render_debug_metric(label, chart_val, global_val, unit=""):
@@ -1087,7 +1104,7 @@ def main():
                 st.warning("JF-Cluster Spalte nicht im Datensatz gefunden.")
 
         else:
-            st.info("💡 **Hinweis:** Keine benutzerdefinierten Cluster geladen. Sie können diese in den Einstellungen definieren.")
+            st.info(t("attrition.info.no_custom_clusters"))
 
         st.divider()
 
@@ -1102,7 +1119,7 @@ def main():
 
     with tab2:
         if events.empty:
-            st.info("Keine Treiber-Events vorhanden.")
+            st.info(t("attrition.info.no_driver_events"))
         else:
             # ── Section 1: Management Summary ──
             st.markdown("### 📊 Zusammenfassung der Abgangs-Treiber")
@@ -1169,7 +1186,7 @@ def main():
 
     with tab3:
         if events.empty:
-            st.info("Keine Personenlisten vorhanden.")
+            st.info(t("attrition.info.no_person_lists"))
         else:
             for reason in sorted(events["reason_label"].unique().tolist()):
                 reason_df = events[events["reason_label"] == reason]
@@ -1183,14 +1200,15 @@ def main():
                         mime="text/csv",
                     )
 
-    with st.expander("Plausibilitätschecks und Parameter"):
+    with st.expander(t("attrition.expander.plausibility")):
         res_global = st.session_state.get("abgaenge_global_result")
         if res_global:
             checks = validate_outputs(res_global)
-            st.write("**Checks**")
+            st.write(t("attrition.plausibility.checks"))
             st.json(checks)
-        st.write("**Parameter**")
+        st.write(t("attrition.plausibility.params"))
         st.json(last_run_params)
 
 
-main()
+if not globals().get("_UNIT_TESTING"):
+    main()

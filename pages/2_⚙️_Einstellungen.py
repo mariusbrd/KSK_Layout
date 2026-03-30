@@ -26,6 +26,7 @@ from dataloader.cluster_manager import generate_template_bytes, validate_and_sav
 from dataloader.source_service import SourceService, DataSourceOrigin
 from config.settings import BASE_DIR
 from components.sidebar import render_metric_selector_only, set_metric_page_hint
+from utils.i18n import t
 
 
 SALARY_AUTOMATION_DEFAULTS = {
@@ -42,13 +43,12 @@ SALARY_AUTOMATION_DEFAULTS = {
 
 def render_settings_page():
     set_metric_page_hint(
-        "Diese Seite dient der Konfiguration. "
-        "Die globale Pille hat hier derzeit keine fachliche Wirkung."
+        t("settings.metric_hint")
     )
     render_metric_selector_only()
 
-    st.title("Einstellungen")
-    st.caption("Loader-spezifische Parameter für Kostenberechnung")
+    st.title(t("settings.title"))
+    st.caption(t("settings.subtitle"))
 
     st.divider()
 
@@ -59,32 +59,34 @@ def render_settings_page():
         cluster_dir = os.path.abspath(os.path.join(BASE_DIR, "..", "Cluster-Daten"))
         
         with st.container():
-            st.success("✅ **Daten erfolgreich neu geladen!**")
+            st.success(f"✅ **{t('settings.reload_success')}**")
             
             diag_col1, diag_col2 = st.columns(2)
             
             with diag_col1:
-                st.markdown("**Datenquellen Status:**")
+                st.markdown(f"**{t('settings.data_sources_status')}**")
                 for group in SourceService.GROUPS.keys():
                     status = SourceService.derive_group_status(group, uploads, original_dir, cluster_dir)
                     st.markdown(f"- **{group}**: {status.origin.value} ({status.completeness_label})")
             
             with diag_col2:
-                st.markdown("**Aktive Einstellungen:**")
+                st.markdown(f"**{t('settings.active_settings')}**")
                 oe_map, jf_map = load_cluster_mappings()
-                st.markdown(f"- **Cluster**: {len(oe_map)} OE / {len(jf_map)} JF Mappings")
+                st.markdown(f"- **{t('settings.cluster_mappings', oe=len(oe_map), jf=len(jf_map))}**")
                 tvoed_ok = st.session_state.get("tvoed_available", False)
-                st.markdown(f"- **Entgelttabelle**: {'Aktiv' if tvoed_ok else 'Fallback-Modus'}")
+                st.markdown(
+                    f"- **{t('settings.pay_table_status', status=t('settings.pay_table_active') if tvoed_ok else t('settings.pay_table_fallback'))}**"
+                )
                 
             st.divider()
             # Reset flag after rendering once
             st.session_state["show_reload_success"] = False
 
     # --- Datenmanagement ---
-    st.subheader("Datenmanagement")
-    st.caption("Eigene Excel-Dateien hochladen (überschreibt Original-Daten für die Sitzung).")
+    st.subheader(t("settings.data_management"))
+    st.caption(t("settings.data_management.caption"))
     
-    with st.expander("📁 Dateien hochladen"):
+    with st.expander(f"📁 {t('settings.uploads_expander')}"):
         if "global_uploads" not in st.session_state:
             st.session_state["global_uploads"] = {}
             
@@ -119,37 +121,37 @@ def render_settings_page():
 
         col_up5, col_up6 = st.columns(2)
         with col_up5:
-            up_tvoed = st.file_uploader("TVÖD.xlsx (optional)", type=["xlsx"], key="set_up_tvoed")
+            up_tvoed = st.file_uploader(t("settings.tvoed_optional"), type=["xlsx"], key="set_up_tvoed")
             if up_tvoed:
                 st.session_state["global_uploads"]["TVÖD"] = io.BytesIO(up_tvoed.getvalue())
 
         if st.session_state["global_uploads"]:
-            st.success(f"✅ {len(st.session_state['global_uploads'])} Dateien aktiv.")
-            if st.button("Alle Uploads löschen"):
+            st.success(f"✅ {t('settings.uploads_active', count=len(st.session_state['global_uploads']))}")
+            if st.button(t("settings.delete_uploads")):
                  st.session_state["global_uploads"] = {}
                  st.rerun()
 
     st.divider()
 
     # --- Cluster-Management ---
-    st.subheader("Cluster-Management")
-    st.caption("Definition von benutzerdefinierten Gruppen für OE und Job-Families.")
+    st.subheader(t("settings.cluster_management"))
+    st.caption(t("settings.cluster_management.caption"))
     
-    with st.expander("🧩 Custom Clusters (Excel-Mapping)"):
+    with st.expander(f"🧩 {t('settings.cluster_expander')}"):
         c_col1, c_col2 = st.columns(2)
         
         with c_col1:
-            st.markdown("**1. Template erstellen**")
-            st.caption("Lädt alle aktuellen OEs und JFs in eine Excel-Datei.")
-            if st.button("📥 Template generieren"):
+            st.markdown(f"**{t('settings.cluster_step1')}**")
+            st.caption(t("settings.cluster_step1.caption"))
+            if st.button(f"📥 {t('settings.cluster_generate_template')}"):
                 # Load current data to get unique names/keys
-                with st.spinner("Lade aktuelle Stammdaten..."):
+                with st.spinner(t("settings.cluster_loading_masterdata")):
                     df_ma, _, _, _ = load_and_prepare_data()
                     jf_defs = load_jobfamily_definitions()
                     template_bytes = generate_template_bytes(df_ma, jf_defs)
                     
                 st.download_button(
-                    label="📂 Cluster-Template.xlsx herunterladen",
+                    label=f"📂 {t('settings.cluster_download_template')}",
                     data=template_bytes,
                     file_name="Cluster-Template.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -157,9 +159,9 @@ def render_settings_page():
                 )
 
         with c_col2:
-            st.markdown("**2. Definitionen hochladen**")
-            st.caption("Laden Sie das bearbeitete Template hier hoch.")
-            up_cluster = st.file_uploader("Mapping-Datei hochladen (.xlsx)", type=["xlsx"], key="up_cluster_mappings")
+            st.markdown(f"**{t('settings.cluster_step2')}**")
+            st.caption(t("settings.cluster_step2.caption"))
+            up_cluster = st.file_uploader(t("settings.cluster_upload_mapping"), type=["xlsx"], key="up_cluster_mappings")
             
             if up_cluster:
                 success, msg = validate_and_save_clusters(up_cluster)
@@ -170,7 +172,7 @@ def render_settings_page():
                     st.session_state["global_uploads"]["Cluster"] = up_cluster.getvalue()
                     
                     st.success(msg)
-                    if st.button("Änderungen jetzt anwenden (Cache leeren)"):
+                    if st.button(t("settings.cluster_apply_now")):
                         st.cache_data.clear()
                         st.session_state["show_reload_success"] = True
                         st.rerun()
@@ -181,12 +183,12 @@ def render_settings_page():
         cluster_override = st.session_state.get("global_uploads", {}).get("Cluster")
         oe_map, jf_map = load_cluster_mappings(cluster_override)
         if oe_map or jf_map:
-            st.info(f"✅ Aktive Mappings: {len(oe_map)} OE-Clusters, {len(jf_map)} JF-Clusters.")
+            st.info(t("settings.cluster_active_mappings", oe=len(oe_map), jf=len(jf_map)))
 
     st.divider()
 
     # --- Allgemeine Einstellungen (Stichtag) ---
-    st.subheader("Allgemeine Einstellungen")
+    st.subheader(t("settings.general"))
 
     from utils.settings_loader import get_setting, set_setting, save_user_settings, load_user_settings
 
@@ -198,22 +200,22 @@ def render_settings_page():
         current_stichtag = pd.to_datetime(STICHTAG_DEFAULT).date()
         
     new_stichtag = st.date_input(
-        "Stichtag (Reference Date)",
+        t("settings.reference_date"),
         value=current_stichtag,
-        help="Bestimmt das Datum für alle Berechnungen (Alter, Dienstjahre, Status).",
+        help=t("settings.reference_date.help"),
     )
     
     if new_stichtag != current_stichtag:
-        if st.button("Stichtag speichern"):
+        if st.button(t("settings.reference_date.save")):
             set_setting("stichtag", str(new_stichtag))
-            st.success(f"Stichtag auf {new_stichtag} geändert. Bitte Daten neu laden.")
+            st.success(t("settings.reference_date.saved", date=new_stichtag))
             
     # Zukünftige Eintritte
     include_future_hires = get_setting("include_future_hires", False)
     include_future_cb = st.checkbox(
-        "Zukünftige Eintritte berücksichtigen?",
+        t("settings.include_future_hires"),
         value=include_future_hires,
-        help="Wenn aktiviert, werden Mitarbeiter mit Eintrittsdatum > Stichtag im Headcount mitgezählt.",
+        help=t("settings.include_future_hires.help"),
     )
     
     if include_future_cb != include_future_hires:
@@ -223,33 +225,33 @@ def render_settings_page():
     # Statistik anzeigen
     if "stats_future_hires" in st.session_state:
         future_count = st.session_state["stats_future_hires"]
-        status_text = "enthalten" if include_future_cb else "ausgefiltert"
+        status_text = t("settings.future_hires.included") if include_future_cb else t("settings.future_hires.filtered")
         if future_count > 0:
-            st.info(f"ℹ️ {future_count} Mitarbeiter mit Eintrittsdatum > {current_stichtag} gefunden (aktuell {status_text}).")
+            st.info(t("settings.future_hires.info", count=future_count, date=current_stichtag, status=status_text))
         else:
-            st.caption(f"Keine Mitarbeiter mit Eintrittsdatum > {current_stichtag} gefunden.")
+            st.caption(t("settings.future_hires.none", date=current_stichtag))
 
     st.divider()
 
     # --- Simulations-Parameter ---
-    st.subheader("Simulations-Parameter")
-    st.caption("Standardwerte für Prognosen und Szenarien.")
+    st.subheader(t("settings.simulation"))
+    st.caption(t("settings.simulation.caption"))
 
     sim_settings = get_setting("simulation", {})
     
     with st.form("simulation_settings_form"):
         c1, c2 = st.columns(2)
         with c1:
-            s_horizon = st.number_input("Prognose-Horizont (Monate)", value=sim_settings.get("horizon_months", 60), min_value=12, max_value=120)
-            s_retire_age = st.number_input("Regelaltersgrenze", value=sim_settings.get("retirement_age", 67), min_value=60, max_value=70)
-            s_early_retire = st.number_input("Frühverrentungs-Quote", value=sim_settings.get("early_retirement_share", 0.10), min_value=0.0, max_value=1.0, format="%.2f")
+            s_horizon = st.number_input(t("settings.simulation.horizon"), value=sim_settings.get("horizon_months", 60), min_value=12, max_value=120)
+            s_retire_age = st.number_input(t("settings.simulation.retirement_age"), value=sim_settings.get("retirement_age", 67), min_value=60, max_value=70)
+            s_early_retire = st.number_input(t("settings.simulation.early_retirement"), value=sim_settings.get("early_retirement_share", 0.10), min_value=0.0, max_value=1.0, format="%.2f")
         
         with c2:
-            s_hiring_rate = st.number_input("Nachbesetzungs-Quote (p.a.)", value=sim_settings.get("hiring_rate_pa", 0.04), min_value=0.0, max_value=1.0, format="%.2f")
-            s_time_to_fill = st.number_input("Time-to-Fill (Monate)", value=sim_settings.get("time_to_fill_months", 3), min_value=1, max_value=24)
-            s_azubi_intake = st.number_input("Azubi-Neueinstellungen (p.a.)", value=sim_settings.get("azubi_intake_per_year", 40), min_value=0)
+            s_hiring_rate = st.number_input(t("settings.simulation.hiring_rate"), value=sim_settings.get("hiring_rate_pa", 0.04), min_value=0.0, max_value=1.0, format="%.2f")
+            s_time_to_fill = st.number_input(t("settings.simulation.time_to_fill"), value=sim_settings.get("time_to_fill_months", 3), min_value=1, max_value=24)
+            s_azubi_intake = st.number_input(t("settings.simulation.azubi_intake"), value=sim_settings.get("azubi_intake_per_year", 40), min_value=0)
 
-        if st.form_submit_button("Simulations-Parameter speichern"):
+        if st.form_submit_button(t("settings.simulation.save")):
             new_sim_settings = {
                 "horizon_months": s_horizon,
                 "retirement_age": s_retire_age,
@@ -262,87 +264,60 @@ def render_settings_page():
                 "azubi_takeover_rate": sim_settings.get("azubi_takeover_rate", 0.70),
             }
             set_setting("simulation", new_sim_settings)
-            st.success("Simulations-Parameter gespeichert. Bitte Layout/Daten neu laden.")
+            st.success(t("settings.simulation.saved"))
 
     st.divider()
 
     # --- Gruppen-Ausschlüsse (verschoben) ---
-    st.subheader("Gruppen-Ausschlüsse")
-    st.info(
-        "Die Konfiguration der Exklusionsgruppen (inkl. Scope Mitarbeiter vs. gesamtes Dashboard) "
-        "wurde in die Deep-Dive-Seite verschoben. "
-        "Dort können alle Gruppen mit Checkboxen ein- und ausgeschlossen werden — "
-        "inklusive Planstellen-Übersicht, Kapazitätsanalyse und Drilldown pro Gruppe.\n\n"
-        "👉 **Navigiere zu: 🔎 Exklusionsgruppen**"
-    )
+    st.subheader(t("settings.exclusion_groups"))
+    st.info(t("settings.exclusion_groups.info"))
 
     st.divider()
 
     # --- TVÖD-Status ---
-    st.subheader("Entgelt & Kosten")
-    st.caption("Konfiguration für Gehaltsberechnungen und TVöD.")
+    st.subheader(t("settings.compensation"))
+    st.caption(t("settings.compensation.caption"))
 
     tvoed_available = st.session_state.get("tvoed_available", False)
     tvoed_lookup = st.session_state.get("tvoed_lookup", {})
 
     if tvoed_available:
-        st.success(
-            f"TVöD-Tabelle geladen: {len(tvoed_lookup)} Einträge "
-            f"(Gruppe x Stufe Kombinationen)"
-        )
-        with st.expander("Geladene Tarifgruppen anzeigen"):
+        st.success(t("settings.tvoed.loaded", count=len(tvoed_lookup)))
+        with st.expander(t("settings.tvoed.show_groups")):
             groups = sorted(set(g for g, _ in tvoed_lookup.keys()))
             st.write(", ".join(groups))
     else:
-        st.warning(
-            "TVöD-Tabelle nicht verfügbar. "
-            "Kosten werden aus approximierten Fallback-Werten berechnet. "
-            "Legen Sie die Datei TVÖD.xlsx im Ordner Original-Daten ab, "
-            "um exakte Werte zu verwenden."
-        )
+        st.warning(t("settings.tvoed.missing"))
 
-    st.markdown("##### Stufenautomatik / Gehaltsautomatik")
-    st.caption(
-        "Transparenz über die aktuelle TVöD-Stufenlogik und vorbereitende "
-        "Konfiguration für eine explizite Stufenautomatik."
-    )
+    st.markdown(f"##### {t('settings.salary_automation.heading')}")
+    st.caption(t("settings.salary_automation.caption"))
 
     salary_automation = get_setting("salary_automation", {})
     salary_automation = {**SALARY_AUTOMATION_DEFAULTS, **salary_automation}
 
-    current_source = "TVöD-Tabelle" if tvoed_available else "Fallback-Werte"
+    current_source = "TVöD-Tabelle" if tvoed_available else t("settings.pay_table_fallback")
     scope_label = {
-        "new_hires_only": "nur simulierte Zugänge",
-        "all_staff": "simulierte Zugänge und Bestand",
-    }.get(salary_automation.get("scope"), "nur simulierte Zugänge")
+        "new_hires_only": t("settings.salary_automation.scope.new_hires_only"),
+        "all_staff": t("settings.salary_automation.scope.all_staff"),
+    }.get(salary_automation.get("scope"), t("settings.salary_automation.scope.new_hires_only"))
 
     sa_info_col1, sa_info_col2 = st.columns(2)
     with sa_info_col1:
-        st.markdown("**Aktuelle Berechnungslogik**")
-        st.markdown(f"- **Gehaltsquelle**: {current_source}")
-        st.markdown("- **Stufenquelle**: vorhandener Datenwert aus `St`")
-        st.markdown(
-            f"- **Technischer System-Fallback bei fehlender Stufe**: aktuell Stufe {salary_automation['fallback_step']}"
-        )
-        st.markdown(
-            "- **Automatische Stufenfortschreibung**: wird in `Kompakt plus Simulation` "
-            "bei aktivierter Konfiguration für TVöD-Stufen innerhalb derselben Entgeltgruppe berücksichtigt"
-        )
+        st.markdown(f"**{t('settings.salary_automation.current_logic')}**")
+        st.markdown(f"- **{t('settings.salary_automation.salary_source', source=current_source)}**")
+        st.markdown(f"- **{t('settings.salary_automation.step_source')}**")
+        st.markdown(f"- **{t('settings.salary_automation.system_fallback', step=salary_automation['fallback_step'])}**")
+        st.markdown(f"- **{t('settings.salary_automation.progression')}**")
     with sa_info_col2:
-        st.markdown("**Vorbereitete Automatik-Konfiguration**")
+        st.markdown(f"**{t('settings.salary_automation.prepared_config')}**")
         st.markdown(
-            f"- **Konfigurationsstatus**: {'aktiviert' if salary_automation['enabled'] else 'deaktiviert'}"
+            f"- **{t('settings.salary_automation.config_status', status=t('settings.salary_automation.enabled') if salary_automation['enabled'] else t('settings.salary_automation.disabled'))}**"
         )
-        st.markdown(f"- **Vorgesehener Scope**: {scope_label}")
+        st.markdown(f"- **{t('settings.salary_automation.scope', scope=scope_label)}**")
         st.markdown(
-            f"- **E1 Einstieg**: Stufe {salary_automation['e1_entry_step']} | "
-            f"**E2-E15 Einstieg**: Stufe {salary_automation['e2_plus_default_entry_step']}"
+            f"- **{t('settings.salary_automation.entry', e1=salary_automation['e1_entry_step'], e2=salary_automation['e2_plus_default_entry_step'])}**"
         )
-        st.markdown(
-            "- **Hinweis**: Die Parameter wirken aktuell auf die Zukunftsfortschreibung "
-            "der TVöD-Stufen in `Kompakt plus Simulation`. "
-            "Entgeltgruppenwechsel werden dabei noch nicht simuliert."
-        )
+        st.markdown(f"- **{t('settings.salary_automation.note')}**")
 
     rules_df = pd.DataFrame(
         [
@@ -373,59 +348,59 @@ def render_settings_page():
         ]
     )
 
-    with st.expander("TVöD-Regeln und heutiger Systemstatus"):
+    with st.expander(t("settings.salary_automation.rules_expander")):
         st.dataframe(rules_df, use_container_width=True, hide_index=True)
-        st.info(
-            "Die TVöD-Regeln werden hier explizit dokumentiert. "
-            "Die operative Nutzung für eine automatische Stufenfortschreibung "
-            "folgt in einem separaten Implementierungsschritt."
-        )
+        st.info(t("settings.salary_automation.rules_info"))
 
     with st.form("salary_automation_form"):
         sa_col1, sa_col2 = st.columns(2)
 
         with sa_col1:
             sa_enabled = st.checkbox(
-                "Stufenautomatik vorbereiten",
+                t("settings.salary_automation.prepare"),
                 value=bool(salary_automation["enabled"]),
-                help="Speichert die gewünschte Konfiguration für eine explizite Stufenautomatik.",
+                help=t("settings.salary_automation.prepare.help"),
             )
+            scope_options = [
+                t("settings.salary_automation.scope.new_hires_only"),
+                t("settings.salary_automation.scope.all_staff"),
+            ]
             sa_scope_label = st.selectbox(
-                "Automatik anwenden auf",
-                options=["nur simulierte Zugänge", "simulierte Zugänge und Bestand"],
+                t("settings.salary_automation.apply_to"),
+                options=scope_options,
                 index=0 if salary_automation["scope"] == "new_hires_only" else 1,
-                help="Der zweite Modus wäre für den Bestand nur als vereinfachende Heuristik belastbar.",
+                help=t("settings.salary_automation.apply_to.help"),
             )
             sa_fallback_step = st.number_input(
-                "Technischer System-Fallback bei fehlender Stufe",
+                t("settings.salary_automation.fallback_step"),
                 min_value=1,
                 max_value=6,
                 value=int(salary_automation["fallback_step"]),
                 step=1,
-                help="Kein TVöD-Regelwert, sondern nur der aktuelle System-Fallback bei fehlender oder unklarer Stufe.",
+                help=t("settings.salary_automation.fallback_step.help"),
             )
             sa_existing_proxy = st.checkbox(
-                "Betriebszugehörigkeit als Proxy für Bestands-Stufenlaufzeit vormerken",
+                t("settings.salary_automation.tenure_proxy"),
                 value=bool(salary_automation["use_tenure_as_step_proxy_for_existing_staff"]),
-                help="Nur vorbereitend. Würde im Bestand eine vereinfachende Heuristik bedeuten.",
+                help=t("settings.salary_automation.tenure_proxy.help"),
             )
 
         with sa_col2:
             st.text_input(
-                "E1 Einstieg (TVöD-Referenz)",
+                t("settings.salary_automation.e1_entry"),
                 value=f"Stufe {salary_automation['e1_entry_step']}",
                 disabled=True,
-                help="Für E1 gilt tariflich der Einstieg in Stufe 2. Dieser Wert wird hier bewusst nur referenziert.",
+                help=t("settings.salary_automation.e1_entry.help"),
             )
             sa_e2_entry = st.number_input(
-                "E2-E15 Standard-Einstieg (Regelfall)",
+                t("settings.salary_automation.e2_entry"),
                 min_value=1,
                 max_value=6,
                 value=int(salary_automation["e2_plus_default_entry_step"]),
                 step=1,
-                help="Regelfall ohne explizit anrechenbare Berufserfahrung.",
+                help=t("settings.salary_automation.e2_entry.help"),
             )
-            st.caption("Stufenlaufzeiten in Jahren")
+            st.caption(t("settings.salary_automation.progression_years"))
             e1_cols = st.columns(4)
             e1_progression_years = []
             for idx, col in enumerate(e1_cols):
@@ -460,10 +435,10 @@ def render_settings_page():
                         )
                     )
 
-        if st.form_submit_button("Stufenautomatik-Konfiguration speichern"):
+        if st.form_submit_button(t("settings.salary_automation.save")):
             new_salary_automation = {
                 "enabled": sa_enabled,
-                "scope": "new_hires_only" if sa_scope_label == "nur simulierte Zugänge" else "all_staff",
+                "scope": "new_hires_only" if sa_scope_label == t("settings.salary_automation.scope.new_hires_only") else "all_staff",
                 "fallback_step": int(sa_fallback_step),
                 "e1_entry_step": int(salary_automation["e1_entry_step"]),
                 "e2_plus_default_entry_step": int(sa_e2_entry),
@@ -472,35 +447,31 @@ def render_settings_page():
                 "use_tenure_as_step_proxy_for_existing_staff": bool(sa_existing_proxy),
             }
             set_setting("salary_automation", new_salary_automation)
-            st.success(
-                "Stufenautomatik-Konfiguration gespeichert. "
-                "Die Parameter werden jetzt in `Kompakt plus Simulation` "
-                "für die TVöD-Stufenfortschreibung berücksichtigt."
-            )
+            st.success(t("settings.salary_automation.saved"))
     
-    st.markdown("##### Arbeitgeber-Kostenfaktor (Lohnnebenkosten)")
-    st.caption("Dieser Faktor wird auf das Bruttogehalt aufgeschlagen, um die tatsächlichen Arbeitgeberkosten abzubilden (z. B. 1,25 = +25%).")
+    st.markdown(f"##### {t('settings.employer_cost.heading')}")
+    st.caption(t("settings.employer_cost.caption"))
     employer_factor = st.number_input(
-        "Arbeitgeber-Kostenfaktor",
+        t("settings.employer_cost.label"),
         min_value=1.0,
         max_value=2.0,
         value=st.session_state.get("employer_cost_factor", EMPLOYER_COST_FACTOR),
         step=0.01,
         format="%.2f",
         key="input_employer_factor",
-        help="Standardmäßig 1,25 (entspricht ca. 20-25% Sozialabgaben-Aufschlag)",
+        help=t("settings.employer_cost.help"),
         label_visibility="collapsed"
     )
     st.session_state["employer_cost_factor"] = employer_factor
 
-    st.markdown("##### Sonderfall-Gehälter")
-    st.caption("Manuelle Jahresgehälter für nicht-TVöD Gruppen.")
+    st.markdown(f"##### {t('settings.special_salaries.heading')}")
+    st.caption(t("settings.special_salaries.caption"))
 
     col1, col2 = st.columns(2)
 
     with col1:
-        st.markdown("**Auszubildende** (TrfGr = TVAÖD)")
-        st.caption("Lehrjahr-abhängige Jahresgehälter (brutto)")
+        st.markdown(f"**{t('settings.special_salaries.trainees')}**")
+        st.caption(t("settings.special_salaries.trainees.caption"))
         
         from config.settings import DEFAULT_AZUBI_SALARIES
         current_azubi_salaries = st.session_state.get("azubi_salaries", DEFAULT_AZUBI_SALARIES)
@@ -511,29 +482,29 @@ def render_settings_page():
             c_idx = (year - 1) % 2
             with az_cols[c_idx]:
                 new_val = st.number_input(
-                    f"Gehalt {year}. Lehrjahr",
+                    t("settings.special_salaries.trainee_salary", year=year),
                     min_value=0.0,
                     value=float(current_azubi_salaries.get(str(year), current_azubi_salaries.get(year, DEFAULT_AZUBI_SALARIES[year]))),
                     step=100.0,
                     format="%.2f",
                     key=f"az_sal_{year}",
-                    help=f"Jährliches Bruttogehalt für Auszubildende im {year}. Jahr"
+                    help=t("settings.special_salaries.trainee_salary.help", year=year)
                 )
                 new_azubi_salaries[year] = new_val
         
         st.session_state["azubi_salaries"] = new_azubi_salaries
 
     with col2:
-        st.markdown("**Vorstand** (TrfGr = 1)")
+        st.markdown(f"**{t('settings.special_salaries.board')}**")
         vorstand_input = st.number_input(
-            "Vorstand-Jahresgehalt (brutto)",
+            t("settings.special_salaries.board_salary"),
             min_value=0.0,
             max_value=1000000.0,
             value=None,
-            placeholder="Individueller Vertrag...",
+            placeholder=t("settings.special_salaries.board_placeholder"),
             step=1000.0,
             key="input_vorstand_gehalt",
-            help="Vorstandsvergütung ist nicht im TVöD geregelt. Falls leer, wird mit dem System-Default gerechnet.",
+            help=t("settings.special_salaries.board_help"),
         )
         if vorstand_input is not None:
             st.session_state["vorstand_jahresgehalt"] = vorstand_input
@@ -545,17 +516,14 @@ def render_settings_page():
     st.divider()
 
     # --- Hinweis zum Neuladen ---
-    st.info(
-        "Änderungen an diesen Einstellungen werden erst nach einem "
-        "Neuladen der Daten wirksam. Nutzen Sie dazu den Button unten "
-        "oder laden Sie die Seite neu (F5)."
-    )
+    st.info(t("settings.reload_required"))
 
-    if st.button("Daten neu laden", type="primary"):
+    if st.button(t("settings.reload_data"), type="primary"):
         st.cache_data.clear()
         st.session_state["show_reload_success"] = True
         st.rerun()
 
 
 # --- Page Entry Point ---
-render_settings_page()
+if not globals().get("_UNIT_TESTING"):
+    render_settings_page()

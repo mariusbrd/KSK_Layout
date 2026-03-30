@@ -20,6 +20,7 @@ from dataloader.jobfamily_matcher import (
     save_jobfamily_definitions
 )
 from config.settings import COLORS
+from utils.i18n import t
 
 
 def render_assignment_matrix(
@@ -54,22 +55,22 @@ def render_assignment_matrix(
     families = list(jobfamily_definitions.get("jobfamilies", {}).keys())
 
     if not families:
-        st.warning("⚠️ Keine Job Families definiert. Bitte erstellen Sie zunächst Job Families im 'Definitionen' Tab.")
+        st.warning(t("jobfamily_matrix.warning.no_families"))
         return {}
 
     # Ensure required columns
     if "Planstellennr" not in df.columns or "Planstelle" not in df.columns:
-        st.error("❌ DataFrame muss 'Planstellennr' und 'Planstelle' Spalten enthalten.")
+        st.error(t("jobfamily_matrix.error.required_columns"))
         return {}
 
     # Header with stats
-    st.markdown("### 📋 Job-Zuordnungs-Matrix")
+    st.markdown(f"### 📋 {t('jobfamily_matrix.title')}")
 
     col1, col2, col3 = st.columns([2, 2, 1])
 
     with col1:
         st.metric(
-            "Gesamt Jobs",
+            t("jobfamily_matrix.metric.total_jobs"),
             f"{len(df):,}",
             help="Anzahl aller Planstellen in gefilterten Daten"
         )
@@ -83,14 +84,14 @@ def render_assignment_matrix(
                 manual_count += 1
 
         st.metric(
-            "Manuell zugeordnet",
+            t("jobfamily_matrix.metric.manual"),
             f"{manual_count:,}",
             help="Anzahl Planstellen mit manueller Zuordnung"
         )
 
     with col3:
         st.metric(
-            "Job Families",
+            t("jobfamily_matrix.metric.families"),
             f"{len(families)}",
             help="Anzahl definierter Job Families"
         )
@@ -102,16 +103,16 @@ def render_assignment_matrix(
 
     with col1:
         search_query = st.text_input(
-            "🔍 Suche nach Planstellen-Bezeichnung",
+            f"🔍 {t('jobfamily_matrix.search.label')}",
             value=st.session_state["jf_matrix_search"],
             key="matrix_search_input",
-            placeholder="z.B. 'IT-Administrator', 'Berater'..."
+            placeholder=t("jobfamily_matrix.search.placeholder")
         )
         st.session_state["jf_matrix_search"] = search_query
 
     with col2:
         filter_unmapped = st.checkbox(
-            "Nur nicht zugeordnete Jobs anzeigen",
+            t("jobfamily_matrix.filter.unmapped"),
             value=st.session_state["jf_matrix_filter_unmapped"],
             key="matrix_filter_unmapped",
             help="Zeigt nur Jobs ohne Pattern-Match (UNMAPPED)"
@@ -119,7 +120,7 @@ def render_assignment_matrix(
         st.session_state["jf_matrix_filter_unmapped"] = filter_unmapped
 
     with col3:
-        if st.button("🔄 Filter zurücksetzen", use_container_width=True):
+        if st.button(f"🔄 {t('jobfamily_matrix.action.reset_filters')}", use_container_width=True):
             st.session_state["jf_matrix_search"] = ""
             st.session_state["jf_matrix_filter_unmapped"] = False
             st.session_state["jf_matrix_page"] = 0
@@ -148,10 +149,10 @@ def render_assignment_matrix(
     total_filtered = len(filtered_df)
 
     if total_filtered == 0:
-        st.info("ℹ️ Keine Jobs gefunden. Bitte passen Sie die Filter an.")
+        st.info(t("jobfamily_matrix.info.no_jobs"))
         return {}
 
-    st.caption(f"📊 {total_filtered:,} Jobs gefunden")
+    st.caption(f"📊 {t('jobfamily_matrix.caption.jobs_found', count=f'{total_filtered:,}')}")
 
     # Pagination
     total_pages = (total_filtered + page_size - 1) // page_size
@@ -161,15 +162,17 @@ def render_assignment_matrix(
         col1, col2, col3 = st.columns([1, 2, 1])
 
         with col1:
-            if st.button("⬅️ Vorherige", disabled=current_page == 0, use_container_width=True):
+            if st.button(f"⬅️ {t('jobfamily_matrix.action.previous')}", disabled=current_page == 0, use_container_width=True):
                 st.session_state["jf_matrix_page"] = max(0, current_page - 1)
                 st.rerun()
 
         with col2:
-            st.markdown(f"**Seite {current_page + 1} von {total_pages}**")
+            st.markdown(
+                f"**{t('jobfamily_matrix.caption.page', current=current_page + 1, total=total_pages)}**"
+            )
 
         with col3:
-            if st.button("Nächste ➡️", disabled=current_page >= total_pages - 1, use_container_width=True):
+            if st.button(f"{t('jobfamily_matrix.action.next')} ➡️", disabled=current_page >= total_pages - 1, use_container_width=True):
                 st.session_state["jf_matrix_page"] = min(total_pages - 1, current_page + 1)
                 st.rerun()
 
@@ -178,7 +181,14 @@ def render_assignment_matrix(
     end_idx = min(start_idx + page_size, total_filtered)
     page_df = filtered_df.iloc[start_idx:end_idx]
 
-    st.caption(f"Zeige Jobs {start_idx + 1}-{end_idx} von {total_filtered:,}")
+    st.caption(
+        t(
+            "jobfamily_matrix.caption.showing",
+            start=start_idx + 1,
+            end=end_idx,
+            total=f"{total_filtered:,}",
+        )
+    )
 
     st.divider()
 
@@ -193,17 +203,17 @@ def render_assignment_matrix(
 
         with col1:
             change_count = len(st.session_state.get("jf_pending_changes", {}))
-            st.info(f"✏️ {change_count} ungespeicherte Änderungen")
+            st.info(t("jobfamily_matrix.info.unsaved_changes", count=change_count))
 
         with col2:
-            if st.button("❌ Verwerfen", use_container_width=True):
+            if st.button(f"❌ {t('jobfamily_matrix.action.discard')}", use_container_width=True):
                 st.session_state["jf_pending_changes"] = {}
                 st.rerun()
 
         with col3:
-            if st.button("💾 Speichern", type="primary", use_container_width=True):
+            if st.button(f"💾 {t('jobfamily_matrix.action.save')}", type="primary", use_container_width=True):
                 _save_pending_changes(jobfamily_definitions, on_change_callback)
-                st.success("✅ Änderungen gespeichert!")
+                st.success(f"✅ {t('jobfamily_matrix.success.saved')}")
                 st.session_state["jf_pending_changes"] = {}
                 st.rerun()
 
