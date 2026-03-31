@@ -30,6 +30,7 @@ from utils.exclusion_groups import (
 )
 from dataloader.kpi_engine import get_unique_employees
 from utils.settings_loader import get_setting, set_setting
+from utils.cache_utils import bump_cache_version
 from utils.plot_helpers import apply_legend_bottom
 from utils.i18n import t
 
@@ -82,7 +83,7 @@ def _persist_exclusions(vorstand: bool, ruhend_bv: bool, org_units: list, planst
     # Cache leeren: prepare_compact_data() ist @st.cache_data und würde sonst veraltete
     # Exklusions-Stände zurückliefern, da apply_exclusions() in load_and_prepare_data()
     # neue Settings erst nach Cache-Invalidierung wirksam werden.
-    st.cache_data.clear()
+    bump_cache_version("data_prep")
 
 
 def _load_current_exclusions() -> dict:

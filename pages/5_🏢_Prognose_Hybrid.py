@@ -44,7 +44,15 @@ from zugaenge.enrichment import build_jf_to_cluster_map, enrich_zugaenge_events,
 # Shared Components
 from dataloader.loader import load_and_prepare_data, load_atz_data_cached, calculate_mak_vectorized, calculate_cost_vectorized
 from dataloader.cluster_manager import is_clustering_active
-from components.sidebar import render_global_filters, apply_filters, apply_event_filters, render_filter_status, set_metric_page_hint
+from components.sidebar import (
+    apply_event_filters,
+    apply_event_filters_with_state,
+    filter_dataframe_by_view_filters,
+    get_active_view_filters,
+    render_filter_status,
+    render_global_filters,
+    set_metric_page_hint,
+)
 from utils.plot_helpers import apply_legend_bottom
 from utils.ui_helpers import render_distribution_matrix, render_orgunit_mode_hint
 from utils.matrix_helpers import migrate_to_percent, percent_to_weights
@@ -203,6 +211,359 @@ def _render_debug_aggregation(df: pd.DataFrame, group_cols: list[str], label: st
     except Exception as e:
         st.error(f"Fehler in Aggregation ({label}): {e}")
 
+
+@st.cache_data
+def _prepare_hybrid_employee_snapshot(
+    snapshot_df: pd.DataFrame,
+    df_atz: pd.DataFrame,
+    *,
+    current_stichtag: pd.Timestamp,
+) -> pd.DataFrame:
+    """Build the employee-level snapshot once per unique base dataset and ATZ state."""
+    df_ma = snapshot_df.dropna(subset=["PersNr"]).copy()
+
+    atz_fr_persnr_set = set()
+    if not df_atz.empty and {"PersNr", "Phase", "Beginn", "Ende"}.issubset(df_atz.columns):
+        atz_fr = df_atz[
+            (df_atz["Phase"] == "FR") &
+            (df_atz["Beginn"] <= current_stichtag) &
+            (df_atz["Ende"] >= current_stichtag)
+        ]
+        if not atz_fr.empty:
+            atz_fr_persnr_set = set(atz_fr["PersNr"].dropna().astype(str).unique())
+
+    df_ma = calculate_mak_vectorized(df_ma, atz_fr_persnr_set)
+
+    agg_dict = {
+        "MAK_Calculated": "sum",
+        "GebDatum": "first",
+        "Eintritt": "first",
+        "Austritt": "first",
+        "Status kundenindividuell": "first",
+        "Sollarbeitszeit": "sum",
+        "Organisationseinheit": "first",
+    }
+    for col in ["Geschlecht", "Planstelle", "Kürzel OrgEinheit", "ATZ_Status", "Jobfamily", "TrfGr", "St", "OE-Cluster", "JF-Cluster", "BsGrd"]:
+        if col in df_ma.columns:
+            agg_dict[col] = "first"
+
+    df_employee_agg = df_ma.groupby("PersNr", as_index=False).agg(agg_dict)
+    df_employee_agg["mak"] = df_employee_agg["MAK_Calculated"]
+    df_employee_agg["Sollarbeitszeit"] = df_employee_agg["Sollarbeitszeit"].fillna(39.0)
+    df_employee_agg["Sollarbeitszeit"] = 39.0
+
+    mask_zero = df_employee_agg["mak"] <= 0
+    if mask_zero.any() and "BsGrd" in df_employee_agg.columns:
+        potential_mak = df_employee_agg.loc[mask_zero, "BsGrd"] / 100.0
+        df_employee_agg.loc[mask_zero, "mak"] = potential_mak.fillna(0.0)
+        df_employee_agg.loc[mask_zero, "MAK_Calculated"] = df_employee_agg.loc[mask_zero, "mak"]
+
+    df_employee_agg["BsGrd"] = df_employee_agg["mak"] * 100.0
+    return df_employee_agg
+
+
+@st.cache_data
+def _build_hybrid_distribution_base(df_ma: pd.DataFrame) -> pd.DataFrame:
+    dist_base = df_ma.groupby(["Jobfamily", "OE-Cluster"]).size().reset_index(name="Count")
+    dist_base["Share %"] = (dist_base["Count"] / dist_base["Count"].sum()).round(4)
+    return dist_base.sort_values(["Count", "Jobfamily", "OE-Cluster"], ascending=[False, True, True]).reset_index(drop=True)
+
+
+@st.cache_data
+def _prepare_hybrid_view_state(
+    raw_abg_events: pd.DataFrame,
+    raw_zug_events: pd.DataFrame,
+    snapshot_df: pd.DataFrame,
+    df_ma: pd.DataFrame,
+    active_filters: dict,
+    *,
+    ist_stichtag: pd.Timestamp,
+    forecast_end_date: pd.Timestamp,
+    freq_label: str,
+) -> dict:
+    filt_abg_events, n_abg_before, n_abg_after = apply_event_filters_with_state(
+        raw_abg_events,
+        snapshot_df,
+        active_filters=active_filters,
+        mode="attrition",
+    )
+
+    abg_cols = [
+        "period_label", "period_start", "period_end", "event_date", "persnr",
+        "reason_code", "reason_label", "headcount_change", "mak_change",
+        "Organisationseinheit", "Jobfamily", "OE-Cluster",
+    ]
+    if any(c not in filt_abg_events.columns for c in ["persnr", "headcount_change", "Organisationseinheit"]):
+        for c in abg_cols:
+            if c not in filt_abg_events.columns:
+                filt_abg_events[c] = pd.NaT if "date" in c or "_start" in c or "_end" in c else None
+
+    if "event_date" in filt_abg_events.columns:
+        filt_abg_events["event_date"] = pd.to_datetime(filt_abg_events["event_date"])
+    filt_abg_events["source_view"] = "Abgang_Detail"
+
+    if "OE-Cluster" not in filt_abg_events.columns or filt_abg_events["OE-Cluster"].isna().all():
+        pm_lookup = df_ma.set_index("PersNr")
+        pm_lookup.index = pm_lookup.index.astype(str).str.replace(r"\.0$", "", regex=True)
+        filt_abg_events["_pid_clean"] = filt_abg_events["persnr"].astype(str).str.replace(r"\.0$", "", regex=True)
+        cluster_map = pm_lookup["OE-Cluster"].to_dict() if "OE-Cluster" in pm_lookup.columns else {}
+        jf_map = pm_lookup["Jobfamily"].to_dict() if "Jobfamily" in pm_lookup.columns else {}
+        filt_abg_events["OE-Cluster"] = filt_abg_events["_pid_clean"].map(cluster_map).fillna("Sonstiges")
+        if "Jobfamily" not in filt_abg_events.columns or filt_abg_events["Jobfamily"].isna().all():
+            filt_abg_events["Jobfamily"] = filt_abg_events["_pid_clean"].map(jf_map).fillna("Unbekannt")
+        filt_abg_events = filt_abg_events.drop(columns=["_pid_clean"], errors="ignore")
+
+    df_snapshot_filtered = filter_dataframe_by_view_filters(df_ma, active_filters)
+
+    if "org_unit" in raw_zug_events.columns:
+        raw_zug_events = raw_zug_events.rename(columns={"org_unit": "Organisationseinheit"})
+    filt_zug_events, n_zug_before, n_zug_after = apply_event_filters_with_state(
+        raw_zug_events,
+        snapshot_df,
+        active_filters=active_filters,
+        mode="accession",
+    )
+
+    if "date" in filt_zug_events.columns:
+        filt_zug_events["date"] = pd.to_datetime(filt_zug_events["date"])
+        filt_zug_events = filt_zug_events[
+            (filt_zug_events["date"] >= pd.Timestamp(ist_stichtag)) &
+            (filt_zug_events["date"] <= pd.Timestamp(forecast_end_date))
+        ].copy()
+
+    zug_cols = ["date", "type", "count", "persnr", "Organisationseinheit", "source", "mak", "Jobfamily", "OE-Cluster", "TrfGr", "St", "Planstelle"]
+    if any(c not in filt_zug_events.columns for c in ["count", "source", "mak"]):
+        for c in zug_cols:
+            if c not in filt_zug_events.columns:
+                filt_zug_events[c] = pd.NaT if c == "date" else None
+
+    if "date" in filt_zug_events.columns:
+        filt_zug_events["date"] = pd.to_datetime(filt_zug_events["date"])
+    filt_zug_events = filt_zug_events[filt_zug_events["count"] != 0].copy()
+    filt_zug_events = filt_zug_events.loc[:, ~filt_zug_events.columns.duplicated()]
+
+    filt_zug_events_std = filt_zug_events.copy()
+    filt_zug_events_std["event_date"] = pd.to_datetime(filt_zug_events_std["date"])
+    filt_zug_events_std["mak_change"] = filt_zug_events_std["mak"]
+    filt_zug_events_std["headcount_change"] = filt_zug_events_std["count"]
+
+    def _map_zug_reason(row):
+        event_type = str(row.get("type", ""))
+        if event_type == "Azubi_Hire":
+            return "Azubi Neueinstellung (externer Zugang)"
+        if event_type == "Azubi_Conversion_Out":
+            return "Azubi-Abschluss (Statuswechsel: Ende Azubi)"
+        if event_type == "Azubi_Conversion_In":
+            return "Übernahme nach Ausbildungsabschluss (interne MAK-wirksame Stellenbesetzung)"
+        if event_type == "Azubi_Exit":
+            return "Azubi-Abschluss: Nichtübernahme (Abgang)"
+        return "Zugang (" + str(row.get("source", "unbekannt")) + ")"
+
+    filt_zug_events_std["reason_label"] = filt_zug_events_std.apply(_map_zug_reason, axis=1)
+    filt_zug_events_std["source_view"] = "Zugang_Detail"
+
+    combined_events = pd.concat([filt_abg_events, filt_zug_events_std], ignore_index=True)
+    start_ts = pd.Timestamp(ist_stichtag)
+    end_ts = pd.Timestamp(forecast_end_date)
+    combined_events_in_scope = combined_events[
+        (combined_events["event_date"] >= start_ts) &
+        (combined_events["event_date"] <= end_ts)
+    ].copy()
+
+    if not combined_events_in_scope.empty:
+        if "event_uid" not in combined_events_in_scope.columns:
+            combined_events_in_scope["event_uid"] = (
+                combined_events_in_scope["event_date"].apply(lambda x: str(pd.Timestamp(x).date())) + "|" +
+                combined_events_in_scope["persnr"].astype(str) + "|" +
+                combined_events_in_scope["reason_label"].astype(str) + "|" +
+                combined_events_in_scope["headcount_change"].astype(str) + "|" +
+                combined_events_in_scope["source_view"].astype(str)
+            )
+
+        combined_events_in_scope["is_headcount_exit_any"] = combined_events_in_scope["headcount_change"] < 0
+        combined_events_in_scope["is_headcount_exit_detail"] = (
+            (combined_events_in_scope["headcount_change"] < 0) &
+            (combined_events_in_scope["source_view"] == "Abgang_Detail")
+        )
+
+        def _is_bank_exit(row):
+            if row["headcount_change"] >= 0:
+                return False
+            rl = str(row["reason_label"])
+            if "Statuswechsel" in rl or "Conversion_Out" in rl:
+                return False
+            if "Ruhend" in rl or "Ruhephase" in rl:
+                return False
+            return True
+
+        combined_events_in_scope["is_headcount_exit_bank"] = combined_events_in_scope.apply(_is_bank_exit, axis=1)
+
+        mask_hc0 = combined_events_in_scope["headcount_change"] == 0
+        mask_atz_ar_fr = combined_events_in_scope["reason_label"].str.contains("AR → FR", na=False)
+        bad_atz_mask = mask_hc0 & mask_atz_ar_fr & (combined_events_in_scope["mak_change"] == 0)
+        if bad_atz_mask.any():
+            combined_events_in_scope.loc[bad_atz_mask, "mak_change"] = -1.0
+
+    for _df in [combined_events_in_scope, filt_zug_events]:
+        if "OE-Cluster" in _df.columns:
+            _mask = _df["OE-Cluster"].isna() | (_df["OE-Cluster"] == "Unclustered")
+            _df.loc[_mask, "OE-Cluster"] = "Sonstiges"
+        if "JF-Cluster" in _df.columns:
+            _mask = _df["JF-Cluster"].isna() | (_df["JF-Cluster"] == "Unclustered")
+            _df.loc[_mask, "JF-Cluster"] = "Sonstiges"
+
+    if df_snapshot_filtered.empty:
+        df_view_agg = pd.DataFrame(columns=["PersNr", "MAK_Calculated", "mak", "active"])
+        net_kpis = pd.DataFrame()
+        abg_view_kpis = pd.DataFrame()
+        zug_view_kpis = pd.DataFrame()
+    else:
+        view_agg_dict = {
+            "MAK_Calculated": "sum",
+            "Organisationseinheit": "first",
+            "Jobfamily": "first",
+            "GebDatum": "first",
+            "Eintritt": "first",
+            "Austritt": "first",
+            "Status kundenindividuell": "first",
+            "Sollarbeitszeit": "sum",
+        }
+        for col in ["Geschlecht", "Planstelle", "OE-Cluster", "JF-Cluster", "TrfGr"]:
+            if col in df_snapshot_filtered.columns:
+                view_agg_dict[col] = "first"
+
+        df_view_agg = df_snapshot_filtered.groupby("PersNr", as_index=False).agg(view_agg_dict)
+        df_view_agg["mak"] = df_view_agg["MAK_Calculated"]
+        df_view_agg["active"] = True
+
+        agg_freq = "M" if freq_label == "Monat" else "Q"
+        net_kpis = calculate_kpi_from_events(
+            df_start_stats=df_view_agg,
+            events_df=combined_events_in_scope,
+            start_date=pd.Timestamp(ist_stichtag),
+            end_date=pd.Timestamp(forecast_end_date),
+            freq=agg_freq,
+        )
+        abg_view_kpis = aggregate_forecast_results(
+            df_initial=df_view_agg,
+            events_df=filt_abg_events,
+            start_date=pd.Timestamp(ist_stichtag),
+            end_date=pd.Timestamp(forecast_end_date),
+            freq=agg_freq,
+            params=None,
+        )
+        zug_view_kpis = aggregate_forecast_results(
+            df_initial=df_view_agg,
+            events_df=filt_zug_events_std,
+            start_date=pd.Timestamp(ist_stichtag),
+            end_date=pd.Timestamp(forecast_end_date),
+            freq=agg_freq,
+            params=None,
+        )
+
+    return {
+        "filt_abg_events": filt_abg_events,
+        "filt_zug_events": filt_zug_events,
+        "filt_zug_events_std": filt_zug_events_std,
+        "combined_events_in_scope": combined_events_in_scope,
+        "df_snapshot_filtered": df_snapshot_filtered,
+        "df_view_agg": df_view_agg,
+        "net_kpis": net_kpis,
+        "abg_view_kpis": abg_view_kpis,
+        "zug_view_kpis": zug_view_kpis,
+        "n_abg_before": n_abg_before,
+        "n_abg_after": n_abg_after,
+        "n_zug_before": n_zug_before,
+        "n_zug_after": n_zug_after,
+    }
+
+
+@st.cache_data
+def _build_hybrid_netto_chart_sources(combined_events_in_scope: pd.DataFrame) -> dict:
+    df_ts = pd.DataFrame({"date": pd.to_datetime(combined_events_in_scope["event_date"])})
+    df_ts["month"] = df_ts["date"].dt.to_period("M").astype(str)
+    df_ts["type"] = combined_events_in_scope["type"]
+    df_ts["count"] = combined_events_in_scope["headcount_change"]
+
+    mask_ext = df_ts["type"].isin(["Azubi_Hire", "Trainee_Hire", "New_Hire"])
+    df_ext = df_ts[mask_ext].groupby(["month", "type"])["count"].sum().reset_index()
+    type_map_ext = {
+        "Azubi_Hire": "Neue Auszubildende (externer Zugang)",
+        "Trainee_Hire": "Trainee (Extern)",
+        "New_Hire": "Neueinstellung (Extern)",
+    }
+    df_ext["Kategorie"] = df_ext["type"].map(type_map_ext)
+
+    mask_conv = df_ts["type"].isin(["Azubi_Conversion_In"])
+    if mask_conv.any():
+        df_conv = df_ts[mask_conv].groupby(["month"])["count"].sum().reset_index()
+        df_conv["Kategorie"] = "Übernahme aus Ausbildung (interne Stellenbesetzung, MAK-wirksam)"
+    else:
+        df_conv = pd.DataFrame(columns=["month", "count", "Kategorie"])
+
+    if combined_events_in_scope.empty:
+        driver_agg = pd.DataFrame(columns=["JahrMonat", "reason_label", "mak_change"])
+    else:
+        events_for_drivers = combined_events_in_scope.copy()
+        events_for_drivers["event_date"] = pd.to_datetime(events_for_drivers["event_date"])
+        events_for_drivers["JahrMonat"] = events_for_drivers["event_date"].dt.to_period("M").astype(str)
+        driver_agg = events_for_drivers.groupby(["JahrMonat", "reason_label"])["mak_change"].sum().reset_index()
+
+    return {
+        "df_ext": df_ext,
+        "df_conv": df_conv,
+        "driver_agg": driver_agg,
+    }
+
+
+@st.cache_data
+def _build_hybrid_abgaenge_chart_bundle(
+    abg_view_kpis: pd.DataFrame,
+    filt_abg_events: pd.DataFrame,
+) -> dict:
+    from abgaenge.visuals import build_charts as build_abgaenge_charts
+
+    return build_abgaenge_charts(abg_view_kpis, filt_abg_events)
+
+
+@st.cache_data
+def _build_hybrid_abgaenge_cluster_source(filt_abg_events: pd.DataFrame) -> pd.DataFrame:
+    return (
+        filt_abg_events[filt_abg_events["headcount_change"] < 0]
+        .groupby("OE-Cluster")
+        .size()
+        .reset_index(name="Abgänge")
+    )
+
+
+@st.cache_data
+def _build_hybrid_zugaenge_chart_sources(filt_zug_events: pd.DataFrame) -> dict:
+    valid_types = ["Azubi_Hire", "Azubi_Conversion_In", "New_Hire", "Trainee_Hire"]
+    if not filt_zug_events.empty:
+        events_chart = filt_zug_events[filt_zug_events["type"].isin(valid_types)].copy()
+    else:
+        events_chart = pd.DataFrame()
+
+    if not events_chart.empty:
+        label_map = {
+            "Azubi_Hire": "Neue Auszubildende",
+            "Azubi_Conversion_In": "Übernahme aus Ausbildung",
+            "New_Hire": "Neueinstellung",
+            "Trainee_Hire": "Trainee",
+        }
+        events_chart["Quelle"] = events_chart["type"].map(label_map)
+
+    if "OE-Cluster" in filt_zug_events.columns:
+        z_stats = filt_zug_events.groupby("OE-Cluster").size().reset_index(name="Zugänge")
+    else:
+        z_stats = pd.DataFrame(columns=["OE-Cluster", "Zugänge"])
+
+    return {
+        "events_chart": events_chart,
+        "z_stats": z_stats,
+    }
+
+
 def main():
     def get_filter_bundle():
         """Aggregates all relevant UI filters for stable hashing."""
@@ -235,11 +596,7 @@ def main():
         # 2. Render Sidebar Filters (Standard Dashboard Logic)
         render_global_filters(snapshot_df, history_df)
         
-        # 3. GLOBAL DATA PREPARATION (Filters applied LATER for View)
-        # We skip apply_filters(snapshot_df) here to ensure Global Forecast.
-        df_ma = snapshot_df.copy()
-
-        # 4. Load ATZ Details (needed for engine phases)
+        # 3. Load ATZ Details (needed for engine phases)
         # Get uploads from session_state for specific loading
         global_uploads = st.session_state.get("global_uploads", {})
         up_ma_arg = global_uploads.get("Mitarbeiter")
@@ -252,86 +609,12 @@ def main():
         
         df_atz = load_atz_data_cached(str(BASE_PATH), up_ma_arg, up_atz_arg, up_pl_arg)
         
-        # 5. Preprocessing for Forecast Engine (GLOBAL)
-        # The snapshot_df is position-level data. Employees with multiple positions
-        # contribute MAK from each position (e.g., 2x 50% = 1.0 FTE total).
-        # The forecast engine expects employee-level data (1 row per person).
-        
-        # Remove Vacancies
-        df_ma = df_ma.dropna(subset=["PersNr"])
-        
-        # Calculate MAK for each position (same logic as Kompakt)
-        from dataloader.loader import berechne_mak, calculate_mak_vectorized
-        
-        # Get ATZ FR employees if available (for MAK calculation)
-        atz_fr_persnr_set = set()
-        if not df_atz.empty:
-            if "PersNr" in df_atz.columns and "Phase" in df_atz.columns:
-                # People currently in Freistellungsphase have MAK = 0
-                stichtag_ts = pd.Timestamp(get_current_stichtag())
-                atz_fr = df_atz[
-                    (df_atz["Phase"] == "FR") &
-                    (df_atz["Beginn"] <= stichtag_ts) &
-                    (df_atz["Ende"] >= stichtag_ts)
-                ]
-                if not atz_fr.empty:
-                    atz_fr_persnr_set = set(atz_fr["PersNr"].dropna().astype(str).unique())
-        
-        # Calculate MAK for each row (position) - Vectorized!
-        df_ma = calculate_mak_vectorized(df_ma, atz_fr_persnr_set)
-        
-        # Aggregate by employee: sum MAK, keep first occurrence of other attributes
-        agg_dict = {
-            "MAK_Calculated": "sum",  # Sum MAK across all positions (from calculate_mak_vectorized)
-            "GebDatum": "first",
-            "Eintritt": "first",
-            "Austritt": "first",
-            "Status kundenindividuell": "first",
-            "Sollarbeitszeit": "sum",  # Sum work hours across positions
-            "Organisationseinheit": "first", # Preserve OrgUnit for Analytics
-        }
-
-        # Optional: include other columns if they exist
-        for col in ["Geschlecht", "Planstelle", "Kürzel OrgEinheit", "ATZ_Status", "Jobfamily", "TrfGr", "St", "OE-Cluster", "JF-Cluster"]:
-            if col in df_ma.columns:
-                agg_dict[col] = "first"
-        
-        # Performance Optimization: Aggregate using groupby
-        df_employee_agg = df_ma.groupby("PersNr", as_index=False).agg(agg_dict)
-        
-        # Standardize column name for subsequent logic
-        df_employee_agg["mak"] = df_employee_agg["MAK_Calculated"]
-        # IMPORTANT: Keep MAK_Calculated for forecast engine (it checks for this specific column)
-        # df_employee_agg = df_employee_agg.rename(columns={"MAK_Calculated": "mak"})
-        
-        # 1. Ensure Sollarbeitszeit is present (fallback 39.0)
-        df_employee_agg["Sollarbeitszeit"] = df_employee_agg["Sollarbeitszeit"].fillna(39.0)
-        
-        # Backcalculate BsGrd from aggregated MAK for engine compatibility
-        # Forecast Engine Logic: MAK = (BsGrd/100) * (Soll/39)
-        # We want: MAK = MAK_Calculated
-        # So we set Soll = 39.0 (Factor=1) and BsGrd = MAK_Calculated * 100
-        
-        # 1. Neutralize Soll-Factor in Engine
-        df_employee_agg["Sollarbeitszeit"] = 39.0
-        
-        # 2. Set BsGrd to match desired MAK exactly
-        # FIX: If 'mak' is 0.0 (e.g. Is_Vacant), try to derive from BsGrd/Soll if available
-        # This handles cases where user wants to see "Potential" loss of a slot even if currently vacant/ruhend
-        mask_zero = (df_employee_agg["mak"] <= 0)
-        if mask_zero.any():
-            if "BsGrd" in df_employee_agg.columns:
-                 potential_mak = df_employee_agg.loc[mask_zero, "BsGrd"] / 100.0
-                 df_employee_agg.loc[mask_zero, "mak"] = potential_mak.fillna(0.0)
-                 # CRITICAL: Also update MAK_Calculated because forecast.py checks this specifically!
-                 df_employee_agg.loc[mask_zero, "MAK_Calculated"] = df_employee_agg.loc[mask_zero, "mak"]
-
-        df_employee_agg["BsGrd"] = df_employee_agg["mak"] * 100.0
-        
-        df_employee_agg["BsGrd"] = df_employee_agg["mak"] * 100.0
-        
-        # Use aggregated data for forecast
-        df_ma = df_employee_agg
+        # 4. Preprocessing for Forecast Engine (GLOBAL)
+        df_ma = _prepare_hybrid_employee_snapshot(
+            snapshot_df,
+            df_atz,
+            current_stichtag=pd.Timestamp(get_current_stichtag()),
+        )
         
     except FileNotFoundError as e:
         st.error(str(e))
@@ -548,9 +831,7 @@ def main():
             
             # Distribution Matrix for New Hires
             with st.expander("📊 Verteilung Neueinstellungen (Matrix)", expanded=False):
-                dist_base = df_ma.groupby(["Jobfamily", "OE-Cluster"]).size().reset_index(name="Count")
-                dist_base["Share %"] = (dist_base["Count"] / dist_base["Count"].sum()).round(4)
-                dist_base = dist_base.sort_values("Share %", ascending=False)[["Jobfamily", "OE-Cluster", "Share %"]]
+                dist_base = _build_hybrid_distribution_base(df_ma)[["Jobfamily", "OE-Cluster", "Share %"]]
                 edited_dist = st.data_editor(dist_base, use_container_width=True, key="hy_hire_dist_mat", column_config={"Share %": st.column_config.NumberColumn(format="%.2f")})
                 hire_distribution = edited_dist.to_dict("records")
         
@@ -679,280 +960,36 @@ def main():
         zug_res = st.session_state["hybrid_zug_res"]
 
     # 3. Filtering & View Preparation (View-Only Zoom) ─────────────
-
-    # A. Abgänge: attrition mode (restrict to filtered snapshot)
+    active_filters = get_active_view_filters()
     raw_abg_events = abg_res["events_person_level"].copy()
-    filt_abg_events, n_abg_before, n_abg_after = apply_event_filters(
-        raw_abg_events, snapshot_df, mode="attrition"
-    )
-
-    # --- Robustness Check: Abgänge ---
-    abg_cols = ["period_label", "period_start", "period_end", "event_date", "persnr", "reason_code", "reason_label", "headcount_change", "mak_change", "Organisationseinheit", "Jobfamily", "OE-Cluster"]
-    if any(c not in filt_abg_events.columns for c in ["persnr", "headcount_change", "Organisationseinheit"]):
-        for c in abg_cols:
-            if c not in filt_abg_events.columns:
-                filt_abg_events[c] = pd.NaT if "date" in c or "_start" in c or "_end" in c else None
-
-    if "event_date" in filt_abg_events.columns:
-        filt_abg_events["event_date"] = pd.to_datetime(filt_abg_events["event_date"])
-
-    filt_abg_events["source_view"] = "Abgang_Detail"
-
-    # Enrichment: Ensure Cluster/JF are present in Abgänge
-    if "OE-Cluster" not in filt_abg_events.columns or filt_abg_events["OE-Cluster"].isna().all():
-        pm_lookup = df_ma.set_index("PersNr")
-        pm_lookup.index = pm_lookup.index.astype(str).str.replace(r"\.0$", "", regex=True)
-        filt_abg_events["_pid_clean"] = filt_abg_events["persnr"].astype(str).str.replace(r"\.0$", "", regex=True)
-        cluster_map = pm_lookup["OE-Cluster"].to_dict() if "OE-Cluster" in pm_lookup.columns else {}
-        jf_map = pm_lookup["Jobfamily"].to_dict() if "Jobfamily" in pm_lookup.columns else {}
-        filt_abg_events["OE-Cluster"] = filt_abg_events["_pid_clean"].map(cluster_map).fillna("Sonstiges")
-        if "Jobfamily" not in filt_abg_events.columns or filt_abg_events["Jobfamily"].isna().all():
-            filt_abg_events["Jobfamily"] = filt_abg_events["_pid_clean"].map(jf_map).fillna("Unbekannt")
-        filt_abg_events = filt_abg_events.drop(columns=["_pid_clean"], errors="ignore")
-
-    df_snapshot_filtered = apply_filters(snapshot_df)
-    if df_snapshot_filtered.empty:
-        st.warning("⚠️ Keine Daten nach Filterung verfügbar.")
-
-    # B. Zugänge: accession mode (preserve new hires)
     raw_zug_events = zug_res["events"].copy()
-    if "org_unit" in raw_zug_events.columns:
-        raw_zug_events = raw_zug_events.rename(columns={"org_unit": "Organisationseinheit"})
-    filt_zug_events, n_zug_before, n_zug_after = apply_event_filters(
-        raw_zug_events, snapshot_df, mode="accession"
+    view_state = _prepare_hybrid_view_state(
+        raw_abg_events,
+        raw_zug_events,
+        snapshot_df,
+        df_ma,
+        active_filters,
+        ist_stichtag=pd.Timestamp(ist_stichtag),
+        forecast_end_date=pd.Timestamp(forecast_end_date),
+        freq_label=freq_label,
     )
-    
-    # --- Scope Filtering (Fix B: Harmonize Zugänge with Netto definition) ---
-    if "date" in filt_zug_events.columns:
-        filt_zug_events["date"] = pd.to_datetime(filt_zug_events["date"])
-        filt_zug_events = filt_zug_events[
-            (filt_zug_events["date"] >= pd.Timestamp(ist_stichtag)) & 
-            (filt_zug_events["date"] <= pd.Timestamp(forecast_end_date))
-        ].copy()
-    
-    # --- Robustness Check: Zugänge ---
-    zug_cols = ["date", "type", "count", "persnr", "Organisationseinheit", "source", "mak", "Jobfamily", "OE-Cluster", "TrfGr", "St", "Planstelle"]
-    if any(c not in filt_zug_events.columns for c in ["count", "source", "mak"]):
-        # Re-initialize with standard schema if vital columns are missing
-        for c in zug_cols:
-            if c not in filt_zug_events.columns: 
-                filt_zug_events[c] = pd.NaT if c == "date" else None
-    
-    # Ensure date is datetime
-    if "date" in filt_zug_events.columns:
-        filt_zug_events["date"] = pd.to_datetime(filt_zug_events["date"])
 
-    # Allow non-zero counts (including removals/exits for lifecycle tracking)
-    filt_zug_events = filt_zug_events[filt_zug_events["count"] != 0].copy()
-
-    # Final Sanity: Remove duplicate columns (Crash Fix)
-    filt_zug_events = filt_zug_events.loc[:, ~filt_zug_events.columns.duplicated()]
-
-
-
-    # Filter Status (combined view)
-    n_total_before = n_abg_before + n_zug_before
-    n_total_after = n_abg_after + n_zug_after
+    filt_abg_events = view_state["filt_abg_events"]
+    filt_zug_events = view_state["filt_zug_events"]
+    filt_zug_events_std = view_state["filt_zug_events_std"]
+    combined_events_in_scope = view_state["combined_events_in_scope"]
+    df_snapshot_filtered = view_state["df_snapshot_filtered"]
+    df_view_agg = view_state["df_view_agg"]
+    net_kpis = view_state["net_kpis"]
+    abg_view_kpis = view_state["abg_view_kpis"]
+    zug_view_kpis = view_state["zug_view_kpis"]
+    n_total_before = view_state["n_abg_before"] + view_state["n_zug_before"]
+    n_total_after = view_state["n_abg_after"] + view_state["n_zug_after"]
     render_filter_status(n_total_before, n_total_after)
 
-    # B. Combined Event Set (for Net View)
-    # Standardize Zugänge to match Abgänge schema
-    filt_zug_events_std = filt_zug_events.copy()
-    filt_zug_events_std["event_date"] = pd.to_datetime(filt_zug_events_std["date"])
-    filt_zug_events_std["mak_change"] = filt_zug_events_std["mak"]
-    filt_zug_events_std["headcount_change"] = filt_zug_events_std["count"]
-    # --- Semantic Labels (Fix: Clarity) ---
-    def _map_zug_reason(row):
-        t = str(row.get("type", ""))
-        if t == "Azubi_Hire": return "Azubi Neueinstellung (externer Zugang)"
-        if t == "Azubi_Conversion_Out": return "Azubi-Abschluss (Statuswechsel: Ende Azubi)"
-        if t == "Azubi_Conversion_In": return "Übernahme nach Ausbildungsabschluss (interne MAK-wirksame Stellenbesetzung)"
-        if t == "Azubi_Exit": return "Azubi-Abschluss: Nichtübernahme (Abgang)"
-        return "Zugang (" + str(row.get("source", "unbekannt")) + ")"
-
-    filt_zug_events_std["reason_label"] = filt_zug_events_std.apply(_map_zug_reason, axis=1)
-    
-    # 📌 Fix 1: Explicitly Mark Source for Zugänge
-    filt_zug_events_std["source_view"] = "Zugang_Detail"
-    
-    
-    combined_events = pd.concat([filt_abg_events, filt_zug_events_std], ignore_index=True)
-
-    # Filter combined_events to Scoped Period (Forecast Range)
-    # Fix B: Ensure Netto KPI and Debug Ref Sum use EXACTLY the same scoped events
-    # Otherwise, historical events or future out-of-scope events distort the mismatch.
-    start_ts = pd.Timestamp(ist_stichtag)
-    end_ts = pd.Timestamp(forecast_end_date)
-    
-    combined_events_in_scope = combined_events[
-        (combined_events["event_date"] >= start_ts) & 
-        (combined_events["event_date"] <= end_ts)
-    ].copy()
-
-    # --- Task: Unified Exit Definition & Enrichment (Refined 3-Way Logic) ---
-    if not combined_events_in_scope.empty:
-        # A. Create Unique Event Keys (Stable UUID)
-        # Structure: date | persnr | type | reason | hc_change
-        if "event_uid" not in combined_events_in_scope.columns:
-            combined_events_in_scope["event_uid"] = (
-                combined_events_in_scope["event_date"].apply(lambda x: str(pd.Timestamp(x).date())) + "|" +
-                combined_events_in_scope["persnr"].astype(str) + "|" +
-                combined_events_in_scope["reason_label"].astype(str) + "|" +
-                combined_events_in_scope["headcount_change"].astype(str) + "|" +
-                combined_events_in_scope["source_view"].astype(str)
-            )
-
-        # B. Define Exit Views
-        # 1. Technical Exits (Any HC loss)
-        combined_events_in_scope["is_headcount_exit_any"] = combined_events_in_scope["headcount_change"] < 0
-        
-        # 2. Detail Page Exits (Matches Page 3 Logic)
-        # Strategy: If Page 3 results exist in Session State, use their IDs as the "Gold Standard".
-        # Otherwise, fall back to "Abgang_Detail" source marker.
-        detail_reference_ids = set()
-        has_page3_ref = False
-        
-        if "abgaenge_results" in st.session_state and "events" in st.session_state["abgaenge_results"]:
-            p3_events = st.session_state["abgaenge_results"]["events"]
-            if not p3_events.empty and "persnr" in p3_events.columns:
-                 # Reconstruct key for matching
-                 # Note: Page 3 events might have different columns, so be careful.
-                 # Safest: Use persnr + date + label
-                 # Ensure date format matches
-                 p3_events["_uid_match"] = (
-                    pd.to_datetime(p3_events["event_date"]).apply(lambda x: str(pd.Timestamp(x).date())) + "|" +
-                    p3_events["persnr"].astype(str) + "|" +
-                    p3_events["reason_label"].astype(str)
-                 )
-                 detail_reference_ids = set(p3_events[p3_events["headcount_change"] < 0]["_uid_match"])
-                 has_page3_ref = True
-        
-        if has_page3_ref:
-            # Match using the constructed UID prefix (without source/hc which might differ lightly?)
-            # Actually use the same logic for combined
-             combined_events_in_scope["_uid_match"] = (
-                combined_events_in_scope["event_date"].apply(lambda x: str(pd.Timestamp(x).date())) + "|" +
-                combined_events_in_scope["persnr"].astype(str) + "|" +
-                combined_events_in_scope["reason_label"].astype(str)
-             )
-             combined_events_in_scope["is_headcount_exit_detail"] = combined_events_in_scope["_uid_match"].isin(detail_reference_ids)
-        else:
-            # Fallback: Source Marker
-            combined_events_in_scope["is_headcount_exit_detail"] = (
-                (combined_events_in_scope["headcount_change"] < 0) & 
-                (combined_events_in_scope["source_view"] == "Abgang_Detail")
-            )
-
-        # 3. Bank Exits (Strict Definition = Cockpit)
-        def _is_bank_exit(row):
-            if row["headcount_change"] >= 0: return False
-            rl = str(row["reason_label"])
-            # 1. Exclude Azubi Conversions / Status Changes
-            if "Statuswechsel" in rl or "Conversion_Out" in rl: return False
-            # 2. Exclude Ruhend (Temporary)
-            if "Ruhend" in rl or "Ruhephase" in rl: return False
-            return True
-        
-        combined_events_in_scope["is_headcount_exit_bank"] = combined_events_in_scope.apply(_is_bank_exit, axis=1)
-
-        # Step 5: ATZ MAK Logik Guard & MAK Auto-Correction
-        # ATZ Statuswechsel (AR -> FR) must keep their MAK change.
-        mask_hc0 = combined_events_in_scope["headcount_change"] == 0
-        mask_atz_ar_fr = combined_events_in_scope["reason_label"].str.contains("AR → FR", na=False)
-        
-        bad_atz_mask = mask_hc0 & mask_atz_ar_fr & (combined_events_in_scope["mak_change"] == 0)
-        if bad_atz_mask.any():
-             combined_events_in_scope.loc[bad_atz_mask, "mak_change"] = -1.0 # fallback
-        
-        # 📌 Fix 4 (REVISED): Soft MAK Correction for Standard Exits (Warning Only)
-        # Instead of auto-setting -1.0, we just flag them or calculate hypothetical.
-        # IF we have FTE data, we use it. If not, we warn.
-        
-        def _get_mak_correction(row):
-            if row["headcount_change"] != -1: return row["mak_change"]
-            if row["mak_change"] != 0: return row["mak_change"]
-            
-            rl = str(row["reason_label"])
-            # Exclude lifecycles
-            if "Ruhend" in rl or "Azubi" in rl or "Statuswechsel" in rl: return 0.0
-            
-            # It's a standard exit with 0 MAK.
-            # Try to infer from current MAK or FTE if available
-            # (Assuming 'mak' column might be present from enrichment?)
-            current_mak = 0.0
-            if "mak" in row.index: current_mak = float(row["mak"])
-            elif "FTE" in row.index: current_mak = float(row["FTE"])
-            
-            if current_mak > 0:
-                return -current_mak
-            
-            # If no info, return 0.0 but flag it later?
-            # User requirement: "Pauschal mak_change=-1.0 ist fachlich zu aggressiv."
-            # So we keep it 0.0 but will visualize it in a debug table.
-            return 0.0
-
-        # Apply correction ONLY if we have data (here we just use the function or skip)
-        # Actually, let's just NOT apply the -1.0 hardfix anymore.
-        # logical "No-Op" for now to satisfy "Rückbauen".
-        pass
-
-     # C. Robust Cluster Enrichment (Fix Missing 118 Events)
-    # Ensure "OE-Cluster" and "JF-Cluster" have defaults – use "Sonstiges" (never "Unclustered")
-    for _df in [combined_events_in_scope, filt_zug_events]:
-        if "OE-Cluster" in _df.columns:
-            _mask = _df["OE-Cluster"].isna() | (_df["OE-Cluster"] == "Unclustered")
-            _df.loc[_mask, "OE-Cluster"] = "Sonstiges"
-        if "JF-Cluster" in _df.columns:
-            _mask = _df["JF-Cluster"].isna() | (_df["JF-Cluster"] == "Unclustered")
-            _df.loc[_mask, "JF-Cluster"] = "Sonstiges"
-
-    # C. Re-Aggregate (View Level)
-    # NOTE: Use df_ma (employee-level, with MAK_Calculated) — NOT snapshot_df
-    # (raw position-level without MAK_Calculated).
-    df_snapshot_filtered = apply_filters(df_ma)
     if df_snapshot_filtered.empty:
         st.warning("⚠️ Keine Daten nach Filterung.")
         return
-
-    # Aggregate Persons for View (Standardize columns for aggregator)
-    view_agg_dict = {
-        "MAK_Calculated": "sum",
-        "Organisationseinheit": "first",
-        "Jobfamily": "first",
-        "GebDatum": "first",
-        "Eintritt": "first",
-        "Austritt": "first",
-        "Status kundenindividuell": "first",
-        "Sollarbeitszeit": "sum",
-    }
-    # Add optional columns if they exist
-    for col in ["Geschlecht", "Planstelle", "OE-Cluster", "JF-Cluster", "TrfGr"]:
-        if col in df_snapshot_filtered.columns:
-            view_agg_dict[col] = "first"
-
-    df_view_agg = df_snapshot_filtered.groupby("PersNr", as_index=False).agg(view_agg_dict)
-    df_view_agg["mak"] = df_view_agg["MAK_Calculated"]
-
-    df_view_agg["mak"] = df_view_agg["MAK_Calculated"]
-    
-    # Ensure "active" key exists for KPI calculator
-    df_view_agg["active"] = True
-
-    # Fix A: Event-Based Netto KPI
-    # Recalculate Net KPI purely from Start State + Event Deltas
-    # This guarantees consistency with Driver Chart
-    net_kpis = calculate_kpi_from_events(
-        df_start_stats=df_view_agg,
-        events_df=combined_events_in_scope,
-        start_date=pd.Timestamp(ist_stichtag),
-        end_date=pd.Timestamp(forecast_end_date),
-        freq="M" if freq_label == "Monat" else "Q"
-    )
-
-    # Standalone KPIs for specific tabs
-    agg_freq = "M" if freq_label == "Monat" else "Q"
-    abg_view_kpis = aggregate_forecast_results(df_initial=df_view_agg, events_df=filt_abg_events, start_date=pd.Timestamp(ist_stichtag), end_date=pd.Timestamp(forecast_end_date), freq=agg_freq, params=None)
-    zug_view_kpis = aggregate_forecast_results(df_initial=df_view_agg, events_df=filt_zug_events_std, start_date=pd.Timestamp(ist_stichtag), end_date=pd.Timestamp(forecast_end_date), freq=agg_freq, params=None)
 
     # 4. Rendering ──────────────────────────────────────────────────
     st.divider()
@@ -1004,23 +1041,8 @@ def main():
         # We want: 
         # 1. External Intake: Azubi_Hire, Trainee_Hire, New_Hire
         # 2. Conversions: Azubi_Conversion_In (Netto 0 in headcount, but +1 for Regular Staff view)
-        
-        # Create explicit time series
-        df_ts = pd.DataFrame({"date": pd.to_datetime(combined_events_in_scope["event_date"])})
-        df_ts["month"] = df_ts["date"].dt.to_period("M").astype(str)
-        df_ts["type"] = combined_events_in_scope["type"]
-        df_ts["count"] = combined_events_in_scope["headcount_change"]
-        
-        # Series A: External Intake (Headcount Growth)
-        mask_ext = df_ts["type"].isin(["Azubi_Hire", "Trainee_Hire", "New_Hire"])
-        df_ext = df_ts[mask_ext].groupby(["month", "type"])["count"].sum().reset_index()
-        # Map types to clean labels
-        type_map_ext = {
-            "Azubi_Hire": "Neue Auszubildende (externer Zugang)",
-            "Trainee_Hire": "Trainee (Extern)", 
-            "New_Hire": "Neueinstellung (Extern)"
-        }
-        df_ext["Kategorie"] = df_ext["type"].map(type_map_ext)
+        netto_chart_sources = _build_hybrid_netto_chart_sources(combined_events_in_scope)
+        df_ext = netto_chart_sources["df_ext"]
         
         fig_z_month = px.bar(
             df_ext, 
@@ -1041,11 +1063,8 @@ def main():
         # Series B: Internal Restructuring / Regular Growth (Optional View)
         # If we want to show "Growth of Regular Staff", we'd sum New_Hire + Azubi_Conversion_In
         # But the user asked for distinct separation. So let's show Conversions separately if significant.
-        mask_conv = df_ts["type"].isin(["Azubi_Conversion_In"])
-        if mask_conv.any():
-            df_conv = df_ts[mask_conv].groupby(["month"])["count"].sum().reset_index()
-            df_conv["Kategorie"] = "Übernahme aus Ausbildung (interne Stellenbesetzung, MAK-wirksam)"
-            
+        df_conv = netto_chart_sources["df_conv"]
+        if not df_conv.empty:
             fig_conv = px.bar(
                 df_conv,
                 x="month",
@@ -1062,9 +1081,7 @@ def main():
                 "und führen – im Gegensatz zu Neueinstellungen – zu einem MAK-Zuwachs."
             )
         if not combined_events_in_scope.empty:
-            combined_events_in_scope["event_date"] = pd.to_datetime(combined_events_in_scope["event_date"])
-            combined_events_in_scope["JahrMonat"] = combined_events_in_scope["event_date"].dt.to_period("M").astype(str)
-            driver_agg = combined_events_in_scope.groupby(["JahrMonat", "reason_label"])["mak_change"].sum().reset_index()
+            driver_agg = netto_chart_sources["driver_agg"]
             
             fig_drivers = px.bar(
                 driver_agg, x="JahrMonat", y="mak_change", color="reason_label",
@@ -1753,14 +1770,13 @@ def main():
 
     with t_abg_res:
         st.markdown("### 📉 Abgangs-Detailanalyse")
-        from abgaenge.visuals import build_charts as build_abgaenge_charts
-        abg_charts = build_abgaenge_charts(abg_view_kpis, filt_abg_events)
+        abg_charts = _build_hybrid_abgaenge_chart_bundle(abg_view_kpis, filt_abg_events)
         st.plotly_chart(abg_charts.get("line_headcount_mak"), use_container_width=True, key="hybrid_abg_line_chart")
         st.plotly_chart(abg_charts.get("bar_abgaenge_reasons"), use_container_width=True, key="hybrid_abg_reasons_chart")
         
         if is_clustering_active() and "OE-Cluster" in filt_abg_events.columns:
              # Cluster chart logic
-             c_stats = filt_abg_events[filt_abg_events["headcount_change"] < 0].groupby("OE-Cluster").size().reset_index(name="Abgänge")
+             c_stats = _build_hybrid_abgaenge_cluster_source(filt_abg_events)
              fig_c = px.bar(c_stats, x="Abgänge", y="OE-Cluster", orientation="h", title="Abgänge nach OE-Cluster")
              st.plotly_chart(fig_c, use_container_width=True, key="hyb_abg_oe_cluster_main")
 
@@ -1813,25 +1829,10 @@ def main():
 
     with t_zug_res:
         st.markdown("### 📈 Zugangs-Detailanalyse")
-        
-        # 1. Filtere auf echte Zugänge (Whitelist)
-        valid_types = ["Azubi_Hire", "Azubi_Conversion_In", "New_Hire", "Trainee_Hire"]
-        if not filt_zug_events.empty:
-            events_chart = filt_zug_events[filt_zug_events["type"].isin(valid_types)].copy()
-        else:
-            events_chart = pd.DataFrame()
+        zug_chart_sources = _build_hybrid_zugaenge_chart_sources(filt_zug_events)
+        events_chart = zug_chart_sources["events_chart"]
 
         if not events_chart.empty:
-            # 2. Deutschsprachige Labels
-            label_map = {
-                "Azubi_Hire": "Neue Auszubildende",
-                "Azubi_Conversion_In": "Übernahme aus Ausbildung", 
-                "New_Hire": "Neueinstellung",
-                "Trainee_Hire": "Trainee"
-            }
-            events_chart["Quelle"] = events_chart["type"].map(label_map)
-            
-            # 3. Chart mit neuen Labels
             fig_sources = px.histogram(
                 events_chart, 
                 x="date", 
@@ -1857,7 +1858,7 @@ def main():
             st.info("Keine Zugangs-Events vorhanden (nach Filterung).")
             
             if is_clustering_active() and "OE-Cluster" in filt_zug_events.columns:
-                 z_stats = filt_zug_events.groupby("OE-Cluster").size().reset_index(name="Zugänge")
+                 z_stats = zug_chart_sources["z_stats"]
                  fig_z = px.bar(z_stats, x="Zugänge", y="OE-Cluster", orientation="h", title="Zugänge nach OE-Cluster", color_discrete_sequence=[COLORS["accent_green"]])
                  st.plotly_chart(fig_z, use_container_width=True, key="hybrid_zug_oe_cluster_chart")
 

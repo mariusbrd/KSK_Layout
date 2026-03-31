@@ -5,6 +5,7 @@ import io
 import streamlit as st
 from typing import Dict, List, Optional, Tuple
 from config.settings import BASE_DIR
+from utils.cache_utils import coerce_file_bytes, get_file_signature
 
 # Path for persistent cluster mapping
 # BASE_DIR imported from config.settings
@@ -100,7 +101,11 @@ def validate_and_save_clusters(uploaded_file) -> Tuple[bool, str]:
     except Exception as e:
         return False, f"Fehler bei der Validierung: {str(e)}"
 
-def load_cluster_mappings(uploaded_file: Optional[bytes] = None) -> Tuple[Dict[str, str], Dict]:
+@st.cache_data
+def _load_cluster_mappings_cached(
+    uploaded_file_bytes: Optional[bytes],
+    active_file_signature: Optional[Tuple[str, int, int]],
+) -> Tuple[Dict[str, str], Dict]:
     """
     Loads saved cluster mappings.
     If uploaded_file is provided (bytes), it takes priority (session state).
@@ -110,8 +115,8 @@ def load_cluster_mappings(uploaded_file: Optional[bytes] = None) -> Tuple[Dict[s
     jf_map = {}
     
     try:
-        if uploaded_file:
-            xls = pd.ExcelFile(io.BytesIO(uploaded_file))
+        if uploaded_file_bytes:
+            xls = pd.ExcelFile(io.BytesIO(uploaded_file_bytes))
         else:
             active_file = get_active_cluster_file()
             if not os.path.exists(active_file):
@@ -157,6 +162,12 @@ def load_cluster_mappings(uploaded_file: Optional[bytes] = None) -> Tuple[Dict[s
         print(f"Error loading clusters: {e}")
         
     return oe_map, jf_map
+
+
+def load_cluster_mappings(uploaded_file: Optional[bytes] = None) -> Tuple[Dict[str, str], Dict]:
+    uploaded_file_bytes = coerce_file_bytes(uploaded_file) if uploaded_file is not None else None
+    active_file_signature = None if uploaded_file_bytes else get_file_signature(get_active_cluster_file())
+    return _load_cluster_mappings_cached(uploaded_file_bytes, active_file_signature)
 
 def enrich_jf_clusters(
     df: pd.DataFrame,

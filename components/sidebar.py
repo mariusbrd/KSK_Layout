@@ -761,6 +761,47 @@ def render_cohort_editor():
         st.rerun()
 
 
+def _normalize_filter_values(values) -> list[str]:
+    if not values:
+        return []
+    return [re.sub(r"\.0$", "", str(v).strip()) for v in values]
+
+
+def _apply_filters_uncached(df: pd.DataFrame, active_filters: dict | None = None) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    filtered = df.copy()
+    filters = active_filters or {}
+
+    filter_mapping = {
+        "selected_org_units": "Organisationseinheit",
+        "selected_jobfamilies": "Jobfamily",
+        "selected_cohorts": "Alterskohorte",
+        "selected_genders": "Geschlecht",
+        "selected_employment": "Arbeitszeit",
+        "selected_education": "Ausbildung",
+        "selected_atz_status": "ATZ_Status",
+        "selected_oe_clusters": "OE-Cluster",
+        "selected_jf_clusters": "JF-Cluster",
+    }
+
+    for state_key, column_name in filter_mapping.items():
+        filter_values = filters.get(state_key)
+        if filter_values and column_name in filtered.columns:
+            s_norm = filtered[column_name].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+            mask = s_norm.isin(_normalize_filter_values(filter_values))
+            filtered = filtered.loc[mask]
+
+    return filtered
+
+
+@st.cache_data
+def filter_dataframe_by_view_filters(df: pd.DataFrame, active_filters: dict | None = None) -> pd.DataFrame:
+    """Pure, cacheable dataframe filtering for the current sidebar view state."""
+    return _apply_filters_uncached(df, active_filters)
+
+
 def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
     """
     Wendet alle aktiven Filter auf den DataFrame an.
@@ -771,6 +812,7 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
     Returns:
         Gefilterter DataFrame
     """
+    return filter_dataframe_by_view_filters(df, get_active_view_filters())
     if df.empty:
         return df
 
@@ -919,6 +961,77 @@ def apply_robust_filter(df: pd.DataFrame, column: str, selected: list) -> pd.Dat
     return df[s_norm.isin(v_norm)]
 
 
+def _apply_event_filters_uncached(
+    events_df: pd.DataFrame,
+    snapshot_df: pd.DataFrame,
+    *,
+    active_filters: dict | None = None,
+    mode: str = "accession",
+) -> tuple:
+    if events_df.empty:
+        return events_df, 0, 0
+
+    n_before = len(events_df)
+    result = events_df.copy()
+    filters = active_filters or {}
+
+    result = apply_robust_filter(result, "Organisationseinheit", filters.get("selected_org_units", []))
+    result = apply_robust_filter(result, "Jobfamily", filters.get("selected_jobfamilies", []))
+    result = apply_robust_filter(result, "OE-Cluster", filters.get("selected_oe_clusters", []))
+    result = apply_robust_filter(result, "JF-Cluster", filters.get("selected_jf_clusters", []))
+
+    if snapshot_df is None or snapshot_df.empty:
+        return result, n_before, len(result)
+
+    filtered_snapshot = filter_dataframe_by_view_filters(snapshot_df, filters)
+    if filtered_snapshot.empty:
+        return pd.DataFrame(columns=result.columns), n_before, 0
+
+    valid_ids = set(
+        filtered_snapshot["PersNr"].astype(str)
+        .str.strip().str.replace(r"\.0$", "", regex=True)
+    )
+
+    if "persnr" not in result.columns:
+        return result, n_before, len(result)
+
+    pid_clean = (
+        result["persnr"].astype(str)
+        .str.strip().str.replace(r"\.0$", "", regex=True)
+    )
+
+    if mode == "attrition":
+        result = result[pid_clean.isin(valid_ids)]
+    else:
+        all_existing_ids = set(
+            snapshot_df["PersNr"].astype(str)
+            .str.strip().str.replace(r"\.0$", "", regex=True)
+        )
+        mask_is_filtered_existing = pid_clean.isin(valid_ids)
+        mask_is_new_hire = ~pid_clean.isin(all_existing_ids)
+        result = result[mask_is_filtered_existing | mask_is_new_hire]
+
+    n_after = len(result)
+    return result, n_before, n_after
+
+
+@st.cache_data
+def apply_event_filters_with_state(
+    events_df: pd.DataFrame,
+    snapshot_df: pd.DataFrame,
+    *,
+    active_filters: dict | None = None,
+    mode: str = "accession",
+) -> tuple:
+    """Pure, cacheable event filtering for forecast views."""
+    return _apply_event_filters_uncached(
+        events_df,
+        snapshot_df,
+        active_filters=active_filters,
+        mode=mode,
+    )
+
+
 def apply_event_filters(
     events_df: pd.DataFrame,
     snapshot_df: pd.DataFrame,
@@ -947,6 +1060,12 @@ def apply_event_filters(
     Returns:
         ``(filtered_df, n_before, n_after)``
     """
+    return apply_event_filters_with_state(
+        events_df,
+        snapshot_df,
+        active_filters=get_active_view_filters(),
+        mode=mode,
+    )
     if events_df.empty:
         return events_df, 0, 0
 

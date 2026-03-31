@@ -359,6 +359,17 @@ def prepare_compact_data(snapshot_df: pd.DataFrame) -> pd.DataFrame:
     """Bereitet Daten fÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¼r die Kompakt-Ansicht vor."""
     return _prepare_compact_data_clean(snapshot_df)
 
+
+def _has_compatible_jobfamily(df: pd.DataFrame) -> bool:
+    if "Jobfamily" not in df.columns:
+        return False
+    if df.empty:
+        return True
+    jobfamily = df["Jobfamily"]
+    if jobfamily.isna().any():
+        return False
+    return jobfamily.astype(str).str.strip().ne("").all()
+
     # Jobfamily zuweisen
     try:
         definitions = load_jobfamily_definitions()
@@ -487,14 +498,15 @@ def _prepare_compact_data_clean(snapshot_df: pd.DataFrame) -> pd.DataFrame:
     """Bereitet Daten für die Kompakt-Ansicht mit sauberen Spaltennamen auf."""
     df = snapshot_df.copy()
 
-    try:
-        definitions = load_jobfamily_definitions()
-        if definitions and "Planstelle" in df.columns:
-            df = assign_jobfamilies(df, definitions)
-        else:
+    if not _has_compatible_jobfamily(df):
+        try:
+            definitions = load_jobfamily_definitions()
+            if definitions and "Planstelle" in df.columns:
+                df = assign_jobfamilies(df, definitions)
+            else:
+                df["Jobfamily"] = "(nicht zugeordnet)"
+        except Exception:
             df["Jobfamily"] = "(nicht zugeordnet)"
-    except Exception:
-        df["Jobfamily"] = "(nicht zugeordnet)"
 
     if "Betriebszugehörigkeit_Jahre" in df.columns:
         tenure_years = pd.to_numeric(df["Betriebszugehörigkeit_Jahre"], errors="coerce")
@@ -637,10 +649,27 @@ def get_soll_eur(df: pd.DataFrame) -> float:
     return 0.0
 
 
+@st.cache_data
+def _create_breakdown_table_cached(
+    df: pd.DataFrame,
+    dimension_col: str,
+    value_col: str,
+    include_soll: bool = False,
+    soll_col: str = None,
+) -> pd.DataFrame:
+    return _create_breakdown_table_clean(
+        df,
+        dimension_col,
+        value_col,
+        include_soll=include_soll,
+        soll_col=soll_col,
+    )
+
+
 def create_breakdown_table(df: pd.DataFrame, dimension_col: str, value_col: str,
                            include_soll: bool = False, soll_col: str = None) -> pd.DataFrame:
     """Erstellt eine Breakdown-Tabelle nach einer Dimension."""
-    return _create_breakdown_table_clean(
+    return _create_breakdown_table_cached(
         df,
         dimension_col,
         value_col,
@@ -994,6 +1023,7 @@ _EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
 # CHART-FUNKTIONEN
 # =============================================================================
 
+@st.cache_data
 def create_horizontal_bar_chart(df: pd.DataFrame, x_col: str, y_col: str,
                                  title: str = "",
                                  preserve_order: bool = False,
@@ -1045,6 +1075,7 @@ def create_horizontal_bar_chart(df: pd.DataFrame, x_col: str, y_col: str,
     return fig
 
 
+@st.cache_data
 def create_donut_chart(df: pd.DataFrame, values_col: str, names_col: str,
                         title: str = "") -> go.Figure:
     """Erstellt ein Donut-Chart mit allen Datenpunkten."""
@@ -1101,6 +1132,69 @@ STEP_COLORS = {
 }
 
 
+@st.cache_data
+def _prepare_stacked_tariff_chart_source(
+    df: pd.DataFrame,
+    value_col: str,
+) -> tuple[pd.DataFrame, list[str]]:
+    work_df = df.copy()
+    work_df["TrfGr_clean"] = work_df["TrfGr"].astype(str).str.strip().str.upper().str.replace(" ", "", regex=False)
+    work_df["St_clean"] = work_df["St"].apply(
+        lambda x: int(str(x).strip().replace("+", "").replace("-", "")) if pd.notna(x) else 4
+    )
+
+    if value_col == "Headcount":
+        id_col = "PersNr" if "PersNr" in work_df.columns else "Personalnummer"
+        pivot = (
+            work_df[work_df["Is_Vacant"] == False]
+            .groupby(["TrfGr_clean", "St_clean"])[id_col]
+            .nunique()
+            .reset_index(name="Wert")
+        )
+    else:
+        pivot = (
+            work_df.groupby(["TrfGr_clean", "St_clean"])[value_col]
+            .sum()
+            .reset_index(name="Wert")
+        )
+
+    from config.settings import TARIFF_GROUPS
+
+    group_order = {g: i for i, g in enumerate(TARIFF_GROUPS)}
+    present_groups = sorted(
+        pivot["TrfGr_clean"].unique(),
+        key=lambda g: group_order.get(g, 999),
+    )
+    return pivot, present_groups
+
+
+@st.cache_data
+def _prepare_stacked_tariff_comparison_chart_source(
+    df: pd.DataFrame,
+    ist_col: str,
+    soll_col: str,
+) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
+    work_df = df.copy()
+    work_df["TrfGr_clean"] = work_df["TrfGr"].astype(str).str.strip().str.upper().str.replace(" ", "", regex=False)
+    work_df["St_clean"] = work_df["St"].apply(
+        lambda x: int(str(x).strip().replace("+", "").replace("-", "")) if pd.notna(x) else 4
+    )
+
+    ist_pivot = work_df.groupby(["TrfGr_clean", "St_clean"])[ist_col].sum().reset_index(name="Wert")
+    ist_totals = ist_pivot.groupby("TrfGr_clean")["Wert"].sum()
+    soll_totals = work_df.groupby("TrfGr_clean")[soll_col].sum().reset_index(name="Wert")
+
+    from config.settings import TARIFF_GROUPS
+
+    group_order = {g: i for i, g in enumerate(TARIFF_GROUPS)}
+    present_groups = sorted(
+        set(ist_totals.index) | set(soll_totals["TrfGr_clean"]),
+        key=lambda g: group_order.get(g, 999),
+    )
+    return ist_pivot, soll_totals, present_groups
+
+
+@st.cache_data
 def create_stacked_tariff_chart(
     df: pd.DataFrame,
     value_col: str,
@@ -1121,35 +1215,7 @@ def create_stacked_tariff_chart(
             "VergÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¼tungsklasse", "IST", title=title, print_mode=print_mode,
         )
 
-    work_df = df.copy()
-    work_df["TrfGr_clean"] = work_df["TrfGr"].astype(str).str.strip().str.upper().str.replace(" ", "", regex=False)
-    work_df["St_clean"] = work_df["St"].apply(
-        lambda x: int(str(x).strip().replace("+", "").replace("-", "")) if pd.notna(x) else 4
-    )
-
-    # Aggregieren: Headcount vs. numerische Spalten
-    if value_col == "Headcount":
-        id_col = "PersNr" if "PersNr" in work_df.columns else "Personalnummer"
-        pivot = (
-            work_df[work_df["Is_Vacant"] == False]
-            .groupby(["TrfGr_clean", "St_clean"])[id_col]
-            .nunique()
-            .reset_index(name="Wert")
-        )
-    else:
-        pivot = (
-            work_df.groupby(["TrfGr_clean", "St_clean"])[value_col]
-            .sum()
-            .reset_index(name="Wert")
-        )
-
-    # Sortierung der Tarifgruppen
-    from config.settings import TARIFF_GROUPS
-    group_order = {g: i for i, g in enumerate(TARIFF_GROUPS)}
-    present_groups = sorted(
-        pivot["TrfGr_clean"].unique(),
-        key=lambda g: group_order.get(g, 999),
-    )
+    pivot, present_groups = _prepare_stacked_tariff_chart_source(df, value_col)
 
     fig = go.Figure()
 
@@ -1209,6 +1275,7 @@ def create_stacked_tariff_chart(
     return fig
 
 
+@st.cache_data
 def create_stacked_tariff_breakdown_table(
     df: pd.DataFrame,
     value_col: str,
@@ -1252,6 +1319,7 @@ def create_stacked_tariff_breakdown_table(
     return pivot
 
 
+@st.cache_data
 def create_stacked_tariff_comparison_chart(
     df: pd.DataFrame,
     ist_col: str,
@@ -1268,6 +1336,8 @@ def create_stacked_tariff_comparison_chart(
     if "TrfGr" not in df.columns or "St" not in df.columns:
         return go.Figure()
 
+    ist_pivot, soll_totals, present_groups = _prepare_stacked_tariff_comparison_chart_source(df, ist_col, soll_col)
+    soll_value_map = dict(zip(soll_totals["TrfGr_clean"], soll_totals["Wert"]))
     work_df = df.copy()
     work_df["TrfGr_clean"] = work_df["TrfGr"].astype(str).str.strip().str.upper().str.replace(" ", "", regex=False)
     work_df["St_clean"] = work_df["St"].apply(
@@ -1362,6 +1432,7 @@ def create_stacked_tariff_comparison_chart(
     return fig
 
 
+@st.cache_data
 def create_comparison_chart(df: pd.DataFrame, dimension_col: str,
                              title: str = "",
                              print_mode: bool = False) -> go.Figure:
@@ -1713,6 +1784,7 @@ def render_education_range_section(df: pd.DataFrame,
 # TABELLEN-FORMATIERUNG
 # =============================================================================
 
+@st.cache_data
 def format_dataframe_for_display(df: pd.DataFrame, value_type: str = "mak") -> pd.DataFrame:
     """Formatiert DataFrame fÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¼r die Anzeige."""
     display_df = df.copy()
@@ -3231,6 +3303,7 @@ def render_management_summary(title: str, summary_data: dict, print_mode: bool =
 
 
 
+@st.cache_data
 def analyze_ist_mak_data(df: pd.DataFrame) -> dict:
     """Analysiert IST-MAK Daten und erstellt Management Summary."""
     from dataloader.kpi_engine import compute_teilzeit_kpis as _tz_mak
@@ -3292,6 +3365,7 @@ def analyze_ist_mak_data(df: pd.DataFrame) -> dict:
 
 
 
+@st.cache_data
 def analyze_ist_koepfe_data(df: pd.DataFrame) -> dict:
     """Analysiert IST-KÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¶pfe Daten und erstellt Management Summary."""
     emp_df = df[~df["Is_Vacant"]] if "Is_Vacant" in df.columns else df
@@ -3364,6 +3438,7 @@ def analyze_ist_koepfe_data(df: pd.DataFrame) -> dict:
     }
 
 
+@st.cache_data
 def analyze_ist_eur_data(df: pd.DataFrame) -> dict:
     """Analysiert IST-EUR Daten und erstellt Management Summary."""
     emp_df = df[~df["Is_Vacant"]] if "Is_Vacant" in df.columns else df
@@ -3424,6 +3499,7 @@ def analyze_ist_eur_data(df: pd.DataFrame) -> dict:
     }
 
 
+@st.cache_data
 def analyze_ist_vs_soll_mak_data(df: pd.DataFrame) -> dict:
     """Analysiert IST vs SOLL MAK Daten und erstellt Management Summary."""
     emp_df = df[~df["Is_Vacant"]] if "Is_Vacant" in df.columns else df
@@ -3743,6 +3819,7 @@ analyze_ist_vs_soll_mak_data = _analyze_ist_vs_soll_mak_data_clean
 render_ist_vs_soll_mak_tab = _render_ist_vs_soll_mak_tab_clean
 
 
+@st.cache_data
 def analyze_ist_vs_soll_eur_data(df: pd.DataFrame) -> dict:
     """Analysiert IST vs SOLL EUR Daten und erstellt Management Summary."""
     emp_df = df[~df["Is_Vacant"]] if "Is_Vacant" in df.columns else df

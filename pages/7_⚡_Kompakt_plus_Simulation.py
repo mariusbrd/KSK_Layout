@@ -19,7 +19,14 @@ else:
     sys.path.append(str(BASE_PATH))
 
 from abgaenge.params import default_params as default_abgaenge_params
-from components.sidebar import apply_filters, get_filter_summary, render_global_filters, get_global_metric_view, set_metric_page_hint
+from components.sidebar import (
+    filter_dataframe_by_view_filters,
+    get_active_view_filters,
+    get_filter_summary,
+    get_global_metric_view,
+    render_global_filters,
+    set_metric_page_hint,
+)
 from components.ui_shell import render_active_filter_banner, render_context_box, render_section_intro
 from dataloader.compact_simulation_engine import simulate_compact_snapshot
 from dataloader.loader import load_and_prepare_data, load_atz_data_cached
@@ -451,7 +458,7 @@ def main():
         set_metric_page_hint(None)
         render_global_filters(prepared_df, history_df)
 
-        filtered_df = apply_filters(prepared_df)
+        filtered_df = filter_dataframe_by_view_filters(prepared_df, get_active_view_filters())
         filter_summary = get_filter_summary()
         render_active_filter_banner(filter_summary)
 

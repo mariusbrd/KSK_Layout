@@ -16,14 +16,23 @@ from datetime import datetime
 from typing import Dict, Tuple, Optional, Set, Any
 import sys
 import os
+import json
 
 # Import settings
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.settings import (
     DATA_PATH, DEFAULT_COHORTS, BASE_SALARY, STEP_MULTIPLIER, EMPLOYER_COST_FACTOR, BASE_DIR,
-    EDUCATION_GROUPS,
+    EDUCATION_GROUPS, DEFAULT_AZUBI_SALARIES,
 )
 from utils.settings_loader import get_setting
+from utils.cache_utils import (
+    ensure_file_like,
+    deserialize_uploaded_files,
+    get_cache_version,
+    get_file_signature,
+    serialize_uploaded_files,
+    stable_json_dumps,
+)
 from dataloader.cluster_manager import apply_clusters_to_snapshot
 from kpi_reference import get_current_stichtag
 
@@ -34,7 +43,11 @@ from abgaenge.schemas import normalize_persnr
 
 
 @st.cache_data
-def load_hr_data(filepath: Optional[str] = None, auto_generate: bool = True) -> Dict[str, pd.DataFrame]:
+def load_hr_data(
+    filepath: Optional[str] = None,
+    auto_generate: bool = True,
+    source_signature: Optional[Tuple[str, int, int]] = None,
+) -> Dict[str, pd.DataFrame]:
     """
     Lädt HR-Daten aus Excel-Datei.
 
@@ -256,7 +269,11 @@ def berechne_mak(row, atz_fr_persnr_set: Optional[Set[str]] = None) -> float:
 
 
 @st.cache_data
-def enrich_snapshot_data(df: pd.DataFrame, stichtag: Optional[pd.Timestamp] = None) -> pd.DataFrame:
+def enrich_snapshot_data(
+    df: pd.DataFrame,
+    stichtag: Optional[pd.Timestamp] = None,
+    cohort_definitions: Optional[Dict[str, Tuple[int, int]]] = None,
+) -> pd.DataFrame:
     """
     Reichert Snapshot-Daten mit berechneten Feldern an.
 
@@ -308,7 +325,9 @@ def enrich_snapshot_data(df: pd.DataFrame, stichtag: Optional[pd.Timestamp] = No
         df["Betriebszugehörigkeit_Jahre"] = 0.0
 
     # Alterskohorten (aus session_state, falls verfügbar)
-    if "cohort_definitions" in st.session_state:
+    if cohort_definitions is not None:
+        cohorts = cohort_definitions
+    elif "cohort_definitions" in st.session_state:
         cohorts = st.session_state["cohort_definitions"]
     else:
         cohorts = DEFAULT_COHORTS
@@ -520,6 +539,135 @@ def apply_exclusions(df: pd.DataFrame, exclusions: Dict[str, Any]) -> pd.DataFra
     return df_out
 
 
+def _get_data_prep_context() -> Dict[str, Any]:
+    return {
+        "stichtag": str(get_current_stichtag()),
+        "include_future_hires": bool(get_setting("include_future_hires", False)),
+        "exclusions": get_setting("exclusions", {}),
+        "cohort_definitions": st.session_state.get("cohort_definitions", DEFAULT_COHORTS),
+        "employer_cost_factor": float(st.session_state.get("employer_cost_factor", EMPLOYER_COST_FACTOR)),
+        "azubi_salaries": st.session_state.get("azubi_salaries", DEFAULT_AZUBI_SALARIES),
+        "vorstand_jahresgehalt": float(st.session_state.get("vorstand_jahresgehalt", 200000.0)),
+        "cache_version": get_cache_version("data_prep"),
+    }
+
+
+@st.cache_data
+def _load_tvoed_lookup_cached(
+    uploaded_tvoed_bytes: Optional[bytes],
+    tvoed_file_signature: Optional[Tuple[str, int, int]],
+) -> Dict[Tuple[str, int], float]:
+    from dataloader.tvoed_loader import load_tvoed_table
+
+    if uploaded_tvoed_bytes:
+        return load_tvoed_table(ensure_file_like(uploaded_tvoed_bytes))
+    if tvoed_file_signature and os.path.exists(TVOED_FILE):
+        return load_tvoed_table(TVOED_FILE)
+    return {}
+
+
+def _apply_jobfamilies(snapshot_df: pd.DataFrame) -> pd.DataFrame:
+    from dataloader.jobfamily_matcher import assign_jobfamilies, load_jobfamily_definitions
+
+    try:
+        definitions = load_jobfamily_definitions()
+        return assign_jobfamilies(snapshot_df, definitions)
+    except Exception:
+        if "Jobfamily" not in snapshot_df.columns:
+            snapshot_df["Jobfamily"] = "UNMAPPED"
+        return snapshot_df
+
+
+@st.cache_data
+def _load_and_prepare_data_cached(
+    use_original: bool,
+    uploaded_payload: Tuple[Tuple[str, bytes], ...],
+    context_json: str,
+    original_file_signatures: Tuple[Tuple[str, Optional[Tuple[str, int, int]]], ...],
+    synthetic_file_signature: Optional[Tuple[str, int, int]],
+    tvoed_file_signature: Optional[Tuple[str, int, int]],
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict, Dict, Optional[int]]:
+    context = json.loads(context_json)
+    current_stichtag = pd.to_datetime(context["stichtag"])
+    uploaded_files = deserialize_uploaded_files(uploaded_payload)
+    tvoed_lookup = _load_tvoed_lookup_cached(
+        uploaded_payload and dict(uploaded_payload).get("TVÖD"),
+        tvoed_file_signature,
+    )
+    future_hires_count = None
+
+    if uploaded_files:
+        data = process_uploaded_data(uploaded_files)
+        snapshot_df = data["snapshot_detail"]
+        history_df = data["history_cube"]
+        org_df = data["org_structure"]
+
+        snapshot_df = enrich_snapshot_data(
+            snapshot_df,
+            stichtag=current_stichtag,
+            cohort_definitions=context["cohort_definitions"],
+        )
+        snapshot_df = _apply_jobfamilies(snapshot_df)
+        snapshot_df = apply_clusters_to_snapshot(snapshot_df, uploaded_file=dict(uploaded_payload).get("Cluster"))
+        snapshot_df = _zero_out_azubi_mak(snapshot_df)
+        snapshot_df = apply_exclusions(snapshot_df, context["exclusions"])
+
+        summary = get_data_summary(snapshot_df)
+        summary["data_source_type"] = "Eigene Daten (Upload)"
+        return snapshot_df, history_df, org_df, summary, tvoed_lookup, future_hires_count
+
+    if use_original:
+        missing_required = [name for name, path in ORIGINAL_FILES.items() if not os.path.exists(path)]
+        if not missing_required:
+            original = load_original_data(file_signatures=original_file_signatures)
+            if "Eintritt" in original["mitarbeiter"].columns:
+                eintritt = pd.to_datetime(original["mitarbeiter"]["Eintritt"], errors="coerce")
+                future_hires_count = int((eintritt > current_stichtag).sum())
+
+            snapshot_df = combine_to_snapshot(
+                original["mitarbeiter"],
+                original["planstellen"],
+                original["atz"],
+                original["ausbildung"],
+                stichtag=current_stichtag,
+                tvoed_lookup=tvoed_lookup,
+                include_future_hires=context["include_future_hires"],
+                employer_factor=context["employer_cost_factor"],
+                azubi_salaries=context["azubi_salaries"],
+                vorstand_salary=context["vorstand_jahresgehalt"],
+            )
+            snapshot_df = enrich_snapshot_data(
+                snapshot_df,
+                stichtag=current_stichtag,
+                cohort_definitions=context["cohort_definitions"],
+            )
+            snapshot_df = _apply_jobfamilies(snapshot_df)
+            snapshot_df = apply_clusters_to_snapshot(snapshot_df, uploaded_file=dict(uploaded_payload).get("Cluster"))
+            snapshot_df = _zero_out_azubi_mak(snapshot_df)
+            snapshot_df = apply_exclusions(snapshot_df, context["exclusions"])
+
+            history_df = generate_history_from_snapshot(snapshot_df)
+            org_df = create_org_structure(original["planstellen"])
+            summary = get_data_summary(snapshot_df)
+            summary["data_source_type"] = "Original-Daten"
+            return snapshot_df, history_df, org_df, summary, tvoed_lookup, future_hires_count
+
+    data = load_hr_data(source_signature=synthetic_file_signature)
+    snapshot_df = enrich_snapshot_data(
+        data["snapshot_detail"],
+        stichtag=current_stichtag,
+        cohort_definitions=context["cohort_definitions"],
+    )
+    snapshot_df = _apply_jobfamilies(snapshot_df)
+    snapshot_df = apply_clusters_to_snapshot(snapshot_df, uploaded_file=dict(uploaded_payload).get("Cluster"))
+    snapshot_df = _zero_out_azubi_mak(snapshot_df)
+    snapshot_df = apply_exclusions(snapshot_df, context["exclusions"])
+
+    summary = get_data_summary(snapshot_df)
+    summary["data_source_type"] = "Synthetische Testdaten"
+    return snapshot_df, data["history_cube"], data["org_structure"], summary, tvoed_lookup, future_hires_count
+
+
 def load_and_prepare_data(
     use_original: bool = True,
     uploaded_files: Optional[Dict[str, Any]] = None
@@ -534,191 +682,59 @@ def load_and_prepare_data(
     Returns:
         Tuple aus (snapshot_df, history_df, org_df, summary)
     """
-
-
-
-    # 0. Check global uploads (from session_state)
     if uploaded_files is None and "global_uploads" in st.session_state:
         uploaded_files = st.session_state["global_uploads"]
 
-    # 1. Uploads haben Vorrang
-    if uploaded_files:
-        try:
-            data = process_uploaded_data(uploaded_files)
-            # data enthält bereits snapshot_detail, history_cube, org_structure
-            snapshot_df = data["snapshot_detail"]
-            history_df = data["history_cube"]
-            org_df = data["org_structure"]
-            
-            
-            # TVOED Loading for Upload Path
-            from dataloader.tvoed_loader import load_tvoed_table
-            tvoed_lookup = {}
-            if "TVÖD" in uploaded_files:
-                 # Load from BytesIO
-                 tvoed_lookup = load_tvoed_table(uploaded_files["TVÖD"])
-            elif os.path.exists(TVOED_FILE):
-                 tvoed_lookup = load_tvoed_table(TVOED_FILE)
-            
-            st.session_state["tvoed_lookup"] = tvoed_lookup
-            st.session_state["tvoed_available"] = len(tvoed_lookup) > 0
+    uploaded_payload = serialize_uploaded_files(uploaded_files)
+    context_json = stable_json_dumps(_get_data_prep_context())
+    original_file_signatures = tuple((name, get_file_signature(path)) for name, path in sorted(ORIGINAL_FILES.items()))
+    synthetic_file_signature = get_file_signature(DATA_PATH)
+    tvoed_file_signature = get_file_signature(TVOED_FILE)
+    missing_required = [name for name, path in ORIGINAL_FILES.items() if not os.path.exists(path)]
 
-            # Anreicherung
-            snapshot_df = enrich_snapshot_data(snapshot_df, stichtag=get_current_stichtag())
-            
-            # Jobfamily
-            from dataloader.jobfamily_matcher import assign_jobfamilies, load_jobfamily_definitions
-            try:
-                definitions = load_jobfamily_definitions()
-                snapshot_df = assign_jobfamilies(snapshot_df, definitions)
-            except Exception:
-                if "Jobfamily" not in snapshot_df.columns:
-                    snapshot_df["Jobfamily"] = "UNMAPPED"
-            
-            # Custom Clusters
-            snapshot_df = apply_clusters_to_snapshot(snapshot_df, uploaded_file=uploaded_files.get("Cluster"))
-
-            # Centralized Azubi MAK Zeroing (Single Source of Truth)
-            snapshot_df = _zero_out_azubi_mak(snapshot_df)
-
-            # --- Centralized UI Exclusions ---
-            exclusions = get_setting("exclusions", {})
-            snapshot_df = apply_exclusions(snapshot_df, exclusions)
-
-            summary = get_data_summary(snapshot_df)
-            summary["data_source_type"] = "Eigene Daten (Upload)"
-            return snapshot_df, history_df, org_df, summary
-            
-        except Exception as e:
-            st.error(f"Fehler bei der Verarbeitung der hochgeladenen Dateien: {str(e)}")
-            # Fallback auf Standard-Logik unten
-            pass
-
-    # Versuche Original-Daten zu laden (wenn use_original=True)
-    if use_original:
-        try:
-            # Prüfe ob Original-Daten existieren (alle benötigten Dateien)
-            missing_required = [name for name, path in ORIGINAL_FILES.items() if not os.path.exists(path)]
-            
-            if not missing_required:
-                # 1. Lade Original-Daten
-                original = load_original_data()
-
-                # 2. Lade TVÖD-Entgelttabelle (optional)
-                from dataloader.tvoed_loader import load_tvoed_table
-                tvoed_lookup = {}
-                if "TVÖD" in (uploaded_files or {}):
-                     tvoed_lookup = load_tvoed_table(uploaded_files["TVÖD"])
-                elif os.path.exists(TVOED_FILE):
-                     tvoed_lookup = load_tvoed_table(TVOED_FILE)
-                
-                st.session_state["tvoed_lookup"] = tvoed_lookup
-                st.session_state["tvoed_available"] = len(tvoed_lookup) > 0
-
-                # 3. Kombiniere zu Snapshot (mit TVÖD-Lookup)
-                current_stichtag = get_current_stichtag()
-                snapshot_df = combine_to_snapshot(
-                    original["mitarbeiter"],
-                    original["planstellen"],
-                    original["atz"],
-                    original["ausbildung"],
-                    stichtag=current_stichtag,
-                    tvoed_lookup=tvoed_lookup,
-                )
-
-                # 4. Reichere Snapshot an (Standard-Prozedur)
-                snapshot_df = enrich_snapshot_data(snapshot_df, stichtag=current_stichtag)
-
-                # 5. Füge Jobfamily-Spalte hinzu
-                from dataloader.jobfamily_matcher import assign_jobfamilies, load_jobfamily_definitions
-                try:
-                    definitions = load_jobfamily_definitions()
-                    snapshot_df = assign_jobfamilies(snapshot_df, definitions)
-                except Exception:
-                    if "Jobfamily" not in snapshot_df.columns:
-                        snapshot_df["Jobfamily"] = "UNMAPPED"
-
-                # 5b. Custom Clusters
-                snapshot_df = apply_clusters_to_snapshot(snapshot_df, uploaded_file=(uploaded_files or {}).get("Cluster"))
-
-                # Centralized Azubi MAK Zeroing (Single Source of Truth)
-                snapshot_df = _zero_out_azubi_mak(snapshot_df)
-
-                # --- Centralized UI Exclusions ---
-                exclusions = get_setting("exclusions", {})
-                snapshot_df = apply_exclusions(snapshot_df, exclusions)
-
-                # 6. Generiere History
-                history_df = generate_history_from_snapshot(snapshot_df)
-
-                # 7. Erstelle Org-Struktur
-                org_df = create_org_structure(original["planstellen"])
-
-                # 8. Berechne Summary
-                summary = get_data_summary(snapshot_df)
-                summary["data_source_type"] = "Original-Daten"
-
-                return snapshot_df, history_df, org_df, summary
-
-            else:
-                st.info(
-                    "ℹ️ Original-Daten unvollständig oder nicht gefunden. "
-                    "Fehlend: " + ", ".join(missing_required) + ". "
-                    "Verwende synthetische Testdaten."
-                )
-
-        except Exception as e:
-            st.warning(f"⚠️ Fehler beim Laden der Original-Daten: {str(e)}\nVerwende synthetische Testdaten.")
-            # Optional: Traceback bei Fehler
-            # import traceback
-            # st.code(traceback.format_exc())
-
-    # Fallback: Lade synthetische Daten
-    data = load_hr_data()
-
-    # Auch hier: TVÖD laden wenn vorhanden (für Korrektheit der Kosten in Testdaten)
-    if "tvoed_lookup" not in st.session_state or not st.session_state.get("tvoed_available"):
-        tvoed_lookup = {}
-        if os.path.exists(TVOED_FILE):
-             from dataloader.tvoed_loader import load_tvoed_table
-             tvoed_lookup = load_tvoed_table(TVOED_FILE)
-        
+    try:
+        snapshot_df, history_df, org_df, summary, tvoed_lookup, future_hires_count = _load_and_prepare_data_cached(
+            use_original=use_original,
+            uploaded_payload=uploaded_payload,
+            context_json=context_json,
+            original_file_signatures=original_file_signatures,
+            synthetic_file_signature=synthetic_file_signature,
+            tvoed_file_signature=tvoed_file_signature,
+        )
         st.session_state["tvoed_lookup"] = tvoed_lookup
         st.session_state["tvoed_available"] = len(tvoed_lookup) > 0
-
-    # Reichere Snapshot an
-    snapshot_df = enrich_snapshot_data(data["snapshot_detail"], stichtag=get_current_stichtag())
-
-    # Füge Jobfamily-Spalte hinzu
-    from dataloader.jobfamily_matcher import assign_jobfamilies, load_jobfamily_definitions
-    try:
-        definitions = load_jobfamily_definitions()
-        snapshot_df = assign_jobfamilies(snapshot_df, definitions)
+        if future_hires_count is not None:
+            st.session_state["stats_future_hires"] = int(future_hires_count)
+        elif use_original and not uploaded_payload and missing_required:
+            st.info(
+                "ℹ️ Original-Daten unvollständig oder nicht gefunden. "
+                "Fehlend: " + ", ".join(missing_required) + ". "
+                "Verwende synthetische Testdaten."
+            )
+        return snapshot_df, history_df, org_df, summary
+    except FileNotFoundError as e:
+        st.info(
+            "ℹ️ Original-Daten unvollständig oder nicht gefunden. "
+            "Fehlend: " + ", ".join(str(e).splitlines()[1:]) + ". "
+            "Verwende synthetische Testdaten."
+        )
     except Exception as e:
-        # Falls Fehler beim Laden, füge leere Spalte hinzu
-        if "Jobfamily" not in snapshot_df.columns:
-            snapshot_df["Jobfamily"] = "UNMAPPED"
+        if uploaded_payload:
+            st.error(f"Fehler bei der Verarbeitung der hochgeladenen Dateien: {str(e)}")
+        elif use_original:
+            st.warning(f"⚠️ Fehler beim Laden der Original-Daten: {str(e)}\nVerwende synthetische Testdaten.")
 
-    # Custom Clusters
-    snapshot_df = apply_clusters_to_snapshot(snapshot_df, uploaded_file=(uploaded_files or {}).get("Cluster"))
-
-    # Centralized Azubi MAK Zeroing (Single Source of Truth)
-    snapshot_df = _zero_out_azubi_mak(snapshot_df)
-
-    # --- Centralized UI Exclusions ---
-    exclusions = get_setting("exclusions", {})
-    snapshot_df = apply_exclusions(snapshot_df, exclusions)
-
-    # Berechne Summary
-    summary = get_data_summary(snapshot_df)
-    summary["data_source_type"] = "Synthetische Testdaten"
-
-    return (
-        snapshot_df,
-        data["history_cube"],
-        data["org_structure"],
-        summary
+    snapshot_df, history_df, org_df, summary, tvoed_lookup, _ = _load_and_prepare_data_cached(
+        use_original=False,
+        uploaded_payload=tuple(),
+        context_json=context_json,
+        original_file_signatures=original_file_signatures,
+        synthetic_file_signature=synthetic_file_signature,
+        tvoed_file_signature=tvoed_file_signature,
     )
+    st.session_state["tvoed_lookup"] = tvoed_lookup
+    st.session_state["tvoed_available"] = len(tvoed_lookup) > 0
+    return snapshot_df, history_df, org_df, summary
 
 
 
@@ -964,7 +980,9 @@ def calculate_cost_row(row, tvoed_lookup=None) -> float:
 # =============================================================================
 
 @st.cache_data
-def load_original_data() -> Dict[str, pd.DataFrame]:
+def load_original_data(
+    file_signatures: Optional[Tuple[Tuple[str, Optional[Tuple[str, int, int]]], ...]] = None,
+) -> Dict[str, pd.DataFrame]:
     """Lädt die 4 Original-Excel-Dateien."""
     data = {}
     missing_files = [fp for fp in ORIGINAL_FILES.values() if not os.path.exists(fp)]
@@ -993,7 +1011,13 @@ def load_original_data() -> Dict[str, pd.DataFrame]:
 
 
 
-def calculate_cost_vectorized(df: pd.DataFrame, tvoed_lookup: Dict) -> pd.DataFrame:
+def calculate_cost_vectorized(
+    df: pd.DataFrame,
+    tvoed_lookup: Dict,
+    employer_factor: Optional[float] = None,
+    azubi_salaries: Optional[Dict[Any, float]] = None,
+    vorstand_salary: Optional[float] = None,
+) -> pd.DataFrame:
     """
     Berechnet Total_Cost_Year mittels vektorisierter Operationen (Merge statt Apply).
     100x schneller als iteratives apply().
@@ -1032,7 +1056,9 @@ def calculate_cost_vectorized(df: pd.DataFrame, tvoed_lookup: Dict) -> pd.DataFr
     # 5. Helper: Special Salaries
     # Azubi (Progressiv)
     from config.settings import DEFAULT_AZUBI_SALARIES
-    azubi_salaries = st.session_state.get("azubi_salaries", DEFAULT_AZUBI_SALARIES)
+    if azubi_salaries is None:
+        azubi_salaries = st.session_state.get("azubi_salaries", DEFAULT_AZUBI_SALARIES)
+    azubi_salaries = {int(k): float(v) for k, v in dict(azubi_salaries).items()}
     
     mask_azubi_base = df_out["TrfGr_Join"].isin(["TVAÖD", "TVÖAD", "TVAOD"])
     for year, salary in azubi_salaries.items():
@@ -1044,12 +1070,14 @@ def calculate_cost_vectorized(df: pd.DataFrame, tvoed_lookup: Dict) -> pd.DataFr
     df_out.loc[mask_azubi_fallback, "Annual_Final"] = azubi_salaries.get(1, 14400.0)
     
     # Vorstand
-    vorstand_salary = st.session_state.get("vorstand_jahresgehalt", 200000.0)
+    if vorstand_salary is None:
+        vorstand_salary = st.session_state.get("vorstand_jahresgehalt", 200000.0)
     mask_vorstand = df_out["TrfGr_Join"] == "1"
     df_out.loc[mask_vorstand, "Annual_Final"] = vorstand_salary
     
     # 6. Final Calculation
-    employer_factor = st.session_state.get("employer_cost_factor", EMPLOYER_COST_FACTOR)
+    if employer_factor is None:
+        employer_factor = st.session_state.get("employer_cost_factor", EMPLOYER_COST_FACTOR)
     fte = df_out["FTE_person"].fillna(1.0)
     
     total_cost = df_out["Annual_Final"] * fte * employer_factor
@@ -1099,7 +1127,18 @@ def calculate_mak_vectorized(df: pd.DataFrame, atz_fr_persnr_set: set = None) ->
     return df_out
 
 
-def combine_to_snapshot(mitarbeiter, planstellen, atz, ausbildung, stichtag=None, tvoed_lookup=None) -> pd.DataFrame:
+def combine_to_snapshot(
+    mitarbeiter,
+    planstellen,
+    atz,
+    ausbildung,
+    stichtag=None,
+    tvoed_lookup=None,
+    include_future_hires: Optional[bool] = None,
+    employer_factor: Optional[float] = None,
+    azubi_salaries: Optional[Dict[Any, float]] = None,
+    vorstand_salary: Optional[float] = None,
+) -> pd.DataFrame:
     """Kombiniert die 4 Original-Dateien zu einem Snapshot DataFrame."""
     if stichtag is None: stichtag = get_current_stichtag()
 
@@ -1115,7 +1154,7 @@ def combine_to_snapshot(mitarbeiter, planstellen, atz, ausbildung, stichtag=None
     # und noch nicht ausgetreten sind.
     
     # 1. Konfiguration laden
-    include_future = get_setting("include_future_hires", False)
+    include_future = get_setting("include_future_hires", False) if include_future_hires is None else include_future_hires
     
     # 2. Eintritts-Logik
     if "Eintritt" in mitarbeiter.columns:
@@ -1194,7 +1233,13 @@ def combine_to_snapshot(mitarbeiter, planstellen, atz, ausbildung, stichtag=None
 
     # Vectorized Cost Calculation
     # We pass the tvoed_lookup dict. The vectorized function handles the merge efficiently.
-    df = calculate_cost_vectorized(df, tvoed_lookup)
+    df = calculate_cost_vectorized(
+        df,
+        tvoed_lookup,
+        employer_factor=employer_factor,
+        azubi_salaries=azubi_salaries,
+        vorstand_salary=vorstand_salary,
+    )
     
     # Vectorized MAK Calculation (Optional here if not already computed?)
     # snapshot_df usually relies on FTE_assigned (calculated above).
@@ -1414,7 +1459,7 @@ def process_uploaded_data(uploaded_files: Dict[str, Any]) -> Dict[str, pd.DataFr
             
         if name in uploaded_files:
             # Read Excel from BytesIO
-            dfs[name] = pd.read_excel(uploaded_files[name])
+            dfs[name] = pd.read_excel(ensure_file_like(uploaded_files[name]))
         else:
             # Create empty DF if missing? Or raise error?
             # For robustness: use empty DF

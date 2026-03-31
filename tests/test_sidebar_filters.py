@@ -11,8 +11,12 @@ import pytest
 import pandas as pd
 
 from components.sidebar import (
+    _apply_event_filters_uncached,
+    _apply_filters_uncached,
     apply_robust_filter,
     apply_event_filters,
+    apply_event_filters_with_state,
+    filter_dataframe_by_view_filters,
     get_active_view_filters,
 )
 
@@ -182,6 +186,16 @@ class TestApplyEventFilters:
         assert n_before == 0
         assert n_after == 0
 
+    def test_cached_event_filters_match_uncached_reference(self):
+        self._state["selected_org_units"] = ["Filiale A"]
+        self._state["selected_jf_clusters"] = ["IT-Cluster"]
+        filters = get_active_view_filters(self._state)
+        events = self._events(include_new_hire=True)
+        expected = _apply_event_filters_uncached(events, self._snapshot(), active_filters=filters, mode="accession")
+        actual = apply_event_filters_with_state(events, self._snapshot(), active_filters=filters, mode="accession")
+        pd.testing.assert_frame_equal(actual[0], expected[0], check_dtype=True, check_like=False)
+        assert actual[1:] == expected[1:]
+
 
 # ── 3. get_active_view_filters ───────────────────────────────────────────
 
@@ -207,6 +221,35 @@ class TestGetActiveViewFilters:
         result = get_active_view_filters({})
         assert result["selected_org_units"] == []
         assert result["selected_genders"] == []
+
+    def test_cached_dataframe_filters_match_uncached_reference(self):
+        state = {
+            "selected_org_units": ["Filiale A"],
+            "selected_jobfamilies": ["IT"],
+            "selected_oe_clusters": ["Filial-Cluster"],
+            "selected_jf_clusters": ["IT-Cluster"],
+            "selected_genders": ["m"],
+            "selected_employment": ["Vollzeit"],
+            "selected_atz_status": ["Kein ATZ"],
+            "selected_cohorts": [],
+            "selected_education": [],
+        }
+        filters = get_active_view_filters(state)
+        df = pd.DataFrame({
+            "PersNr": ["E01", "E02"],
+            "Organisationseinheit": ["Filiale A", "Zentrale"],
+            "Jobfamily": ["IT", "Beratung"],
+            "OE-Cluster": ["Filial-Cluster", "Zentral-Cluster"],
+            "JF-Cluster": ["IT-Cluster", "Beratungs-Cluster"],
+            "Geschlecht": ["m", "w"],
+            "Arbeitszeit": ["Vollzeit", "Teilzeit"],
+            "ATZ_Status": ["Kein ATZ", "Kein ATZ"],
+            "Alterskohorte": ["30-40 Jahre", "40-50 Jahre"],
+            "Ausbildung": ["Bachelor", "Master"],
+        })
+        expected = _apply_filters_uncached(df, filters)
+        actual = filter_dataframe_by_view_filters(df, filters)
+        pd.testing.assert_frame_equal(actual, expected, check_dtype=True, check_like=False)
 
 
 # ── 4. Recompute Protection ─────────────────────────────────────────────

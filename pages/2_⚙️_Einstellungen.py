@@ -26,6 +26,7 @@ from dataloader.cluster_manager import generate_template_bytes, validate_and_sav
 from dataloader.source_service import SourceService, DataSourceOrigin
 from config.settings import BASE_DIR
 from components.sidebar import render_metric_selector_only, set_metric_page_hint
+from utils.cache_utils import bump_cache_version
 from utils.i18n import t
 
 
@@ -173,7 +174,7 @@ def render_settings_page():
                     
                     st.success(msg)
                     if st.button(t("settings.cluster_apply_now")):
-                        st.cache_data.clear()
+                        bump_cache_version("data_prep")
                         st.session_state["show_reload_success"] = True
                         st.rerun()
                 else:
@@ -519,7 +520,7 @@ def render_settings_page():
     st.info(t("settings.reload_required"))
 
     if st.button(t("settings.reload_data"), type="primary"):
-        st.cache_data.clear()
+        bump_cache_version("data_prep")
         st.session_state["show_reload_success"] = True
         st.rerun()
 

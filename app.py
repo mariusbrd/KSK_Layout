@@ -10,6 +10,7 @@ from pathlib import Path
 from components.setup_wizard import needs_setup, render_setup_wizard
 from components.ui_shell import inject_ui_theme
 from config.settings import DEFAULT_COHORTS, PAGE_CONFIG
+from utils.cache_utils import ensure_cache_bootstrap
 from utils.i18n import initialize_language_state, t
 
 SIDEBAR_BRAND_LOGO = Path(__file__).resolve().parent / "assets" / "sidebar_brand.svg"
@@ -26,7 +27,7 @@ st.logo(str(SIDEBAR_BRAND_LOGO), size="large")
 
 # Cache einmalig leeren nach KPI-Engine-Update (kann nach erstem Start entfernt werden)
 if "kpi_engine_cache_cleared" not in st.session_state:
-    st.cache_data.clear()
+    ensure_cache_bootstrap("data_prep", "2026-03-31-kpi-engine-v1")
     st.session_state["kpi_engine_cache_cleared"] = True
 
 
