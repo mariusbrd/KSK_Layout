@@ -31,18 +31,30 @@ AZUBI_TRAINING_EDUCATION = "derzeit Berufsausbildung"
 DEFAULT_NEW_HIRE_EDUCATION = "kfm Berufsabschluss"
 DEFAULT_TRAINEE_EDUCATION = "Bachelor FH"
 DEFAULT_AZUBI_CONVERSION_EDUCATION = "Bankberufsabschluss"
+INTERNAL_EDUCATION_COL = "_education_normalized_internal"
+INTERNAL_AZUBI_FLAG_COL = "_is_azubi_internal"
 
 
-def _build_gender_distribution(df: pd.DataFrame) -> tuple[list[str], list[float]]:
+def _normalized_gender_series(df: pd.DataFrame) -> pd.Series:
+    if "Geschlecht" not in df.columns or df.empty:
+        return pd.Series(dtype="object")
+    genders = df["Geschlecht"].astype(str).str.strip().str.lower()
+    return genders[genders.isin(["m", "w", "d"])]
+
+
+def _build_gender_distribution(
+    df: pd.DataFrame,
+    normalized_genders: Optional[pd.Series] = None,
+) -> tuple[list[str], list[float]]:
     """
     Derive a stable sampling distribution for forecast hires from the current
     state. Falls back to a 50/50 split if no usable gender data exists.
     """
-    if "Geschlecht" not in df.columns or df.empty:
-        return ["m", "w"], [0.5, 0.5]
+    if normalized_genders is not None:
+        genders = normalized_genders
+    else:
+        genders = _normalized_gender_series(df)
 
-    genders = df["Geschlecht"].astype(str).str.strip().str.lower()
-    genders = genders[genders.isin(["m", "w", "d"])]
     if genders.empty:
         return ["m", "w"], [0.5, 0.5]
 
@@ -81,15 +93,31 @@ def _build_education_distribution(
     if "Ausbildung" not in df.columns or df.empty:
         return fallback, [1.0 / len(fallback)] * len(fallback)
 
-    education = df["Ausbildung"].map(normalize_education_value)
+    if INTERNAL_EDUCATION_COL in df.columns:
+        education = df[INTERNAL_EDUCATION_COL]
+    else:
+        education = df["Ausbildung"].map(normalize_education_value)
     education = education.dropna().astype(str).str.strip()
     education = education[education.isin(EDUCATION_GROUPS)]
 
+    if education.empty:
+        return fallback, [1.0 / len(fallback)] * len(fallback)
+
     if allowed_values:
-        allowed = {str(normalize_education_value(v)) for v in allowed_values if pd.notna(normalize_education_value(v))}
+        allowed = {
+            str(normalized)
+            for v in allowed_values
+            for normalized in [normalize_education_value(v)]
+            if pd.notna(normalized)
+        }
         education = education[education.isin(allowed)]
     if excluded_values:
-        excluded = {str(normalize_education_value(v)) for v in excluded_values if pd.notna(normalize_education_value(v))}
+        excluded = {
+            str(normalized)
+            for v in excluded_values
+            for normalized in [normalize_education_value(v)]
+            if pd.notna(normalized)
+        }
         education = education[~education.isin(excluded)]
 
     if education.empty:
@@ -112,6 +140,22 @@ def _sample_education(
     choice = rng.choice(education_choices, p=education_weights)
     choice = normalize_education_value(choice)
     return str(choice if pd.notna(choice) else canonical_fallback)
+
+
+def _build_internal_education_series(df: pd.DataFrame) -> pd.Series:
+    if "Ausbildung" not in df.columns or df.empty:
+        return pd.Series(index=df.index, dtype="object")
+    return df["Ausbildung"].map(normalize_education_value)
+
+
+def _build_internal_azubi_series(df: pd.DataFrame) -> pd.Series:
+    if df.empty or "TrfGr" not in df.columns or "Jobfamily" not in df.columns:
+        return pd.Series(index=df.index, dtype="bool")
+    return (
+        df["TrfGr"].astype(str).str.contains("TVA", na=False, case=False)
+        | df["Jobfamily"].astype(str).str.contains("Azubi", na=False, case=False)
+        | df["Jobfamily"].astype(str).str.contains("Ausbildung", na=False, case=False)
+    )
 
 def _next_august_conversion_date(entry_date: pd.Timestamp, conversion_month: int = 8, conversion_day: int = 1) -> pd.Timestamp:
     """
@@ -387,29 +431,11 @@ def _simulate_azubis(
     _raw_grace = azubi_params.get("nearest_cycle_grace_days", None)
     grace_days = int(_raw_grace) if _raw_grace is not None else None
 
-    # Pre-compute cluster map for lookups
-    unit_to_cluster = _get_unit_to_cluster_map(df_state)
-    valid_units = list(unit_to_cluster.keys()) if unit_to_cluster else all_org_units
-    gender_choices, gender_weights = _build_gender_distribution(df_state)
-    conversion_edu_choices, conversion_edu_weights = _build_education_distribution(
-        df_state,
-        allowed_values=[
-            "kfm Berufsabschluss",
-            "Bankberufsabschluss",
-            "Bankfachwirt",
-            "Bankbetriebswirt",
-        ],
-        excluded_values=[AZUBI_TRAINING_EDUCATION],
-        fallback_choices=[DEFAULT_AZUBI_CONVERSION_EDUCATION],
-    )
-    valid_jfs = sorted(df_state["Jobfamily"].dropna().unique().tolist()) if "Jobfamily" in df_state.columns else []
-
     # Identify Azubis
-    mask_azubi = (
-        df_state["TrfGr"].astype(str).str.contains("TVA", na=False, case=False) |
-        (df_state["Jobfamily"].astype(str).str.contains("Azubi", na=False, case=False)) |
-        (df_state["Jobfamily"].astype(str).str.contains("Ausbildung", na=False, case=False))
-    )
+    if INTERNAL_AZUBI_FLAG_COL in df_state.columns:
+        mask_azubi = df_state[INTERNAL_AZUBI_FLAG_COL].eq(True)
+    else:
+        mask_azubi = _build_internal_azubi_series(df_state)
 
     # id: 63 - Label training phase as "Sonstige" for charts
     training_label = "Sonstige"
@@ -430,6 +456,8 @@ def _simulate_azubis(
         (df_state["Jobfamily"] == training_label) &
         mask_azubi # Ensure we only pick the ones identified as Azubis
     ]
+    if current_azubis.empty:
+        return
 
     # Support for Isolated Forecast (id: 16)
     exclude_baseline = params.get("azubi", {}).get("exclude_baseline_azubis", False)
@@ -441,28 +469,25 @@ def _simulate_azubis(
     for persnr, row in current_azubis.iterrows():
         is_f = row.get("is_forecast", False)
         is_forecast = False if pd.isna(is_f) else bool(is_f)
-        
+
         if exclude_baseline and not is_forecast:
             continue
 
         eintritt = pd.to_datetime(row.get("Eintritt", pd.NaT))
         graduation_date = row.get("GraduationDate", pd.NaT)
-        
+
         if pd.isna(graduation_date) and pd.notna(eintritt):
              graduation_date = _estimate_baseline_graduation_date(eintritt, duration_years, conv_month, conv_day, graduation_mode, grace_days)
-        
+
         if pd.isna(graduation_date):
             continue
-        
+
         if period.start <= graduation_date <= period.end:
-            # Deterministic decision
             fixed_destiny = row.get("GraduationModus", None)
-            
+
             if pd.notna(fixed_destiny):
                 should_retain = (fixed_destiny == "Takeover")
             else:
-                # Baseline Azubi (no pre-assigned destiny): use isolated baseline debt pool
-                # so that fluctuations in forecast hire volume do not affect baseline outcomes.
                 success_chance = retention_rate
                 if debts is not None:
                     expected_success = success_chance + debts.get("takeover_baseline", 0.0)
@@ -479,6 +504,18 @@ def _simulate_azubis(
 
     # --- Phase 2: Distribute Dimension Values for Retained Azubis ---
     if retained_info:
+        unit_to_cluster = _get_unit_to_cluster_map(df_state)
+        conversion_edu_choices, conversion_edu_weights = _build_education_distribution(
+            df_state,
+            allowed_values=[
+                "kfm Berufsabschluss",
+                "Bankberufsabschluss",
+                "Bankfachwirt",
+                "Bankbetriebswirt",
+            ],
+            excluded_values=[AZUBI_TRAINING_EDUCATION],
+            fallback_choices=[DEFAULT_AZUBI_CONVERSION_EDUCATION],
+        )
         # Stable sort by PersNr to ensure deterministic assignment
         retained_info.sort(key=lambda x: str(x[0]))
         total_retained = len(retained_info)
@@ -554,6 +591,10 @@ def _simulate_azubis(
             df_state.loc[persnr, "St"] = entry_step
             df_state.loc[persnr, "mak"] = mak_after
             df_state.loc[persnr, "Ausbildung"] = new_education
+            if INTERNAL_EDUCATION_COL in df_state.columns:
+                df_state.loc[persnr, INTERNAL_EDUCATION_COL] = new_education
+            if INTERNAL_AZUBI_FLAG_COL in df_state.columns:
+                df_state.loc[persnr, INTERNAL_AZUBI_FLAG_COL] = False
             
             # Events
             events.append({
@@ -599,7 +640,8 @@ def _simulate_azubis(
             events.append(_conv_in_event)
 
     # --- Phase 4: Handle Exits ---
-    for persnr, row, graduation_date, is_forecast in exited_info:
+    for info in exited_info:
+        persnr, row, graduation_date, is_forecast = info
         eintritt = pd.to_datetime(row.get("Eintritt", pd.NaT))
         audit_fields = {
             "entry_date": eintritt,
@@ -633,14 +675,18 @@ def _simulate_new_azubis(
     all_org_units: List[str],
     num_cases: int = 0,
     forecast_start_date: Optional[pd.Timestamp] = None,
-    debts: Dict[str, float] = None
+    debts: Dict[str, float] = None,
+    gender_distribution: Optional[tuple[list[str], list[float]]] = None,
+    unit_to_cluster_map: Optional[Dict[str, str]] = None,
 ):
     """
     Simulate hiring of NEW Azubis (not just retention).
     Azubi_Hire represents a brand new entry into the apprenticeship.
     """
+    if num_cases <= 0:
+        return
+
     azubi_params = params.get("azubi", {})
-    count_annual = float(azubi_params.get("new_cases_per_year", 0))
     # Duration doesn't affect ENTRY, but retention logic needs it later.
     duration_years = float(azubi_params.get("duration_years", 3.0))
     retention_rate = float(azubi_params.get("retention_rate", 0.8))
@@ -657,13 +703,13 @@ def _simulate_new_azubis(
     grace_days = int(_raw_grace) if _raw_grace is not None else None
 
     # Pre-compute cluster map for lookups
-    unit_to_cluster = _get_unit_to_cluster_map(df_state)
+    unit_to_cluster = unit_to_cluster_map if unit_to_cluster_map is not None else _get_unit_to_cluster_map(df_state)
     valid_units = list(unit_to_cluster.keys()) if unit_to_cluster else all_org_units
-    gender_choices, gender_weights = _build_gender_distribution(df_state)
+    if gender_distribution is None:
+        gender_choices, gender_weights = _build_gender_distribution(df_state)
+    else:
+        gender_choices, gender_weights = gender_distribution
     azubi_edu = AZUBI_TRAINING_EDUCATION
-
-    period_days = (period.end - period.start).days + 1
-    # num_cases is passed from caller for determinism
     
     # Effective start for random entry date (to avoid filter loss in first month)
     eff_start = period.start
@@ -709,6 +755,8 @@ def _simulate_new_azubis(
             "Geschlecht": gender_code,
             "Text Gsch": gender_text,
             "Ausbildung": azubi_edu,
+            INTERNAL_EDUCATION_COL: azubi_edu,
+            INTERNAL_AZUBI_FLAG_COL: True,
             "Vertragsart": "Auszubildende",
             "Status kundenindividuell": "Aktives Beschäftigungsverhältnis",
             "Planstelle": "Azubi",
@@ -773,16 +821,23 @@ def _simulate_trainees(
     events: List[Dict[str, Any]],
     all_org_units: List[str],
     num_cases: int = 0,
-    forecast_start_date: Optional[pd.Timestamp] = None
+    forecast_start_date: Optional[pd.Timestamp] = None,
+    gender_distribution: Optional[tuple[list[str], list[float]]] = None,
+    education_distribution: Optional[tuple[list[str], list[float]]] = None,
 ):
     trainee_params = params.get("trainee", {})
-    count_annual = float(trainee_params.get("new_cases_per_year", 0))
+    if num_cases <= 0:
+        return
     salary_group = trainee_params.get("salary_group", "E13")
     strategy = trainee_params.get("strategy", "Random")
     target_unit = trainee_params.get("target_org_unit", None)
-    gender_choices, gender_weights = _build_gender_distribution(df_state)
-    trainee_edu_choices, trainee_edu_weights = _build_education_distribution(
-        df_state,
+    if gender_distribution is None:
+        gender_choices, gender_weights = _build_gender_distribution(df_state)
+    else:
+        gender_choices, gender_weights = gender_distribution
+    if education_distribution is None:
+        trainee_edu_choices, trainee_edu_weights = _build_education_distribution(
+            df_state,
         allowed_values=[
             "Bachelor FH",
             "Bachelor Universität",
@@ -791,9 +846,11 @@ def _simulate_trainees(
             "Master Universität",
             "Bankbetriebswirt",
         ],
-        excluded_values=[AZUBI_TRAINING_EDUCATION],
-        fallback_choices=[DEFAULT_TRAINEE_EDUCATION],
-    )
+            excluded_values=[AZUBI_TRAINING_EDUCATION],
+            fallback_choices=[DEFAULT_TRAINEE_EDUCATION],
+        )
+    else:
+        trainee_edu_choices, trainee_edu_weights = education_distribution
     
     # Effective start for random entry date (to avoid filter loss in first month)
     eff_start = period.start
@@ -832,6 +889,7 @@ def _simulate_trainees(
             "Geschlecht": gender_code,
             "Text Gsch": gender_text,
             "Ausbildung": education,
+            INTERNAL_EDUCATION_COL: education,
             "Vertragsart": "Zeitvertrag",
             "Status kundenindividuell": "Aktives Beschäftigungsverhältnis",
             "Planstelle": "Trainee",
@@ -868,10 +926,14 @@ def _simulate_hires(
     all_org_units: List[str],
     vacancies: List[Dict[str, Any]],
     num_cases: int = 0,
-    forecast_start_date: Optional[pd.Timestamp] = None
+    forecast_start_date: Optional[pd.Timestamp] = None,
+    gender_distribution: Optional[tuple[list[str], list[float]]] = None,
+    education_distribution: Optional[tuple[list[str], list[float]]] = None,
 ):
     hire_params = params.get("new_hires", {})
-    count_annual = float(hire_params.get("count_per_year", 0))
+    if num_cases <= 0:
+        return
+
     strategy = hire_params.get("strategy", "Fill Vacancies")
     target_unit = hire_params.get("target_org_unit", None)
     
@@ -892,12 +954,18 @@ def _simulate_hires(
             dist_weights = [w / total_w for w in dist_weights]
         else:
             dist_list = [] # Invalid distribution
-    gender_choices, gender_weights = _build_gender_distribution(df_state)
-    hire_edu_choices, hire_edu_weights = _build_education_distribution(
-        df_state,
-        excluded_values=[AZUBI_TRAINING_EDUCATION],
-        fallback_choices=[DEFAULT_NEW_HIRE_EDUCATION],
-    )
+    if gender_distribution is None:
+        gender_choices, gender_weights = _build_gender_distribution(df_state)
+    else:
+        gender_choices, gender_weights = gender_distribution
+    if education_distribution is None:
+        hire_edu_choices, hire_edu_weights = _build_education_distribution(
+            df_state,
+            excluded_values=[AZUBI_TRAINING_EDUCATION],
+            fallback_choices=[DEFAULT_NEW_HIRE_EDUCATION],
+        )
+    else:
+        hire_edu_choices, hire_edu_weights = education_distribution
     
     # Effective start for random entry date (to avoid filter loss in first month)
     eff_start = period.start
@@ -976,6 +1044,7 @@ def _simulate_hires(
             "Geschlecht": gender_code,
             "Text Gsch": gender_text,
             "Ausbildung": education,
+            INTERNAL_EDUCATION_COL: education,
             "Vertragsart": "Unbefristet",
             "Status kundenindividuell": "Aktives Beschäftigungsverhältnis",
             "Planstelle": plan_stelle,
@@ -1027,6 +1096,8 @@ def run_forecast_zugaenge(
     df_state = df_snapshot.copy()
     if "active" not in df_state.columns:
         df_state["active"] = True # Assume snapshot is all active
+    df_state[INTERNAL_EDUCATION_COL] = _build_internal_education_series(df_state)
+    df_state[INTERNAL_AZUBI_FLAG_COL] = _build_internal_azubi_series(df_state)
         
     if not df_state.empty and "PersNr" in df_state.columns:
         df_state.set_index("PersNr", drop=False, inplace=True)
@@ -1083,17 +1154,56 @@ def run_forecast_zugaenge(
         if params.get("azubi", {}).get("active", True):
             _simulate_azubis(df_state, params, period, rng, period_events, all_org_units, debts)
 
+        period_gender_distribution = None
+        if n_az > 0 or n_tr > 0 or n_hi > 0:
+            normalized_genders = _normalized_gender_series(df_state)
+            period_gender_distribution = _build_gender_distribution(df_state, normalized_genders)
+
         # 2. Trainees (NEW Hires)
         if params.get("trainee", {}).get("active", True):
-            _simulate_trainees(df_state, params, period, rng, period_events, all_org_units, n_tr, start_date)
+            _simulate_trainees(
+                df_state,
+                params,
+                period,
+                rng,
+                period_events,
+                all_org_units,
+                n_tr,
+                start_date,
+                period_gender_distribution,
+            )
         
         # 3. New Azubis (NEW Hire entry)
         if params.get("azubi", {}).get("active", True):
-            _simulate_new_azubis(df_state, params, period, rng, period_events, all_org_units, n_az, start_date, debts)
+            period_unit_to_cluster_map = _get_unit_to_cluster_map(df_state) if n_az > 0 else None
+            _simulate_new_azubis(
+                df_state,
+                params,
+                period,
+                rng,
+                period_events,
+                all_org_units,
+                n_az,
+                start_date,
+                debts,
+                period_gender_distribution,
+                period_unit_to_cluster_map,
+            )
         
         # 4. New Hires (Standard)
         if params.get("new_hires", {}).get("active", True):
-            _simulate_hires(df_state, params, period, rng, period_events, all_org_units, current_vacancies, n_hi, start_date)
+            _simulate_hires(
+                df_state,
+                params,
+                period,
+                rng,
+                period_events,
+                all_org_units,
+                current_vacancies,
+                n_hi,
+                start_date,
+                period_gender_distribution,
+            )
         
         # Apply New Rows
         new_rows = [e["_new_row"] for e in period_events if "_new_row" in e]
@@ -1265,6 +1375,11 @@ def run_forecast_zugaenge(
         cum_mak_change += delta_mak
 
     forecast_kpis = pd.DataFrame(kpi_rows)
+
+    if INTERNAL_EDUCATION_COL in df_state.columns:
+        df_state = df_state.drop(columns=[INTERNAL_EDUCATION_COL])
+    if INTERNAL_AZUBI_FLAG_COL in df_state.columns:
+        df_state = df_state.drop(columns=[INTERNAL_AZUBI_FLAG_COL])
 
     return {
         "events": events_df,

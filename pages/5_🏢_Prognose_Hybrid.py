@@ -57,6 +57,13 @@ from utils.plot_helpers import apply_legend_bottom
 from utils.ui_helpers import render_distribution_matrix, render_orgunit_mode_hint
 from utils.matrix_helpers import migrate_to_percent, percent_to_weights
 
+_HYBRID_ZUG_REASON_LABELS = {
+    "Azubi_Hire": "Azubi Neueinstellung (externer Zugang)",
+    "Azubi_Conversion_Out": "Azubi-Abschluss (Statuswechsel: Ende Azubi)",
+    "Azubi_Conversion_In": "Übernahme nach Ausbildungsabschluss (interne MAK-wirksame Stellenbesetzung)",
+    "Azubi_Exit": "Azubi-Abschluss: Nichtübernahme (Abgang)",
+}
+
 
 def calculate_kpi_from_events(df_start_stats: pd.DataFrame, events_df: pd.DataFrame, start_date: pd.Timestamp, end_date: pd.Timestamp, freq: str) -> pd.DataFrame:
     """
@@ -212,6 +219,82 @@ def _render_debug_aggregation(df: pd.DataFrame, group_cols: list[str], label: st
         st.error(f"Fehler in Aggregation ({label}): {e}")
 
 
+def _has_effective_hybrid_filters(active_filters: dict) -> bool:
+    return any(
+        [
+            bool(active_filters.get("selected_org_units")),
+            bool(active_filters.get("selected_jobfamilies")),
+            bool(active_filters.get("selected_oe_clusters")),
+            bool(active_filters.get("selected_jf_clusters")),
+            bool(active_filters.get("selected_cohorts")),
+            bool(active_filters.get("selected_education")),
+            set(active_filters.get("selected_genders", ["m", "w"])) != {"m", "w"},
+            set(active_filters.get("selected_employment", ["Vollzeit", "Teilzeit", "Inaktiv"])) != {"Vollzeit", "Teilzeit", "Inaktiv"},
+            set(active_filters.get("selected_atz_status", ["Kein ATZ", "Arbeitsphase", "Freistellungsphase"])) != {"Kein ATZ", "Arbeitsphase", "Freistellungsphase"},
+        ]
+    )
+
+
+def _build_hybrid_zug_reason_labels(event_types: pd.Series, sources: pd.Series) -> pd.Series:
+    type_labels = event_types.astype(str).map(_HYBRID_ZUG_REASON_LABELS)
+    source_labels = sources.astype(str)
+    return type_labels.where(type_labels.notna(), "Zugang (" + source_labels + ")")
+
+
+def _build_hybrid_vacancies_from_events(
+    abg_events: pd.DataFrame,
+    df_ma: pd.DataFrame,
+) -> list[dict[str, Any]]:
+    exits = abg_events[abg_events["headcount_change"] < 0]
+    if exits.empty:
+        return []
+
+    donor_lookup = (
+        df_ma[["PersNr", "Jobfamily", "OE-Cluster"]]
+        .copy()
+        .assign(_lookup_key=lambda frame: frame["PersNr"])
+        .drop_duplicates("_lookup_key", keep="first")
+    )
+
+    enriched_exits = exits.copy()
+    enriched_exits["_lookup_key"] = enriched_exits["persnr"].astype(str).str.strip().str.replace(".0", "", regex=False)
+    enriched_exits = enriched_exits.merge(
+        donor_lookup[["_lookup_key", "Jobfamily", "OE-Cluster"]].rename(
+            columns={
+                "Jobfamily": "_donor_jobfamily",
+                "OE-Cluster": "_donor_oe_cluster",
+            }
+        ),
+        on="_lookup_key",
+        how="left",
+        sort=False,
+        indicator=True,
+    )
+    matched_donor = enriched_exits["_merge"].eq("both")
+    org_unit_series = (
+        enriched_exits["Organisationseinheit"]
+        if "Organisationseinheit" in enriched_exits.columns
+        else pd.Series("Unbekannt", index=enriched_exits.index, dtype="object")
+    )
+    planstelle_series = (
+        enriched_exits["Planstelle"]
+        if "Planstelle" in enriched_exits.columns
+        else pd.Series("Unbekannt", index=enriched_exits.index, dtype="object")
+    )
+
+    vacancy_df = pd.DataFrame(
+        {
+            "date": enriched_exits["event_date"],
+            "org_unit": org_unit_series.where(org_unit_series.notna(), "Unbekannt"),
+            "planstelle": planstelle_series.where(planstelle_series.notna(), "Unbekannt"),
+            "persnr": enriched_exits["persnr"],
+            "Jobfamily": enriched_exits["_donor_jobfamily"].where(matched_donor, "Angestellte"),
+            "OE-Cluster": enriched_exits["_donor_oe_cluster"].where(matched_donor, "Sonstiges"),
+        }
+    )
+    return vacancy_df.to_dict("records")
+
+
 @st.cache_data
 def _prepare_hybrid_employee_snapshot(
     snapshot_df: pd.DataFrame,
@@ -280,13 +363,21 @@ def _prepare_hybrid_view_state(
     ist_stichtag: pd.Timestamp,
     forecast_end_date: pd.Timestamp,
     freq_label: str,
+    base_abg_kpis: Optional[pd.DataFrame] = None,
 ) -> dict:
-    filt_abg_events, n_abg_before, n_abg_after = apply_event_filters_with_state(
-        raw_abg_events,
-        snapshot_df,
-        active_filters=active_filters,
-        mode="attrition",
-    )
+    has_effective_filters = _has_effective_hybrid_filters(active_filters)
+
+    if has_effective_filters:
+        filt_abg_events, n_abg_before, n_abg_after = apply_event_filters_with_state(
+            raw_abg_events,
+            snapshot_df,
+            active_filters=active_filters,
+            mode="attrition",
+        )
+    else:
+        filt_abg_events = raw_abg_events.copy()
+        n_abg_before = len(raw_abg_events)
+        n_abg_after = len(filt_abg_events)
 
     abg_cols = [
         "period_label", "period_start", "period_end", "event_date", "persnr",
@@ -313,16 +404,26 @@ def _prepare_hybrid_view_state(
             filt_abg_events["Jobfamily"] = filt_abg_events["_pid_clean"].map(jf_map).fillna("Unbekannt")
         filt_abg_events = filt_abg_events.drop(columns=["_pid_clean"], errors="ignore")
 
-    df_snapshot_filtered = filter_dataframe_by_view_filters(df_ma, active_filters)
+    if has_effective_filters:
+        df_snapshot_filtered = filter_dataframe_by_view_filters(df_ma, active_filters)
+    else:
+        df_snapshot_filtered = df_ma.copy()
 
-    if "org_unit" in raw_zug_events.columns:
+    if "org_unit" in raw_zug_events.columns and "Organisationseinheit" not in raw_zug_events.columns:
         raw_zug_events = raw_zug_events.rename(columns={"org_unit": "Organisationseinheit"})
-    filt_zug_events, n_zug_before, n_zug_after = apply_event_filters_with_state(
-        raw_zug_events,
-        snapshot_df,
-        active_filters=active_filters,
-        mode="accession",
-    )
+    elif "org_unit" in raw_zug_events.columns and "Organisationseinheit" in raw_zug_events.columns:
+        raw_zug_events = raw_zug_events.drop(columns=["org_unit"])
+    if has_effective_filters:
+        filt_zug_events, n_zug_before, n_zug_after = apply_event_filters_with_state(
+            raw_zug_events,
+            snapshot_df,
+            active_filters=active_filters,
+            mode="accession",
+        )
+    else:
+        filt_zug_events = raw_zug_events.copy()
+        n_zug_before = len(raw_zug_events)
+        n_zug_after = len(filt_zug_events)
 
     if "date" in filt_zug_events.columns:
         filt_zug_events["date"] = pd.to_datetime(filt_zug_events["date"])
@@ -346,20 +447,13 @@ def _prepare_hybrid_view_state(
     filt_zug_events_std["event_date"] = pd.to_datetime(filt_zug_events_std["date"])
     filt_zug_events_std["mak_change"] = filt_zug_events_std["mak"]
     filt_zug_events_std["headcount_change"] = filt_zug_events_std["count"]
-
-    def _map_zug_reason(row):
-        event_type = str(row.get("type", ""))
-        if event_type == "Azubi_Hire":
-            return "Azubi Neueinstellung (externer Zugang)"
-        if event_type == "Azubi_Conversion_Out":
-            return "Azubi-Abschluss (Statuswechsel: Ende Azubi)"
-        if event_type == "Azubi_Conversion_In":
-            return "Übernahme nach Ausbildungsabschluss (interne MAK-wirksame Stellenbesetzung)"
-        if event_type == "Azubi_Exit":
-            return "Azubi-Abschluss: Nichtübernahme (Abgang)"
-        return "Zugang (" + str(row.get("source", "unbekannt")) + ")"
-
-    filt_zug_events_std["reason_label"] = filt_zug_events_std.apply(_map_zug_reason, axis=1)
+    if filt_zug_events_std.empty:
+        filt_zug_events_std["reason_label"] = pd.Series(index=filt_zug_events_std.index, dtype="float64")
+    else:
+        filt_zug_events_std["reason_label"] = _build_hybrid_zug_reason_labels(
+            filt_zug_events_std["type"],
+            filt_zug_events_std["source"],
+        )
     filt_zug_events_std["source_view"] = "Zugang_Detail"
 
     combined_events = pd.concat([filt_abg_events, filt_zug_events_std], ignore_index=True)
@@ -386,17 +480,11 @@ def _prepare_hybrid_view_state(
             (combined_events_in_scope["source_view"] == "Abgang_Detail")
         )
 
-        def _is_bank_exit(row):
-            if row["headcount_change"] >= 0:
-                return False
-            rl = str(row["reason_label"])
-            if "Statuswechsel" in rl or "Conversion_Out" in rl:
-                return False
-            if "Ruhend" in rl or "Ruhephase" in rl:
-                return False
-            return True
-
-        combined_events_in_scope["is_headcount_exit_bank"] = combined_events_in_scope.apply(_is_bank_exit, axis=1)
+        reason_labels = combined_events_in_scope["reason_label"].astype(str)
+        combined_events_in_scope["is_headcount_exit_bank"] = (
+            (combined_events_in_scope["headcount_change"] < 0)
+            & ~reason_labels.str.contains("Statuswechsel|Conversion_Out|Ruhend|Ruhephase", na=False, regex=True)
+        )
 
         mask_hc0 = combined_events_in_scope["headcount_change"] == 0
         mask_atz_ar_fr = combined_events_in_scope["reason_label"].str.contains("AR → FR", na=False)
@@ -444,14 +532,17 @@ def _prepare_hybrid_view_state(
             end_date=pd.Timestamp(forecast_end_date),
             freq=agg_freq,
         )
-        abg_view_kpis = aggregate_forecast_results(
-            df_initial=df_view_agg,
-            events_df=filt_abg_events,
-            start_date=pd.Timestamp(ist_stichtag),
-            end_date=pd.Timestamp(forecast_end_date),
-            freq=agg_freq,
-            params=None,
-        )
+        if not has_effective_filters and base_abg_kpis is not None and not base_abg_kpis.empty:
+            abg_view_kpis = base_abg_kpis.copy()
+        else:
+            abg_view_kpis = aggregate_forecast_results(
+                df_initial=df_view_agg,
+                events_df=filt_abg_events,
+                start_date=pd.Timestamp(ist_stichtag),
+                end_date=pd.Timestamp(forecast_end_date),
+                freq=agg_freq,
+                params=None,
+            )
         zug_view_kpis = aggregate_forecast_results(
             df_initial=df_view_agg,
             events_df=filt_zug_events_std,
@@ -924,19 +1015,7 @@ def main():
                     "age", "tenure", "Organisationseinheit", "Kürzel OrgEinheit", 
                     "Jobfamily", "Planstelle", "TrfGr", "St"
                 ])
-                
-            exits = abg_res["events_person_level"][abg_res["events_person_level"]["headcount_change"] < 0]
-            # Simple attribute donor lookup
-            snap_lookup = df_ma.set_index("PersNr")
-            for _, row in exits.iterrows():
-                pid = str(row["persnr"]).strip().replace(".0", "")
-                d_jf, d_oe_c = "Angestellte", "Sonstiges"
-                if pid in snap_lookup.index:
-                    d_row = snap_lookup.loc[pid]
-                    if isinstance(d_row, pd.DataFrame): d_row = d_row.iloc[0]
-                    d_jf = d_row.get("Jobfamily", d_jf)
-                    d_oe_c = d_row.get("OE-Cluster", d_oe_c)
-                vacancies.append({"date": row["event_date"], "org_unit": row.get("Organisationseinheit", "Unbekannt"), "planstelle": row.get("Planstelle", "Unbekannt"), "persnr": row["persnr"], "Jobfamily": d_jf, "OE-Cluster": d_oe_c})
+            vacancies = _build_hybrid_vacancies_from_events(abg_res["events_person_level"], df_ma)
 
         # C. Arrivals
         with st.spinner("Berechne Zugangs-Szenario..."):
@@ -972,6 +1051,7 @@ def main():
         ist_stichtag=pd.Timestamp(ist_stichtag),
         forecast_end_date=pd.Timestamp(forecast_end_date),
         freq_label=freq_label,
+        base_abg_kpis=abg_res.get("forecast_kpis"),
     )
 
     filt_abg_events = view_state["filt_abg_events"]
