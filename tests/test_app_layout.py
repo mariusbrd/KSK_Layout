@@ -4,6 +4,7 @@ import importlib.util
 from pathlib import Path
 import sys
 
+import pandas as pd
 import pytest
 import streamlit as st
 
@@ -165,7 +166,7 @@ def test_render_data_status_surfaces_runtime_status_message_in_sidebar(monkeypat
     from dataloader.source_service import DataSourceOrigin
 
     markdown_calls: list[str] = []
-    info_calls: list[str] = []
+    note_calls: list[str] = []
     monkeypatch.setattr(
         st,
         "session_state",
@@ -176,7 +177,7 @@ def test_render_data_status_surfaces_runtime_status_message_in_sidebar(monkeypat
         },
     )
     monkeypatch.setattr(st, "markdown", lambda body, **kwargs: markdown_calls.append(body))
-    monkeypatch.setattr(st, "info", lambda body, **kwargs: info_calls.append(body))
+    monkeypatch.setattr(sidebar_module, "_render_sidebar_note", lambda body: note_calls.append(body))
     monkeypatch.setattr(
         sidebar_module.SourceService,
         "GROUPS",
@@ -195,4 +196,85 @@ def test_render_data_status_surfaces_runtime_status_message_in_sidebar(monkeypat
     sidebar_module.render_data_status()
 
     assert markdown_calls
-    assert info_calls == ["Using synthetic fallback data."]
+    assert note_calls == ["ℹ️ Using synthetic fallback data."]
+
+
+def test_render_global_filters_uses_refined_sidebar_section_order(monkeypatch):
+    if str(ROOT) not in sys.path:
+        sys.path.append(str(ROOT))
+
+    from components import sidebar as sidebar_module
+
+    class DummyContext:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    section_calls: list[str] = []
+    summary_calls: list[str] = []
+
+    monkeypatch.setattr(
+        st,
+        "session_state",
+        {
+            "global_uploads": {},
+            "selected_org_units": [],
+            "selected_jobfamilies": [],
+            "selected_cohorts": [],
+            "selected_genders": ["m", "w"],
+            "selected_employment": ["Vollzeit", "Teilzeit", "Inaktiv"],
+            "selected_education": [],
+            "selected_atz_status": ["Kein ATZ", "Arbeitsphase", "Freistellungsphase"],
+            "selected_oe_clusters": [],
+            "selected_jf_clusters": [],
+        },
+    )
+    monkeypatch.setattr(sidebar_module, "_render_sidebar_block_intro", lambda title, caption=None, icon=None: section_calls.append(title))
+    monkeypatch.setattr(sidebar_module, "_render_sidebar_summary", lambda text: summary_calls.append(text))
+    monkeypatch.setattr(sidebar_module, "_render_sidebar_caption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sidebar_module, "_render_sidebar_section", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sidebar_module, "render_data_status", lambda *args, **kwargs: section_calls.append("DATA_STATUS_BODY"))
+    monkeypatch.setattr(sidebar_module, "render_global_metric_selector", lambda: "MAK")
+    monkeypatch.setattr(sidebar_module, "render_language_switcher", lambda: None)
+    monkeypatch.setattr(sidebar_module, "render_cohort_editor", lambda: None)
+    monkeypatch.setattr(sidebar_module, "get_filter_summary", lambda: "1 aktiver Filter")
+    monkeypatch.setattr(sidebar_module, "inject_ui_theme", lambda: None)
+    monkeypatch.setattr(sidebar_module, "initialize_language_state", lambda: None)
+    monkeypatch.setattr(st, "sidebar", DummyContext())
+    monkeypatch.setattr(st, "markdown", lambda *args, **kwargs: None)
+    monkeypatch.setattr(st, "date_input", lambda *args, value=None, **kwargs: value)
+    monkeypatch.setattr(st, "multiselect", lambda *args, default=None, **kwargs: default or [])
+    monkeypatch.setattr(st, "button", lambda *args, **kwargs: False)
+    monkeypatch.setattr(st, "checkbox", lambda *args, value=False, **kwargs: value)
+    monkeypatch.setattr(st, "columns", lambda spec: [DummyContext() for _ in range(spec if isinstance(spec, int) else len(spec))])
+    monkeypatch.setattr(st, "popover", lambda *args, **kwargs: DummyContext())
+    monkeypatch.setattr(st, "expander", lambda *args, **kwargs: DummyContext())
+    monkeypatch.setattr(st, "divider", lambda *args, **kwargs: None)
+    monkeypatch.setattr(st, "rerun", lambda *args, **kwargs: None)
+
+    snapshot_df = pd.DataFrame(
+        {
+            "Organisationseinheit": ["OE A"],
+            "Kürzel OrgEinheit": ["100"],
+            "Jobfamily": ["IT"],
+            "Ausbildung": ["Bankfachwirt"],
+            "OE-Cluster": ["Cluster A"],
+            "JF-Cluster": ["Family A"],
+        }
+    )
+    history_df = pd.DataFrame({"Date": pd.to_datetime(["2026-03-01"])})
+
+    sidebar_module.render_global_filters(snapshot_df, history_df)
+
+    assert section_calls[:6] == [
+        "Dashboard Steuerung",
+        "Ansicht",
+        "Primäre Filter",
+        "Aktive Auswahl",
+        "Beschäftigte",
+        "Datenstatus",
+    ]
+    assert "Weitere Filter" not in section_calls
+    assert "1 aktiver Filter" in summary_calls

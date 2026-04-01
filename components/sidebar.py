@@ -231,7 +231,18 @@ def _render_sidebar_note(text: str):
     )
 
 
-def render_data_status():
+def _render_sidebar_caption(text: str):
+    st.caption(text)
+
+
+def _render_sidebar_block_intro(title: str, caption: str | None = None, icon: str | None = None):
+    heading = f"{icon} {title}" if icon else title
+    _render_sidebar_heading(heading)
+    if caption:
+        _render_sidebar_caption(caption)
+
+
+def render_data_status(show_title: bool = True):
     """Renders the structured data status in an ultra-compact Ampel-format."""
     uploads = st.session_state.get("global_uploads", {})
     original_dir = os.path.join(BASE_DIR, "..", "Original-Daten")
@@ -252,9 +263,10 @@ def render_data_status():
 
     # Start HTML block
     html_parts = ["<div style='margin-bottom: 8px;'>"]
-    html_parts.append(
-        f"<div style='margin: 0 0 4px 0; font-size: 13px; font-weight: bold;'>📊 {html.escape(t('sidebar.data_status.title'))}</div>"
-    )
+    if show_title:
+        html_parts.append(
+            f"<div style='margin: 0 0 4px 0; font-size: 13px; font-weight: bold;'>📊 {html.escape(t('sidebar.data_status.title'))}</div>"
+        )
     html_parts.append("<div style='border-left: 2px solid #e5e7eb; padding-left: 8px;'>")
     
     for group_name in SourceService.GROUPS.keys():
@@ -278,10 +290,8 @@ def render_data_status():
     data_status_message = st.session_state.get("data_status_message")
     data_status_level = st.session_state.get("data_status_level", "info")
     if data_status_message:
-        if data_status_level == "warning":
-            st.warning(data_status_message)
-        else:
-            st.info(data_status_message)
+        prefix = "⚠️ " if data_status_level == "warning" else "ℹ️ "
+        _render_sidebar_note(f"{prefix}{data_status_message}")
 
 
 def _sync_legacy_view_mode():
@@ -405,7 +415,11 @@ def render_metric_selector_only(caption_text: str | None = None):
     initialize_language_state()
     initialize_global_metric_view()
     with st.sidebar:
-        st.markdown(f"### 💡 {t('sidebar.view.section')}")
+        _render_sidebar_block_intro(
+            t("sidebar.view.section"),
+            t("sidebar.view.caption"),
+            icon="💡",
+        )
         render_global_metric_selector()
         if caption_text:
             _render_sidebar_note(caption_text)
@@ -471,31 +485,25 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
     initialize_global_metric_view()
 
     with st.sidebar:
-        # -----------------------------
-        # Data Source Status
-        # -----------------------------
-        render_data_status()
+        _render_sidebar_block_intro(
+            t("sidebar.control.heading"),
+            t("sidebar.control.caption"),
+            icon="🎛️",
+        )
 
-        st.markdown("---")
-
-        # -----------------------------
-        # Header / Summary
-        # -----------------------------
-        st.markdown(f"## 🎛️ {t('sidebar.control.heading')}")
-        _render_sidebar_summary(get_filter_summary())
-
-        # -----------------------------
-        # View Mode (Köpfe/MAK/EUR) - compact pills
-        # -----------------------------
-        st.markdown(f"### 💡 {t('sidebar.view.section')}")
+        _render_sidebar_block_intro(
+            t("sidebar.view.section"),
+            t("sidebar.view.caption"),
+            icon="💡",
+        )
+        st.markdown(f"**{t('sidebar.metric.label')}**")
         render_global_metric_selector()
 
-        st.markdown("---")
-
-        # -----------------------------
-        # Primary Filters (always visible)
-        # -----------------------------
-        st.markdown(f"### 🎯 {t('sidebar.primary_filters.section')}")
+        _render_sidebar_block_intro(
+            t("sidebar.primary_filters.section"),
+            t("sidebar.primary_filters.caption"),
+            icon="🎯",
+        )
 
         # Zeitraum (aus History)
         if not history_df.empty and "Date" in history_df.columns:
@@ -574,31 +582,6 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
         )
         st.session_state["selected_jobfamilies"] = selected_jf
 
-        # Custom Clusters (Optional)
-        has_oe_clusters = "OE-Cluster" in snapshot_df.columns and snapshot_df["OE-Cluster"].nunique() > 1
-        has_jf_clusters = "JF-Cluster" in snapshot_df.columns and snapshot_df["JF-Cluster"].nunique() > 1
-        
-        if has_oe_clusters or has_jf_clusters:
-            st.markdown(f"### 🧩 {t('sidebar.cluster.section')}")
-            
-            if has_oe_clusters:
-                oe_clusters = sorted(snapshot_df["OE-Cluster"].dropna().unique())
-                st.session_state["selected_oe_clusters"] = _multiselect_with_placeholder(
-                    t("sidebar.label.oe_clusters_select"),
-                    options=oe_clusters,
-                    default=st.session_state.get("selected_oe_clusters", []),
-                    key="oe_cluster_select"
-                )
-                
-            if has_jf_clusters:
-                jf_clusters = sorted(snapshot_df["JF-Cluster"].dropna().unique())
-                st.session_state["selected_jf_clusters"] = _multiselect_with_placeholder(
-                    t("sidebar.label.jf_clusters_select"),
-                    options=jf_clusters,
-                    default=st.session_state.get("selected_jf_clusters", []),
-                    key="jf_cluster_select"
-                )
-
         # Alterskohorten (Auswahl + Editor in Popover)
         st.markdown(f"**👥 {t('sidebar.label.age_cohorts')}**")
         cohorts = list(st.session_state["cohort_definitions"].keys())
@@ -631,12 +614,18 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
             with st.expander(f"⚙️ {t('sidebar.action.edit_cohorts')}"):
                 render_cohort_editor()
 
-        st.markdown("---")
+        _render_sidebar_block_intro(
+            t("sidebar.active_selection.section"),
+            t("sidebar.active_selection.caption"),
+            icon="🧭",
+        )
+        _render_sidebar_summary(get_filter_summary())
 
-        # -----------------------------
-        # Demography (compact)
-        # -----------------------------
-        st.markdown(f"### 👤 {t('sidebar.demography.section')}")
+        _render_sidebar_block_intro(
+            t("sidebar.people_filters.section"),
+            t("sidebar.people_filters.caption"),
+            icon="👤",
+        )
 
         # Geschlecht - compact pills (multi)
         # Keep values "m"/"w" in session state, same as before.
@@ -674,66 +663,95 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
         )
         st.session_state["selected_employment"] = selected_employment
 
-        st.markdown("---")
+        with st.expander(f"🧩 {t('sidebar.more_filters.section')}", expanded=False):
+            _render_sidebar_caption(t("sidebar.more_filters.caption"))
 
-        # -----------------------------
-        # Secondary Filters (accordion principle)
-        # -----------------------------
-        st.markdown(f"### 🧩 {t('sidebar.more_filters.section')}")
+            # Custom Clusters (Optional)
+            has_oe_clusters = "OE-Cluster" in snapshot_df.columns and snapshot_df["OE-Cluster"].nunique() > 1
+            has_jf_clusters = "JF-Cluster" in snapshot_df.columns and snapshot_df["JF-Cluster"].nunique() > 1
 
-        # Qualifikation (Expander with smart label + buttons)
-        education_options = []
-        if "Ausbildung" in snapshot_df.columns:
-            education_options = sorted(snapshot_df["Ausbildung"].dropna().unique())
+            if has_oe_clusters or has_jf_clusters:
+                _render_sidebar_section(t("sidebar.cluster.section"))
 
-        edu_selected = st.session_state.get("selected_education", [])
-        edu_label = _smart_label(f"🎓 {t('sidebar.label.education')}", edu_selected, total=len(education_options))
+                if has_oe_clusters:
+                    oe_clusters = sorted(snapshot_df["OE-Cluster"].dropna().unique())
+                    st.session_state["selected_oe_clusters"] = _multiselect_with_placeholder(
+                        t("sidebar.label.oe_clusters_select"),
+                        options=oe_clusters,
+                        default=st.session_state.get("selected_oe_clusters", []),
+                        key="oe_cluster_select"
+                    )
 
-        with st.expander(edu_label, expanded=False):
-            _render_select_all_reset_row(
-                select_all_key="edu_select_all",
-                reset_key="edu_reset",
-                on_select_all=lambda: st.session_state.__setitem__("selected_education", education_options.copy()),
-                on_reset=lambda: st.session_state.__setitem__("selected_education", []),
-            )
-            
-            selected_education = _multiselect_with_placeholder(
-                t("sidebar.label.education_select"),
-                options=education_options,
-                default=edu_selected,
-                key="education_select",
-                label_visibility="collapsed",
-            )
-            st.session_state["selected_education"] = selected_education
+                if has_jf_clusters:
+                    jf_clusters = sorted(snapshot_df["JF-Cluster"].dropna().unique())
+                    st.session_state["selected_jf_clusters"] = _multiselect_with_placeholder(
+                        t("sidebar.label.jf_clusters_select"),
+                        options=jf_clusters,
+                        default=st.session_state.get("selected_jf_clusters", []),
+                        key="jf_cluster_select"
+                    )
 
+            # Qualifikation (Expander with smart label + buttons)
+            education_options = []
+            if "Ausbildung" in snapshot_df.columns:
+                education_options = sorted(snapshot_df["Ausbildung"].dropna().unique())
 
+            edu_selected = st.session_state.get("selected_education", [])
+            edu_label = _smart_label(f"🎓 {t('sidebar.label.education')}", edu_selected, total=len(education_options))
 
-        # ATZ-Status (Expander with smart label + buttons)
-        atz_options = ["Kein ATZ", "Arbeitsphase", "Freistellungsphase"]
-        atz_selected = st.session_state.get("selected_atz_status", atz_options)
-        atz_label = _smart_label(f"🔄 {t('sidebar.label.atz')}", atz_selected, total=len(atz_options))
+            with st.expander(edu_label, expanded=False):
+                _render_select_all_reset_row(
+                    select_all_key="edu_select_all",
+                    reset_key="edu_reset",
+                    on_select_all=lambda: st.session_state.__setitem__("selected_education", education_options.copy()),
+                    on_reset=lambda: st.session_state.__setitem__("selected_education", []),
+                )
+                
+                selected_education = _multiselect_with_placeholder(
+                    t("sidebar.label.education_select"),
+                    options=education_options,
+                    default=edu_selected,
+                    key="education_select",
+                    label_visibility="collapsed",
+                )
+                st.session_state["selected_education"] = selected_education
 
-        with st.expander(atz_label, expanded=False):
-            _render_select_all_reset_row(
-                select_all_key="atz_select_all",
-                reset_key="atz_reset",
-                on_select_all=lambda: st.session_state.__setitem__("selected_atz_status", atz_options.copy()),
-                on_reset=lambda: st.session_state.__setitem__("selected_atz_status", []),
-            )
+            # ATZ-Status (Expander with smart label + buttons)
+            atz_options = ["Kein ATZ", "Arbeitsphase", "Freistellungsphase"]
+            atz_selected = st.session_state.get("selected_atz_status", atz_options)
+            atz_label = _smart_label(f"🔄 {t('sidebar.label.atz')}", atz_selected, total=len(atz_options))
 
-            selected_atz = _multiselect_with_placeholder(
-                t("sidebar.label.atz_select"),
-                options=atz_options,
-                default=atz_selected,
-                format_func=_localized_atz_option,
-                key="atz_select",
-                label_visibility="collapsed",
-            )
-            st.session_state["selected_atz_status"] = selected_atz
+            with st.expander(atz_label, expanded=False):
+                _render_select_all_reset_row(
+                    select_all_key="atz_select_all",
+                    reset_key="atz_reset",
+                    on_select_all=lambda: st.session_state.__setitem__("selected_atz_status", atz_options.copy()),
+                    on_reset=lambda: st.session_state.__setitem__("selected_atz_status", []),
+                )
 
-        st.markdown("---")
+                selected_atz = _multiselect_with_placeholder(
+                    t("sidebar.label.atz_select"),
+                    options=atz_options,
+                    default=atz_selected,
+                    format_func=_localized_atz_option,
+                    key="atz_select",
+                    label_visibility="collapsed",
+                )
+                st.session_state["selected_atz_status"] = selected_atz
 
-        # Reset Button
+        _render_sidebar_block_intro(
+            t("sidebar.data_status.title"),
+            t("sidebar.data_status.caption"),
+            icon="📊",
+        )
+        render_data_status(show_title=False)
+
+        _render_sidebar_block_intro(
+            t("sidebar.actions.section"),
+            t("sidebar.actions.caption"),
+            icon="⚙️",
+        )
+
         if st.button(f"🔄 {t('sidebar.action.reset_all_filters')}", use_container_width=True):
             reset_filters()
             st.rerun()
