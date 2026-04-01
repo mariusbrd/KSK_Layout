@@ -3,7 +3,7 @@ from pathlib import Path
 import sys
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
-from dataloader.compact_simulation_engine import simulate_compact_snapshot
+from dataloader.compact_simulation_engine import _vacate_rows, simulate_compact_snapshot
 
 
 def _base_snapshot(age_years: int = 45) -> pd.DataFrame:
@@ -108,3 +108,37 @@ def test_compact_simulation_vacates_row_for_certain_retirement():
 
     assert future["Is_Vacant"].all()
     assert future["MAK_Calculated"].sum() == 0.0
+
+
+def test_vacate_rows_handles_bool_and_integer_person_fields_without_type_error():
+    df = pd.DataFrame(
+        {
+            "PersNr": ["000001"],
+            "Personalnummer": ["000001"],
+            "ATZ_Status": ["Freistellungsphase"],
+            "ist_atz_fr": pd.Series([True], dtype=bool),
+            "GebDatum": [pd.Timestamp("1980-01-01")],
+            "Eintritt": [pd.Timestamp("2010-01-01")],
+            "Austritt": [pd.NaT],
+            "Alter": pd.Series([46], dtype="int64"),
+            "Alter_Jahre": pd.Series([46], dtype="int64"),
+            "MAK_Calculated": [1.0],
+            "Is_Vacant": [False],
+        }
+    )
+
+    out = _vacate_rows(df, pd.Series([True], index=df.index))
+
+    assert bool(out["Is_Vacant"].iloc[0]) is True
+    assert pd.isna(out["PersNr"].iloc[0])
+    assert pd.isna(out["Personalnummer"].iloc[0])
+    assert pd.isna(out["ATZ_Status"].iloc[0])
+    assert bool(out["ist_atz_fr"].iloc[0]) is False
+    assert pd.isna(out["GebDatum"].iloc[0])
+    assert pd.isna(out["Eintritt"].iloc[0])
+    assert pd.isna(out["Austritt"].iloc[0])
+    assert pd.isna(out["Alter"].iloc[0])
+    assert pd.isna(out["Alter_Jahre"].iloc[0])
+    assert out["Alter"].dtype == "Int64"
+    assert out["Alter_Jahre"].dtype == "Int64"
+    assert out["MAK_Calculated"].iloc[0] == 0.0

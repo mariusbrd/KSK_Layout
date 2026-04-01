@@ -569,6 +569,25 @@ def _vacate_rows(df: pd.DataFrame, mask: pd.Series) -> pd.DataFrame:
 
     clear_cols = [col for col in PERSON_CLEAR_FIELDS if col in out.columns]
     for col in clear_cols:
+        series = out[col]
+
+        if pd.api.types.is_datetime64_any_dtype(series.dtype):
+            out.loc[mask, col] = pd.NaT
+            continue
+
+        if str(series.dtype) == "boolean":
+            out.loc[mask, col] = pd.NA
+            continue
+
+        if pd.api.types.is_bool_dtype(series.dtype):
+            out.loc[mask, col] = False
+            continue
+
+        if pd.api.types.is_integer_dtype(series.dtype):
+            out[col] = series.astype("Int64")
+            out.loc[mask, col] = pd.NA
+            continue
+
         out.loc[mask, col] = pd.NA
 
     zero_cols = [col for col in NUMERIC_ZERO_FIELDS if col in out.columns]
