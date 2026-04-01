@@ -1,4 +1,4 @@
-﻿"""
+"""
 Streamlit page: Abgänge Prognose.
 """
 
@@ -673,7 +673,7 @@ def main():
     current_filter_hash = dict_hash(get_filter_bundle())
 
     st.title("🏢 Prognose: Hybrid")
-    st.caption("Prognose von Hybrid-Szenarien (Abgaenge und Zugaenge) mit klarer Trennung von MAK und Headcount.")
+    st.caption("Prognose von Hybrid-Szenarien (Abgänge und Zugänge) mit klarer Trennung von MAK und Headcount.")
     set_metric_page_hint(
         "Diese Seite zeigt derzeit ein kombiniertes Netto-Cockpit. "
         "Die globale Pille schaltet hier noch nicht die gesamte Seite zwischen Köpfe / MAK / EUR um."

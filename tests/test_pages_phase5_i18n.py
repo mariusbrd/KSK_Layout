@@ -138,6 +138,54 @@ def test_compact_main_uses_localized_mode_labels_in_english(monkeypatch):
     assert captured["tabs"] == [["📈 Current-state analysis", "🎯 Current vs target"]]
 
 
+@pytest.mark.parametrize(
+    ("metric_view", "expected_calls"),
+    [
+        ("Köpfe", {"ist_koepfe": 1, "ist_mak": 0, "ist_eur": 0, "ist_soll_koepfe": 1, "ist_vs_soll_mak": 0, "ist_vs_soll_eur": 0}),
+        ("MAK", {"ist_koepfe": 0, "ist_mak": 1, "ist_eur": 0, "ist_soll_koepfe": 0, "ist_vs_soll_mak": 1, "ist_vs_soll_eur": 0}),
+    ],
+)
+def test_compact_main_routes_selected_metric_view(monkeypatch, metric_view, expected_calls):
+    import streamlit as st
+
+    module = _load_page_module("*_Kompakt.py", f"compact_page_phase5_metric_{metric_view}")
+    calls = {key: 0 for key in expected_calls}
+
+    df = pd.DataFrame({"PersNr": ["1"], "Organisationseinheit": ["A"]})
+    history_df = pd.DataFrame({"Date": pd.to_datetime(["2026-03-27"])})
+    st.session_state[i18n.LANGUAGE_SESSION_KEY] = "de"
+
+    monkeypatch.setattr(module, "SCROLL_NAV_AVAILABLE", False)
+    monkeypatch.setattr(module, "load_and_prepare_data", lambda: (df, history_df, None, None))
+    monkeypatch.setattr(module, "prepare_compact_data", lambda snapshot_df: snapshot_df)
+    monkeypatch.setattr(module, "set_metric_page_hint", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "render_global_filters", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "apply_filters", lambda input_df: input_df)
+    monkeypatch.setattr(module, "get_filter_summary", lambda: "1 aktiver Filter")
+    monkeypatch.setattr(module, "render_active_filter_banner", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "render_section_intro", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "render_context_box", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "get_global_metric_view", lambda: metric_view)
+    monkeypatch.setattr(module, "render_ist_koepfe_tab", lambda *args, **kwargs: calls.__setitem__("ist_koepfe", calls["ist_koepfe"] + 1))
+    monkeypatch.setattr(module, "render_ist_mak_tab", lambda *args, **kwargs: calls.__setitem__("ist_mak", calls["ist_mak"] + 1))
+    monkeypatch.setattr(module, "render_ist_eur_tab", lambda *args, **kwargs: calls.__setitem__("ist_eur", calls["ist_eur"] + 1))
+    monkeypatch.setattr(module, "render_ist_soll_koepfe_tab", lambda *args, **kwargs: calls.__setitem__("ist_soll_koepfe", calls["ist_soll_koepfe"] + 1))
+    monkeypatch.setattr(module, "render_ist_vs_soll_mak_tab", lambda *args, **kwargs: calls.__setitem__("ist_vs_soll_mak", calls["ist_vs_soll_mak"] + 1))
+    monkeypatch.setattr(module, "render_ist_vs_soll_eur_tab", lambda *args, **kwargs: calls.__setitem__("ist_vs_soll_eur", calls["ist_vs_soll_eur"] + 1))
+
+    monkeypatch.setattr(module.st, "sidebar", DummyContext())
+    monkeypatch.setattr(module.st, "divider", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.st, "toggle", lambda *args, **kwargs: False)
+    monkeypatch.setattr(module.st, "title", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.st, "caption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.st, "markdown", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.st, "tabs", lambda labels, **kwargs: [DummyContext() for _ in labels])
+
+    module.main()
+
+    assert calls == expected_calls
+
+
 def test_compact_render_management_summary_localizes_eur_labels_in_english(monkeypatch):
     import streamlit as st
 
@@ -352,7 +400,7 @@ def test_compact_ist_vs_soll_mak_path_is_clean_in_german(monkeypatch):
     assert "Tatsächliche Kapazität" in flat_kpi_texts
     assert "Geplante Kapazität" in flat_kpi_texts
     assert "Erfüllungsgrad" in flat_kpi_texts
-    assert not any(marker in text for text in flat_kpi_texts for marker in ("Ãƒ", "Ã¢", "Æ’", "Ã†"))
+    assert not any(marker in text for text in flat_kpi_texts for marker in ("\u00c3", "\u00e2", "\u0192", "\u00c6"))
 
     summary_title, summary_data = captured["summary"][0]
     assert summary_title == "IST vs SOLL MAK"
@@ -365,7 +413,7 @@ def test_compact_ist_vs_soll_mak_path_is_clean_in_german(monkeypatch):
     assert "Erfüllungsgrad" in summary_texts
     assert "Kritische Unterbesetzung: Nur 50,0% der Soll-Kapazität besetzt!" in summary_texts
     assert "SOFORT: Recruiting-Offensive starten, Zeitarbeit prüfen" in summary_texts
-    assert not any(marker in text for text in summary_texts for marker in ("Ãƒ", "Ã¢", "Æ’", "Ã†"))
+    assert not any(marker in text for text in summary_texts for marker in ("\u00c3", "\u00e2", "\u0192", "\u00c6"))
 
 
 def test_prepare_compact_data_creates_clean_dimension_columns(monkeypatch):
@@ -391,8 +439,10 @@ def test_prepare_compact_data_creates_clean_dimension_columns(monkeypatch):
     assert "Beschäftigungsgrad_Kat" in prepared.columns
     assert "Beschäftigungsstatus" in prepared.columns
     assert "Vergütungsklasse" in prepared.columns
-    assert "Betriebszugeh?rigkeit_Bin" not in prepared.columns
-    assert "Besch?ftigungsgrad_Kat" not in prepared.columns
+    broken_tenure_bin = "Betriebszugeh" + "?" + "rigkeit_Bin"
+    broken_employment_bin = "Besch" + "?" + "ftigungsgrad_Kat"
+    assert broken_tenure_bin not in prepared.columns
+    assert broken_employment_bin not in prepared.columns
     assert prepared.loc[0, "Vergütungsklasse"] == "9/2"
     assert prepared.loc[0, "Beschäftigungsstatus"] == "Unbefristet"
     assert prepared.loc[0, "Betriebszugehörigkeit_Bin"] == "2-5 J."
@@ -419,4 +469,4 @@ def test_compact_breakdown_missing_dimension_warning_is_clean_in_german(monkeypa
     assert warnings == [
         "Dimension 'Beschäftigungsgrad' nicht verfügbar (Spalte 'Beschäftigungsgrad_Kat' fehlt)."
     ]
-    assert not any(marker in warnings[0] for marker in ("Ã", "â", "ƒ", "Æ", "?"))
+    assert not any(marker in warnings[0] for marker in ("Ã", "â", "ƒ", "Æ"))

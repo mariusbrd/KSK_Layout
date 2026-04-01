@@ -265,3 +265,98 @@ def test_compact_plus_simulation_main_uses_localized_control_intro(monkeypatch):
         "Choose the target date, calculate the workforce and then analyze it like on the compact page.",
         {},
     )
+
+
+def test_compact_plus_simulation_routes_heads_metric_view(monkeypatch):
+    import streamlit as st
+
+    module = _load_page_module("*_Kompakt_plus_Simulation.py", "compact_plus_page_metric_heads")
+    calls = {
+        "ist_koepfe": 0,
+        "ist_mak": 0,
+        "ist_eur": 0,
+        "ist_soll_koepfe": 0,
+        "ist_vs_soll_mak": 0,
+        "ist_vs_soll_eur": 0,
+    }
+
+    st.session_state.update(
+        {
+            i18n.LANGUAGE_SESSION_KEY: "de",
+            "compact_sim_signature": "sig",
+            "compact_sim_prepared_df": pd.DataFrame({"PersNr": ["1"], "Organisationseinheit": ["A"]}),
+            "compact_sim_metadata": {},
+            "compact_sim_target_date_cached": pd.Timestamp("2026-03-27"),
+        }
+    )
+
+    class CompactDummy:
+        @staticmethod
+        def render_ist_koepfe_tab(*args, **kwargs):
+            calls["ist_koepfe"] += 1
+
+        @staticmethod
+        def render_ist_mak_tab(*args, **kwargs):
+            calls["ist_mak"] += 1
+
+        @staticmethod
+        def render_ist_eur_tab(*args, **kwargs):
+            calls["ist_eur"] += 1
+
+        @staticmethod
+        def render_ist_soll_koepfe_tab(*args, **kwargs):
+            calls["ist_soll_koepfe"] += 1
+
+        @staticmethod
+        def render_ist_vs_soll_mak_tab(*args, **kwargs):
+            calls["ist_vs_soll_mak"] += 1
+
+        @staticmethod
+        def render_ist_vs_soll_eur_tab(*args, **kwargs):
+            calls["ist_vs_soll_eur"] += 1
+
+    monkeypatch.setattr(module, "_inject_page_styles", lambda: None)
+    monkeypatch.setattr(module, "_render_hero", lambda: None)
+    monkeypatch.setattr(module, "load_compact_page_module", lambda: CompactDummy())
+    monkeypatch.setattr(module, "get_current_stichtag", lambda: "2026-03-27")
+    monkeypatch.setattr(module, "_build_simulation_signature", lambda **kwargs: "sig")
+    monkeypatch.setattr(
+        module,
+        "load_and_prepare_data",
+        lambda: (
+            pd.DataFrame({"PersNr": ["1"], "Organisationseinheit": ["A"]}),
+            pd.DataFrame({"Date": pd.to_datetime(["2026-03-27"])}),
+            None,
+            None,
+        ),
+    )
+    monkeypatch.setattr(module, "render_section_intro", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "render_context_box", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "render_global_filters", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "filter_dataframe_by_view_filters", lambda df, *_args, **_kwargs: df)
+    monkeypatch.setattr(module, "get_filter_summary", lambda: "2 aktive Filter")
+    monkeypatch.setattr(module, "render_active_filter_banner", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "get_active_view_filters", lambda: {})
+    monkeypatch.setattr(module, "set_metric_page_hint", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "get_global_metric_view", lambda: "Köpfe")
+    monkeypatch.setattr(module, "_render_status_box", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "_render_summary_cards", lambda *args, **kwargs: None)
+
+    monkeypatch.setattr(module.st, "columns", _dummy_columns)
+    monkeypatch.setattr(module.st, "markdown", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.st, "caption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.st, "date_input", lambda label, value=None, **kwargs: value)
+    monkeypatch.setattr(module.st, "button", lambda *args, **kwargs: False)
+    monkeypatch.setattr(module.st, "warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.st, "tabs", lambda labels, **kwargs: [DummyContext() for _ in labels])
+
+    module.main()
+
+    assert calls == {
+        "ist_koepfe": 1,
+        "ist_mak": 0,
+        "ist_eur": 0,
+        "ist_soll_koepfe": 1,
+        "ist_vs_soll_mak": 0,
+        "ist_vs_soll_eur": 0,
+    }

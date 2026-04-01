@@ -1,4 +1,4 @@
-﻿"""
+"""
 Streamlit page: Abgänge Prognose.
 """
 

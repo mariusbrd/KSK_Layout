@@ -177,7 +177,7 @@ def main() -> None:
     _assert(len(breakdown_counts) >= 2, "Geschlecht-Breakdown ist unplausibel schmal und sollte geprueft werden.")
 
     summary_labels = {item["label"]: item["value"] for item in summary.get("kennzahlen", [])}
-    _assert("Gesamt Köpfe" in summary_labels or "Gesamt K?pfe" in summary_labels, "Management Summary fuer IST-Koepfe enthaelt Gesamt-Koepfe nicht.")
+    _assert("Gesamt Köpfe" in summary_labels, "Management Summary fuer IST-Koepfe enthaelt Gesamt-Koepfe nicht.")
     _assert("Frauenanteil" in summary_labels, "Management Summary fuer IST-Koepfe enthaelt Frauenanteil nicht.")
 
     print("OK: IST-Analyse > Koepfe > Geschlecht ist fuer 31.12.2026 konsistent.")

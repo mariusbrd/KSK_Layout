@@ -26,8 +26,17 @@ from utils.i18n import (
     t,
     toggle_language,
 )
+from utils.text_normalization import normalize_dashboard_text
 
 GLOBAL_METRIC_OPTIONS = ["Köpfe", "MAK", "EUR"]
+_GLOBAL_METRIC_ALIASES = {
+    "Köpfe": "Köpfe",
+    "Koepfe": "Köpfe",
+    "Kopfe": "Köpfe",
+    "MAK": "MAK",
+    "EUR": "EUR",
+    "Euro": "EUR",
+}
 
 
 # -----------------------------
@@ -269,7 +278,7 @@ def render_data_status():
 
 def _sync_legacy_view_mode():
     """Keep the legacy MAK/EUR session key aligned for older consumers."""
-    metric_view = st.session_state.get("global_metric_view", "MAK")
+    metric_view = normalize_global_metric_view(st.session_state.get("global_metric_view", "MAK"))
     if metric_view in ("MAK", "EUR"):
         st.session_state["view_mode"] = metric_view
     else:
@@ -286,6 +295,9 @@ def initialize_global_metric_view():
             st.session_state["global_metric_view"] = "EUR"
         else:
             st.session_state["global_metric_view"] = "MAK"
+    st.session_state["global_metric_view"] = normalize_global_metric_view(
+        st.session_state.get("global_metric_view", "MAK")
+    ) or "MAK"
     _sync_legacy_view_mode()
 
 
@@ -310,7 +322,17 @@ def render_global_metric_selector():
 def get_global_metric_view(default: str = "MAK") -> str:
     """Return the currently selected global metric view."""
     initialize_global_metric_view()
-    return st.session_state.get("global_metric_view", default)
+    return normalize_global_metric_view(st.session_state.get("global_metric_view", default)) or default
+
+
+def normalize_global_metric_view(metric_view: str | None) -> str | None:
+    """Normalize known metric aliases to the canonical global sidebar values."""
+    if metric_view is None:
+        return None
+    text = normalize_dashboard_text(str(metric_view)).strip()
+    if not text:
+        return text
+    return _GLOBAL_METRIC_ALIASES.get(text, text)
 
 
 def get_effective_metric_view(

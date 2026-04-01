@@ -575,6 +575,60 @@ def test_hiring_page_main_warns_in_english_for_empty_filters(monkeypatch):
     assert warnings == ["⚠️ No data available after filtering."]
 
 
+def test_hybrid_page_intro_uses_clean_german_runtime_text(monkeypatch):
+    import streamlit as st
+
+    module = _load_page_module("*_Prognose_Hybrid.py", "hybrid_page_phase4_intro")
+    captured = {"titles": [], "captions": [], "metric_hints": []}
+    st.session_state[i18n.LANGUAGE_SESSION_KEY] = "de"
+
+    monkeypatch.setattr(module.st, "title", lambda text, *args, **kwargs: captured["titles"].append(text))
+    monkeypatch.setattr(module.st, "caption", lambda text, *args, **kwargs: captured["captions"].append(text))
+    monkeypatch.setattr(module, "set_metric_page_hint", lambda text: captured["metric_hints"].append(text))
+    monkeypatch.setattr(module, "load_and_prepare_data", lambda: (_ for _ in ()).throw(FileNotFoundError("stop after intro")))
+    monkeypatch.setattr(module.st, "error", lambda *args, **kwargs: None)
+
+    module.main()
+
+    assert captured["titles"] == ["🏢 Prognose: Hybrid"]
+    assert captured["captions"] == [
+        "Prognose von Hybrid-Szenarien (Abgänge und Zugänge) mit klarer Trennung von MAK und Headcount."
+    ]
+    assert captured["metric_hints"] == [
+        "Diese Seite zeigt derzeit ein kombiniertes Netto-Cockpit. Die globale Pille schaltet hier noch nicht die gesamte Seite zwischen Köpfe / MAK / EUR um."
+    ]
+    joined = "\n".join(captured["titles"] + captured["captions"] + captured["metric_hints"])
+    assert "Abgänge" in joined
+    assert "Zugänge" in joined
+    assert "Köpfe" in joined
+    assert not any(marker in joined for marker in ("\u00c3", "\u00e2", "\u0192", "\u00c6"))
+
+
+def test_hybrid_zugaenge_chart_sources_use_clean_runtime_labels():
+    module = _load_page_module("*_Prognose_Hybrid.py", "hybrid_page_phase4_chart_labels")
+
+    filt_zug_events = pd.DataFrame(
+        {
+            "type": ["Azubi_Hire", "Azubi_Conversion_In", "New_Hire", "Trainee_Hire"],
+            "OE-Cluster": ["A", "A", "B", "B"],
+        }
+    )
+
+    chart_sources = module._build_hybrid_zugaenge_chart_sources(filt_zug_events)
+
+    assert list(chart_sources["events_chart"]["Quelle"]) == [
+        "Neue Auszubildende",
+        "Übernahme aus Ausbildung",
+        "Neueinstellung",
+        "Trainee",
+    ]
+    assert list(chart_sources["z_stats"].columns) == ["OE-Cluster", "Zugänge"]
+    joined = "\n".join(chart_sources["events_chart"]["Quelle"].tolist() + chart_sources["z_stats"].columns.tolist())
+    assert "Übernahme aus Ausbildung" in joined
+    assert "Zugänge" in joined
+    assert not any(marker in joined for marker in ("\u00c3", "\u00e2", "\u0192", "\u00c6"))
+
+
 def test_exclusion_groups_page_is_localized_in_english(monkeypatch):
     import streamlit as st
 

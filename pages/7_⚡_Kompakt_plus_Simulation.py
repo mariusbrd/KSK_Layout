@@ -24,6 +24,7 @@ from components.sidebar import (
     get_active_view_filters,
     get_filter_summary,
     get_global_metric_view,
+    normalize_global_metric_view,
     render_global_filters,
     set_metric_page_hint,
 )
@@ -471,7 +472,7 @@ def main():
             t("sim.evaluation.subtitle"),
         )
 
-        metric_view = get_global_metric_view()
+        metric_view = normalize_global_metric_view(get_global_metric_view())
         render_context_box(
             t("sim.metric_view.label"),
             t("sim.metric_view.text", metric_view=metric_view),

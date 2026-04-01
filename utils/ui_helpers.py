@@ -291,7 +291,7 @@ def render_distribution_matrix(
 
 ORGUNIT_MODE_HINT = (
     'Auch wenn du nach OrgUnit verteilst, ist es normal, dass in den JF-Charts '
-    'dann viele Einträge unter „Sonstiges" landen – denn das ist ja eure fachliche '
+    'dann viele Einträge unter „Sonstiges“ landen – denn das ist ja eure fachliche '
     'Vorgabe. Entscheidend ist: nicht "Unclustered" und kein "Fallback (Mapping fehlt)".'
 )
 
