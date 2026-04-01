@@ -4370,7 +4370,7 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
         except (ValueError, TypeError):
             return "–"
 
-    display_df = pivot_display.applymap(_fmt_int)
+    display_df = pivot_display.map(_fmt_int)
 
     # Spaltenbreite angepasst
     column_config = {col: st.column_config.TextColumn(col, width="small")
@@ -4758,7 +4758,7 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
         _nosoll_display["Gesamt"] = _nosoll_total
         _nosoll_df = _nosoll_display.rename("(Keine Soll-EG)").to_frame().T
         _nosoll_df.index.name = "Soll-EG"
-        _nosoll_fmt = _nosoll_df.applymap(_fmt_int)
+        _nosoll_fmt = _nosoll_df.map(_fmt_int)
         st.dataframe(
             _nosoll_fmt,
             use_container_width=True,
