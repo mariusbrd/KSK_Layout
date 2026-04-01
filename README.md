@@ -1,93 +1,288 @@
-# Dashboard Strategische Personalplanung
+# HR Dashboard
 
+## Overview
 
+This project is a Streamlit-based HR Dashboard for workforce analytics, target-vs-actual analysis, and forecast-driven workforce planning.
 
-## Getting started
+The application combines:
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+- current-state workforce analysis
+- target-vs-actual plan position analysis
+- attrition forecasting
+- hiring forecasting
+- combined net workforce forecasting
+- forward simulation of workforce development
+- exclusion and data-quality controls
+- bilingual UI support (German / English)
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+The dashboard is designed to work with structured HR source files when available and to remain usable with reproducible synthetic fallback data when source data is incomplete or missing.
 
-## Add your files
+## Key Features
 
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+- Compact workforce dashboard for current-state and current-vs-target analysis
+- Dedicated `Köpfe` / `MAK` / `EUR` view switching
+- Detailed `Ist vs Soll` analysis, including matrix and detail views
+- Attrition forecast for partial retirement, retirement, resignations, and dormant-status effects
+- Hiring forecast for apprentices, trainees, and external hires
+- Hybrid forecast combining attrition and hiring into a single net view
+- Compact plus Simulation page for projecting the workforce to a future date and reusing the compact analysis on the simulated state
+- Global sidebar filters for time, organization, job families, cohorts, demographics, employment, qualifications, and partial-retirement status
+- Exclusion-group management that affects analytical scope across the dashboard
+- Synthetic test-data fallback for development, demos, and environments without source files
+- German / English language switching across the UI
 
+## Dashboard Pages
+
+### Kompakt / Compact
+
+The compact page is the main analytical cockpit for current-state reporting. It focuses on:
+
+- current-state analysis (`IST`)
+- current-vs-target analysis (`IST vs SOLL`)
+- KPI cards, charts, and management summaries
+- target-vs-actual analysis for heads, FTE-style capacity (`MAK`), and cost views
+
+The `Köpfe: Ist vs Soll` view is especially important for plan-position analysis. It compares:
+
+- planned pay grade of the position
+- actual pay grade of the assigned employee
+- exact matches
+- in-band matches
+- overgrading / undergrading
+- vacant positions
+- special cases such as technical additional positions and missing target grades
+
+### Kompakt plus Simulation / Compact plus Simulation
+
+This page projects the current workforce to a selected future date using the existing attrition and hiring logic, then reuses the compact analysis on the simulated snapshot.
+
+It is useful for:
+
+- scenario walkthroughs
+- future-state KPI analysis
+- target-vs-actual checks on projected staffing structures
+
+### Forecast: Attrition
+
+The attrition page models workforce losses and capacity effects over time. It includes:
+
+- configurable forecast horizon
+- driver controls for partial retirement, retirement, resignations, and dormant-status behavior
+- overview trends
+- driver breakdowns
+- export-oriented detail tables
+
+### Forecast: Hiring
+
+The hiring page models additions to the workforce through:
+
+- apprentices
+- trainee programs
+- external hiring
+
+It includes parameter controls, distribution logic, overview charts, cluster views, details, and cost analysis.
+
+### Forecast: Hybrid
+
+The hybrid page combines attrition and hiring into a single net workforce view. It supports:
+
+- unified forecast horizon
+- combined summary KPIs
+- net headcount and capacity trajectory
+- driver-level views for inflows and outflows
+- list/detail sections for both sides of the forecast
+
+### Settings
+
+The settings page provides configuration and setup utilities, including:
+
+- data-source status
+- upload-based data sourcing
+- clustering configuration
+- salary and employer-cost settings
+- prepared dashboard configuration
+
+### Exclusion Groups
+
+The exclusion page provides transparent controls for exclusion logic that affects the analytical scope. It helps validate which groups are currently excluded and how this impacts downstream views.
+
+## Data Inputs
+
+The dashboard expects HR-oriented input data with schemas compatible with the current loader and page logic. In practice, this includes source data for areas such as:
+
+- employees
+- plan positions
+- partial-retirement status/details
+- training / apprenticeship data
+
+The application reads and prepares these datasets through the centralized data layer in [`dataloader/`](./dataloader).
+
+### Data Preparation Layer
+
+The central preparation pipeline:
+
+- loads raw or uploaded data
+- normalizes important identifiers
+- assigns derived attributes such as cohorts, status classes, and cost/capacity fields
+- applies clustering and exclusions
+- prepares page-ready snapshots and history data
+
+This logic is intentionally shared so that the pages operate on a consistent prepared-data layer.
+
+## Synthetic Fallback / Test Data
+
+When original source files are incomplete or unavailable, the dashboard can fall back to synthetic data generation.
+
+The synthetic datasets are designed to be:
+
+- schema-compatible with the dashboard
+- reproducible
+- analytically meaningful rather than purely random
+
+The synthetic generator includes realistic HR patterns such as:
+
+- occupied and vacant positions
+- regular and technical/additional positions
+- meaningful target-vs-actual pay-grade mismatches
+- non-trivial distributions across organization, job family, age, qualification, and employment patterns
+
+This is especially useful for:
+
+- local development
+- UI validation
+- test automation
+- runtime fallback in environments without source files
+
+## Sidebar, Filters, and Language
+
+The dashboard uses a shared sidebar control system across pages.
+
+Core capabilities include:
+
+- page navigation
+- data-status display
+- active selection summary
+- metric switching (`Köpfe`, `MAK`, `EUR`)
+- global filtering
+- page-specific contextual hints
+- language switching between German and English
+
+The language switcher is backed by a central i18n layer in [`utils/i18n.py`](./utils/i18n.py). User-facing text is translated at the display layer so analytical logic remains independent from UI language.
+
+## Project Structure
+
+High-level structure:
+
+- [`app.py`](./app.py)
+  Main Streamlit entry point and page navigation setup
+- [`pages/`](./pages)
+  Dashboard pages
+- [`components/`](./components)
+  Shared UI components such as sidebar, shell, cards, and setup helpers
+- [`dataloader/`](./dataloader)
+  Data loading, preparation, synthetic fallback, clustering, and compact simulation engine
+- [`abgaenge/`](./abgaenge)
+  Attrition forecast logic, parameters, and related helpers
+- [`zugaenge/`](./zugaenge)
+  Hiring forecast logic, parameters, and enrichment helpers
+- [`utils/`](./utils)
+  Shared helpers for i18n, formatting, plotting, caching, settings, and normalization
+- [`config/`](./config)
+  Settings, static configuration, and constants
+- [`tests/`](./tests)
+  Regression, i18n, rendering, and analytical test coverage
+
+## Requirements
+
+The project currently depends on:
+
+- Python 3.11+
+- Streamlit
+- pandas
+- numpy
+- plotly
+- openpyxl
+- xlsxwriter
+- faker
+- python-dateutil
+
+See [`requirements.txt`](./requirements.txt) for the current dependency list.
+
+## Local Setup
+
+### 1. Create and activate a virtual environment
+
+Windows PowerShell:
+
+```powershell
+py -3 -m venv .venv
+.venv\Scripts\Activate.ps1
 ```
-cd existing_repo
-git remote add origin https://gitlab.horn-company.com/marius.brede/dashboard-strategische-personalplanung.git
-git branch -M main
-git push -uf origin main
+
+### 2. Install dependencies
+
+```powershell
+pip install -r requirements.txt
 ```
 
-## Integrate with your tools
+### 3. Start the dashboard
 
-* [Set up project integrations](https://gitlab.horn-company.com/marius.brede/dashboard-strategische-personalplanung/-/settings/integrations)
+```powershell
+streamlit run app.py
+```
 
-## Collaborate with your team
+Streamlit will print a local URL for the dashboard.
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+## Running the Dashboard
 
-## Test and Deploy
+Typical local workflow:
 
-Use the built-in continuous integration in GitLab.
+1. Start the app with `streamlit run app.py`
+2. Open the dashboard in the browser
+3. Use the sidebar to:
+   - navigate between pages
+   - switch the metric view
+   - set global filters
+   - switch language
+4. If source data is not available, verify that the application has switched to synthetic fallback data
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+## Testing and Validation
 
-***
+The repository contains an extensive test suite covering, among other things:
 
-# Editing this README
+- data preparation regression
+- forecast golden-master behavior
+- runtime page rendering
+- i18n coverage
+- compact simulation behavior
+- sidebar and layout behavior
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+Run the test suite with:
 
-## Suggestions for a good README
+```powershell
+py -3 -m pytest tests -q
+```
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+For quicker targeted checks, run individual modules such as:
 
-## Name
-Choose a self-explaining name for your project.
+```powershell
+py -3 -m pytest tests\test_pages_phase3_i18n.py tests\test_pages_phase4_i18n.py tests\test_pages_phase5_i18n.py -q
+```
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+## Notes
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+- The application contains both business-facing pages and technical helper/debug paths.
+- Forecast pages are designed to reuse shared prepared data and shared filter state wherever possible.
+- Some helper files and scripts still contain legacy naming from earlier project phases, but the active dashboard is documented here neutrally as an HR Dashboard.
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+## Project Status
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+This repository contains an actively maintained dashboard application with:
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+- current-state analytics
+- forecast modules
+- synthetic fallback capability
+- automated regression coverage
+- bilingual UI support
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+It is suitable for local development, internal technical review, and structured dashboard operation in environments where compatible HR source data is available.
