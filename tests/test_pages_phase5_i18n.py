@@ -63,19 +63,23 @@ def test_compact_main_warns_in_english_for_empty_filters(monkeypatch):
 
     module = _load_page_module("*_Kompakt.py", "compact_page_phase5_warning")
     warnings = []
+    load_calls = []
 
     df = pd.DataFrame({"PersNr": ["1"], "Organisationseinheit": ["A"]})
     history_df = pd.DataFrame({"Date": pd.to_datetime(["2026-03-27"])})
     st.session_state[i18n.LANGUAGE_SESSION_KEY] = "en"
 
     monkeypatch.setattr(module, "SCROLL_NAV_AVAILABLE", False)
-    monkeypatch.setattr(module, "load_and_prepare_data", lambda: (df, history_df, None, None))
+    monkeypatch.setattr(
+        module,
+        "load_and_prepare_data",
+        lambda **kwargs: load_calls.append(kwargs) or (df, history_df, None, None),
+    )
     monkeypatch.setattr(module, "prepare_compact_data", lambda snapshot_df: snapshot_df)
     monkeypatch.setattr(module, "set_metric_page_hint", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "render_global_filters", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "apply_filters", lambda input_df: pd.DataFrame())
     monkeypatch.setattr(module, "get_filter_summary", lambda: "2 active filters")
-    monkeypatch.setattr(module, "render_active_filter_banner", lambda *args, **kwargs: None)
 
     monkeypatch.setattr(module.st, "sidebar", DummyContext())
     monkeypatch.setattr(module.st, "divider", lambda *args, **kwargs: None)
@@ -87,6 +91,7 @@ def test_compact_main_warns_in_english_for_empty_filters(monkeypatch):
 
     module.main()
 
+    assert load_calls == [{"show_status_messages": False}]
     assert warnings == ["No data for the selected filters."]
 
 
@@ -94,22 +99,19 @@ def test_compact_main_uses_localized_mode_labels_in_english(monkeypatch):
     import streamlit as st
 
     module = _load_page_module("*_Kompakt.py", "compact_page_phase5_mode")
-    captured = {"intro": [], "context": [], "tabs": []}
+    captured = {"page_hint": [], "tabs": []}
 
     df = pd.DataFrame({"PersNr": ["1"], "Organisationseinheit": ["A"]})
     history_df = pd.DataFrame({"Date": pd.to_datetime(["2026-03-27"])})
     st.session_state[i18n.LANGUAGE_SESSION_KEY] = "en"
 
     monkeypatch.setattr(module, "SCROLL_NAV_AVAILABLE", False)
-    monkeypatch.setattr(module, "load_and_prepare_data", lambda: (df, history_df, None, None))
+    monkeypatch.setattr(module, "load_and_prepare_data", lambda **kwargs: (df, history_df, None, None))
     monkeypatch.setattr(module, "prepare_compact_data", lambda snapshot_df: snapshot_df)
-    monkeypatch.setattr(module, "set_metric_page_hint", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "set_metric_page_hint", lambda text: captured["page_hint"].append(text))
     monkeypatch.setattr(module, "render_global_filters", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "apply_filters", lambda input_df: input_df)
     monkeypatch.setattr(module, "get_filter_summary", lambda: "1 active filter")
-    monkeypatch.setattr(module, "render_active_filter_banner", lambda *args, **kwargs: None)
-    monkeypatch.setattr(module, "render_section_intro", lambda title, text, **kwargs: captured["intro"].append((title, text)))
-    monkeypatch.setattr(module, "render_context_box", lambda label, text, **kwargs: captured["context"].append((label, text)))
     monkeypatch.setattr(module, "get_global_metric_view", lambda: "FTE")
     monkeypatch.setattr(module, "render_ist_koepfe_tab", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "render_ist_mak_tab", lambda *args, **kwargs: None)
@@ -128,14 +130,13 @@ def test_compact_main_uses_localized_mode_labels_in_english(monkeypatch):
 
     module.main()
 
-    assert captured["intro"] == [
-        (
-            "Evaluation mode",
-            "Switch between analysis area and metric view. The content below reacts to the active view filters.",
-        )
+    assert captured["page_hint"] == [
+        "Switch between analysis area and metric view. The content below reacts to the active view filters. Controlled via the sidebar: FTE"
     ]
-    assert captured["context"] == [("Metric view", "Controlled via the sidebar: FTE")]
-    assert captured["tabs"] == [["📈 Current-state analysis", "🎯 Current vs target"]]
+    assert captured["tabs"] == [[
+        i18n.t("compact.tabs.ist", language="en"),
+        i18n.t("compact.tabs.ist_soll", language="en"),
+    ]]
 
 
 @pytest.mark.parametrize(
@@ -156,15 +157,12 @@ def test_compact_main_routes_selected_metric_view(monkeypatch, metric_view, expe
     st.session_state[i18n.LANGUAGE_SESSION_KEY] = "de"
 
     monkeypatch.setattr(module, "SCROLL_NAV_AVAILABLE", False)
-    monkeypatch.setattr(module, "load_and_prepare_data", lambda: (df, history_df, None, None))
+    monkeypatch.setattr(module, "load_and_prepare_data", lambda **kwargs: (df, history_df, None, None))
     monkeypatch.setattr(module, "prepare_compact_data", lambda snapshot_df: snapshot_df)
     monkeypatch.setattr(module, "set_metric_page_hint", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "render_global_filters", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "apply_filters", lambda input_df: input_df)
     monkeypatch.setattr(module, "get_filter_summary", lambda: "1 aktiver Filter")
-    monkeypatch.setattr(module, "render_active_filter_banner", lambda *args, **kwargs: None)
-    monkeypatch.setattr(module, "render_section_intro", lambda *args, **kwargs: None)
-    monkeypatch.setattr(module, "render_context_box", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "get_global_metric_view", lambda: metric_view)
     monkeypatch.setattr(module, "render_ist_koepfe_tab", lambda *args, **kwargs: calls.__setitem__("ist_koepfe", calls["ist_koepfe"] + 1))
     monkeypatch.setattr(module, "render_ist_mak_tab", lambda *args, **kwargs: calls.__setitem__("ist_mak", calls["ist_mak"] + 1))

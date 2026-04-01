@@ -155,3 +155,44 @@ def test_render_active_filter_banner_reinserts_css_on_render_even_with_session_f
     assert len(markdown_calls) == 1
     assert '<style id="dashboard-ui-theme">' in markdown_calls[0]
     assert len(info_calls) == 1
+
+
+def test_render_data_status_surfaces_runtime_status_message_in_sidebar(monkeypatch):
+    if str(ROOT) not in sys.path:
+        sys.path.append(str(ROOT))
+
+    from components import sidebar as sidebar_module
+    from dataloader.source_service import DataSourceOrigin
+
+    markdown_calls: list[str] = []
+    info_calls: list[str] = []
+    monkeypatch.setattr(
+        st,
+        "session_state",
+        {
+            "global_uploads": {},
+            "data_status_message": "Using synthetic fallback data.",
+            "data_status_level": "info",
+        },
+    )
+    monkeypatch.setattr(st, "markdown", lambda body, **kwargs: markdown_calls.append(body))
+    monkeypatch.setattr(st, "info", lambda body, **kwargs: info_calls.append(body))
+    monkeypatch.setattr(
+        sidebar_module.SourceService,
+        "GROUPS",
+        {"Mitarbeiterinformationen": object()},
+    )
+    monkeypatch.setattr(
+        sidebar_module.SourceService,
+        "derive_group_status",
+        lambda *args, **kwargs: type(
+            "Status",
+            (),
+            {"origin": DataSourceOrigin.SYNTHETIC, "completeness_label": "synthetic"},
+        )(),
+    )
+
+    sidebar_module.render_data_status()
+
+    assert markdown_calls
+    assert info_calls == ["Using synthetic fallback data."]

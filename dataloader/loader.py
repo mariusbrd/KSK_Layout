@@ -83,11 +83,15 @@ def load_hr_data(
             missing = _REQUIRED_COLS - set(probe.columns)
             if missing:
                 needs_generate = True
-                st.info(
+                message = (
                     f"ℹ️ Synthetische Daten veraltet "
                     f"(fehlende Spalten: {', '.join(sorted(missing))}). "
                     f"Regeneriere…"
                 )
+                st.session_state["data_status_message"] = message
+                st.session_state["data_status_level"] = "info"
+                if not st.session_state.get("suppress_data_status_messages", False):
+                    st.info(message)
         except Exception:
             needs_generate = True
 
@@ -670,7 +674,8 @@ def _load_and_prepare_data_cached(
 
 def load_and_prepare_data(
     use_original: bool = True,
-    uploaded_files: Optional[Dict[str, Any]] = None
+    uploaded_files: Optional[Dict[str, Any]] = None,
+    show_status_messages: bool = True,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict]:
     """
     Kompletter Daten-Lade- und Aufbereitungsprozess.
@@ -678,6 +683,7 @@ def load_and_prepare_data(
     Args:
         use_original: Wenn True, versucht Original-Daten zu laden (default: True)
         uploaded_files: Optionales Dict mit Upload-Files (Mitarbeiter, Planstellen, etc.)
+        show_status_messages: Rendert Statusmeldungen im Main-Bereich, falls True
 
     Returns:
         Tuple aus (snapshot_df, history_df, org_df, summary)
@@ -691,6 +697,15 @@ def load_and_prepare_data(
     synthetic_file_signature = get_file_signature(DATA_PATH)
     tvoed_file_signature = get_file_signature(TVOED_FILE)
     missing_required = [name for name, path in ORIGINAL_FILES.items() if not os.path.exists(path)]
+    st.session_state["suppress_data_status_messages"] = not show_status_messages
+
+    def _set_data_status(message: str | None, level: str = "info") -> None:
+        if message:
+            st.session_state["data_status_message"] = message
+            st.session_state["data_status_level"] = level
+        else:
+            st.session_state.pop("data_status_message", None)
+            st.session_state.pop("data_status_level", None)
 
     try:
         snapshot_df, history_df, org_df, summary, tvoed_lookup, future_hires_count = _load_and_prepare_data_cached(
@@ -705,24 +720,37 @@ def load_and_prepare_data(
         st.session_state["tvoed_available"] = len(tvoed_lookup) > 0
         if future_hires_count is not None:
             st.session_state["stats_future_hires"] = int(future_hires_count)
+            _set_data_status(None)
         elif use_original and not uploaded_payload and missing_required:
-            st.info(
+            message = (
                 "ℹ️ Original-Daten unvollständig oder nicht gefunden. "
                 "Fehlend: " + ", ".join(missing_required) + ". "
                 "Verwende synthetische Testdaten."
             )
+            _set_data_status(message, "info")
+            if show_status_messages:
+                st.info(message)
+        else:
+            _set_data_status(None)
         return snapshot_df, history_df, org_df, summary
     except FileNotFoundError as e:
-        st.info(
+        message = (
             "ℹ️ Original-Daten unvollständig oder nicht gefunden. "
             "Fehlend: " + ", ".join(str(e).splitlines()[1:]) + ". "
             "Verwende synthetische Testdaten."
         )
+        _set_data_status(message, "info")
+        if show_status_messages:
+            st.info(message)
     except Exception as e:
         if uploaded_payload:
+            _set_data_status(None)
             st.error(f"Fehler bei der Verarbeitung der hochgeladenen Dateien: {str(e)}")
         elif use_original:
-            st.warning(f"⚠️ Fehler beim Laden der Original-Daten: {str(e)}\nVerwende synthetische Testdaten.")
+            message = f"⚠️ Fehler beim Laden der Original-Daten: {str(e)}\nVerwende synthetische Testdaten."
+            _set_data_status(message, "warning")
+            if show_status_messages:
+                st.warning(message)
 
     snapshot_df, history_df, org_df, summary, tvoed_lookup, _ = _load_and_prepare_data_cached(
         use_original=False,

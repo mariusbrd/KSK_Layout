@@ -26,7 +26,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from abgaenge.schemas import normalize_persnr
 from components.ui_compat import dataframe_compat, download_button_compat
-from components.ui_shell import render_active_filter_banner, render_context_box, render_section_intro
 from dataloader.loader import load_and_prepare_data
 from dataloader.soll_ist_koepfe_engine import build_soll_ist_koepfe_result
 from components.sidebar import render_global_filters, apply_filters, get_filter_summary, get_global_metric_view, normalize_global_metric_view, set_metric_page_hint
@@ -228,6 +227,14 @@ def _compact_text(text: str | None) -> str:
 
 def _compact_metric_view_label(metric_view: str | None) -> str:
     return normalize_dashboard_text(metric_view) if metric_view else t("compact.metric_view.none")
+
+
+def _build_compact_sidebar_hint() -> str:
+    metric_view = _compact_metric_view_label(normalize_global_metric_view(get_global_metric_view()))
+    return (
+        f"{t('compact.mode.subtitle')} "
+        f"{t('compact.metric_view.text', metric_view=metric_view)}"
+    )
 
 
 def _is_mojibake(text: str | None) -> bool:
@@ -5127,9 +5134,9 @@ def main():
 
     try:
         # Daten laden
-        snapshot_df, history_df, org_df, summary = load_and_prepare_data()
+        snapshot_df, history_df, org_df, summary = load_and_prepare_data(show_status_messages=False)
         prepared_df = prepare_compact_data(snapshot_df)
-        set_metric_page_hint(None)
+        set_metric_page_hint(_build_compact_sidebar_hint())
 
         # Filter rendern
         # Hinweis: Job Family Filter ist jetzt global in Sidebar (render_global_filters)
@@ -5149,8 +5156,6 @@ def main():
 
         # Filter-Summary (inkl. Job Families)
         filter_summary = get_filter_summary()
-
-        render_active_filter_banner(filter_summary)
 
         # Prüfe Daten
         if len(filtered_df) == 0:
@@ -5257,18 +5262,7 @@ def main():
 
             
         else:
-            render_section_intro(
-                t("compact.mode.section"),
-                t("compact.mode.subtitle"),
-            )
             metric_view = _compact_metric_view_label(normalize_global_metric_view(get_global_metric_view()))
-            render_context_box(
-                t("compact.metric_view.label"),
-                t("compact.metric_view.text", metric_view=metric_view),
-                tone="neutral",
-                compact=True,
-            )
-
             ist_tab, ist_soll_tab = st.tabs(_get_main_tab_labels())
 
             with ist_tab:

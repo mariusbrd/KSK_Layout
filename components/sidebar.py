@@ -275,6 +275,14 @@ def render_data_status():
     
     st.markdown("".join(html_parts), unsafe_allow_html=True)
 
+    data_status_message = st.session_state.get("data_status_message")
+    data_status_level = st.session_state.get("data_status_level", "info")
+    if data_status_message:
+        if data_status_level == "warning":
+            st.warning(data_status_message)
+        else:
+            st.info(data_status_message)
+
 
 def _sync_legacy_view_mode():
     """Keep the legacy MAK/EUR session key aligned for older consumers."""
