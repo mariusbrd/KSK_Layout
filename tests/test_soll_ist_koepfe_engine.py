@@ -262,7 +262,7 @@ def test_load_soll_ist_koepfe_basis_falls_back_to_synthetic_raw_data(monkeypatch
         "Mitarbeiter": pd.DataFrame(
             [
                 {
-                    "PersNr": "000001",
+                    "PersNr": 1,
                     "Eintritt": pd.Timestamp("2020-01-01"),
                     "Austritt": pd.NaT,
                     "TrfGr": "E9A",
@@ -275,7 +275,7 @@ def test_load_soll_ist_koepfe_basis_falls_back_to_synthetic_raw_data(monkeypatch
             [
                 {
                     "Kürzel OrgEinheit": "300",
-                    "Personalnummer": "000001",
+                    "Personalnummer": 1.0,
                     "Sollarbeitszeit": 39.0,
                     "Bewertung Tarifgruppe": "E9A",
                     "Text Gehaltsband": "bis E9A",

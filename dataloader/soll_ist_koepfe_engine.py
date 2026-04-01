@@ -119,6 +119,9 @@ def _load_soll_ist_koepfe_basis_cached(
     planstellen = data["planstellen"].copy()
     mitarbeiter = _filter_mitarbeiter_for_stichtag(data["mitarbeiter"])
 
+    if "PersNr" in mitarbeiter.columns:
+        mitarbeiter["PersNr"] = normalize_persnr(mitarbeiter["PersNr"])
+
     # Summen-/Artefaktzeilen entfernen, 0.01 explizit NICHT transformieren.
     if "Kürzel OrgEinheit" in planstellen.columns:
         org = _normalize_org_unit_series(planstellen["Kürzel OrgEinheit"])
