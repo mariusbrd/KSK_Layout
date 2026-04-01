@@ -17,8 +17,9 @@ import streamlit as st
 
 from abgaenge.schemas import normalize_persnr
 from config.settings import TARIFF_GROUPS
-from dataloader.loader import load_original_data
+from dataloader.loader import ORIGINAL_FILES, load_original_data
 from kpi_reference import get_current_stichtag
+from utils.cache_utils import deserialize_uploaded_files, get_file_signature, serialize_uploaded_files
 from utils.settings_loader import get_setting
 
 IST_UNBESETZT = "Unbesetzt"
@@ -62,9 +63,58 @@ def _filter_mitarbeiter_for_stichtag(mitarbeiter: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def _read_uploaded_raw_data(uploaded_payload: tuple[tuple[str, bytes], ...]) -> Dict[str, pd.DataFrame]:
+    uploads = deserialize_uploaded_files(uploaded_payload)
+    mapping = {
+        "mitarbeiter": "Mitarbeiter",
+        "planstellen": "Planstellen",
+        "atz": "ATZ",
+        "ausbildung": "Ausbildung",
+    }
+    data: Dict[str, pd.DataFrame] = {}
+    for target_key, upload_key in mapping.items():
+        file_obj = uploads.get(upload_key)
+        if file_obj is None:
+            data[target_key] = pd.DataFrame()
+            continue
+        if target_key == "atz":
+            data[target_key] = pd.read_excel(file_obj, parse_dates=["Beginn", "Ende", "Ende ATZ Vertrag"])
+        else:
+            data[target_key] = pd.read_excel(file_obj)
+    return data
+
+
 @st.cache_data(show_spinner=False)
-def load_soll_ist_koepfe_basis() -> pd.DataFrame:
-    data = load_original_data()
+def _load_raw_source_data_cached(
+    uploaded_payload: tuple[tuple[str, bytes], ...],
+    original_file_signatures: tuple[tuple[str, tuple[str, int, int] | None], ...],
+) -> Dict[str, pd.DataFrame]:
+    if uploaded_payload:
+        return _read_uploaded_raw_data(uploaded_payload)
+
+    try:
+        return load_original_data(file_signatures=original_file_signatures)
+    except FileNotFoundError:
+        from dataloader.synthetic import generate_all_files
+
+        synthetic_files = generate_all_files()
+        return {
+            "mitarbeiter": synthetic_files["Mitarbeiter"],
+            "planstellen": synthetic_files["Planstellen"],
+            "atz": synthetic_files["ATZ"],
+            "ausbildung": synthetic_files["Ausbildung"],
+        }
+
+
+@st.cache_data(show_spinner=False)
+def _load_soll_ist_koepfe_basis_cached(
+    uploaded_payload: tuple[tuple[str, bytes], ...],
+    original_file_signatures: tuple[tuple[str, tuple[str, int, int] | None], ...],
+) -> pd.DataFrame:
+    data = _load_raw_source_data_cached(
+        uploaded_payload=uploaded_payload,
+        original_file_signatures=original_file_signatures,
+    )
 
     planstellen = data["planstellen"].copy()
     mitarbeiter = _filter_mitarbeiter_for_stichtag(data["mitarbeiter"])
@@ -114,6 +164,19 @@ def load_soll_ist_koepfe_basis() -> pd.DataFrame:
 
     merged["_Ist_EG"] = merged.apply(_ist_kat, axis=1)
     return merged
+
+
+def load_soll_ist_koepfe_basis() -> pd.DataFrame:
+    uploaded_files = st.session_state.get("global_uploads")
+    uploaded_payload = serialize_uploaded_files(uploaded_files)
+    original_file_signatures = tuple(
+        (name, get_file_signature(path))
+        for name, path in sorted(ORIGINAL_FILES.items())
+    )
+    return _load_soll_ist_koepfe_basis_cached(
+        uploaded_payload=uploaded_payload,
+        original_file_signatures=original_file_signatures,
+    )
 
 
 def _apply_variant_b_exclusions(df: pd.DataFrame, exclusions: Dict[str, Any]) -> pd.DataFrame:

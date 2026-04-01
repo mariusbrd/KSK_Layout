@@ -245,3 +245,64 @@ def test_soll_ist_koepfe_engine_matches_current_deep_dive_settings():
     }
 
     assert summary == expected
+
+
+def test_load_soll_ist_koepfe_basis_falls_back_to_synthetic_raw_data(monkeypatch):
+    import dataloader.soll_ist_koepfe_engine as engine
+
+    engine._load_raw_source_data_cached.clear()
+    engine._load_soll_ist_koepfe_basis_cached.clear()
+
+    monkeypatch.setattr(engine.st, "session_state", {})
+
+    def fail_original(*args, **kwargs):
+        raise FileNotFoundError("Original-Daten nicht gefunden:\nmissing")
+
+    synthetic_files = {
+        "Mitarbeiter": pd.DataFrame(
+            [
+                {
+                    "PersNr": "000001",
+                    "Eintritt": pd.Timestamp("2020-01-01"),
+                    "Austritt": pd.NaT,
+                    "TrfGr": "E9A",
+                    "MitarbGruppenbez.": "Angestellte",
+                    "Status kundenindividuell": "",
+                }
+            ]
+        ),
+        "Planstellen": pd.DataFrame(
+            [
+                {
+                    "Kürzel OrgEinheit": "300",
+                    "Personalnummer": "000001",
+                    "Sollarbeitszeit": 39.0,
+                    "Bewertung Tarifgruppe": "E9A",
+                    "Text Gehaltsband": "bis E9A",
+                },
+                {
+                    "Kürzel OrgEinheit": "300",
+                    "Personalnummer": pd.NA,
+                    "Sollarbeitszeit": 39.0,
+                    "Bewertung Tarifgruppe": "E10",
+                    "Text Gehaltsband": "bis E10",
+                },
+            ]
+        ),
+        "ATZ": pd.DataFrame(columns=["PersNr", "Beginn", "Ende", "Ende ATZ Vertrag"]),
+        "Ausbildung": pd.DataFrame(columns=["PersNr"]),
+    }
+
+    monkeypatch.setattr(engine, "load_original_data", fail_original)
+    monkeypatch.setattr(engine, "get_file_signature", lambda path: None)
+    monkeypatch.setattr(engine, "generate_all_files", None, raising=False)
+
+    from dataloader import synthetic as synthetic_module
+
+    monkeypatch.setattr(synthetic_module, "generate_all_files", lambda: synthetic_files)
+
+    basis = engine.load_soll_ist_koepfe_basis()
+
+    assert len(basis) == 2
+    assert basis["__has_pnr__"].tolist() == [True, False]
+    assert basis["_Ist_EG"].tolist() == ["E9A", "Unbesetzt"]
