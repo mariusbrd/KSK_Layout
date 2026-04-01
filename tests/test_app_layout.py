@@ -82,3 +82,76 @@ def test_inject_ui_theme_contains_full_width_sidebar_logo_styles(monkeypatch):
     assert 'height: auto !important;' in css
     assert 'max-height: none !important;' in css
     assert 'min-height: 4.5rem !important;' in css
+
+
+def test_inject_ui_theme_reinserts_css_even_when_session_flag_exists(monkeypatch):
+    if str(ROOT) not in sys.path:
+        sys.path.append(str(ROOT))
+
+    from components.ui_shell import inject_ui_theme
+
+    markdown_calls: list[str] = []
+    monkeypatch.setattr(st, "session_state", {"_dashboard_ui_theme_injected": True})
+    monkeypatch.setattr(
+        st,
+        "markdown",
+        lambda body, **kwargs: markdown_calls.append(body),
+    )
+
+    inject_ui_theme()
+
+    assert len(markdown_calls) == 1
+    assert '<style id="dashboard-ui-theme">' in markdown_calls[0]
+
+
+@pytest.mark.parametrize(
+    ("helper_name", "args", "expected_fragment"),
+    [
+        ("render_app_shell_header", ("Title", "Subtitle"), "dashboard-app-shell"),
+        ("render_page_header", ("Title", "Subtitle", "Note"), "dashboard-page-header"),
+        ("render_context_box", ("Label", "Text"), "dashboard-context-box"),
+        ("render_section_intro", ("Title", "Subtitle"), "dashboard-section-intro"),
+    ],
+)
+def test_ui_shell_helpers_reinsert_css_on_render_even_with_session_flag(monkeypatch, helper_name, args, expected_fragment):
+    if str(ROOT) not in sys.path:
+        sys.path.append(str(ROOT))
+
+    from components import ui_shell
+
+    markdown_calls: list[str] = []
+    monkeypatch.setattr(st, "session_state", {"_dashboard_ui_theme_injected": True})
+    monkeypatch.setattr(
+        st,
+        "markdown",
+        lambda body, **kwargs: markdown_calls.append(body),
+    )
+
+    getattr(ui_shell, helper_name)(*args)
+
+    assert len(markdown_calls) >= 2
+    assert '<style id="dashboard-ui-theme">' in markdown_calls[0]
+    assert expected_fragment in markdown_calls[1]
+
+
+def test_render_active_filter_banner_reinserts_css_on_render_even_with_session_flag(monkeypatch):
+    if str(ROOT) not in sys.path:
+        sys.path.append(str(ROOT))
+
+    from components.ui_shell import render_active_filter_banner
+
+    markdown_calls: list[str] = []
+    info_calls: list[str] = []
+    monkeypatch.setattr(st, "session_state", {"_dashboard_ui_theme_injected": True})
+    monkeypatch.setattr(
+        st,
+        "markdown",
+        lambda body, **kwargs: markdown_calls.append(body),
+    )
+    monkeypatch.setattr(st, "info", lambda body, **kwargs: info_calls.append(body))
+
+    render_active_filter_banner("2 active filters")
+
+    assert len(markdown_calls) == 1
+    assert '<style id="dashboard-ui-theme">' in markdown_calls[0]
+    assert len(info_calls) == 1

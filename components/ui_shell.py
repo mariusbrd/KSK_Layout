@@ -9,14 +9,16 @@ from utils.i18n import t
 
 
 def inject_ui_theme() -> None:
-    """Inject the shared dashboard UI rules once per session."""
-    if st.session_state.get("_dashboard_ui_theme_injected"):
-        return
+    """Inject the shared dashboard UI rules on every render pass.
 
+    Streamlit rebuilds the page DOM on reruns and page switches. Keeping the
+    CSS behind a session-level one-shot flag can leave later renders without
+    the corresponding style tag even though the HTML helpers still render.
+    """
     st.session_state["_dashboard_ui_theme_injected"] = True
     st.markdown(
         f"""
-        <style>
+        <style id="dashboard-ui-theme">
         :root {{
             --dashboard-accent: {COLORS["accent_blue"]};
             --dashboard-accent-light: {COLORS["accent_blue_light"]};
