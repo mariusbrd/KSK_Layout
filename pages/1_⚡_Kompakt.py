@@ -24,6 +24,7 @@ from typing import Dict
 # Path setup
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from abgaenge.schemas import normalize_persnr
 from components.ui_compat import dataframe_compat, download_button_compat
 from components.ui_shell import render_active_filter_banner, render_context_box, render_section_intro
 from dataloader.loader import load_and_prepare_data
@@ -47,6 +48,15 @@ try:
 except ImportError:
     SCROLL_NAV_AVAILABLE = False
     st.warning("⚠️ streamlit-scroll-navigation nicht installiert. Führen Sie 'pip install streamlit-scroll-navigation' aus.")
+
+
+# =============================================================================
+# HELPERS
+# =============================================================================
+
+def _normalize_personalnummer_keys(series: pd.Series) -> pd.Series:
+    normalized = normalize_persnr(series)
+    return normalized.astype("string").fillna("").replace({"<NA>": ""}).str.strip()
 
 
 # =============================================================================
@@ -4819,8 +4829,8 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
             if "Is_Vacant" in ueb_base.columns:
                 _mask_has_pnr = ~(ueb_base["Is_Vacant"].fillna(True).astype(bool))
             elif "Personalnummer" in ueb_base.columns:
-                _pnr_raw = ueb_base["Personalnummer"].astype(str).str.strip()
-                _mask_has_pnr = ~_pnr_raw.isin(["", "nan", "None", "NaN", "<NA>"])
+                _pnr_raw = _normalize_personalnummer_keys(ueb_base["Personalnummer"])
+                _mask_has_pnr = _pnr_raw.ne("")
             else:
                 _mask_has_pnr = pd.Series(False, index=ueb_base.index)
 
@@ -4836,18 +4846,18 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
                 ueb_base["Sollarbeitszeit"].astype(str).str.strip().str.replace(",", ".", regex=False),
                 errors="coerce",
             )
-            _ueb_persnr = set(ueb_df["Personalnummer"].astype(str).str.strip())
+            _ueb_persnr = set(_normalize_personalnummer_keys(ueb_df["Personalnummer"]))
+            _ueb_persnr.discard("")
             _all_for_ueb = ueb_base[
-                ueb_base["Personalnummer"].astype(str).str.strip().isin(_ueb_persnr)
+                _normalize_personalnummer_keys(ueb_base["Personalnummer"]).isin(_ueb_persnr)
             ]
+            _all_for_ueb_pnr = _normalize_personalnummer_keys(_all_for_ueb["Personalnummer"])
             _has_real_set = set(
-                _all_for_ueb.loc[_az_all.reindex(_all_for_ueb.index).gt(0.1), "Personalnummer"]
-                .astype(str).str.strip()
+                _all_for_ueb_pnr.loc[_az_all.reindex(_all_for_ueb.index).gt(0.1)]
             )
-            n_nur_ueberhang = int(
-                ueb_df["Personalnummer"].astype(str).str.strip()
-                .apply(lambda p: p not in _has_real_set).sum()
-            )
+            _has_real_set.discard("")
+            _ueb_df_pnr = _normalize_personalnummer_keys(ueb_df["Personalnummer"])
+            n_nur_ueberhang = int((~_ueb_df_pnr.isin(_has_real_set)).sum())
             n_mit_echter = n_ueberhang - n_nur_ueberhang
 
             st.info(
@@ -5003,7 +5013,8 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
 
             # Typ-Spalte: Nur Überhang vs. Überhang + echte Stelle
             _ueb_detail = ueb_df.copy()
-            _ueb_detail["_Typ"] = _ueb_detail["Personalnummer"].astype(str).str.strip().apply(
+            _ueb_detail_pnr = _normalize_personalnummer_keys(_ueb_detail["Personalnummer"])
+            _ueb_detail["_Typ"] = _ueb_detail_pnr.map(
                 lambda p: "Zusätzlich zur regulären Stelle" if p in _has_real_set else "Ohne reguläre Stelle"
             )
 

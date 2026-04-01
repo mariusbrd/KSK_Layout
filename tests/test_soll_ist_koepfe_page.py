@@ -157,3 +157,12 @@ def test_render_ist_soll_koepfe_tab_warns_on_missing_tariff_group(monkeypatch):
     module.render_ist_soll_koepfe_tab(pd.DataFrame(), print_mode=False)
     assert warnings
     assert "Bewertung Tarifgruppe" in warnings[0]
+
+
+def test_normalize_personalnummer_keys_handles_empty_and_numeric_values():
+    module = _load_compact_page_module()
+
+    series = pd.Series(["", None, 1, 1.0, "000123", "  45  ", "nan"])
+    normalized = module._normalize_personalnummer_keys(series)
+
+    assert normalized.tolist() == ["", "", "000001", "000001", "000123", "000045", ""]
