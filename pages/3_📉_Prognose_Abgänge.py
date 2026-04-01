@@ -787,22 +787,26 @@ def main():
         st.markdown(t("attrition.summary.section"))
         m1, m2, m3, m4 = st.columns([1, 1, 1, 1])
         with m1:
-            st.metric("Abgänge gesamt (Köpfe)", f"{exits_total}")
+            st.metric(t("attrition.summary.metric.total_exits_heads"), f"{exits_total}")
         with m2:
-            st.metric("Kapazitätsverlust (MAK)", f"{mak_loss_total:.1f}")
+            st.metric(t("attrition.summary.metric.capacity_loss_fte"), f"{mak_loss_total:.1f}")
         with m3:
-            st.metric("Abgangsquote (Zeitraum)", f"{abgangsquote*100:.1f}%", help="Summierte Abgänge im Verhältnis zum Ø Bestand über den gesamten Zeitraum.")
+            st.metric(
+                t("attrition.summary.metric.attrition_rate_period"),
+                f"{abgangsquote*100:.1f}%",
+                help=t("attrition.summary.metric.attrition_rate_period.help"),
+            )
         with m4:
-            st.metric("Ø Fluktuation (p.a.)", f"{abgangsquote_annual*100:.1f}%", help="Annualisierte Abgangsquote (geometrischer Durchschnitt pro Jahr).")
+            st.metric(
+                t("attrition.summary.metric.avg_fluctuation_annual"),
+                f"{abgangsquote_annual*100:.1f}%",
+                help=t("attrition.summary.metric.avg_fluctuation_annual.help"),
+            )
         
-        st.info("""
-        **💡 Interpretationshilfe: Köpfe vs. Kapazität (MAK)**
-        * **Abgänge (Köpfe):** Personen, die das Unternehmen verlassen (Rente, Kündigung etc.).
-        * **Kapazitätsverlust (MAK):** Summierter Verlust an Arbeitskraft. Hier zählen auch **ATZ-Wechsel (AR→FR)** und Ruhenphasen, da diese die Kapazität reduzieren, ohne dass die Person die Bank verlassen muss.
-        """)
+        st.info(t("attrition.summary.interpretation"))
         
         # P03: Secure Start/End KPI (Robust extraction from Timeline info)
-        with st.expander("🔍 Details: Bestandsentwicklung (Start vs. Ende)", expanded=False):
+        with st.expander(t("attrition.summary.details.expander"), expanded=False):
             d1, d2, d3, d4 = st.columns(4)
             
             # Use total period delta (End - Start) for consistency
@@ -814,38 +818,48 @@ def main():
             total_hc_delta = int(hc_end - hc_start)
             total_mak_delta = float(mak_end - mak_start)
             
-            d1.metric("Headcount Start", f"{int(hc_start)}")
-            d2.metric("Headcount Ende", f"{int(hc_end)}", 
-                      delta=f"{total_hc_delta}", delta_color="normal", help="Δ gesamt im Zeitraum")
+            d1.metric(t("attrition.summary.details.headcount_start"), f"{int(hc_start)}")
+            d2.metric(
+                t("attrition.summary.details.headcount_end"),
+                f"{int(hc_end)}",
+                delta=f"{total_hc_delta}",
+                delta_color="normal",
+                help=t("attrition.summary.details.delta_help"),
+            )
             
-            d3.metric("MAK Start", f"{mak_start:.1f}")
-            d4.metric("MAK Ende", f"{mak_end:.1f}", 
-                      delta=f"{total_mak_delta:.1f}", delta_color="normal", help="Δ gesamt im Zeitraum")
+            d3.metric(t("attrition.summary.details.fte_start"), f"{mak_start:.1f}")
+            d4.metric(
+                t("attrition.summary.details.fte_end"),
+                f"{mak_end:.1f}",
+                delta=f"{total_mak_delta:.1f}",
+                delta_color="normal",
+                help=t("attrition.summary.details.delta_help"),
+            )
             
             # P01: Clearer caption without hardcoded artifacts
             end_date_str = last['period_end'].strftime("%d.%m.%Y") if hasattr(last['period_end'], 'strftime') else last['period_label']
-            st.caption(f"Das Delta (**Δ gesamt**) entspricht der Differenz zwischen dem Bestand am Ende des Prognosezeitraums ({end_date_str}) und dem Bestand zu Beginn.")
+            st.caption(t("attrition.summary.details.delta_caption", end_date=end_date_str))
 
         # DEBUG OUTPUT
         if st.session_state.get("debug_active", False):
-            with st.expander("🐞 Debug-Daten (Abgänge)", expanded=True):
+            with st.expander(t("attrition.debug.expander"), expanded=True):
                 # 1. Summary Metrics
                 c1, c2, c3 = st.columns(3)
                 with c1:
-                    st.write(f"**Events (Raw):** `{len(events)}`")
-                    st.write(f"**Abgänge (Köpfe, sum):** `{events['headcount_change'].sum() if not events.empty else 0}`")
+                    st.write(f"**{t('attrition.debug.raw_events')}:** `{len(events)}`")
+                    st.write(f"**{t('attrition.debug.exits_heads_sum')}:** `{events['headcount_change'].sum() if not events.empty else 0}`")
                 with c2:
                     unique_total = events['persnr'].nunique() if not events.empty else 0
                     unique_hc = events[events['headcount_change'] < 0]['persnr'].nunique() if not events.empty else 0
                     unique_cap = events[(events['headcount_change'] == 0) & (events['mak_change'] < 0)]['persnr'].nunique() if not events.empty else 0
                     
-                    st.write(f"**Unique Personen (alle Events):** `{unique_total}`")
-                    st.write(f"**- davon mit Headcount-Abgang:** `{unique_hc}`")
-                    st.write(f"**- davon nur Kapazität (ohne Austritt):** `{unique_cap}`")
+                    st.write(f"**{t('attrition.debug.unique_people_all')}:** `{unique_total}`")
+                    st.write(f"**- {t('attrition.debug.unique_people_exit')}:** `{unique_hc}`")
+                    st.write(f"**- {t('attrition.debug.unique_people_capacity_only')}:** `{unique_cap}`")
                 
                 with c3:
-                    st.write(f"**MAK-Verlust (sum):** `{events['mak_change'].sum() if not events.empty else 0:.2f}`")
-                    st.caption("*(Debug, 2 Dez. Summe über alle Events)*")
+                    st.write(f"**{t('attrition.debug.fte_loss_sum')}:** `{events['mak_change'].sum() if not events.empty else 0:.2f}`")
+                    st.caption(t("attrition.debug.fte_loss_caption"))
                     
                     # Logic Overlap Check (ATZ_END vs RETIREMENT)
                     if not events.empty:
@@ -854,12 +868,12 @@ def main():
                         pnr_retirement = set(events[events["reason_code"] == REASON_RETIREMENT]["persnr"])
                         overlap = len(pnr_atz_end & pnr_retirement)
                         color = "red" if overlap > 0 else "green"
-                        st.markdown(f"**Overlap ATZ_END ∩ Rente (Unique):** :{color}[`{overlap}`]")
+                        st.markdown(f"**{t('attrition.debug.overlap_atz_retirement')}:** :{color}[`{overlap}`]")
 
                 st.divider()
                 
                 # 2. Impact Table
-                st.markdown("**Events nach Wirkung (Abstimmung)**")
+                st.markdown(f"**{t('attrition.debug.events_by_effect')}**")
                 if not events.empty:
                     debug_impact = events.groupby("reason_code").agg(
                         Event_Count=("reason_code", "count"),
@@ -871,11 +885,11 @@ def main():
                     # Labels
                     from abgaenge.schemas import REASON_LABELS
                     debug_impact["Ursache"] = debug_impact["reason_code"].map(REASON_LABELS)
-                    st.caption("🔍 **Debug (2 Dez.):** Rohsummen der identifizierten Events.")
+                    st.caption(t("attrition.debug.events_caption"))
                     st.table(debug_impact[["Ursache", "Event_Count", "Unique_Pers", "Sum_Headcount", "Sum_MAK"]].round(2))
                 
                 st.divider()
-                st.markdown("**Stichprobe (Letzte 20 Events)**")
+                st.markdown(f"**{t('attrition.debug.sample_last_events')}**")
                 st.dataframe(events.tail(20))
 
     # --- Choice of Metric for Charts ---
@@ -909,13 +923,13 @@ def main():
 
     with tab1:
         # ── Section 1: zeitliche Entwicklung & Gesamt-Struktur ──
-        st.markdown("### 📈 Bestandsentwicklung (Trend)")
+        st.markdown(t("attrition.overview.trend.heading"))
         st.plotly_chart(charts.get("line_headcount_mak"), use_container_width=True)
         # Debug Timeline: Last Point vs KPI
         if not forecast_kpis.empty:
             _render_debug_metric("Timeline End MAK", last['mak_end'], last['mak_end'], " MAK")
             
-        st.caption("Die Trendlinie zeigt den Bestand am Ende jeder Periode. Ein sinkender MAK-Verlauf bei stabilem Headcount deutet auf ATZ-Übergänge hin.")
+        st.caption(t("attrition.overview.trend.caption"))
 
         st.plotly_chart(charts.get("bar_reasons_total"), use_container_width=True)
         # Debug Reason Total
@@ -924,23 +938,23 @@ def main():
             compare_val = exits_total if metric_choice=="Köpfe" else mak_loss_total
             _render_debug_metric(f"Reason Chart Sum ({metric_choice})", abs(layout_val), compare_val, " MAK" if metric_choice=="MAK" else "")
             
-        st.caption(f"Gesamt-Verlust ({metric_choice}) nach Ursache für den gewählten Zeitraum.")
+        st.caption(t("attrition.overview.total_loss.caption", metric=metric_choice))
 
         st.divider()
 
         # ── Section 2: Struktur der Abgänge ──
-        st.markdown(f"### 🧬 {metric_choice} nach Ursache (zeitlich)")
+        st.markdown(t("attrition.overview.reason_timeline.heading", metric=metric_choice))
         st.plotly_chart(charts.get("bar_abgaenge_reasons"), use_container_width=True)
         # Debug Detailed Reasons
         if not events.empty:
             _render_debug_metric("Detailed Reason Sum", abs(events["headcount_change" if metric_choice=="Köpfe" else "mak_change"].sum()), exits_total if metric_choice=="Köpfe" else mak_loss_total, " MAK" if metric_choice=="MAK" else "")
 
-        st.caption(f"Diese Grafik zeigt, in welchen Perioden der Kapazitätsverlust ({metric_choice}) durch welche Ursache auftritt.")
+        st.caption(t("attrition.overview.reason_timeline.caption", metric=metric_choice))
 
         st.divider()
 
         if "Organisationseinheit" in events.columns:
-            st.markdown("### 🏢 Top 15 Organisationseinheiten")
+            st.markdown(t("attrition.overview.top_org_units.heading"))
             
             # Aggregate
             exclude_units = ["Unbekannt", None]
@@ -957,7 +971,7 @@ def main():
                     x="Abgänge", 
                     y="Organisationseinheit", 
                     orientation="h",
-                    title="Abgänge nach Organisationseinheit (Top 15)",
+                    title=t("attrition.overview.top_org_units.chart_title"),
                     text="Abgänge",
                     color="Abgänge",
                     color_continuous_scale="Reds"
@@ -973,7 +987,7 @@ def main():
         st.divider()
 
         # ── Section 4: Cluster-Analyse (OE) ──
-        st.markdown("### 🧩 Analyse nach OE-Clustern")
+        st.markdown(t("attrition.overview.cluster_oe.heading"))
         if is_clustering_active():
             if "OE-Cluster" in events.columns:
                 # Get full set of clusters for consistent Y-axis
@@ -988,7 +1002,7 @@ def main():
                 # Layout: Vertical (untereinander)
                 
                 # Chart 1: Kopfabgänge
-                st.markdown("#### 👤 Abgänge nach Personen (OE)")
+                st.markdown(t("attrition.overview.cluster_oe.people"))
                 c_stats_h = cluster_events_h.groupby("OE-Cluster").size().reindex(all_clusters, fill_value=0).reset_index(name="Abgänge")
                 c_stats_h = c_stats_h.sort_values("Abgänge", ascending=True)
                 
@@ -997,7 +1011,7 @@ def main():
                     x="Abgänge",
                     y="OE-Cluster",
                     orientation="h",
-                    title="Kopfabgänge (Anzahl Personen)",
+                    title=t("attrition.overview.cluster_oe.people_chart_title"),
                     text="Abgänge",
                     color="Abgänge",
                     color_continuous_scale="Reds"
@@ -1011,7 +1025,7 @@ def main():
                 st.divider()
 
                 # Chart 2: MAK-Abgänge (Capacity Loss)
-                st.markdown("#### 📊 Abgänge nach Kapazität (MAK) (OE)")
+                st.markdown(t("attrition.overview.cluster_oe.fte"))
                 
                 if "mak_change" in cluster_events_m.columns:
                     cluster_events_m["mak_loss"] = cluster_events_m["mak_change"].abs()
@@ -1024,7 +1038,7 @@ def main():
                         x="MAK-Verlust",
                         y="OE-Cluster",
                         orientation="h",
-                        title="Kapazitätsverlust (MAK)",
+                        title=t("attrition.overview.cluster_oe.fte_chart_title"),
                         text_auto=".1f",
                         color="MAK-Verlust",
                         color_continuous_scale="Reds"
@@ -1036,14 +1050,14 @@ def main():
                         # mak_loss is positive
                         _render_debug_metric("Cluster Sum (MAK)", cluster_events_m["mak_loss"].sum(), mak_loss_total, " MAK")
                 else:
-                    st.info("MAK-Daten für Cluster nicht verfügbar.")
+                    st.info(t("attrition.overview.cluster_oe.no_fte"))
             else:
-                st.warning("OE-Cluster Spalte nicht im Datensatz gefunden.")
+                st.warning(t("attrition.overview.cluster_oe.missing_column"))
 
             st.divider()
 
             # ── Section 5: Cluster-Analyse (JF) ──
-            st.markdown("### 🧩 Analyse nach Job-Family-Clustern")
+            st.markdown(t("attrition.overview.cluster_jf.heading"))
             if "JF-Cluster" in events.columns:
                 # Get full set of clusters for consistent Y-axis
                 all_jf_clusters = sorted(df_ma["JF-Cluster"].unique().tolist())
@@ -1055,7 +1069,7 @@ def main():
                 cluster_events_m_jf = events[events["mak_change"] < 0].copy()
 
                 # Chart 1: Kopfabgänge JF
-                st.markdown("#### 👤 Abgänge nach Personen (JF)")
+                st.markdown(t("attrition.overview.cluster_jf.people"))
                 c_stats_h_jf = cluster_events_h_jf.groupby("JF-Cluster").size().reindex(all_jf_clusters, fill_value=0).reset_index(name="Abgänge")
                 c_stats_h_jf = c_stats_h_jf.sort_values("Abgänge", ascending=True)
                 
@@ -1064,7 +1078,7 @@ def main():
                     x="Abgänge",
                     y="JF-Cluster",
                     orientation="h",
-                    title="Kopfabgänge Job-Family (Anzahl Personen)",
+                    title=t("attrition.overview.cluster_jf.people_chart_title"),
                     text="Abgänge",
                     color="Abgänge",
                     color_continuous_scale="Reds"
@@ -1078,7 +1092,7 @@ def main():
                 st.divider()
 
                 # Chart 2: MAK-Abgänge JF
-                st.markdown("#### 📊 Abgänge nach Kapazität (MAK) (JF)")
+                st.markdown(t("attrition.overview.cluster_jf.fte"))
                 if "mak_change" in cluster_events_m_jf.columns:
                     cluster_events_m_jf["mak_loss"] = cluster_events_m_jf["mak_change"].abs()
                     c_stats_m_jf = cluster_events_m_jf.groupby("JF-Cluster")["mak_loss"].sum().reindex(all_jf_clusters, fill_value=0.0).reset_index(name="MAK-Verlust")
@@ -1089,7 +1103,7 @@ def main():
                         x="MAK-Verlust",
                         y="JF-Cluster",
                         orientation="h",
-                        title="Kapazitätsverlust Job-Family (MAK)",
+                        title=t("attrition.overview.cluster_jf.fte_chart_title"),
                         text_auto=".1f",
                         color="MAK-Verlust",
                         color_continuous_scale="Reds"
@@ -1101,7 +1115,7 @@ def main():
                          # mak_loss is positive
                          _render_debug_metric("JF Cluster Sum (MAK)", cluster_events_m_jf["mak_loss"].sum(), mak_loss_total, " MAK")
             else:
-                st.warning("JF-Cluster Spalte nicht im Datensatz gefunden.")
+                st.warning(t("attrition.overview.cluster_jf.missing_column"))
 
         else:
             st.info(t("attrition.info.no_custom_clusters"))
@@ -1109,7 +1123,7 @@ def main():
         st.divider()
 
         # ── Section 3: Datengrundlage ──
-        with st.expander("📄 Detaillierte Kennzahlentabelle (Rohdaten)", expanded=False):
+        with st.expander(t("attrition.overview.raw_table.expander"), expanded=False):
             # Round for raw display (2 digits as requested for non-summary)
             df_display = forecast_kpis.copy()
             for col in ["mak_start", "mak_end", "mak_delta", "mak_loss_gross", "abgangsquote"]:
@@ -1122,17 +1136,9 @@ def main():
             st.info(t("attrition.info.no_driver_events"))
         else:
             # ── Section 1: Management Summary ──
-            st.markdown("### 📊 Zusammenfassung der Abgangs-Treiber")
+            st.markdown(t("attrition.drivers.summary.heading"))
             
-            st.info("""
-            **💡 Interpretationshilfe: Headcount vs. Kapazität**
-            
-            **A) Headcount-Abgänge:** Zählen Personen, die die Bank verlassen (z.B. Kündigung, Rente). 
-            Ein Wechsel in die ATZ-Freistellung ist *kein* Headcount-Abgang.
-            
-            **B) Kapazitäts-Abgänge (MAK):** Messen den Verlust an Arbeitskraft in FTE. 
-            Hier zählen auch ATZ-Wechsel (AR→FR) und Ruhens-Starts, da diese die verfügbare Kapazität sofort reduzieren.
-            """)
+            st.info(t("attrition.drivers.summary.info"))
 
             # Data Prep
             summary_df = events.copy()
@@ -1140,17 +1146,17 @@ def main():
             summary_df["Jahr"] = summary_df["event_date"].dt.to_period("Y").astype(str)
             
             # --- Table A: Headcount ---
-            st.markdown("##### A) Headcount-Abgänge (Personen)")
+            st.markdown(t("attrition.drivers.table.headcount"))
             hc_exits = summary_df[summary_df["headcount_change"] < 0]
             if not hc_exits.empty:
                 hc_pivot = hc_exits.pivot_table(index="Jahr", columns="reason_label", values="persnr", aggfunc="count", fill_value=0)
                 hc_pivot["Gesamt"] = hc_pivot.sum(axis=1)
                 st.dataframe(hc_pivot, use_container_width=True)
             else:
-                st.info("Keine Headcount-Abgänge.")
+                st.info(t("attrition.drivers.info.no_headcount"))
 
             # --- Table B: MAK ---
-            st.markdown("##### B) Kapazitäts-Abgänge (FTE-Volumen)")
+            st.markdown(t("attrition.drivers.table.fte"))
             mak_exits = summary_df[summary_df["mak_change"] < -0.001].copy()
             if not mak_exits.empty:
                 mak_exits["MAK_Verlust"] = mak_exits["mak_change"].abs()
@@ -1159,12 +1165,12 @@ def main():
                 # Management View: Round to 1 decimal place as requested
                 st.dataframe(mak_pivot.round(1), use_container_width=True)
             else:
-                st.info("Keine Kapazitäts-Abgänge.")
+                st.info(t("attrition.drivers.info.no_fte"))
 
             st.divider()
 
             # ── Section 2: Visual Analysis ──
-            st.markdown("### 📈 Grafische Analyse")
+            st.markdown(t("attrition.drivers.visual.heading"))
             for key, fig in charts.items():
                 if key.startswith("driver_"):
                     st.plotly_chart(fig, use_container_width=True)
@@ -1172,16 +1178,16 @@ def main():
             st.divider()
 
             # ── Section 3: Detailed Data Tables ──
-            st.markdown("### 📋 Detail-Tabellen nach Treiber")
+            st.markdown(t("attrition.drivers.detail.heading"))
             res_global = st.session_state.get("abgaenge_global_result", {})
             tables = res_global.get("tables", {})
             if not tables:
-                st.info("Keine detaillierten Tabellen verfügbar.")
+                st.info(t("attrition.drivers.info.no_tables"))
             else:
                 for name, df in tables.items():
                     if df is None or df.empty:
                         continue
-                    with st.expander(f"Details: {name.capitalize()}", expanded=False):
+                    with st.expander(t("attrition.drivers.detail.expander", name=name.capitalize()), expanded=False):
                         st.dataframe(df, use_container_width=True)
 
     with tab3:
@@ -1194,7 +1200,7 @@ def main():
                 with st.expander(f"{reason} ({len(reason_df)})", expanded=False):
                     st.dataframe(reason_df, use_container_width=True)
                     st.download_button(
-                        label=f"CSV Export {reason}",
+                        label=t("attrition.export.csv_label", reason=reason),
                         data=to_csv_bytes(reason_df),
                         file_name=f"abgaenge_{safe_reason}.csv",
                         mime="text/csv",

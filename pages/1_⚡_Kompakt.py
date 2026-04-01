@@ -193,6 +193,34 @@ _COMPACT_LABEL_KEYS = {
     "Teilzeitquote": "compact.summary.metric.part_time_rate",
     "Aktuelle Kostenstruktur monitoren und Budget einhalten": "compact.rec.monitor_costs",
     "Retention-Maßnahmen für Schlüsselkräfte prüfen": "compact.rec.retention_key_roles",
+    "Regulär auswertbare Planstellen": "compact.ist_soll_heads.kpi.regular_positions",
+    "inkludierte OEs mit verwertbarer Soll-Entgeltgruppe": "compact.ist_soll_heads.kpi.regular_positions.subtitle",
+    "Besetzt": "compact.ist_soll_heads.kpi.filled",
+    "Unbesetzt": "compact.ist_soll_heads.kpi.vacant",
+    "Ohne Ist-EG": "compact.ist_soll_heads.kpi.missing_actual",
+    "Besetzt, aber im Mitarbeiterdatensatz ohne Tarifgruppe": "compact.ist_soll_heads.kpi.missing_actual.subtitle",
+    "Soll-Stellen (regulaer)": "compact.ist_soll_heads.kpi.regular_target_positions",
+    "Regulaere Planstellen ohne Sollkapa 0,01": "compact.ist_soll_heads.kpi.regular_target_positions.subtitle",
+    "Regulaer besetzt": "compact.ist_soll_heads.kpi.regular_filled",
+    "Regulaer unbesetzt": "compact.ist_soll_heads.kpi.regular_vacant",
+    "Nicht definierte Sollstelle in Arbeit": "compact.ist_soll_heads.kpi.undefined_target_in_work",
+    "Sollkapa 0,01, nicht 9XXX/99XX, mit Personalnummer": "compact.ist_soll_heads.kpi.undefined_target_in_work.subtitle",
+    "Passend oder im Band": "compact.ist_soll_heads.kpi.matching_or_band",
+    "Low-AZ-Planstellen gesamt": "compact.ist_soll_heads.overhang.kpi.low_az_total",
+    "Alle Planstellen mit Soll-Arbeitszeit 0 oder 0,1": "compact.ist_soll_heads.overhang.kpi.low_az_total.subtitle",
+    "Besetzte Zusatzstellen": "compact.ist_soll_heads.overhang.kpi.occupied_additional",
+    "Low-AZ-Planstellen mit tatsächlich besetzter Person": "compact.ist_soll_heads.overhang.kpi.occupied_additional.subtitle",
+    "Ohne reguläre Stelle": "compact.ist_soll_heads.overhang.kpi.without_regular",
+    "Person erscheint nur über diese technische Zusatzstelle": "compact.ist_soll_heads.overhang.kpi.without_regular.subtitle",
+    "Zusätzlich zur regulären Stelle": "compact.ist_soll_heads.overhang.kpi.alongside_regular",
+    "Technische Zusatzstelle neben einer regulären aktiven Stelle": "compact.ist_soll_heads.overhang.kpi.alongside_regular.subtitle",
+    "Sonderfälle gesamt": "compact.ist_soll_heads.special_cases.kpi.total",
+    "Besetzt, aber ohne hinterlegte Soll-EG": "compact.ist_soll_heads.special_cases.kpi.total.subtitle",
+    "Passend (exakt)": "compact.ist_soll_heads.detail.class.exact",
+    "Passend im Band": "compact.ist_soll_heads.detail.class.in_band",
+    "Übergruppiert": "compact.ist_soll_heads.detail.class.overgraded",
+    "Untergruppiert": "compact.ist_soll_heads.detail.class.undergraded",
+    "Nicht gefunden": "compact.ist_soll_heads.detail.class.not_found",
 }
 
 _COMPACT_LABEL_KEYS = {
@@ -4199,14 +4227,10 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
     # ── Toggle: Maximalwert (Spalte I) vs. Basiswert (Spalte H) ──────────────
     if not print_mode:
         use_max_eg = st.toggle(
-            "Soll-EG: Maximalwert verwenden (Spalte I – Text Gehaltsband)",
+            t("compact.ist_soll_heads.toggle.max_grade.label"),
             value=True,
             key="soll_ist_koepfe_use_max_eg",
-            help=(
-                "**Ein:** Soll-EG = oberes Ende des Gehaltsbandes aus Spalte I "
-                "(z. B. 'bis E11' → E11). Falls Spalte I leer, Fallback auf Spalte H.\n\n"
-                "**Aus:** Soll-EG = Basisbewertung der Planstelle aus Spalte H."
-            ),
+            help=t("compact.ist_soll_heads.toggle.max_grade.help"),
         )
     else:
         use_max_eg = True  # Im Druckbericht immer Maximalwert
@@ -4214,17 +4238,11 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
     pivot, soll_order, ist_eg_cols, IST_UNBESETZT, IST_NOT_FOUND, work_df, n_no_soll_eg, no_soll_eg_row, summary = _build_soll_ist_pivot_raw_logic(use_max_eg=use_max_eg)
 
     if pivot is None:
-        st.warning("⚠️ Spalte 'Bewertung Tarifgruppe' nicht im Datensatz vorhanden. "
-                   "Bitte Planstellen-Datei mit Spalte H prüfen.")
+        st.warning(t("compact.ist_soll_heads.warning.missing_target_column"))
         return
 
     # ── KPI-Karten ────────────────────────────────────────────────────────────
-    st.info(
-        "**So lesen Sie diese Ansicht:** Zuerst sehen Sie die regulär auswertbaren "
-        "Planstellen mit verwertbarer Soll-Entgeltgruppe. Danach folgt die fachliche "
-        "Soll-Ist-Analyse. Sonderfälle und Datenqualitätsfälle werden separat im unteren "
-        "Bereich ausgewiesen."
-    )
+    st.info(t("compact.ist_soll_heads.reading_hint"))
 
     total_pl  = int(pivot["Gesamt"].sum())
     unbesetzt = int(pivot[IST_UNBESETZT].sum()) if IST_UNBESETZT in pivot.columns else 0
@@ -4330,50 +4348,49 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
             "status": "good" if passend_pct >= 75 else "warning",
         },
     ]
-    st.markdown("### Management-Zusammenfassung")
+    st.markdown(t("compact.ist_soll_heads.summary.heading"))
     render_kpi_cards_styled(kpis)
     st.caption(
-        f"Von {total_pl:,} regulär auswertbaren Planstellen sind {besetzt:,} besetzt und "
-        f"{unbesetzt:,} unbesetzt. {n_passend_gesamt:,} besetzte Stellen liegen exakt oder "
-        f"innerhalb des vorgesehenen Entgeltbandes.".replace(",", ".")
+        t(
+            "compact.ist_soll_heads.summary.caption_primary",
+            total_positions=f"{total_pl:,}".replace(",", "."),
+            occupied=f"{besetzt:,}".replace(",", "."),
+            vacant=f"{unbesetzt:,}".replace(",", "."),
+            matching=f"{n_passend_gesamt:,}".replace(",", "."),
+        )
     )
 
     st.caption(
-        f"Roh-nahe Kontrolllogik: {total_pl:,} regulaere Sollstellen | {besetzt:,} regulaer besetzt | "
-        f"{unbesetzt:,} regulaer unbesetzt | {technical_in_work:,} Personen auf nicht definierter "
-        f"Sollstelle in Arbeit.".replace(",", ".")
+        t(
+            "compact.ist_soll_heads.summary.caption_secondary",
+            total_positions=f"{total_pl:,}".replace(",", "."),
+            occupied=f"{besetzt:,}".replace(",", "."),
+            vacant=f"{unbesetzt:,}".replace(",", "."),
+            technical_in_work=f"{technical_in_work:,}".replace(",", "."),
+        )
     )
 
     if n_no_soll_eg > 0 and not print_mode:
-        st.info(
-            f"ℹ️ **Nicht in der Matrix enthalten:** {n_no_soll_eg} Planstellen in inkludierten OEs "
-            f"haben keine verwertbare Soll-Entgeltgruppe in Spalte H oder I. Diese Fälle werden "
-            f"weiter unten separat als Sonderfälle ausgewiesen und sind deshalb nicht Teil der "
-            f"regulären Matrix."
-        )
+        st.info(t("compact.ist_soll_heads.summary.no_soll_info", count=n_no_soll_eg))
 
     if not print_mode:
         st.caption(
-            f"Kontrollsummen 0,01-Faelle: {summary['technical_total']:,} gesamt | "
-            f"{summary['technical_9xxx_total']:,} auf 9XXX/99XX | "
-            f"{summary['technical_non9xxx_total']:,} ausserhalb 9XXX/99XX | "
-            f"{summary['technical_non9xxx_occupied']:,} davon in Arbeit.".replace(",", ".")
+            t(
+                "compact.ist_soll_heads.summary.technical_caption",
+                total=f"{summary['technical_total']:,}".replace(",", "."),
+                on_9xxx=f"{summary['technical_9xxx_total']:,}".replace(",", "."),
+                outside_9xxx=f"{summary['technical_non9xxx_total']:,}".replace(",", "."),
+                occupied=f"{summary['technical_non9xxx_occupied']:,}".replace(",", "."),
+            )
         )
         st.markdown("---")
 
-    st.markdown("### Fachliche Soll-Ist-Analyse")
-    st.caption(
-        "Hier wird nur der reguläre Bestand mit verwertbarer Soll-EG betrachtet. "
-        "Die Matrix zeigt, wie die besetzten Planstellen tatsächlich eingruppiert sind."
-    )
+    st.markdown(t("compact.ist_soll_heads.analysis.heading"))
+    st.caption(t("compact.ist_soll_heads.analysis.caption"))
 
     # ── Tabelle ───────────────────────────────────────────────────────────────
-    st.subheader("📋 Soll-Ist-Matrix — Köpfe je Entgeltgruppe")
-    st.caption(
-        "**Zeilen:** vorgesehene Entgeltgruppe der Planstelle  "
-        "| **Spalten:** tatsächliche Tarifgruppe der besetzenden Person  "
-        "| **Diagonal / im Band:** fachlich passend"
-    )
+    st.subheader(t("compact.ist_soll_heads.matrix.heading"))
+    st.caption(t("compact.ist_soll_heads.matrix.caption"))
 
     # Summenzeile anhängen
     total_row = pivot.sum(axis=0).rename("Gesamt")
@@ -4407,7 +4424,7 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
             pivot_display.to_excel(writer, sheet_name="Soll-Ist-Köpfe")
         buf.seek(0)
         download_button_compat(
-            label="📥 Excel Download",
+            label=t("compact.ist_soll_heads.matrix.download"),
             data=buf.getvalue(),
             file_name="ist_soll_koepfe.xlsx",
             mime=_EXCEL_MIME,
@@ -4422,8 +4439,8 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
         st.markdown("<div style='page-break-after: always;'></div>", unsafe_allow_html=True)
 
     # ── Gestapeltes Balkendiagramm ────────────────────────────────────────────
-    st.subheader("📊 Soll-Ist-Verteilung — Köpfe je Soll-Entgeltgruppe")
-    st.caption("X-Achse: Anzahl Planstellen | Y-Achse: Soll-Entgeltgruppe | Segmente: tatsächliche Eingruppierung")
+    st.subheader(t("compact.ist_soll_heads.distribution.heading"))
+    st.caption(t("compact.ist_soll_heads.distribution.caption"))
 
     chart_cols = ist_eg_cols + (
         [IST_UNBESETZT] if IST_UNBESETZT in pivot.columns else []
@@ -4476,7 +4493,7 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
             name=col,
             orientation="h",
             marker=_marker,
-            hovertemplate=f"<b>%{{y}}</b> — Ist: {col}<br>Planstellen: %{{x:,.0f}}<extra></extra>",
+            hovertemplate=t("compact.ist_soll_heads.distribution.hover", ist_group=col),
         ))
 
     n_rows = len(soll_order) + (1 if _has_nosoll_chart else 0)
@@ -4519,23 +4536,16 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
 
     st.plotly_chart(fig, use_container_width=True)
     if not_found > 0:
-        st.caption(
-            f"ℹ️ **Ohne Ist-EG ({not_found} Planstellen):** Die Stelle ist besetzt, aber im "
-            f"Mitarbeiterdatensatz fehlt die Tarifgruppe. Das ist kein fachlicher Soll-Ist-Fehler, "
-            f"sondern ein Datenpflegehinweis."
-        )
+        st.caption(t("compact.ist_soll_heads.distribution.missing_ist_caption", count=not_found))
 
     # ── Detailbereich: eine Soll-EG tiefer analysieren ────────────────────────
     if not print_mode:
         st.markdown("---")
-        st.subheader("🔍 Detailanalyse — Soll-Entgeltgruppe")
-        st.caption(
-            "Wählen Sie eine Soll-Entgeltgruppe aus. Die Detailansicht zeigt dann, "
-            "wie sich die besetzten und unbesetzten Planstellen innerhalb dieser Gruppe verteilen."
-        )
+        st.subheader(t("compact.ist_soll_heads.detail.heading"))
+        st.caption(t("compact.ist_soll_heads.detail.caption"))
 
         selected_soll = st.selectbox(
-            "Soll-Entgeltgruppe auswählen",
+            t("compact.ist_soll_heads.detail.select_label"),
             options=soll_order,
             key="soll_ist_detail_eg",
             label_visibility="collapsed",
@@ -4546,7 +4556,7 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
         n_total = len(detail)
 
         if n_total == 0:
-            st.info("Keine Planstellen für diese Soll-Entgeltgruppe.")
+            st.info(t("compact.ist_soll_heads.detail.no_positions"))
         else:
             # ── Klassifizierung jeder Planstelle ──────────────────────────────
             # Band-Logik: Soll-EG_H (Spalte H) = untere Grenze,
@@ -4690,7 +4700,7 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
 
             # ── Chart 2: Ist-EG-Balken für gewählte Soll-EG ───────────────────
             with col_bar:
-                st.caption(f"**Ist-Eingruppierung** — Planstellen auf Soll-EG {selected_soll}")
+                st.caption(t("compact.ist_soll_heads.detail.actual_grading_caption", selected_soll=selected_soll))
                 ist_counts = (
                     detail.groupby("_Ist_EG").size()
                     .reset_index(name="n")
@@ -4747,18 +4757,12 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
                 st.plotly_chart(fig_bar, use_container_width=True)
 
     st.markdown("---")
-    st.markdown("### Sonderfälle und Datenqualität")
-    st.caption(
-        "Die folgenden Bereiche gehören nicht zur regulären Matrix, sind aber für die "
-        "Interpretation und Datenpflege wichtig."
-    )
+    st.markdown(t("compact.ist_soll_heads.special_cases.heading"))
+    st.caption(t("compact.ist_soll_heads.special_cases.caption"))
 
     if len(no_soll_eg_row) > 0:
-        st.subheader("📎 Besetzte Planstellen ohne hinterlegte Soll-Entgeltgruppe")
-        st.caption(
-            "Diese Planstellen sind besetzt, haben aber weder in Spalte H noch in Spalte I "
-            "eine verwertbare Soll-EG. Sie werden deshalb bewusst getrennt von der regulären Matrix dargestellt."
-        )
+        st.subheader(t("compact.ist_soll_heads.special_cases.no_target.heading"))
+        st.caption(t("compact.ist_soll_heads.special_cases.no_target.caption"))
         _nosoll_total = int(no_soll_eg_row.sum())
         _nosoll_kpis = [{
             "title": "Sonderfälle gesamt",
@@ -4786,11 +4790,8 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
     # ── Analyse Überhänge ─────────────────────────────────────────────────────
     if not print_mode:
         st.markdown("---")
-        st.subheader("⚠️ Technische Zusatzstellen / Überhangstellen")
-        st.caption(
-            "Hier werden besetzte Planstellen mit Sollarbeitszeit 0 oder 0,1 betrachtet. "
-            "Solche Einträge sind meist keine regulären Stellen, sondern technische Zusatz- oder Reststellen."
-        )
+        st.subheader(t("compact.ist_soll_heads.overhang.heading"))
+        st.caption(t("compact.ist_soll_heads.overhang.caption"))
 
         # OE-Exklusion auf Rohdaten anwenden (gleiche Logik wie _build_soll_ist_pivot)
         from utils.settings_loader import get_setting as _get_setting
@@ -4868,9 +4869,12 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
             n_mit_echter = n_ueberhang - n_nur_ueberhang
 
             st.info(
-                f"**Kurzinterpretation:** {n_ueberhang} besetzte technische Zusatzstellen wurden gefunden. "
-                f"Davon haben {n_nur_ueberhang} keine weitere reguläre Stelle in den inkludierten OEs "
-                f"und {n_mit_echter} existieren zusätzlich neben einer regulären Stelle."
+                t(
+                    "compact.ist_soll_heads.overhang.quick_interpretation",
+                    total=n_ueberhang,
+                    without_regular=n_nur_ueberhang,
+                    alongside_regular=n_mit_echter,
+                )
             )
 
             # ── KPI-Kacheln (mit Option B) ────────────────────────────────────
@@ -4912,7 +4916,7 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
 
                 # ── Option A: OE-Verteilung ───────────────────────────────────
                 with col_oe:
-                    st.caption("**Wo treten diese Zusatzstellen auf?**")
+                    st.caption(t("compact.ist_soll_heads.overhang.where_caption"))
                     _oe_col = "Organisationseinheit" if "Organisationseinheit" in ueb_df.columns else "Kürzel OrgEinheit"
                     oe_counts = (
                         ueb_df.groupby([_oe_col, "Kürzel OrgEinheit"]).size()
@@ -4932,7 +4936,7 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
                         x=oe_counts["n"],
                         orientation="h",
                         marker=dict(color="#0088DE", line=dict(color="white", width=0.5)),
-                        hovertemplate="%{y}<br>Überhänge: %{x}<extra></extra>",
+                        hovertemplate=t("compact.ist_soll_heads.overhang.where_hover"),
                         text=oe_counts["n"],
                         textposition="outside",
                     ))
@@ -4949,7 +4953,7 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
 
                 # ── Option C: Ist-EG Verteilung ───────────────────────────────
                 with col_eg:
-                    st.caption("**Welche Eingruppierungen haben die betroffenen Personen?**")
+                    st.caption(t("compact.ist_soll_heads.overhang.grading_caption"))
                     if "TrfGr" in ueb_df.columns:
                         from config.settings import TARIFF_GROUPS as _TG_UEB
                         _EG_RANK_UEB = {g: i for i, g in enumerate(_TG_UEB)}
@@ -4967,7 +4971,7 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
                             x=eg_counts["eg"],
                             y=eg_counts["n"],
                             marker=dict(color="#0088DE", line=dict(color="white", width=0.5)),
-                            hovertemplate="Ist-EG: %{x}<br>Überhänge: %{y}<extra></extra>",
+                            hovertemplate=t("compact.ist_soll_heads.overhang.grading_hover"),
                             text=eg_counts["n"],
                             textposition="outside",
                         ))
@@ -4988,51 +4992,42 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
                         )
                         st.plotly_chart(fig_eg, use_container_width=True)
                     else:
-                        st.info("Spalte 'TrfGr' nicht im Datensatz.")
+                        st.info(t("compact.ist_soll_heads.overhang.info.missing_trfgr"))
 
             # ── Detailtabelle Überhänge ───────────────────────────────────
             st.markdown("---")
-            st.subheader("🔍 Detailansicht Zusatzstellen")
+            st.subheader(t("compact.ist_soll_heads.overhang.detail.heading"))
 
             col_exp_a, col_exp_b = st.columns(2, gap="medium")
             with col_exp_a:
-                st.markdown(
-                    "**⚠️ Ohne reguläre Stelle**  \n"
-                    "Die Person ist im System ausschließlich über diese technische Zusatzstelle geführt "
-                    "– und die hat eine Sollarbeitszeit von ≤ 0,1. Es existiert **keine weitere "
-                    "aktive Planstelle** in den inkludierten OEs. Das bedeutet: Die Person hat "
-                    "formal keine reguläre Stellenzuordnung. Mögliche Ursachen sind ein noch "
-                    "nicht abgeschlossener Versetzungsprozess, ein vergessener Altdatensatz oder "
-                    "eine fehlende Nacherfassung der echten Stelle."
-                )
+                st.markdown(t("compact.ist_soll_heads.overhang.detail.without_regular"))
             with col_exp_b:
-                st.markdown(
-                    "**Zusätzlich zur regulären Stelle**  \n"
-                    "Die Person hat **zusätzlich** zu dieser technischen Zusatzstelle mindestens eine "
-                    "weitere Planstelle mit einer regulären Sollarbeitszeit (> 0,1) in den "
-                    "inkludierten OEs. Der Eintrag ist damit ein **Zusatzeintrag**, der "
-                    "neben der echten Stelle existiert. Typische Ursachen sind ein nicht "
-                    "bereinigter Rest nach einer Versetzung, ein SAP-Artefakt oder ein bewusst "
-                    "angelegter Platzhalter. Handlungsbedarf: Prüfen, ob der Eintrag gelöscht "
-                    "oder korrigiert werden kann."
-                )
+                st.markdown(t("compact.ist_soll_heads.overhang.detail.alongside_regular"))
             st.markdown("")
 
             # Typ-Spalte: Nur Überhang vs. Überhang + echte Stelle
             _ueb_detail = ueb_df.copy()
             _ueb_detail_pnr = _normalize_personalnummer_keys(_ueb_detail["Personalnummer"])
             _ueb_detail["_Typ"] = _ueb_detail_pnr.map(
-                lambda p: "Zusätzlich zur regulären Stelle" if p in _has_real_set else "Ohne reguläre Stelle"
+                lambda p: (
+                    t("compact.ist_soll_heads.overhang.filter.alongside_regular")
+                    if p in _has_real_set
+                    else t("compact.ist_soll_heads.overhang.filter.without_regular")
+                )
             )
 
-            _filter_opts = ["Alle", "Ohne reguläre Stelle", "Zusätzlich zur regulären Stelle"]
+            _filter_opts = [
+                t("compact.ist_soll_heads.overhang.filter.all"),
+                t("compact.ist_soll_heads.overhang.filter.without_regular"),
+                t("compact.ist_soll_heads.overhang.filter.alongside_regular"),
+            ]
             _filter_sel = st.radio(
-                "Welche Fälle möchten Sie sehen?",
+                t("compact.ist_soll_heads.overhang.filter.label"),
                 options=_filter_opts,
                 horizontal=True,
                 key="ueb_detail_filter",
             )
-            if _filter_sel != "Alle":
+            if _filter_sel != t("compact.ist_soll_heads.overhang.filter.all"):
                 _ueb_detail = _ueb_detail[_ueb_detail["_Typ"] == _filter_sel]
 
             # Anzuzeigende Spalten (nur vorhandene)
@@ -5048,21 +5043,21 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
             ]
             _display_cols = [c for c in _display_cols_pref if c in _ueb_detail.columns]
             _rename_map = {
-                "TrfGr": "Ist-EG",
-                "Bewertung Tarifgruppe": "Soll-EG (Basis)",
-                "Text Gehaltsband": "Soll-EG (Max)",
-                "Sollarbeitszeit": "Soll-AZ",
-                "_Typ": "Typ",
+                "TrfGr": t("compact.ist_soll_heads.overhang.table.actual_grade"),
+                "Bewertung Tarifgruppe": t("compact.ist_soll_heads.overhang.table.target_grade_base"),
+                "Text Gehaltsband": t("compact.ist_soll_heads.overhang.table.target_grade_max"),
+                "Sollarbeitszeit": t("compact.ist_soll_heads.overhang.table.target_capacity"),
+                "_Typ": t("compact.ist_soll_heads.overhang.table.case_type"),
             }
             _show_df = (
                 _ueb_detail[_display_cols]
                 .rename(columns=_rename_map)
                 .reset_index(drop=True)
             )
-            st.caption(f"{len(_show_df)} Einträge")
+            st.caption(t("compact.ist_soll_heads.overhang.table.entries", count=len(_show_df)))
             st.dataframe(_show_df, use_container_width=True, hide_index=True)
         else:
-            st.info("Spalte 'Sollarbeitszeit' nicht im Datensatz vorhanden.")
+            st.info(t("compact.ist_soll_heads.overhang.info.missing_target_capacity"))
 
 
 # =============================================================================

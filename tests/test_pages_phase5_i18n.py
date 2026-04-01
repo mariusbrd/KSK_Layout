@@ -258,6 +258,111 @@ def test_compact_breakdown_localizes_dimension_and_data_table_in_english(monkeyp
     assert any("**Data table**" == text for text in captured["markdown"])
 
 
+def test_compact_soll_ist_heads_runtime_text_is_localized_in_english(monkeypatch):
+    import streamlit as st
+
+    module = _load_page_module("*_Kompakt.py", "compact_page_phase5_soll_ist_heads")
+    st.session_state[i18n.LANGUAGE_SESSION_KEY] = "en"
+
+    captured = {"markdown": [], "subheaders": [], "captions": [], "infos": [], "warnings": [], "radios": []}
+
+    pivot = pd.DataFrame(
+        {"E10": [1], "Unbesetzt": [0], "Nicht gefunden": [0], "Gesamt": [1]},
+        index=["E10"],
+    )
+    work_df = pd.DataFrame(
+        {
+            "_Soll_EG": ["E10"],
+            "_Soll_EG_H": ["E10"],
+            "_Soll_EG_I": ["E11"],
+            "_Ist_EG": ["E10"],
+            "TrfGr": ["E10"],
+            "Sollarbeitszeit": [1.0],
+            "Personalnummer": ["1001"],
+            "Kürzel OrgEinheit": ["1000"],
+            "Organisationseinheit": ["Service"],
+            "Bewertung Tarifgruppe": ["E10"],
+            "Text Gehaltsband": ["bis E11"],
+        }
+    )
+    raw_df = pd.DataFrame(
+        {
+            "Sollarbeitszeit": [0.1],
+            "Personalnummer": ["2001"],
+            "Kürzel OrgEinheit": ["1000"],
+            "Organisationseinheit": ["Service"],
+            "TrfGr": ["E10"],
+            "Bewertung Tarifgruppe": ["E10"],
+            "Text Gehaltsband": ["bis E11"],
+            "Is_Vacant": [False],
+        }
+    )
+    summary = {
+        "regular_total": 1,
+        "regular_occupied": 1,
+        "regular_vacant": 0,
+        "matrix_not_found": 0,
+        "technical_non9xxx_occupied": 1,
+        "matrix_occupied": 1,
+        "technical_total": 1,
+        "technical_9xxx_total": 0,
+        "technical_non9xxx_total": 1,
+        "technical_non9xxx_occupied": 1,
+    }
+    no_soll_eg_row = pd.Series({"E10": 1, "Unbesetzt": 0, "Nicht gefunden": 0, "Gesamt": 1})
+
+    monkeypatch.setattr(
+        module,
+        "_build_soll_ist_pivot_raw_logic",
+        lambda use_max_eg=True: (
+            pivot,
+            ["E10"],
+            ["E10"],
+            "Unbesetzt",
+            "Nicht gefunden",
+            work_df,
+            1,
+            no_soll_eg_row,
+            summary,
+        ),
+    )
+    monkeypatch.setattr(module, "render_kpi_cards_styled", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "download_button_compat", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "dataframe_compat", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.st, "toggle", lambda *args, **kwargs: True)
+    monkeypatch.setattr(module.st, "info", lambda text, *args, **kwargs: captured["infos"].append(text))
+    monkeypatch.setattr(module.st, "warning", lambda text, *args, **kwargs: captured["warnings"].append(text))
+    monkeypatch.setattr(module.st, "markdown", lambda text, *args, **kwargs: captured["markdown"].append(text))
+    monkeypatch.setattr(module.st, "subheader", lambda text, *args, **kwargs: captured["subheaders"].append(text))
+    monkeypatch.setattr(module.st, "caption", lambda text, *args, **kwargs: captured["captions"].append(text))
+    monkeypatch.setattr(module.st, "dataframe", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.st, "plotly_chart", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.st, "selectbox", lambda label, options, **kwargs: options[0])
+    monkeypatch.setattr(module.st, "radio", lambda label, options, **kwargs: captured["radios"].append((label, options)) or options[0])
+    monkeypatch.setattr(module.st, "columns", lambda *args, **kwargs: [DummyContext(), DummyContext()])
+
+    module.render_ist_soll_koepfe_tab(raw_df)
+
+    joined = "\n".join(
+        captured["markdown"]
+        + captured["subheaders"]
+        + captured["captions"]
+        + captured["infos"]
+        + captured["warnings"]
+        + [label for label, _opts in captured["radios"]]
+        + [opt for _label, opts in captured["radios"] for opt in opts]
+    )
+    assert "Current-vs-target matrix" in joined
+    assert "Special cases and data quality" in joined
+    assert "Technical additional positions / overhang positions" in joined
+    assert "Which cases would you like to see?" in joined
+    assert "Without regular position" in joined
+    assert "Alongside the regular position" in joined
+    assert "Soll-Ist-Matrix" not in joined
+    assert "Sonderfälle und Datenqualität" not in joined
+    assert "Zusätzlich zur regulären Stelle" not in joined
+
+
 def test_compact_ist_eur_kpis_use_english_subtitles(monkeypatch):
     import streamlit as st
 

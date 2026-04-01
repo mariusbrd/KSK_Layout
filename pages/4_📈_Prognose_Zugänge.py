@@ -681,12 +681,12 @@ def main():
                 _tooltip = f"Gesamt: {gross_entries}"
                 if gross_entries_internal > 0:
                     _tooltip += f" | davon {gross_entries_external} externe Neueinstellungen + {gross_entries_internal} interne Übernahmen (Azubis)"
-                st.metric("Gesamt Zugänge (Köpfe)", f"{gross_entries}", help=_tooltip)
+                st.metric(t("hiring.summary.metric.total_entries_heads"), f"{gross_entries}", help=_tooltip)
             with m2:
                 # Show Net Growth as Delta
-                st.metric("Δ Personalvolumen (Ende)", f"{last['mak_end'] - first['mak_start']:+.1f} FTE")
+                st.metric(t("hiring.summary.metric.delta_fte_end"), f"{last['mak_end'] - first['mak_start']:+.1f} FTE")
             with m3:
-                st.metric("Δ Personalkosten (Jahr)", f"{total_added_cost:,.0f} €")
+                st.metric(t("hiring.summary.metric.delta_cost_year"), f"{total_added_cost:,.0f} €")
             
             # Dynamic Info Text based on active components
             info_parts = []
@@ -701,36 +701,33 @@ def main():
                 info_parts.append("Trainee- und externe Einstellungen sind i.d.R. sofort MAK/FTE-wirksam und erhöhen Köpfe und MAK gleichzeitig.")
             
             if info_parts:
-                st.info(f"💡 **Hinweis:** {' '.join(info_parts)}")
+                st.info(t("hiring.summary.note", details=' '.join(info_parts)))
             
             # DEBUG OUTPUT
             if st.session_state.get("debug_active", False):
-                with st.expander("🐞 Debug-Daten (Zugänge)", expanded=True):
+                with st.expander(t("hiring.debug.expander"), expanded=True):
                     show_technical_debug = st.toggle(
-                        "🔧 Technische Audit-Kennzahlen anzeigen",
+                        t("hiring.debug.toggle_technical"),
                         value=False,
                         help="Zeigt interne Berechnungs- und Lifecycle-Events zur Validierung der Prognoselogik."
                     )
                     
                     if show_technical_debug:
-                        st.markdown("**Technische Audit-Kennzahlen (nicht managementrelevant)**")
-                        st.caption(
-                            "Diese Werte enthalten zusätzlich interne Lifecycle- und Hilfs-Events "
-                            "zur Validierung der Prognoselogik und entsprechen nicht den tatsächlichen Personalzugängen."
-                        )
+                        st.markdown(f"**{t('hiring.debug.technical.heading')}**")
+                        st.caption(t("hiring.debug.technical.caption"))
                         st.write(f"Global Events (Raw): {len(events_df)}")
                         st.write(f"Net Count Sum: {events_df['count'].sum()}")
                         st.divider()
 
-                    st.write(f"Gross Entries: {gross_entries}")
+                    st.write(f"{t('hiring.debug.gross_entries')}: {gross_entries}")
                     st.dataframe(events_df.head(20))
             
-            with st.expander("🔍 Details: Bestandsentwicklung (Brutto-Zuwachs)", expanded=False):
+            with st.expander(t("hiring.summary.details.expander"), expanded=False):
                 d1, d2, d3, d4 = st.columns(4)
-                d1.metric("Headcount Start", f"{start_hc}")
-                d2.metric("Headcount Ende", f"{end_hc}", delta=f"{total_net_hc_change:+}")
-                d3.metric("MAK Start", f"{first['mak_start']:.1f}")
-                d4.metric("MAK Ende", f"{last['mak_end']:.1f}", delta=f"{last['mak_end'] - first['mak_start']:.1f}")
+                d1.metric(t("hiring.summary.details.headcount_start"), f"{start_hc}")
+                d2.metric(t("hiring.summary.details.headcount_end"), f"{end_hc}", delta=f"{total_net_hc_change:+}")
+                d3.metric(t("hiring.summary.details.fte_start"), f"{first['mak_start']:.1f}")
+                d4.metric(t("hiring.summary.details.fte_end"), f"{last['mak_end']:.1f}", delta=f"{last['mak_end'] - first['mak_start']:.1f}")
             
             # ── Tabs ───────────────────────────────────────────────────────
             tab_overview, tab_details, tab_cost = st.tabs(_get_result_tab_labels())
@@ -752,21 +749,21 @@ def main():
             
             with tab_overview:
                 # Section 1: Entwicklung (Show Net Evolution)
-                st.markdown("### 📈 Entwicklung Headcount & MAK")
+                st.markdown(t("hiring.overview.evolution.heading"))
                 fig_evo = px.line(
                     forecast_kpis, 
                     x="period_end", 
                     y=["headcount_end", "mak_end"],
                     labels={
-                        "value": "Anzahl", 
-                        "period_end": "Datum", 
-                        "variable": "Metrik"
+                        "value": t("hiring.overview.evolution.label.value"), 
+                        "period_end": t("hiring.overview.evolution.label.date"), 
+                        "variable": t("hiring.overview.evolution.label.metric")
                     },
                     color_discrete_map={"headcount_end": COLORS["accent_blue"], "mak_end": COLORS["accent_green"]}
                 )
                 # Explicitly Rename Traces (Fixes "undefiniert")
-                fig_evo.update_traces(name="Köpfe (Headcount)", selector=dict(name="headcount_end"))
-                fig_evo.update_traces(name="MAK (FTE)", selector=dict(name="mak_end"))
+                fig_evo.update_traces(name=t("hiring.overview.evolution.trace_heads"), selector=dict(name="headcount_end"))
+                fig_evo.update_traces(name=t("hiring.overview.evolution.trace_fte"), selector=dict(name="mak_end"))
                 
                 def build_entries_caption(use_azubis, use_trainees, use_newhires):
                     base = "Brutto-Entwicklung durch Zugänge (ohne Berücksichtigung von Abgängen)."
@@ -791,7 +788,7 @@ def main():
                 st.divider()
                 
                 # Section 2: Struktur (Show Gross Entries)
-                st.markdown("### 📥 Zugänge nach Quelle")
+                st.markdown(t("hiring.overview.sources.heading"))
                 
                 # 1. Definiere explizite Teilmengen (Strikte Trennung)
                 # A) Alle Azubi-Events (inkl. Statuswechsel Out)
@@ -820,10 +817,10 @@ def main():
                 if not events_inflows.empty:
                     # 2. Deutschsprachige Labels für Chart und Legende
                     label_map = {
-                        "Azubi_Hire": "Neue Auszubildende",
-                        "Azubi_Conversion_In": "Übernahme aus Ausbildung", 
-                        "New_Hire": "Neueinstellung",
-                        "Trainee_Hire": "Trainee"
+                        "Azubi_Hire": t("hiring.overview.sources.label.new_apprentices"),
+                        "Azubi_Conversion_In": t("hiring.overview.sources.label.takeover_training"), 
+                        "New_Hire": t("hiring.overview.sources.label.new_hire"),
+                        "Trainee_Hire": t("hiring.overview.sources.label.trainee")
                     }
                     events_inflows["Quelle"] = events_inflows["type"].map(label_map)
                     
@@ -833,13 +830,13 @@ def main():
                         x="date", 
                         color="Quelle", 
                         text_auto=True,
-                        labels={"date": "Datum", "count": "Anzahl (Zugänge)", "Quelle": "Quelle"},
+                        labels={"date": t("hiring.overview.sources.label.date"), "count": t("hiring.overview.sources.label.count"), "Quelle": t("hiring.overview.sources.label.source")},
                         # Use specific colors for clarity
                         color_discrete_map={
-                            "Neue Auszubildende": COLORS.get("accent_blue", "#1f77b4"),
-                            "Übernahme aus Ausbildung": "#9467bd", # Purple (Transformation)
-                            "Neueinstellung": COLORS.get("accent_green", "#2ca02c"),
-                            "Trainee": COLORS.get("accent_orange", "#ff7f0e")
+                            t("hiring.overview.sources.label.new_apprentices"): COLORS.get("accent_blue", "#1f77b4"),
+                            t("hiring.overview.sources.label.takeover_training"): "#9467bd",
+                            t("hiring.overview.sources.label.new_hire"): COLORS.get("accent_green", "#2ca02c"),
+                            t("hiring.overview.sources.label.trainee"): COLORS.get("accent_orange", "#ff7f0e")
                         }
                     )
                     def build_source_caption(use_azubis, use_trainees, use_newhires):
@@ -857,7 +854,7 @@ def main():
                                 return "Externe Neueinstellungen sind i.d.R. sofort MAK-wirksam und erhöhen Köpfe und MAK gleichzeitig."
                             return ""
 
-                    fig_hist.update_layout(title=None, xaxis_title="Datum", yaxis_title="Anzahl (Zugänge)")
+                    fig_hist.update_layout(title=None, xaxis_title=t("hiring.overview.sources.label.date"), yaxis_title=t("hiring.overview.sources.label.count"))
                     fig_hist = apply_legend_bottom(fig_hist)
                     st.plotly_chart(fig_hist, use_container_width=True)
                     
@@ -866,7 +863,7 @@ def main():
                     
                     # Debug Source Hist (Check against Gross Entries)
                     if st.session_state.get("debug_active", False):
-                        st.markdown("#### 🐞 Debug-Analyse (Zugänge)")
+                        st.markdown(t("hiring.debug.analysis_heading"))
                         
                         # Treiber-Status Tabelle
                         driver_data = [
@@ -933,12 +930,12 @@ def main():
 
                         _render_debug_metric("Zugänge (Events): Chart vs Inflows", len(events_inflows), len(events_inflows), "")
                 else:
-                    st.info("Keine Zugangs-Events vorhanden (nach Filterung).")
+                            st.info(t("hiring.overview.sources.no_events"))
                 
                 st.divider()
                 
                 # Section 3: Cluster-Struktur (OE)
-                st.markdown("### 🧩 Zugänge nach OE-Clustern")
+                st.markdown(t("hiring.overview.cluster_oe.heading"))
                 
                 if is_clustering_active():
                     if "OE-Cluster" in events_inflows.columns:
@@ -952,7 +949,7 @@ def main():
                         all_clusters = [c for c in all_clusters if pd.notna(c) and str(c).strip() != ""]
                         
                         # Chart 1: Kopfzugänge
-                        st.markdown("#### 👤 Zugänge nach Personen (OE)")
+                        st.markdown(t("hiring.overview.cluster_oe.people"))
                         c_stats_h = events_inflows.groupby("OE-Cluster").size().reindex(all_clusters, fill_value=0).reset_index(name="Zugänge")
                         c_stats_h = c_stats_h.sort_values("Zugänge", ascending=True)
                         
@@ -962,7 +959,7 @@ def main():
                             y="OE-Cluster",
                             orientation="h",
                             title=None,
-                            labels={"OE-Cluster": "Bereich (OE)", "Zugänge": "Anzahl Personen"},
+                                labels={"OE-Cluster": t("hiring.overview.cluster_oe.label.cluster"), "Zugänge": t("hiring.overview.cluster_oe.label.people_count")},
                             text="Zugänge",
                             color="Zugänge",
                             color_continuous_scale="Blues"
@@ -975,7 +972,7 @@ def main():
                         st.divider()
 
                         # Chart 2: MAK-Zuwachs
-                        st.markdown("#### 📊 Zugänge nach Kapazität (MAK) (OE)")
+                        st.markdown(t("hiring.overview.cluster_oe.fte"))
                         if "mak" in events_inflows.columns:
                             c_stats_m = events_inflows.groupby("OE-Cluster")["mak"].sum().reindex(all_clusters, fill_value=0.0).reset_index(name="MAK-Zuwachs")
                             c_stats_m = c_stats_m.sort_values("MAK-Zuwachs", ascending=True)
@@ -986,7 +983,7 @@ def main():
                                 y="OE-Cluster",
                                 orientation="h",
                                 title=None,
-                                labels={"OE-Cluster": "Bereich (OE)", "MAK-Zuwachs": "MAK-Zuwachs (FTE)"},
+                                labels={"OE-Cluster": t("hiring.overview.cluster_oe.label.cluster"), "MAK-Zuwachs": t("hiring.overview.cluster_oe.label.fte_gain")},
                                 text_auto=".1f",
                                 color="MAK-Zuwachs",
                                 color_continuous_scale="Blues"
@@ -996,14 +993,14 @@ def main():
                             # Debug OE MAK
                             _render_debug_metric("OE Cluster MAK", c_stats_m["MAK-Zuwachs"].sum(), gross_mak_add, " MAK")
                         else:
-                            st.info("MAK-Daten für Cluster nicht verfügbar.")
+                            st.info(t("hiring.overview.cluster_oe.no_fte"))
                     else:
-                        st.warning("OE-Cluster Spalte nicht im Datensatz gefunden.")
+                        st.warning(t("hiring.overview.cluster_oe.missing_column"))
 
                     st.divider()
 
                     # Section 4: Cluster-Struktur (JF)
-                    st.markdown("### 🧩 Zugänge nach Job-Family-Clustern")
+                    st.markdown(t("hiring.overview.cluster_jf.heading"))
                     if "JF-Cluster" in events_inflows.columns:
                         snap_jf = df_filtered_rows["JF-Cluster"].unique().tolist() if "JF-Cluster" in df_filtered_rows.columns else []
                         evt_jf = events_inflows["JF-Cluster"].unique().tolist()
@@ -1012,7 +1009,7 @@ def main():
                         all_jf_clusters = [c for c in all_jf_clusters if pd.notna(c) and str(c).strip() != ""]
 
                         # Chart 1: Kopfzugänge JF
-                        st.markdown("#### 👤 Zugänge nach Personen (JF)")
+                        st.markdown(t("hiring.overview.cluster_jf.people"))
                         c_stats_h_jf = events_inflows.groupby("JF-Cluster").size().reindex(all_jf_clusters, fill_value=0).reset_index(name="Zugänge")
                         c_stats_h_jf = c_stats_h_jf.sort_values("Zugänge", ascending=True)
                         
@@ -1022,7 +1019,7 @@ def main():
                             y="JF-Cluster",
                             orientation="h",
                             title=None,
-                            labels={"JF-Cluster": "Berufsgruppe (JF)", "Zugänge": "Anzahl Personen"},
+                                labels={"JF-Cluster": t("hiring.overview.cluster_jf.label.cluster"), "Zugänge": t("hiring.overview.cluster_jf.label.people_count")},
                             text="Zugänge",
                             color="Zugänge",
                             color_continuous_scale="Blues"
@@ -1035,7 +1032,7 @@ def main():
                         st.divider()
 
                         # Chart 2: MAK-Zuwachs JF
-                        st.markdown("#### 📊 Zugänge nach Kapazität (MAK) (JF)")
+                        st.markdown(t("hiring.overview.cluster_jf.fte"))
                         if "mak" in events_inflows.columns:
                             c_stats_m_jf = events_inflows.groupby("JF-Cluster")["mak"].sum().reindex(all_jf_clusters, fill_value=0.0).reset_index(name="MAK-Zuwachs")
                             c_stats_m_jf = c_stats_m_jf.sort_values("MAK-Zuwachs", ascending=True)
@@ -1046,7 +1043,7 @@ def main():
                                 y="JF-Cluster",
                                 orientation="h",
                                 title=None,
-                                labels={"JF-Cluster": "Berufsgruppe (JF)", "MAK-Zuwachs": "MAK-Zuwachs (FTE)"},
+                                labels={"JF-Cluster": t("hiring.overview.cluster_jf.label.cluster"), "MAK-Zuwachs": t("hiring.overview.cluster_jf.label.fte_gain")},
                                 text_auto=".1f",
                                 color="MAK-Zuwachs",
                                 color_continuous_scale="Blues"
@@ -1056,12 +1053,12 @@ def main():
                             # Debug JF MAK
                             _render_debug_metric("JF Cluster MAK", c_stats_m_jf["MAK-Zuwachs"].sum(), gross_mak_add, " MAK")
                     else:
-                        st.warning("JF-Cluster Spalte nicht im Datensatz gefunden.")
+                        st.warning(t("hiring.overview.cluster_jf.missing_column"))
                 else:
                     st.info(t("hiring.info.no_custom_clusters"))
 
             with tab_details:
-                st.markdown("### 📋 Detaillierte Liste der Zugänge")
+                st.markdown(t("hiring.details.heading"))
 
                 # Separate internal status-change pairs from external new entries.
                 # Azubi_Conversion_Out (-1) + Azubi_Conversion_In (+1) are a matched pair
@@ -1091,7 +1088,7 @@ def main():
                 st.dataframe(_display_df, use_container_width=True)
                 
             with tab_cost:
-                st.markdown("### 💰 Kosten-Impact")
+                st.markdown(t("hiring.cost.heading"))
                 if not events_df.empty:
                     cost_df["Month"] = cost_df["date"].dt.to_period("M").astype(str)
                     
@@ -1118,11 +1115,10 @@ def main():
                     fig_cost = apply_legend_bottom(fig_cost)
                     st.plotly_chart(fig_cost, use_container_width=True)
                     
-                    st.markdown("#### Detail-Tabelle Kosten")
+                    st.markdown(t("hiring.cost.detail_heading"))
                     st.dataframe(cost_df[["date", "source", "TrfGr", "St", "Total_Cost_Year", "Cost_Impact"]], use_container_width=True)
                 else:
-                    st.info("Keine Kostendaten verfügbar (da keine Zugänge).")
+                    st.info(t("hiring.cost.no_data"))
 
 if __name__ == "__main__":
     main()
-

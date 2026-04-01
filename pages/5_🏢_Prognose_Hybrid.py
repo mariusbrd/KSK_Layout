@@ -53,6 +53,7 @@ from components.sidebar import (
     render_global_filters,
     set_metric_page_hint,
 )
+from utils.i18n import t
 from utils.plot_helpers import apply_legend_bottom
 from utils.ui_helpers import render_distribution_matrix, render_orgunit_mode_hint
 from utils.matrix_helpers import migrate_to_percent, percent_to_weights
@@ -524,7 +525,7 @@ def _prepare_hybrid_view_state(
         df_view_agg["mak"] = df_view_agg["MAK_Calculated"]
         df_view_agg["active"] = True
 
-        agg_freq = "M" if freq_label == "Monat" else "Q"
+        agg_freq = "M" if freq_label == t("hybrid.settings.frequency.month") else "Q"
         net_kpis = calculate_kpi_from_events(
             df_start_stats=df_view_agg,
             events_df=combined_events_in_scope,
@@ -672,11 +673,10 @@ def main():
 
     current_filter_hash = dict_hash(get_filter_bundle())
 
-    st.title("🏢 Prognose: Hybrid")
-    st.caption("Prognose von Hybrid-Szenarien (Abgänge und Zugänge) mit klarer Trennung von MAK und Headcount.")
+    st.title(t("hybrid.title"))
+    st.caption(t("hybrid.subtitle"))
     set_metric_page_hint(
-        "Diese Seite zeigt derzeit ein kombiniertes Netto-Cockpit. "
-        "Die globale Pille schaltet hier noch nicht die gesamte Seite zwischen Köpfe / MAK / EUR um."
+        t("hybrid.metric_hint")
     )
 
     try:
@@ -724,51 +724,53 @@ def main():
     params_zug = default_zugaenge_params()
 
     # ── Settings Accordion ──────────────────────────────────────────
-    with st.expander("⚙️ Prognose-Einstellungen (Hybrid)", expanded=True):
+    with st.expander(t("hybrid.settings.expander"), expanded=True):
         # ── Row 1: Base Settings (horizontal) ──
-        st.markdown("##### 📅 Zeitraum & Basis")
+        st.markdown(t("hybrid.settings.period"))
         submit = False
         bc1, bc2, bc3, bc4 = st.columns(4)
         with bc1:
-            ist_stichtag = st.date_input("Ist-Stichtag", value=default_start)
+            ist_stichtag = st.date_input(t("hybrid.settings.actual_date"), value=default_start)
         with bc2:
-            forecast_end_date = st.date_input("Prognose-Ende", value=default_end)
+            forecast_end_date = st.date_input(t("hybrid.settings.forecast_end"), value=default_end)
         with bc3:
-            freq_label = st.selectbox("Frequenz", options=["Monat", "Quartal"], index=0)
+            _freq_month = t("hybrid.settings.frequency.month")
+            _freq_quarter = t("hybrid.settings.frequency.quarter")
+            freq_label = st.selectbox(t("hybrid.settings.frequency"), options=[_freq_month, _freq_quarter], index=0)
         with bc4:
-            random_seed = st.number_input("Random Seed", value=int(params_abg["random_seed"]), step=1)
+            random_seed = st.number_input(t("attrition.settings.random_seed"), value=int(params_abg["random_seed"]), step=1)
 
         st.markdown("---")
 
         # ── Row 2: Component Toggles (horizontal) ──
-        st.markdown("##### 🧩 Aktive Komponenten")
+        st.markdown(t("hybrid.settings.components"))
         
-        st.markdown("**Abgangs-Treiber:**")
+        st.markdown(f"**{t('hybrid.settings.attrition_drivers')}**")
         cc1, cc2, cc3, cc4 = st.columns(4)
         with cc1:
-            comp_atz = st.checkbox("ATZ", value=params_abg["components"]["atz"])
+            comp_atz = st.checkbox(t("hybrid.settings.component.atz"), value=params_abg["components"]["atz"])
         with cc2:
-            comp_ret = st.checkbox("Rente", value=params_abg["components"]["retirement"])
+            comp_ret = st.checkbox(t("hybrid.settings.component.retirement"), value=params_abg["components"]["retirement"])
         with cc3:
-            comp_quit = st.checkbox("Kündigung", value=params_abg["components"]["quit"])
+            comp_quit = st.checkbox(t("hybrid.settings.component.quit"), value=params_abg["components"]["quit"])
         with cc4:
-            comp_ruhend = st.checkbox("Ruhend", value=params_abg["components"]["ruhend"])
+            comp_ruhend = st.checkbox(t("hybrid.settings.component.ruhend"), value=params_abg["components"]["ruhend"])
             
-        st.markdown("**Zugangs-Treiber:**")
+        st.markdown(f"**{t('hybrid.settings.hiring_drivers')}**")
         zc1, zc2, zc3 = st.columns(3)
         with zc1:
-            comp_azubi = st.checkbox("Azubis", value=True) # Usually active
+            comp_azubi = st.checkbox(t("hybrid.settings.component.azubis"), value=True)
         with zc2:
-            comp_trainee = st.checkbox("Trainees", value=True)
+            comp_trainee = st.checkbox(t("hybrid.settings.component.trainees"), value=True)
         with zc3:
-            comp_hires = st.checkbox("Neueinstellungen", value=True)
+            comp_hires = st.checkbox(t("hybrid.settings.component.new_hires"), value=True)
 
         st.markdown("---")
 
         # ── Row 3: Detail Parameters (sub-expanders) ──
-        st.markdown("##### 🔧 Detail-Parameter")
+        st.markdown(t("hybrid.settings.details"))
 
-        t_abg, t_zug = st.tabs(["📉 Abgänge", "📈 Zugänge"])
+        t_abg, t_zug = st.tabs([t("hybrid.tabs.attrition"), t("hybrid.tabs.hiring")])
 
         with t_abg:
             with st.expander("ATZ-Parameter"):
@@ -931,20 +933,20 @@ def main():
 
     # ── Action Button ──
     st.write("")
-    if st.button("🚀 Prognose (Hybrid) berechnen", use_container_width=True, key="btn_run_hybrid"):
+    if st.button(t("hybrid.action.compute"), use_container_width=True, key="btn_run_hybrid"):
         submit = True
 
     has_hybrid_res = "hybrid_abg_res" in st.session_state and "hybrid_zug_res" in st.session_state
 
     if not submit and not has_hybrid_res:
-        st.info("⬆️ Parameter oben einstellen und Prognose berechnen.")
+        st.info(t("hybrid.info.prompt_compute"))
         return
 
     # 1. Build Final Params
     ui_state_abg = {
         "ist_stichtag": ist_stichtag.isoformat() if hasattr(ist_stichtag, "isoformat") else str(ist_stichtag),
         "forecast_end_date": forecast_end_date.isoformat() if hasattr(forecast_end_date, "isoformat") else str(forecast_end_date),
-        "freq": "M" if freq_label == "Monat" else "Q",
+        "freq": "M" if freq_label == t("hybrid.settings.frequency.month") else "Q",
         "components": {"atz": comp_atz, "retirement": comp_ret, "quit": comp_quit, "ruhend": comp_ruhend},
         "atz": {"new_atz_rate": new_atz_base, "atz_eligible_age_min": eligible_age, "atz_eligible_age_max": eligible_age_max, "atz_duration_ar_years": ar_years, "atz_duration_fr_years": fr_years, "use_atz_matrix": use_atz_matrix, "atz_dimension": atz_dim, "atz_matrix": new_atz_matrix},
         "retirement": {"rent_rate_65": rent65, "rent_rate_60_65": rent60},
@@ -997,7 +999,7 @@ def main():
                     df_atz=df_atz,
                     start_date=pd.Timestamp(ist_stichtag),
                     end_date=pd.Timestamp(forecast_end_date),
-                    freq="M" if freq_label == "Monat" else "Q",
+                    freq="M" if freq_label == t("hybrid.settings.frequency.month") else "Q",
                     params=final_params_abg,
                 )
             
@@ -1023,7 +1025,7 @@ def main():
                 df_snapshot=df_ma,
                 start_date=pd.Timestamp(ist_stichtag),
                 end_date=pd.Timestamp(forecast_end_date),
-                freq="M" if freq_label == "Monat" else "Q",
+                freq="M" if freq_label == t("hybrid.settings.frequency.month") else "Q",
                 params=final_params_zug,
                 vacancies=vacancies
             )
@@ -1068,7 +1070,7 @@ def main():
     render_filter_status(n_total_before, n_total_after)
 
     if df_snapshot_filtered.empty:
-        st.warning("⚠️ Keine Daten nach Filterung.")
+        st.warning(t("hybrid.warning.no_filtered_data"))
         return
 
     # 4. Rendering ──────────────────────────────────────────────────
@@ -1087,35 +1089,33 @@ def main():
         
         last_kpi = net_kpis.iloc[-1]
         
-        st.markdown("### 🏆 Hybrid-Cockpit: Netto-Zusammenfassung")
+        st.markdown(t("hybrid.summary.heading"))
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Abgänge (Köpfe)", f"{total_exits}")
-        m2.metric("Zugänge (Köpfe)", f"{total_entries}")
-        m3.metric("Netto-Delta (Köpfe)", f"{net_hc_delta:+}")
-        m4.metric("Personalstand (MAK) Ende", f"{last_kpi['mak_end']:.1f}", delta=f"{last_kpi['mak_delta']:.1f}")
+        m1.metric(t("hybrid.summary.metric.exits_heads"), f"{total_exits}")
+        m2.metric(t("hybrid.summary.metric.entries_heads"), f"{total_entries}")
+        m3.metric(t("hybrid.summary.metric.net_delta_heads"), f"{net_hc_delta:+}")
+        m4.metric(t("hybrid.summary.metric.fte_end"), f"{last_kpi['mak_end']:.1f}", delta=f"{last_kpi['mak_delta']:.1f}")
 
-    t_all, t_abg_res, t_zug_res, t_list = st.tabs(["📊 Netto-Cockpit", "📉 Abgänge Details", "📈 Zugänge Details", "📋 Listen & Export"])
+    t_all, t_abg_res, t_zug_res, t_list = st.tabs([
+        t("hybrid.results.tab.net"),
+        t("hybrid.results.tab.attrition"),
+        t("hybrid.results.tab.hiring"),
+        t("hybrid.results.tab.list"),
+    ])
     
     with t_all:
         import plotly.graph_objects as go
-        st.markdown("### 📈 Netto-Entwicklung (Köpfe & MAK)")
+        st.markdown(t("hybrid.net.heading"))
         fig_net = go.Figure()
-        fig_net.add_trace(go.Scatter(x=net_kpis["period_end"], y=net_kpis["headcount_end"], name="Headcount (Netto)", line=dict(color=COLORS["accent_blue"], width=3)))
-        fig_net.add_trace(go.Scatter(x=net_kpis["period_end"], y=net_kpis["mak_end"], name="MAK (Netto)", line=dict(color=COLORS["accent_green"], width=3, dash='dash')))
-        fig_net.update_layout(xaxis_title="Datum", yaxis_title="Bestand")
+        fig_net.add_trace(go.Scatter(x=net_kpis["period_end"], y=net_kpis["headcount_end"], name=t("hybrid.net.trace.headcount"), line=dict(color=COLORS["accent_blue"], width=3)))
+        fig_net.add_trace(go.Scatter(x=net_kpis["period_end"], y=net_kpis["mak_end"], name=t("hybrid.net.trace.fte"), line=dict(color=COLORS["accent_green"], width=3, dash='dash')))
+        fig_net.update_layout(xaxis_title=t("hybrid.net.axis.date"), yaxis_title=t("hybrid.net.axis.stock"))
         fig_net = apply_legend_bottom(fig_net)
         st.plotly_chart(fig_net, use_container_width=True, key="hybrid_net_line_chart")
         
-        st.info(
-            "Neue Auszubildende erhöhen während der Ausbildungsdauer zunächst nur den Personalbestand (Köpfe), "
-            "werden jedoch erst nach erfolgreicher Übernahme in eine reguläre Stelle MAK-wirksam. "
-            "Bei einer Ausbildungsdauer von 3 Jahren zeigt sich der Effekt auf den MAK daher zeitverzögert – "
-            "typischerweise ab dem ersten Übernahmezeitpunkt (z.B. im August). "
-            "Ein flacher MAK-Verlauf in den ersten Jahren bedeutet daher nicht, dass kein Personal aufgebaut wird, "
-            "sondern dass sich dieser Aufbau noch in der Ausbildung befindet."
-        )
+        st.info(t("hybrid.net.info"))
         
-        st.markdown("### 🧬 Treiber-Gegenüberstellung (Monatlich)")
+        st.markdown(t("hybrid.net.drivers.heading"))
         # Stacked bar with exits (negative) and entries (positive)
         # Chart: Zugänge nach Typ (Monatlich verfeinert) - Fix: Strict Separation
         # We want: 
@@ -1129,12 +1129,12 @@ def main():
             x="month", 
             y="count", 
             color="Kategorie", 
-            title="Zugänge (extern) - Echte Neueinstellungen",
-            labels={"count": "Anzahl Köpfe", "month": "Monat"},
+            title=t("hybrid.net.external_entries_chart.title"),
+            labels={"count": t("hybrid.net.external_entries_chart.count"), "month": t("hybrid.net.external_entries_chart.month")},
             color_discrete_map={
-                "Azubi (Extern)": "#1f77b4", # blue
-                "Trainee (Extern)": "#ff7f0e", # orange
-                "Neueinstellung (Extern)": "#2ca02c" # green
+                t("hybrid.net.external_entries_chart.apprentice"): "#1f77b4",
+                t("hybrid.net.external_entries_chart.trainee"): "#ff7f0e",
+                t("hybrid.net.external_entries_chart.new_hire"): "#2ca02c"
             }
         )
         fig_z_month = apply_legend_bottom(fig_z_month)
@@ -1150,32 +1150,26 @@ def main():
                 x="month",
                 y="count",
                 color="Kategorie",
-                title="Interne Stellenbesetzung durch Übernahmen",
-                labels={"count": "Anzahl Übernahmen", "month": "Monat"},
+                title=t("hybrid.net.takeovers_chart.title"),
+                labels={"count": t("hybrid.net.takeovers_chart.count"), "month": t("hybrid.net.takeovers_chart.month")},
                 color_discrete_sequence=["#9467bd"] # purple
             )
             fig_conv = apply_legend_bottom(fig_conv)
             st.plotly_chart(fig_conv, use_container_width=True, key="hybrid_conv_month")
-            st.caption(
-                "Übernahmen aus der Ausbildung stellen interne Stellenbesetzungen dar "
-                "und führen – im Gegensatz zu Neueinstellungen – zu einem MAK-Zuwachs."
-            )
+            st.caption(t("hybrid.net.takeovers_chart.caption"))
         if not combined_events_in_scope.empty:
             driver_agg = netto_chart_sources["driver_agg"]
             
             fig_drivers = px.bar(
                 driver_agg, x="JahrMonat", y="mak_change", color="reason_label",
                 labels={"mak_change": "Kapazitätsänderung (MAK)", "JahrMonat": "Zeitraum", "reason_label": "Typ"},
-                title="Netto-Effekte nach Ursache"
+                title=t("hybrid.net.effects_chart.title")
             )
             fig_drivers = apply_legend_bottom(fig_drivers)
             st.plotly_chart(fig_drivers, use_container_width=True, key="hyb_net_drivers_main")
-            st.caption(
-                "Die Übernahme nach Ausbildungsabschluss erhöht den MAK, "
-                "da Auszubildende während der Ausbildung nicht zur MAK gezählt werden."
-            )
+            st.caption(t("hybrid.net.effects_chart.caption"))
         else:
-            st.info("Keine Daten für die Treiber-Gegenüberstellung im gewählten Zeitraum.")
+            st.info(t("hybrid.net.effects_chart.no_data"))
 
         
         if st.session_state.get("debug_active", False):
@@ -1849,7 +1843,7 @@ def main():
                     st.write("Keine Daten für Debugging.")
 
     with t_abg_res:
-        st.markdown("### 📉 Abgangs-Detailanalyse")
+        st.markdown(t("hybrid.attrition.heading"))
         abg_charts = _build_hybrid_abgaenge_chart_bundle(abg_view_kpis, filt_abg_events)
         st.plotly_chart(abg_charts.get("line_headcount_mak"), use_container_width=True, key="hybrid_abg_line_chart")
         st.plotly_chart(abg_charts.get("bar_abgaenge_reasons"), use_container_width=True, key="hybrid_abg_reasons_chart")
@@ -1908,7 +1902,7 @@ def main():
                       st.write("Keine Abgangsdaten.")
 
     with t_zug_res:
-        st.markdown("### 📈 Zugangs-Detailanalyse")
+        st.markdown(t("hybrid.hiring.heading"))
         zug_chart_sources = _build_hybrid_zugaenge_chart_sources(filt_zug_events)
         events_chart = zug_chart_sources["events_chart"]
 
@@ -1935,7 +1929,7 @@ def main():
                 "Neue Auszubildende werden während der Ausbildung nicht zur MAK gezählt."
             )
         else:
-            st.info("Keine Zugangs-Events vorhanden (nach Filterung).")
+            st.info(t("hybrid.hiring.no_events"))
             
             if is_clustering_active() and "OE-Cluster" in filt_zug_events.columns:
                  z_stats = zug_chart_sources["z_stats"]
@@ -2204,7 +2198,7 @@ def main():
                     st.write("Keine Zugangsdaten.")
 
     with t_list:
-        st.markdown("### 📋 Kombinierte Ereignisliste")
+        st.markdown(t("hybrid.list.heading"))
         st.dataframe(combined_events[["event_date", "reason_label", "headcount_change", "mak_change", "Organisationseinheit", "Jobfamily"]], use_container_width=True)
         st.download_button("📥 Gesamte Liste exportieren (CSV)", data=to_csv_bytes(combined_events), file_name="hybrid_prognose_details.csv")
 
