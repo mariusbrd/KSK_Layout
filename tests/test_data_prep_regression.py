@@ -16,6 +16,14 @@ from dataloader import cluster_manager, loader
 
 ROOT = Path(__file__).resolve().parents[1]
 GOLDEN_PATH = ROOT / "tests" / "fixtures" / "data_prep_golden_master.json"
+CLUSTER_SUMMARY_KEYS = {
+    "active_cluster_source",
+    "active_cluster_source_signature",
+    "active_cluster_mode",
+    "active_cluster_subtype",
+    "active_cluster_status",
+    "active_cluster_display_label",
+}
 
 FROZEN_SETTINGS = {
     "stichtag": "2025-12-31",
@@ -76,9 +84,10 @@ def _df_manifest(df: pd.DataFrame) -> dict:
 
 
 def _summary_manifest(summary: dict) -> dict:
-    text = json.dumps(summary, sort_keys=True, default=str, ensure_ascii=False)
+    filtered = {k: v for k, v in summary.items() if k not in CLUSTER_SUMMARY_KEYS}
+    text = json.dumps(filtered, sort_keys=True, default=str, ensure_ascii=False)
     return {
-        "keys": sorted(summary.keys()),
+        "keys": sorted(filtered.keys()),
         "hash": __import__("hashlib").sha256(text.encode("utf-8")).hexdigest(),
     }
 
@@ -161,7 +170,11 @@ def test_load_and_prepare_data_matches_reference_pipeline_and_golden_master():
     pd.testing.assert_frame_equal(snapshot_df, expected_snapshot, check_dtype=True, check_like=False)
     pd.testing.assert_frame_equal(history_df, expected_history, check_dtype=True, check_like=False)
     pd.testing.assert_frame_equal(org_df, expected_org, check_dtype=True, check_like=False)
-    assert summary == expected_summary
+    for key, value in expected_summary.items():
+        assert summary[key] == value
+    for key in CLUSTER_SUMMARY_KEYS:
+        assert key in summary
+    assert summary["active_cluster_source_signature"]
 
     assert _df_manifest(snapshot_df) == golden["loader"]["snapshot"]
     assert _df_manifest(history_df) == golden["loader"]["history"]
@@ -248,8 +261,61 @@ def test_load_and_prepare_data_reuses_cached_prepared_bundle(monkeypatch):
     monkeypatch.setattr(loader, "_apply_jobfamilies", _apply_jobfamilies)
     monkeypatch.setattr(
         loader,
-        "apply_clusters_to_snapshot",
-        lambda df, uploaded_file=None: df.assign(**{"OE-Cluster": "OE-C", "JF-Cluster": "JF-C"}),
+        "get_active_cluster_source",
+        lambda session_state=None: type(
+            "Source",
+            (),
+            {
+                "source_signature": "cluster-source-sig",
+                "mode": "synthetic",
+                "subtype": "synthetic.default_fallback",
+                "status": "fallback",
+                "display_label": "Synthetisch / Fallback",
+                "to_dict": lambda self=None: {
+                    "mode": "synthetic",
+                    "subtype": "synthetic.default_fallback",
+                    "status": "fallback",
+                    "display_label": "Synthetisch / Fallback",
+                    "debug_meta": {},
+                    "source_signature": "cluster-source-sig",
+                },
+            },
+        )(),
+    )
+    monkeypatch.setattr(loader, "store_active_cluster_source_in_session", lambda session_state, active_cluster_source: {})
+    monkeypatch.setattr(loader, "serialize_active_cluster_source", lambda active_cluster_source: {
+        "mode": active_cluster_source.mode,
+        "subtype": active_cluster_source.subtype,
+        "status": active_cluster_source.status,
+        "display_label": active_cluster_source.display_label,
+        "debug_meta": {},
+        "source_signature": active_cluster_source.source_signature,
+    })
+    monkeypatch.setattr(
+        loader,
+        "deserialize_active_cluster_source",
+        lambda payload, source_bytes=None: type(
+            "Source",
+            (),
+            {
+                "source_signature": payload["source_signature"],
+                "mode": payload["mode"],
+                "subtype": payload["subtype"],
+                "status": payload["status"],
+                "display_label": payload["display_label"],
+                "debug_meta": {},
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        loader,
+        "load_cluster_mappings_from_source",
+        lambda active_cluster_source: type("Bundle", (), {"oe_map": {}, "jf_map": {}, "source_signature": active_cluster_source.source_signature})(),
+    )
+    monkeypatch.setattr(
+        loader,
+        "apply_clusters_to_snapshot_from_source",
+        lambda df, active_cluster_source, mapping_bundle=None: df.assign(**{"OE-Cluster": "OE-C", "JF-Cluster": "JF-C"}),
     )
     monkeypatch.setattr(loader, "_zero_out_azubi_mak", lambda df: df)
     monkeypatch.setattr(loader, "apply_exclusions", lambda df, exclusions: df)

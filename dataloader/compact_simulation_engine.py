@@ -16,7 +16,15 @@ import streamlit as st
 
 from abgaenge.forecast import run_forecast_abgaenge
 from abgaenge.params import default_params as default_abgaenge_params
-from dataloader.cluster_manager import apply_clusters_to_snapshot
+from dataloader.cluster_manager import (
+    apply_clusters_to_snapshot_from_source,
+    load_cluster_mappings_from_source,
+)
+from dataloader.cluster_resolver import (
+    ActiveClusterSource,
+    ClusterMappingBundle,
+    get_active_cluster_source,
+)
 from dataloader.loader import (
     _zero_out_azubi_mak,
     apply_exclusions,
@@ -333,6 +341,27 @@ def _fill_missing_education_values(
 
     out["Ausbildung"] = normalize_education_series(out["Ausbildung"])
     return out
+
+
+def _resolve_simulation_cluster_context(
+    active_cluster_source: Optional[ActiveClusterSource] = None,
+    cluster_mapping_bundle: Optional[ClusterMappingBundle] = None,
+    cluster_source_signature: Optional[str] = None,
+) -> tuple[ActiveClusterSource, ClusterMappingBundle, Optional[str]]:
+    """
+    Resolve the simulation cluster context once.
+
+    The preferred Patch-6 path passes an explicit active source and optional
+    bundle/signature from the page. A narrow legacy fallback remains for older
+    call sites until Patch 7 removes implicit resolution from this module.
+    """
+    resolved_source = active_cluster_source
+    if resolved_source is None:
+        resolved_source = get_active_cluster_source(session_state=getattr(st, "session_state", None))
+
+    resolved_bundle = cluster_mapping_bundle or load_cluster_mappings_from_source(resolved_source)
+    resolved_signature = cluster_source_signature or getattr(resolved_source, "source_signature", None)
+    return resolved_source, resolved_bundle, resolved_signature
 
 
 def _current_atz_fr_set(df_atz: pd.DataFrame, ref_date: pd.Timestamp) -> set[str]:
@@ -791,6 +820,9 @@ def _append_new_people_rows(
 def _finalize_future_snapshot(
     future_df: pd.DataFrame,
     target_date: pd.Timestamp,
+    *,
+    active_cluster_source: Optional[ActiveClusterSource] = None,
+    cluster_mapping_bundle: Optional[ClusterMappingBundle] = None,
 ) -> pd.DataFrame:
     future_df = future_df.copy()
 
@@ -811,7 +843,15 @@ def _finalize_future_snapshot(
     future_df["MAK"] = future_df["MAK_Calculated"]
     future_df["mak"] = future_df["MAK_Calculated"]
 
-    future_df = apply_clusters_to_snapshot(future_df)
+    resolved_source, resolved_bundle, _ = _resolve_simulation_cluster_context(
+        active_cluster_source=active_cluster_source,
+        cluster_mapping_bundle=cluster_mapping_bundle,
+    )
+    future_df = apply_clusters_to_snapshot_from_source(
+        future_df,
+        resolved_source,
+        mapping_bundle=resolved_bundle,
+    )
     if "Ausbildung" in future_df.columns:
         future_df["Ausbildung"] = normalize_education_series(future_df["Ausbildung"])
         future_df = _fill_missing_education_values(future_df)
@@ -830,6 +870,9 @@ def simulate_compact_snapshot(
     base_date: Optional[pd.Timestamp] = None,
     abgaenge_params: Optional[Dict[str, Any]] = None,
     zugaenge_params: Optional[Dict[str, Any]] = None,
+    active_cluster_source: Optional[ActiveClusterSource] = None,
+    cluster_mapping_bundle: Optional[ClusterMappingBundle] = None,
+    cluster_source_signature: Optional[str] = None,
 ) -> CompactSimulationResult:
     """
     Projects the current snapshot to a future target date for use on the
@@ -839,19 +882,30 @@ def simulate_compact_snapshot(
         base_date = get_current_stichtag()
     base_date = pd.Timestamp(base_date)
     target_date = pd.Timestamp(target_date)
+    active_cluster_source, cluster_mapping_bundle, cluster_source_signature = _resolve_simulation_cluster_context(
+        active_cluster_source=active_cluster_source,
+        cluster_mapping_bundle=cluster_mapping_bundle,
+        cluster_source_signature=cluster_source_signature,
+    )
 
     current_snapshot = snapshot_df.copy()
     abgaenge_params = abgaenge_params or default_abgaenge_params()
     zugaenge_params = zugaenge_params or default_zugaenge_params()
 
     if target_date <= base_date:
-        future_snapshot = _finalize_future_snapshot(current_snapshot.copy(), target_date)
+        future_snapshot = _finalize_future_snapshot(
+            current_snapshot.copy(),
+            target_date,
+            active_cluster_source=active_cluster_source,
+            cluster_mapping_bundle=cluster_mapping_bundle,
+        )
         empty_abg = {"events_person_level": pd.DataFrame(), "tables": {"atz_pivot": pd.DataFrame()}}
         empty_zug = {"events": pd.DataFrame(), "final_state": pd.DataFrame()}
         metadata = {
             "base_date": base_date,
             "target_date": target_date,
             "used_simulation": False,
+            "cluster_source_signature": cluster_source_signature,
         }
         future_employees = _prepare_employee_forecast_base(future_snapshot, df_atz, target_date)
         return CompactSimulationResult(future_snapshot, future_employees, empty_abg, empty_zug, metadata)
@@ -887,7 +941,13 @@ def simulate_compact_snapshot(
     )
     zug_events = zugaenge_result.get("events", pd.DataFrame())
     if not zug_events.empty:
-        zugaenge_result["events"] = enrich_zugaenge_events(zug_events, current_snapshot, run_params_zug)
+        zugaenge_result["events"] = enrich_zugaenge_events(
+            zug_events,
+            current_snapshot,
+            run_params_zug,
+            cluster_mapping_bundle=cluster_mapping_bundle,
+            active_cluster_source_signature=cluster_source_signature,
+        )
 
     final_employee_df = zugaenge_result.get("final_state", employee_after_abg).copy()
     if "PersNr" in final_employee_df.columns:
@@ -913,7 +973,12 @@ def simulate_compact_snapshot(
         final_employee_df=final_employee_df,
         zugaenge_result=zugaenge_result,
     )
-    future_snapshot = _finalize_future_snapshot(future_snapshot, target_date)
+    future_snapshot = _finalize_future_snapshot(
+        future_snapshot,
+        target_date,
+        active_cluster_source=active_cluster_source,
+        cluster_mapping_bundle=cluster_mapping_bundle,
+    )
 
     metadata = {
         "base_date": base_date,
@@ -922,6 +987,7 @@ def simulate_compact_snapshot(
         "vacancy_count": len(vacancies),
         "abgaenge_events": len(abgaenge_result.get("events_person_level", pd.DataFrame())),
         "zugaenge_events": len(zugaenge_result.get("events", pd.DataFrame())),
+        "cluster_source_signature": cluster_source_signature,
     }
 
     return CompactSimulationResult(

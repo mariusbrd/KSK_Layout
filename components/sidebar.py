@@ -270,7 +270,13 @@ def render_data_status(show_title: bool = True):
     html_parts.append("<div style='border-left: 2px solid #e5e7eb; padding-left: 8px;'>")
     
     for group_name in SourceService.GROUPS.keys():
-        status = SourceService.derive_group_status(group_name, uploads, original_dir, cluster_dir)
+        status = SourceService.derive_group_status(
+            group_name,
+            uploads,
+            original_dir,
+            cluster_dir,
+            session_state=st.session_state,
+        )
         color, short_origin = ampel_cfg[status.origin]
         
         # Build compact row without leading whitespace to avoid markdown code blocks

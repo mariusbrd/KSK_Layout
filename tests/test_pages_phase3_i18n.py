@@ -73,7 +73,6 @@ def test_settings_page_renders_core_texts_in_english(monkeypatch):
 
     monkeypatch.setattr(module, "render_metric_selector_only", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "set_metric_page_hint", lambda *args, **kwargs: None)
-    monkeypatch.setattr(module, "load_cluster_mappings", lambda *args, **kwargs: ({}, {}))
     monkeypatch.setattr(settings_loader, "get_setting", lambda key, default=None: default)
     monkeypatch.setattr(settings_loader, "set_setting", lambda *args, **kwargs: None)
     monkeypatch.setattr(settings_loader, "save_user_settings", lambda *args, **kwargs: None)

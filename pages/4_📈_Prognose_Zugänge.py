@@ -3,7 +3,7 @@ import pandas as pd
 import plotly.express as px
 from datetime import date
 from utils.plot_helpers import apply_legend_bottom
-from typing import Any
+from typing import Any, Optional
 from pathlib import Path
 import sys
 import os
@@ -17,7 +17,12 @@ else:
     sys.path.append(str(BASE_PATH))
 
 from dataloader.loader import load_and_prepare_data, calculate_cost_vectorized, load_original_data, load_atz_data_cached
-from dataloader.cluster_manager import is_clustering_active
+from dataloader.cluster_manager import load_cluster_mappings_from_source
+from dataloader.cluster_resolver import (
+    deserialize_active_cluster_source,
+    get_active_cluster_source,
+    invalidate_cluster_dependent_state,
+)
 from kpi_reference import get_current_stichtag
 from config.settings import COLORS, TARIFF_GROUPS
 from abgaenge.forecast import run_forecast_abgaenge, aggregate_forecast_results
@@ -58,13 +63,50 @@ def _takeover_dimension_label(dimension: str) -> str:
     return t("hiring.azubi.takeover_dimension.orgunit")
 
 
+def _get_page_cluster_context(summary: Optional[dict[str, Any]]):
+    summary = summary or {}
+    active_cluster_source = deserialize_active_cluster_source(summary.get("active_cluster_source"))
+    if active_cluster_source is None:
+        active_cluster_source = get_active_cluster_source(session_state=st.session_state)
+
+    cluster_source_signature = (
+        summary.get("active_cluster_source_signature")
+        or getattr(active_cluster_source, "source_signature", None)
+    )
+    cluster_mapping_bundle = load_cluster_mappings_from_source(active_cluster_source)
+    cluster_is_active = bool(cluster_mapping_bundle.oe_map or cluster_mapping_bundle.jf_map)
+    return active_cluster_source, cluster_mapping_bundle, cluster_source_signature, cluster_is_active
+
+
+def _clear_stale_zugaenge_results():
+    for key in [
+        "zugaenge_global_result",
+        "zugaenge_vacancies",
+        "zugaenge_cluster_source_signature",
+    ]:
+        st.session_state.pop(key, None)
+
+
+def _is_zugaenge_result_current(current_cluster_source_signature: Optional[str]) -> bool:
+    stored_signature = st.session_state.get("zugaenge_cluster_source_signature")
+    if "zugaenge_global_result" not in st.session_state:
+        return False
+    return stored_signature == current_cluster_source_signature
+
+
 def main():
     _render_page_intro()
     set_metric_page_hint(t("hiring.metric_hint"))
 
     try:
         # 1. Load Central Data (Consistent with Abgänge/Kompakt)
-        snapshot_df_raw, history_df, _, _ = load_and_prepare_data()
+        snapshot_df_raw, history_df, _, summary = load_and_prepare_data()
+        (
+            active_cluster_source,
+            cluster_mapping_bundle,
+            cluster_source_signature,
+            cluster_is_active,
+        ) = _get_page_cluster_context(summary)
 
         # 2. Render Sidebar Filters (Output only, apply later)
         from components.sidebar import render_global_filters, apply_filters, apply_event_filters, render_filter_status
@@ -147,8 +189,7 @@ def main():
     
     # 3. Sidebar Actions (Reset)
     if st.sidebar.button(t("hiring.reset_results"), use_container_width=True):
-        st.session_state.pop("zugaenge_global_result", None)
-        st.session_state.pop("zugaenge_vacancies", None)
+        _clear_stale_zugaenge_results()
         st.rerun()
 
     # 4. Settings UI
@@ -539,10 +580,17 @@ def main():
         # ── 3. Ergebnis-Aufbereitung (Enrichment) ──
         events_df = res["events"]
         if not events_df.empty:
-            events_df = enrich_zugaenge_events(events_df, snapshot_df, run_params)
+            events_df = enrich_zugaenge_events(
+                events_df,
+                snapshot_df,
+                run_params,
+                cluster_mapping_bundle=cluster_mapping_bundle,
+                active_cluster_source_signature=cluster_source_signature,
+            )
 
         # Save enriched events back to result
         res["events"] = events_df
+        res["cluster_source_signature"] = cluster_source_signature
 
         # 2. Debug Post-Calculation Summary (Step 5 & Debug JF Enrichment)
         if st.session_state.get("chk_forecast_debug", False):
@@ -552,13 +600,14 @@ def main():
         # Store Result
         st.session_state["zugaenge_global_result"] = res
         st.session_state["zugaenge_vacancies"] = vacancies
+        st.session_state["zugaenge_cluster_source_signature"] = cluster_source_signature
         st.session_state["zugaenge_start_date"] = start_date
         st.session_state["zugaenge_end_date"] = end_date
         st.session_state["zugaenge_use_azubis"] = use_azubis
         st.session_state["zugaenge_use_trainees"] = use_trainees
         st.session_state["zugaenge_use_newhires"] = use_newhires
     
-    elif "zugaenge_global_result" in st.session_state:
+    elif _is_zugaenge_result_current(cluster_source_signature):
         res = st.session_state["zugaenge_global_result"]
         vacancies = st.session_state.get("zugaenge_vacancies", [])
         start_date = st.session_state.get("zugaenge_start_date", start_date)
@@ -566,6 +615,12 @@ def main():
         use_azubis = st.session_state.get("zugaenge_use_azubis", use_azubis)
         use_trainees = st.session_state.get("zugaenge_use_trainees", use_trainees)
         use_newhires = st.session_state.get("zugaenge_use_newhires", use_newhires)
+    elif "zugaenge_global_result" in st.session_state:
+        invalidate_cluster_dependent_state(
+            st.session_state,
+            reason="zugaenge_cluster_source_changed",
+        )
+        st.info("Gespeicherte Zugangs-Ergebnisse wurden verworfen, weil sich die aktive Clusterquelle geändert hat.")
     else:
         st.info(t("hiring.info.prompt_compute"))
         
@@ -937,7 +992,7 @@ def main():
                 # Section 3: Cluster-Struktur (OE)
                 st.markdown(t("hiring.overview.cluster_oe.heading"))
                 
-                if is_clustering_active():
+                if cluster_is_active:
                     if "OE-Cluster" in events_inflows.columns:
                         # Get full set of clusters for Zoom effect AND New Hires (Union of Snapshot + Events)
                         # Fix: Ensure categories present in Inflows (e.g. Matrix assigned) are shown even if not in Snapshot

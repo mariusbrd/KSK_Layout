@@ -43,7 +43,12 @@ from zugaenge.enrichment import build_jf_to_cluster_map, enrich_zugaenge_events,
 
 # Shared Components
 from dataloader.loader import load_and_prepare_data, load_atz_data_cached, calculate_mak_vectorized, calculate_cost_vectorized
-from dataloader.cluster_manager import is_clustering_active
+from dataloader.cluster_manager import load_cluster_mappings_from_source
+from dataloader.cluster_resolver import (
+    deserialize_active_cluster_source,
+    get_active_cluster_source,
+    invalidate_cluster_dependent_state,
+)
 from components.sidebar import (
     apply_event_filters,
     apply_event_filters_with_state,
@@ -64,6 +69,26 @@ _HYBRID_ZUG_REASON_LABELS = {
     "Azubi_Conversion_In": "Übernahme nach Ausbildungsabschluss (interne MAK-wirksame Stellenbesetzung)",
     "Azubi_Exit": "Azubi-Abschluss: Nichtübernahme (Abgang)",
 }
+
+
+def _get_hybrid_cluster_context(summary: Optional[dict[str, Any]]):
+    summary = summary or {}
+    active_cluster_source = deserialize_active_cluster_source(summary.get("active_cluster_source"))
+    if active_cluster_source is None:
+        active_cluster_source = get_active_cluster_source(session_state=st.session_state)
+
+    cluster_source_signature = (
+        summary.get("active_cluster_source_signature")
+        or getattr(active_cluster_source, "source_signature", None)
+    )
+    cluster_mapping_bundle = load_cluster_mappings_from_source(active_cluster_source)
+    cluster_is_active = bool(cluster_mapping_bundle.oe_map or cluster_mapping_bundle.jf_map)
+    return active_cluster_source, cluster_mapping_bundle, cluster_source_signature, cluster_is_active
+
+def _hybrid_results_match_cluster_signature(current_cluster_source_signature: Optional[str]) -> bool:
+    if "hybrid_abg_res" not in st.session_state or "hybrid_zug_res" not in st.session_state:
+        return False
+    return st.session_state.get("hybrid_cluster_source_signature") == current_cluster_source_signature
 
 
 def calculate_kpi_from_events(df_start_stats: pd.DataFrame, events_df: pd.DataFrame, start_date: pd.Timestamp, end_date: pd.Timestamp, freq: str) -> pd.DataFrame:
@@ -682,7 +707,13 @@ def main():
     try:
         # 1. Load Central Data (Consistent with Kompakt)
         # Loader automatically picks up 'global_uploads' from session_state (see loader.py)
-        snapshot_df, history_df, _, _ = load_and_prepare_data()
+        snapshot_df, history_df, _, summary = load_and_prepare_data()
+        (
+            active_cluster_source,
+            cluster_mapping_bundle,
+            cluster_source_signature,
+            cluster_is_active,
+        ) = _get_hybrid_cluster_context(summary)
 
         # 2. Render Sidebar Filters (Standard Dashboard Logic)
         render_global_filters(snapshot_df, history_df)
@@ -936,7 +967,16 @@ def main():
     if st.button(t("hybrid.action.compute"), use_container_width=True, key="btn_run_hybrid"):
         submit = True
 
-    has_hybrid_res = "hybrid_abg_res" in st.session_state and "hybrid_zug_res" in st.session_state
+    has_hybrid_res = _hybrid_results_match_cluster_signature(cluster_source_signature)
+
+    if not submit and not has_hybrid_res and (
+        "hybrid_abg_res" in st.session_state or "hybrid_zug_res" in st.session_state
+    ):
+        invalidate_cluster_dependent_state(
+            st.session_state,
+            reason="hybrid_cluster_source_changed",
+        )
+        st.info("Gespeicherte Hybrid-Ergebnisse wurden verworfen, weil sich die aktive Clusterquelle geändert hat.")
 
     if not submit and not has_hybrid_res:
         st.info(t("hybrid.info.prompt_compute"))
@@ -986,7 +1026,8 @@ def main():
             use_cached_abg = False
             if p3_bundle and p3_bundle.get("schema_version") == 3:
                 p3_params = p3_bundle.get("params", {})
-                if p3_params == ui_state_abg:
+                p3_cluster_signature = st.session_state.get("abgaenge_cluster_source_signature")
+                if p3_params == ui_state_abg and p3_cluster_signature == cluster_source_signature:
                     p3_global = st.session_state.get("abgaenge_global_result")
                     if p3_global:
                         abg_res = p3_global
@@ -1032,10 +1073,18 @@ def main():
             # Enrichment: shared pipeline (same as Page 4)
             zug_events = zug_res["events"]
             if not zug_events.empty:
-                zug_events = enrich_zugaenge_events(zug_events, df_ma, final_params_zug)
+                zug_events = enrich_zugaenge_events(
+                    zug_events,
+                    df_ma,
+                    final_params_zug,
+                    cluster_mapping_bundle=cluster_mapping_bundle,
+                    active_cluster_source_signature=cluster_source_signature,
+                )
                 zug_res["events"] = zug_events
+            zug_res["cluster_source_signature"] = cluster_source_signature
             st.session_state["hybrid_zug_res"] = zug_res
             st.session_state["hybrid_zug_params"] = final_params_zug
+            st.session_state["hybrid_cluster_source_signature"] = cluster_source_signature
     else:
         abg_res = st.session_state["hybrid_abg_res"]
         zug_res = st.session_state["hybrid_zug_res"]
@@ -1848,7 +1897,7 @@ def main():
         st.plotly_chart(abg_charts.get("line_headcount_mak"), use_container_width=True, key="hybrid_abg_line_chart")
         st.plotly_chart(abg_charts.get("bar_abgaenge_reasons"), use_container_width=True, key="hybrid_abg_reasons_chart")
         
-        if is_clustering_active() and "OE-Cluster" in filt_abg_events.columns:
+        if cluster_is_active and "OE-Cluster" in filt_abg_events.columns:
              # Cluster chart logic
              c_stats = _build_hybrid_abgaenge_cluster_source(filt_abg_events)
              fig_c = px.bar(c_stats, x="Abgänge", y="OE-Cluster", orientation="h", title="Abgänge nach OE-Cluster")
@@ -1882,7 +1931,7 @@ def main():
                       st.write(f"ℹ️ Unique Personen (Abgänge): `{unique_leavers}`")
                       
                       # Cluster Chart
-                      if is_clustering_active() and "OE-Cluster" in filt_abg_events.columns:
+                      if cluster_is_active and "OE-Cluster" in filt_abg_events.columns:
                           # Cluster chart counts rows (Events)
                           chart_cluster_sum = c_stats["Abgänge"].sum()
                           _check_sum("OE-Cluster Summe vs Event Count", chart_cluster_sum, chart_reasons_sum, "Events")
@@ -1931,7 +1980,7 @@ def main():
         else:
             st.info(t("hybrid.hiring.no_events"))
             
-            if is_clustering_active() and "OE-Cluster" in filt_zug_events.columns:
+            if cluster_is_active and "OE-Cluster" in filt_zug_events.columns:
                  z_stats = zug_chart_sources["z_stats"]
                  fig_z = px.bar(z_stats, x="Zugänge", y="OE-Cluster", orientation="h", title="Zugänge nach OE-Cluster", color_discrete_sequence=[COLORS["accent_green"]])
                  st.plotly_chart(fig_z, use_container_width=True, key="hybrid_zug_oe_cluster_chart")
@@ -1960,7 +2009,7 @@ def main():
                     st.write(f"ℹ️ Unique Personen (Zugänge): `{unique_entries}`")
                     
                     # Cluster Chart
-                    if is_clustering_active() and "OE-Cluster" in filt_zug_events.columns:
+                    if cluster_is_active and "OE-Cluster" in filt_zug_events.columns:
                         # Check for Unclustered
                         unclustered_count = len(filt_zug_events[(filt_zug_events["OE-Cluster"] == "Unclustered") | (filt_zug_events["OE-Cluster"] == "Sonstiges")])
                         # Note: After fix, "Unclustered" should never appear.
@@ -1982,7 +2031,7 @@ def main():
                     ]
                     st.dataframe(pd.DataFrame(status_data), use_container_width=True)
                         
-                    if is_clustering_active() and "OE-Cluster" in filt_zug_events.columns:
+                    if cluster_is_active and "OE-Cluster" in filt_zug_events.columns:
                         chart_z_cluster_sum = filt_zug_events.groupby("OE-Cluster").size().sum()
                         _check_sum("OE-Cluster Summe vs Total Events", chart_z_cluster_sum, len(filt_zug_events), "Events")
                     

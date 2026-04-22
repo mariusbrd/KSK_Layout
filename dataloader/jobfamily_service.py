@@ -1,13 +1,10 @@
 import pandas as pd
-import os
-from typing import Dict, List, Set, Optional
+from typing import Dict, List, Optional
 
-# Re-use existing cluster manager logic
 try:
-    from .cluster_manager import load_cluster_mappings
-except ImportError:
-    # Fallback for unit tests outside package
-    def load_cluster_mappings(): return {}, {}
+    from .cluster_resolver import ClusterMappingBundle
+except ImportError:  # pragma: no cover - fallback for unit tests outside package
+    ClusterMappingBundle = object  # type: ignore[assignment]
 
 class JobFamilyService:
     """
@@ -16,32 +13,34 @@ class JobFamilyService:
     """
     
     @staticmethod
-    def get_active_jobfamilies(df_ma: Optional[pd.DataFrame] = None) -> List[str]:
+    def get_active_jobfamilies(
+        df_ma: Optional[pd.DataFrame] = None,
+        cluster_mapping_bundle: Optional[ClusterMappingBundle] = None,
+    ) -> List[str]:
         """
         Returns the currently valid Job Families.
         Priority:
-        1. Explicitly mapped Job Families from Cluster Upload.
-        2. Job Families present in the current Mitarbeiter data (if provided).
+        1. Job Families present in the current Mitarbeiter data (if provided).
+        2. Explicit Jobfamily keys from an already-loaded mapping bundle.
         3. Default / Fallback.
         """
-        # 1. Try Cluster Mapping
-        _, jf_map = load_cluster_mappings()
-        
-        if jf_map:
-            # jf_map can be {Pos: Cluster} or {(Org, Pos): Cluster}
-            clusters = set()
-            for val in jf_map.values():
-                if pd.notna(val) and str(val).strip() != "":
-                    clusters.add(str(val).strip())
-            
-            if clusters:
-                return sorted(list(clusters))
-                
-        # 2. Try df_ma if clusters missing
+        # 1. Prefer actual Jobfamily values from the current snapshot.
         if df_ma is not None and "Jobfamily" in df_ma.columns:
             jfs = set(df_ma["Jobfamily"].dropna().unique())
             return sorted([str(jf).strip() for jf in jfs if str(jf).strip() != ""])
-            
+
+        # 2. Derive Jobfamily keys from explicit mappings where possible.
+        jf_map = getattr(cluster_mapping_bundle, "jf_map", {}) or {}
+        jf_keys = set()
+        for key in jf_map.keys():
+            if isinstance(key, tuple):
+                continue
+            key_str = str(key).strip()
+            if key_str and key_str.lower() not in {"nan", "none"}:
+                jf_keys.add(key_str)
+        if jf_keys:
+            return sorted(jf_keys)
+
         # 3. Fallback
         return ["Alternativlos", "Vertrieb", "Produktion", "Verwaltung"]
 

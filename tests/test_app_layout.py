@@ -199,6 +199,51 @@ def test_render_data_status_surfaces_runtime_status_message_in_sidebar(monkeypat
     assert note_calls == ["ℹ️ Using synthetic fallback data."]
 
 
+def test_render_data_status_uses_resolver_based_cluster_status(monkeypatch):
+    if str(ROOT) not in sys.path:
+        sys.path.append(str(ROOT))
+
+    from components import sidebar as sidebar_module
+    from dataloader.cluster_resolver import ActiveClusterSource, store_active_cluster_source_in_session
+
+    markdown_calls: list[str] = []
+    monkeypatch.setattr(st, "session_state", {"global_uploads": {}})
+    store_active_cluster_source_in_session(
+        st.session_state,
+        ActiveClusterSource(
+            mode="ui_upload",
+            subtype="ui_upload.persisted_local_copy",
+            status="active",
+            is_active=True,
+            is_valid=True,
+            priority_rank=2,
+            display_label="UI-Upload (persistiert)",
+            description="Persistierte Clusterquelle",
+            source_path="C:/tmp/cluster_mapping.xlsx",
+            session_key=None,
+            persisted_local_path="C:/tmp/cluster_mapping.xlsx",
+            filename="cluster_mapping.xlsx",
+            file_exists=True,
+            content_hash="hash",
+            source_signature="sig",
+            activated_at=None,
+            last_modified_at=None,
+            oe_mapping_count=1,
+            jf_mapping_count=1,
+            resolution_reason="test",
+            validation_errors=[],
+            fallback_from=None,
+            debug_meta={},
+        ),
+    )
+    monkeypatch.setattr(st, "markdown", lambda body, **kwargs: markdown_calls.append(body))
+
+    sidebar_module.render_data_status()
+
+    assert markdown_calls
+    assert "Upload" in markdown_calls[0] or "upload" in markdown_calls[0]
+
+
 def test_render_global_filters_uses_refined_sidebar_section_order(monkeypatch):
     if str(ROOT) not in sys.path:
         sys.path.append(str(ROOT))

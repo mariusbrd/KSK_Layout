@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
+from dataloader.cluster_resolver import ClusterMappingBundle
 from utils import i18n
 
 
@@ -122,19 +123,34 @@ def test_attrition_page_main_warns_in_english_for_empty_filters(monkeypatch):
     )
     history_df = pd.DataFrame({"Date": pd.to_datetime(["2026-03-27"])})
 
+    st.session_state.clear()
     st.session_state.update(
         {
             i18n.LANGUAGE_SESSION_KEY: "en",
             "global_uploads": {},
-            "abgaenge_global_result": {"events_person_level": pd.DataFrame()},
+            "abgaenge_global_result": {
+                "events_person_level": pd.DataFrame(),
+                "cluster_source_signature": "cluster-sig-test",
+            },
+            "abgaenge_cluster_source_signature": "cluster-sig-test",
         }
     )
 
     monkeypatch.setattr(module, "get_current_stichtag", lambda: pd.Timestamp("2026-03-27"))
     monkeypatch.setattr(module, "load_and_prepare_data", lambda: (snapshot_df, history_df, None, None))
+    monkeypatch.setattr(
+        module,
+        "_get_attrition_cluster_context",
+        lambda summary: (
+            SimpleNamespace(source_signature="cluster-sig-test"),
+            ClusterMappingBundle(),
+            "cluster-sig-test",
+            False,
+        ),
+    )
     monkeypatch.setattr(module, "load_atz_data_cached", lambda *args, **kwargs: pd.DataFrame())
     monkeypatch.setattr(loader, "calculate_mak_vectorized", lambda df, *_args, **_kwargs: df.assign(MAK_Calculated=1.0))
-    monkeypatch.setattr(module.JobFamilyService, "get_active_jobfamilies", lambda df: [])
+    monkeypatch.setattr(module.JobFamilyService, "get_active_jobfamilies", lambda *args, **kwargs: [])
     monkeypatch.setattr(module, "render_global_filters", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "apply_event_filters", lambda *args, **kwargs: (pd.DataFrame(), 0, 0))
     monkeypatch.setattr(module, "apply_filters", lambda df: pd.DataFrame())
@@ -202,19 +218,34 @@ def test_attrition_settings_form_is_localized_in_english(monkeypatch):
     )
     history_df = pd.DataFrame({"Date": pd.to_datetime(["2026-03-27"])})
 
+    st.session_state.clear()
     st.session_state.update(
         {
             i18n.LANGUAGE_SESSION_KEY: "en",
             "global_uploads": {},
-            "abgaenge_global_result": {"events_person_level": pd.DataFrame()},
+            "abgaenge_global_result": {
+                "events_person_level": pd.DataFrame(),
+                "cluster_source_signature": "cluster-sig-test",
+            },
+            "abgaenge_cluster_source_signature": "cluster-sig-test",
         }
     )
 
     monkeypatch.setattr(module, "get_current_stichtag", lambda: pd.Timestamp("2026-03-27"))
     monkeypatch.setattr(module, "load_and_prepare_data", lambda: (snapshot_df, history_df, None, None))
+    monkeypatch.setattr(
+        module,
+        "_get_attrition_cluster_context",
+        lambda summary: (
+            SimpleNamespace(source_signature="cluster-sig-test"),
+            ClusterMappingBundle(),
+            "cluster-sig-test",
+            False,
+        ),
+    )
     monkeypatch.setattr(module, "load_atz_data_cached", lambda *args, **kwargs: pd.DataFrame())
     monkeypatch.setattr(loader, "calculate_mak_vectorized", lambda df, *_args, **_kwargs: df.assign(MAK_Calculated=1.0))
-    monkeypatch.setattr(module.JobFamilyService, "get_active_jobfamilies", lambda df: ["JF1"])
+    monkeypatch.setattr(module.JobFamilyService, "get_active_jobfamilies", lambda *args, **kwargs: ["JF1"])
     monkeypatch.setattr(module.JobFamilyService, "get_available_years", lambda start, count: [2026, 2027])
     monkeypatch.setattr(module, "render_global_filters", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "apply_event_filters", lambda *args, **kwargs: (pd.DataFrame(), 0, 0))
@@ -409,6 +440,7 @@ def test_hiring_settings_form_has_clean_german_labels(monkeypatch):
     )
     history_df = pd.DataFrame({"Date": pd.to_datetime(["2026-03-27"])})
 
+    st.session_state.clear()
     st.session_state.update(
         {
             i18n.LANGUAGE_SESSION_KEY: "de",
@@ -418,6 +450,16 @@ def test_hiring_settings_form_has_clean_german_labels(monkeypatch):
 
     monkeypatch.setattr(module, "get_current_stichtag", lambda: pd.Timestamp("2025-12-31"))
     monkeypatch.setattr(module, "load_and_prepare_data", lambda: (snapshot_df, history_df, None, None))
+    monkeypatch.setattr(
+        module,
+        "_get_page_cluster_context",
+        lambda summary: (
+            SimpleNamespace(source_signature="cluster-sig-test"),
+            ClusterMappingBundle(),
+            "cluster-sig-test",
+            False,
+        ),
+    )
     monkeypatch.setattr(module, "load_atz_data_cached", lambda *args, **kwargs: pd.DataFrame())
     monkeypatch.setattr(loader, "calculate_mak_vectorized", lambda df, *_args, **_kwargs: df.assign(MAK_Calculated=1.0))
     monkeypatch.setattr(module, "render_distribution_matrix", lambda label, **kwargs: captured["matrix_labels"].append(label) or {})
@@ -527,6 +569,7 @@ def test_hiring_page_main_warns_in_english_for_empty_filters(monkeypatch):
             "global_uploads": {},
             "zugaenge_global_result": {"events": pd.DataFrame()},
             "zugaenge_vacancies": [],
+            "zugaenge_cluster_source_signature": "cluster-sig-test",
             "zugaenge_start_date": pd.Timestamp("2026-03-27"),
             "zugaenge_end_date": pd.Timestamp("2027-03-27"),
             "zugaenge_use_azubis": True,
@@ -537,6 +580,16 @@ def test_hiring_page_main_warns_in_english_for_empty_filters(monkeypatch):
 
     monkeypatch.setattr(module, "get_current_stichtag", lambda: pd.Timestamp("2026-03-27"))
     monkeypatch.setattr(module, "load_and_prepare_data", lambda: (snapshot_df, history_df, None, None))
+    monkeypatch.setattr(
+        module,
+        "_get_page_cluster_context",
+        lambda summary: (
+            SimpleNamespace(source_signature="cluster-sig-test"),
+            ClusterMappingBundle(),
+            "cluster-sig-test",
+            False,
+        ),
+    )
     monkeypatch.setattr(module, "load_atz_data_cached", lambda *args, **kwargs: pd.DataFrame())
     monkeypatch.setattr(loader, "calculate_mak_vectorized", lambda df, *_args, **_kwargs: df.assign(MAK_Calculated=1.0))
     monkeypatch.setattr(module, "set_metric_page_hint", lambda *args, **kwargs: None)

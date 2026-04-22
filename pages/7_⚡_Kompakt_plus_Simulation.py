@@ -30,6 +30,8 @@ from components.sidebar import (
 )
 from components.ui_shell import render_active_filter_banner, render_context_box, render_section_intro
 from dataloader.compact_simulation_engine import simulate_compact_snapshot
+from dataloader.cluster_manager import load_cluster_mappings_from_source
+from dataloader.cluster_resolver import deserialize_active_cluster_source, get_active_cluster_source
 from dataloader.loader import load_and_prepare_data, load_atz_data_cached
 from kpi_reference import get_current_stichtag
 from utils.compact_page_loader import load_compact_page_module
@@ -54,25 +56,13 @@ def _get_atz_input():
     return load_atz_data_cached(str(BASE_PATH), up_ma_arg, up_atz_arg, up_pl_arg)
 
 
-def _build_upload_signature() -> dict:
-    uploads = st.session_state.get("global_uploads", {})
-    signature = {}
-    for key, value in uploads.items():
-        if value is None:
-            continue
-        signature[key] = {
-            "name": getattr(value, "name", key),
-            "size": getattr(value, "size", None),
-        }
-    return signature
-
-
 def _build_simulation_signature(
     *,
     target_date: pd.Timestamp,
     base_date: pd.Timestamp,
     abgaenge_params: dict,
     zugaenge_params: dict,
+    cluster_source_signature: str | None,
 ) -> str:
     payload = {
         "target_date": str(pd.Timestamp(target_date).date()),
@@ -81,7 +71,7 @@ def _build_simulation_signature(
         "zugaenge_params": zugaenge_params,
         "exclusions": get_setting("exclusions", {}),
         "include_future_hires": get_setting("include_future_hires", False),
-        "uploads": _build_upload_signature(),
+        "cluster_source_signature": cluster_source_signature,
     }
     return json.dumps(payload, sort_keys=True, default=str)
 
@@ -89,11 +79,26 @@ def _build_simulation_signature(
 def _clear_simulation_cache():
     for key in [
         "compact_sim_signature",
+        "compact_sim_cluster_source_signature",
         "compact_sim_prepared_df",
         "compact_sim_metadata",
         "compact_sim_target_date_cached",
     ]:
         st.session_state.pop(key, None)
+
+
+def _get_simulation_cluster_context(summary):
+    summary = summary or {}
+    active_cluster_source = deserialize_active_cluster_source(summary.get("active_cluster_source"))
+    if active_cluster_source is None:
+        active_cluster_source = get_active_cluster_source(session_state=st.session_state)
+
+    cluster_source_signature = (
+        summary.get("active_cluster_source_signature")
+        or getattr(active_cluster_source, "source_signature", None)
+    )
+    cluster_mapping_bundle = load_cluster_mappings_from_source(active_cluster_source)
+    return active_cluster_source, cluster_mapping_bundle, cluster_source_signature
 
 
 def _segmented_single(label: str, options: list[str], value: str, key: str):
@@ -393,49 +398,55 @@ def main():
         )
 
     target_date = pd.Timestamp(target_date_input).normalize()
-    current_signature = _build_simulation_signature(
-        target_date=target_date,
-        base_date=base_date,
-        abgaenge_params=abgaenge_params,
-        zugaenge_params=zugaenge_params,
-    )
-
-    cached_signature = st.session_state.get("compact_sim_signature")
-    has_cached_result = (
-        "compact_sim_prepared_df" in st.session_state and
-        "compact_sim_metadata" in st.session_state
-    )
-    needs_recompute = (not has_cached_result) or (cached_signature != current_signature)
     is_stale = False
 
     try:
-        snapshot_df, history_df, _, _ = load_and_prepare_data()
+        snapshot_df, history_df, _, summary = load_and_prepare_data()
+        (
+            active_cluster_source,
+            cluster_mapping_bundle,
+            cluster_source_signature,
+        ) = _get_simulation_cluster_context(summary)
+        current_signature = _build_simulation_signature(
+            target_date=target_date,
+            base_date=base_date,
+            abgaenge_params=abgaenge_params,
+            zugaenge_params=zugaenge_params,
+            cluster_source_signature=cluster_source_signature,
+        )
+
+        cached_signature = st.session_state.get("compact_sim_signature")
+        has_cached_result = (
+            "compact_sim_prepared_df" in st.session_state and
+            "compact_sim_metadata" in st.session_state
+        )
+        needs_recompute = (not has_cached_result) or (cached_signature != current_signature)
 
         if recalc_clicked:
             _clear_simulation_cache()
             needs_recompute = True
 
         if needs_recompute:
-            if has_cached_result and not recalc_clicked:
-                is_stale = True
-                prepared_df = st.session_state["compact_sim_prepared_df"]
-            else:
-                df_atz = _get_atz_input()
-                with st.spinner(t("sim.controls.spinner")):
-                    sim_result = simulate_compact_snapshot(
-                        snapshot_df=snapshot_df,
-                        df_atz=df_atz,
-                        target_date=target_date,
-                        base_date=base_date,
-                        abgaenge_params=abgaenge_params,
-                        zugaenge_params=zugaenge_params,
-                    )
+            df_atz = _get_atz_input()
+            with st.spinner(t("sim.controls.spinner")):
+                sim_result = simulate_compact_snapshot(
+                    snapshot_df=snapshot_df,
+                    df_atz=df_atz,
+                    target_date=target_date,
+                    base_date=base_date,
+                    abgaenge_params=abgaenge_params,
+                    zugaenge_params=zugaenge_params,
+                    active_cluster_source=active_cluster_source,
+                    cluster_mapping_bundle=cluster_mapping_bundle,
+                    cluster_source_signature=cluster_source_signature,
+                )
 
-                prepared_df = compact.prepare_compact_data(sim_result.future_snapshot_df)
-                st.session_state["compact_sim_signature"] = current_signature
-                st.session_state["compact_sim_prepared_df"] = prepared_df
-                st.session_state["compact_sim_metadata"] = sim_result.metadata
-                st.session_state["compact_sim_target_date_cached"] = target_date
+            prepared_df = compact.prepare_compact_data(sim_result.future_snapshot_df)
+            st.session_state["compact_sim_signature"] = current_signature
+            st.session_state["compact_sim_cluster_source_signature"] = cluster_source_signature
+            st.session_state["compact_sim_prepared_df"] = prepared_df
+            st.session_state["compact_sim_metadata"] = sim_result.metadata
+            st.session_state["compact_sim_target_date_cached"] = target_date
         else:
             prepared_df = st.session_state["compact_sim_prepared_df"]
 

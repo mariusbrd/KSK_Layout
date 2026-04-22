@@ -1,23 +1,30 @@
 import pytest
 import pandas as pd
 import numpy as np
-from unittest.mock import patch
 from dataloader.jobfamily_service import JobFamilyService
+from dataloader.cluster_resolver import ClusterMappingBundle
 from abgaenge.forecast import _select_quit_prob
 
 def test_jf_extraction_default():
-    # Mock load_cluster_mappings to return empty to trigger fallback
-    with patch("dataloader.jobfamily_service.load_cluster_mappings", return_value=({}, {})):
-        jfs = JobFamilyService.get_active_jobfamilies(None)
-        assert "Alternativlos" in jfs
-        assert len(jfs) > 0
+    jfs = JobFamilyService.get_active_jobfamilies(None)
+    assert "Alternativlos" in jfs
+    assert len(jfs) > 0
 
 def test_jf_extraction_from_df():
-    # Mock load_cluster_mappings to return empty to ensure df_ma is used
-    with patch("dataloader.jobfamily_service.load_cluster_mappings", return_value=({}, {})):
-        df = pd.DataFrame({"Jobfamily": ["JF1", "JF2", "JF1", np.nan, "  JF3  "]})
-        jfs = JobFamilyService.get_active_jobfamilies(df)
-        assert jfs == ["JF1", "JF2", "JF3"]
+    df = pd.DataFrame({"Jobfamily": ["JF1", "JF2", "JF1", np.nan, "  JF3  "]})
+    jfs = JobFamilyService.get_active_jobfamilies(df)
+    assert jfs == ["JF1", "JF2", "JF3"]
+
+def test_jf_extraction_from_explicit_bundle_keys():
+    bundle = ClusterMappingBundle(
+        jf_map={
+            "JF_A": "Cluster A",
+            "JF_B": "Cluster B",
+            ("ORG1", "P1"): "Tuple Cluster",
+        }
+    )
+    jfs = JobFamilyService.get_active_jobfamilies(None, cluster_mapping_bundle=bundle)
+    assert jfs == ["JF_A", "JF_B"]
 
 def test_sanitize_selection():
     valid = ["JF1", "JF2", "JF3"]

@@ -8,6 +8,11 @@ to ensure identical JF-Cluster mapping, fallback handling, and debug output.
 import pandas as pd
 from typing import Dict, Any, Optional, Set
 
+try:
+    from dataloader.cluster_resolver import ClusterMappingBundle
+except ImportError:  # pragma: no cover - fallback for isolated imports
+    ClusterMappingBundle = Any  # type: ignore[misc,assignment]
+
 
 # ---------------------------------------------------------------------------
 # 1. JF-to-Cluster Map Builder
@@ -31,7 +36,12 @@ def build_jf_to_cluster_map(snapshot_df: pd.DataFrame) -> dict:
 # 2. Known JF Keys Builder (for fallback detection)
 # ---------------------------------------------------------------------------
 
-def build_known_jf_keys(run_params: dict, snapshot_df: pd.DataFrame) -> set:
+def build_known_jf_keys(
+    run_params: dict,
+    snapshot_df: pd.DataFrame,
+    cluster_mapping_bundle: Optional[ClusterMappingBundle] = None,
+    active_cluster_source_signature: Optional[str] = None,
+) -> set:
     """
     Build the complete set of known Jobfamily keys (lowercased) from all sources.
     Used to distinguish real mapping gaps from deliberate 'Sonstiges' assignments.
@@ -39,7 +49,7 @@ def build_known_jf_keys(run_params: dict, snapshot_df: pd.DataFrame) -> set:
     Sources:
     - Hardcoded aliases (sonstige, trainee, azubi)
     - jf_to_cluster_map from run_params
-    - Cluster file (via load_cluster_mappings)
+    - Explicit cluster mapping bundle
     - Snapshot inheritance (non-Sonstiges JF-Cluster entries)
     """
     _alias_keys = {"sonstige", "sonstiges", "trainee", "azubi"}
@@ -49,15 +59,11 @@ def build_known_jf_keys(run_params: dict, snapshot_df: pd.DataFrame) -> set:
     _jf_param_map = run_params.get("azubi", {}).get("jf_to_cluster_map", {})
     _known.update(str(k).strip().lower() for k in _jf_param_map.keys())
 
-    # From cluster file
-    try:
-        from dataloader.cluster_manager import load_cluster_mappings as _lcm
-        _, _file_jf_map = _lcm()
-        for k in _file_jf_map.keys():
-            if not isinstance(k, tuple):
-                _known.add(str(k).strip().lower())
-    except Exception:
-        pass
+    # From explicit mapping bundle
+    jf_map = getattr(cluster_mapping_bundle, "jf_map", {}) or {}
+    for k in jf_map.keys():
+        if not isinstance(k, tuple):
+            _known.add(str(k).strip().lower())
 
     # From snapshot inheritance (only non-Sonstiges clusters)
     if "Jobfamily" in snapshot_df.columns and "JF-Cluster" in snapshot_df.columns:
@@ -77,6 +83,8 @@ def enrich_zugaenge_events(
     events_df: pd.DataFrame,
     snapshot_df: pd.DataFrame,
     run_params: dict,
+    cluster_mapping_bundle: Optional[ClusterMappingBundle] = None,
+    active_cluster_source_signature: Optional[str] = None,
 ) -> pd.DataFrame:
     """
     Full multi-stage enrichment pipeline for Zugaenge events.
@@ -139,25 +147,21 @@ def enrich_zugaenge_events(
 
         # Stage B: Planstelle/OrgUnit tuple lookup (External Cluster File)
         mask_unclustered_jf = (events_df["JF-Cluster"] == "Unclustered") | (events_df["JF-Cluster"].isna())
+        jf_map = getattr(cluster_mapping_bundle, "jf_map", {}) or {}
         if mask_unclustered_jf.any():
-            try:
-                from dataloader.cluster_manager import load_cluster_mappings
-                _, jf_map = load_cluster_mappings()
-
-                if jf_map:
-                    first_key = next(iter(jf_map.keys()), None)
-                    if isinstance(first_key, tuple):
-                        if "Organisationseinheit" in events_df.columns and "Planstelle" in events_df.columns:
-                            s_org = events_df.loc[mask_unclustered_jf, "Organisationseinheit"].astype(str).str.strip()
-                            s_pos = events_df.loc[mask_unclustered_jf, "Planstelle"].astype(str).str.strip()
-                            keys = list(zip(s_org, s_pos))
-                            events_df.loc[mask_unclustered_jf, "JF-Cluster"] = [jf_map.get(k, None) for k in keys]
-                    elif "Planstelle" in events_df.columns:
-                        s_pos_clean = events_df.loc[mask_unclustered_jf, "Planstelle"].astype(str).str.strip()
-                        jf_map_clean = {str(k).strip(): v for k, v in jf_map.items()}
-                        events_df.loc[mask_unclustered_jf, "JF-Cluster"] = s_pos_clean.map(jf_map_clean)
-            except Exception:
-                pass
+            # Preferred Patch-5 path: use the explicitly provided mapping bundle.
+            if jf_map:
+                first_key = next(iter(jf_map.keys()), None)
+                if isinstance(first_key, tuple):
+                    if "Organisationseinheit" in events_df.columns and "Planstelle" in events_df.columns:
+                        s_org = events_df.loc[mask_unclustered_jf, "Organisationseinheit"].astype(str).str.strip()
+                        s_pos = events_df.loc[mask_unclustered_jf, "Planstelle"].astype(str).str.strip()
+                        keys = list(zip(s_org, s_pos))
+                        events_df.loc[mask_unclustered_jf, "JF-Cluster"] = [jf_map.get(k, None) for k in keys]
+                elif "Planstelle" in events_df.columns:
+                    s_pos_clean = events_df.loc[mask_unclustered_jf, "Planstelle"].astype(str).str.strip()
+                    jf_map_clean = {str(k).strip(): v for k, v in jf_map.items()}
+                    events_df.loc[mask_unclustered_jf, "JF-Cluster"] = s_pos_clean.map(jf_map_clean)
 
         # Stage C: Jobfamily alias mapping (centralized function)
         mask_still_uncl = (events_df["JF-Cluster"] == "Unclustered") | (events_df["JF-Cluster"].isna())
@@ -198,7 +202,12 @@ def enrich_zugaenge_events(
     events_df["Diagnose-Quelle"] = events_df.apply(_get_diag_source, axis=1)
 
     # --- 4. Fallback Flag ---
-    _known_jf_keys = build_known_jf_keys(run_params, snapshot_df)
+    _known_jf_keys = build_known_jf_keys(
+        run_params,
+        snapshot_df,
+        cluster_mapping_bundle=cluster_mapping_bundle,
+        active_cluster_source_signature=active_cluster_source_signature,
+    )
 
     if "Jobfamily" in events_df.columns:
         _jf_lower = events_df["Jobfamily"].astype(str).str.strip().str.lower()

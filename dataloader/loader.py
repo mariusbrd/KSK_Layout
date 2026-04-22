@@ -26,6 +26,7 @@ from config.settings import (
 )
 from utils.settings_loader import get_setting
 from utils.cache_utils import (
+    coerce_file_bytes,
     ensure_file_like,
     deserialize_uploaded_files,
     get_cache_version,
@@ -33,7 +34,17 @@ from utils.cache_utils import (
     serialize_uploaded_files,
     stable_json_dumps,
 )
-from dataloader.cluster_manager import apply_clusters_to_snapshot
+from dataloader.cluster_manager import (
+    apply_clusters_to_snapshot,
+    apply_clusters_to_snapshot_from_source,
+    load_cluster_mappings_from_source,
+)
+from dataloader.cluster_resolver import (
+    deserialize_active_cluster_source,
+    get_active_cluster_source,
+    serialize_active_cluster_source,
+    store_active_cluster_source_in_session,
+)
 from kpi_reference import get_current_stichtag
 
 ID_PAD_LENGTH = 6
@@ -556,6 +567,37 @@ def _get_data_prep_context() -> Dict[str, Any]:
     }
 
 
+def _resolve_loader_cluster_source(
+    uploaded_files: Optional[Dict[str, Any]] = None,
+):
+    active_cluster_source = get_active_cluster_source(session_state=st.session_state)
+    cluster_source_bytes = None
+    if active_cluster_source.subtype == "ui_upload.session":
+        debug_meta = getattr(active_cluster_source, "debug_meta", {}) or {}
+        cluster_source_bytes = coerce_file_bytes(debug_meta.get("source_bytes"))
+    store_active_cluster_source_in_session(st.session_state, active_cluster_source)
+    return active_cluster_source, cluster_source_bytes
+
+
+def _cluster_source_payload_json(active_cluster_source, cluster_source_bytes: Optional[bytes]) -> str:
+    payload = serialize_active_cluster_source(active_cluster_source)
+    if cluster_source_bytes is not None:
+        payload.setdefault("debug_meta", {})
+        payload["debug_meta"]["source_bytes_present"] = True
+    return stable_json_dumps(payload)
+
+
+def _build_cluster_summary_fields(active_cluster_source) -> Dict[str, Any]:
+    return {
+        "active_cluster_source": serialize_active_cluster_source(active_cluster_source),
+        "active_cluster_source_signature": active_cluster_source.source_signature,
+        "active_cluster_mode": active_cluster_source.mode,
+        "active_cluster_subtype": active_cluster_source.subtype,
+        "active_cluster_status": active_cluster_source.status,
+        "active_cluster_display_label": active_cluster_source.display_label,
+    }
+
+
 @st.cache_data
 def _load_tvoed_lookup_cached(
     uploaded_tvoed_bytes: Optional[bytes],
@@ -587,6 +629,9 @@ def _load_and_prepare_data_cached(
     use_original: bool,
     uploaded_payload: Tuple[Tuple[str, bytes], ...],
     context_json: str,
+    cluster_source_signature: Optional[str],
+    cluster_source_payload_json: str,
+    cluster_source_bytes: Optional[bytes],
     original_file_signatures: Tuple[Tuple[str, Optional[Tuple[str, int, int]]], ...],
     synthetic_file_signature: Optional[Tuple[str, int, int]],
     tvoed_file_signature: Optional[Tuple[str, int, int]],
@@ -594,6 +639,11 @@ def _load_and_prepare_data_cached(
     context = json.loads(context_json)
     current_stichtag = pd.to_datetime(context["stichtag"])
     uploaded_files = deserialize_uploaded_files(uploaded_payload)
+    active_cluster_source = deserialize_active_cluster_source(
+        json.loads(cluster_source_payload_json),
+        source_bytes=cluster_source_bytes,
+    )
+    cluster_mapping_bundle = load_cluster_mappings_from_source(active_cluster_source)
     tvoed_lookup = _load_tvoed_lookup_cached(
         uploaded_payload and dict(uploaded_payload).get("TVÖD"),
         tvoed_file_signature,
@@ -612,12 +662,17 @@ def _load_and_prepare_data_cached(
             cohort_definitions=context["cohort_definitions"],
         )
         snapshot_df = _apply_jobfamilies(snapshot_df)
-        snapshot_df = apply_clusters_to_snapshot(snapshot_df, uploaded_file=dict(uploaded_payload).get("Cluster"))
+        snapshot_df = apply_clusters_to_snapshot_from_source(
+            snapshot_df,
+            active_cluster_source,
+            mapping_bundle=cluster_mapping_bundle,
+        )
         snapshot_df = _zero_out_azubi_mak(snapshot_df)
         snapshot_df = apply_exclusions(snapshot_df, context["exclusions"])
 
         summary = get_data_summary(snapshot_df)
         summary["data_source_type"] = "Eigene Daten (Upload)"
+        summary.update(_build_cluster_summary_fields(active_cluster_source))
         return snapshot_df, history_df, org_df, summary, tvoed_lookup, future_hires_count
 
     if use_original:
@@ -646,7 +701,11 @@ def _load_and_prepare_data_cached(
                 cohort_definitions=context["cohort_definitions"],
             )
             snapshot_df = _apply_jobfamilies(snapshot_df)
-            snapshot_df = apply_clusters_to_snapshot(snapshot_df, uploaded_file=dict(uploaded_payload).get("Cluster"))
+            snapshot_df = apply_clusters_to_snapshot_from_source(
+                snapshot_df,
+                active_cluster_source,
+                mapping_bundle=cluster_mapping_bundle,
+            )
             snapshot_df = _zero_out_azubi_mak(snapshot_df)
             snapshot_df = apply_exclusions(snapshot_df, context["exclusions"])
 
@@ -654,6 +713,7 @@ def _load_and_prepare_data_cached(
             org_df = create_org_structure(original["planstellen"])
             summary = get_data_summary(snapshot_df)
             summary["data_source_type"] = "Original-Daten"
+            summary.update(_build_cluster_summary_fields(active_cluster_source))
             return snapshot_df, history_df, org_df, summary, tvoed_lookup, future_hires_count
 
     data = load_hr_data(source_signature=synthetic_file_signature)
@@ -663,12 +723,17 @@ def _load_and_prepare_data_cached(
         cohort_definitions=context["cohort_definitions"],
     )
     snapshot_df = _apply_jobfamilies(snapshot_df)
-    snapshot_df = apply_clusters_to_snapshot(snapshot_df, uploaded_file=dict(uploaded_payload).get("Cluster"))
+    snapshot_df = apply_clusters_to_snapshot_from_source(
+        snapshot_df,
+        active_cluster_source,
+        mapping_bundle=cluster_mapping_bundle,
+    )
     snapshot_df = _zero_out_azubi_mak(snapshot_df)
     snapshot_df = apply_exclusions(snapshot_df, context["exclusions"])
 
     summary = get_data_summary(snapshot_df)
     summary["data_source_type"] = "Synthetische Testdaten"
+    summary.update(_build_cluster_summary_fields(active_cluster_source))
     return snapshot_df, data["history_cube"], data["org_structure"], summary, tvoed_lookup, future_hires_count
 
 
@@ -692,7 +757,10 @@ def load_and_prepare_data(
         uploaded_files = st.session_state["global_uploads"]
 
     uploaded_payload = serialize_uploaded_files(uploaded_files)
+    active_cluster_source, cluster_source_bytes = _resolve_loader_cluster_source(uploaded_files)
     context_json = stable_json_dumps(_get_data_prep_context())
+    cluster_source_signature = active_cluster_source.source_signature
+    cluster_source_payload_json = _cluster_source_payload_json(active_cluster_source, cluster_source_bytes)
     original_file_signatures = tuple((name, get_file_signature(path)) for name, path in sorted(ORIGINAL_FILES.items()))
     synthetic_file_signature = get_file_signature(DATA_PATH)
     tvoed_file_signature = get_file_signature(TVOED_FILE)
@@ -712,6 +780,9 @@ def load_and_prepare_data(
             use_original=use_original,
             uploaded_payload=uploaded_payload,
             context_json=context_json,
+            cluster_source_signature=cluster_source_signature,
+            cluster_source_payload_json=cluster_source_payload_json,
+            cluster_source_bytes=cluster_source_bytes,
             original_file_signatures=original_file_signatures,
             synthetic_file_signature=synthetic_file_signature,
             tvoed_file_signature=tvoed_file_signature,
@@ -756,6 +827,9 @@ def load_and_prepare_data(
         use_original=False,
         uploaded_payload=tuple(),
         context_json=context_json,
+        cluster_source_signature=cluster_source_signature,
+        cluster_source_payload_json=cluster_source_payload_json,
+        cluster_source_bytes=cluster_source_bytes,
         original_file_signatures=original_file_signatures,
         synthetic_file_signature=synthetic_file_signature,
         tvoed_file_signature=tvoed_file_signature,

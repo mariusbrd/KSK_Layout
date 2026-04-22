@@ -10,6 +10,7 @@ import streamlit as st
 import pandas as pd
 import sys
 import os
+from datetime import datetime, timezone
 
 # Path setup
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -22,7 +23,21 @@ from config.settings import (
 from kpi_reference import STICHTAG_DEFAULT
 from dataloader.loader import load_and_prepare_data
 from dataloader.jobfamily_matcher import load_jobfamily_definitions
-from dataloader.cluster_manager import generate_template_bytes, validate_and_save_clusters, load_cluster_mappings
+from dataloader.cluster_manager import (
+    delete_persisted_cluster_upload,
+    generate_template_bytes,
+    persist_cluster_upload_bytes,
+    validate_cluster_upload,
+)
+from dataloader.cluster_resolver import (
+    SUBTYPE_INPUT_EXTERNAL,
+    SUBTYPE_SYNTHETIC_FALLBACK,
+    SUBTYPE_UI_UPLOAD_PERSISTED,
+    clear_active_cluster_source_from_session,
+    get_active_cluster_source,
+    invalidate_cluster_dependent_state,
+    store_active_cluster_source_in_session,
+)
 from dataloader.source_service import SourceService, DataSourceOrigin
 from config.settings import BASE_DIR
 from components.sidebar import render_metric_selector_only, set_metric_page_hint
@@ -41,8 +56,262 @@ SALARY_AUTOMATION_DEFAULTS = {
     "use_tenure_as_step_proxy_for_existing_staff": False,
 }
 
+CLUSTER_STAGED_KEYS = (
+    "cluster_upload_staged_bytes",
+    "cluster_upload_staged_filename",
+    "cluster_upload_staged_hash",
+    "cluster_upload_staged_valid",
+    "cluster_upload_staged_errors",
+    "cluster_upload_staged_uploaded_at",
+    "cluster_upload_staged_oe_mapping_count",
+    "cluster_upload_staged_jf_mapping_count",
+)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _ensure_global_uploads() -> dict:
+    if "global_uploads" not in st.session_state or not isinstance(st.session_state.get("global_uploads"), dict):
+        st.session_state["global_uploads"] = {}
+    return st.session_state["global_uploads"]
+
+
+def _set_cluster_feedback(level: str, message: str) -> None:
+    st.session_state["cluster_action_level"] = level
+    st.session_state["cluster_action_message"] = message
+
+
+def _render_cluster_feedback() -> None:
+    level = st.session_state.pop("cluster_action_level", None)
+    message = st.session_state.pop("cluster_action_message", None)
+    if not message:
+        return
+    if level == "error":
+        st.error(message)
+    elif level == "warning":
+        st.warning(message)
+    elif level == "info":
+        st.info(message)
+    else:
+        st.success(message)
+
+
+def _clear_staged_cluster_state() -> None:
+    for key in CLUSTER_STAGED_KEYS:
+        st.session_state.pop(key, None)
+
+
+def _get_staged_cluster_state() -> dict:
+    return {
+        "bytes": st.session_state.get("cluster_upload_staged_bytes"),
+        "filename": st.session_state.get("cluster_upload_staged_filename"),
+        "hash": st.session_state.get("cluster_upload_staged_hash"),
+        "is_valid": bool(st.session_state.get("cluster_upload_staged_valid", False)),
+        "errors": list(st.session_state.get("cluster_upload_staged_errors", []) or []),
+        "uploaded_at": st.session_state.get("cluster_upload_staged_uploaded_at"),
+        "oe_mapping_count": int(st.session_state.get("cluster_upload_staged_oe_mapping_count", 0) or 0),
+        "jf_mapping_count": int(st.session_state.get("cluster_upload_staged_jf_mapping_count", 0) or 0),
+    }
+
+
+def _refresh_active_cluster_source_state(
+    *,
+    persisted_local_path: str | None = None,
+    external_file_path: str | None = None,
+):
+    active_source = get_active_cluster_source(
+        session_state=st.session_state,
+        persisted_local_path=persisted_local_path,
+        external_file_path=external_file_path,
+    )
+    store_active_cluster_source_in_session(st.session_state, active_source)
+    if active_source.subtype == SUBTYPE_UI_UPLOAD_PERSISTED:
+        st.session_state["cluster_override_active"] = True
+        st.session_state["cluster_override_activated_at"] = (
+            st.session_state.get("cluster_override_activated_at")
+            or active_source.activated_at
+            or active_source.last_modified_at
+        )
+    else:
+        st.session_state["cluster_override_active"] = False
+    return active_source
+
+
+def _stage_cluster_upload(
+    uploaded_file,
+    *,
+    persisted_local_path: str | None = None,
+    external_file_path: str | None = None,
+) -> dict:
+    if uploaded_file is None:
+        return {"status": "no_upload"}
+
+    validation = validate_cluster_upload(uploaded_file)
+    uploaded_bytes = uploaded_file.getvalue()
+    ignored_hash = st.session_state.get("cluster_upload_ignore_hash")
+    if validation.content_hash and ignored_hash and validation.content_hash == ignored_hash:
+        return {"status": "ignored_same_upload", "validation": validation}
+    if validation.content_hash and ignored_hash and validation.content_hash != ignored_hash:
+        st.session_state.pop("cluster_upload_ignore_hash", None)
+    active_source = get_active_cluster_source(
+        session_state=st.session_state,
+        persisted_local_path=persisted_local_path,
+        external_file_path=external_file_path,
+    )
+
+    if (
+        validation.is_valid
+        and active_source.subtype == SUBTYPE_UI_UPLOAD_PERSISTED
+        and active_source.content_hash
+        and active_source.content_hash == validation.content_hash
+    ):
+        _clear_staged_cluster_state()
+        return {
+            "status": "matches_active",
+            "validation": validation,
+            "active_source": active_source,
+        }
+
+    if validation.is_valid:
+        st.session_state["cluster_upload_staged_bytes"] = uploaded_bytes
+        st.session_state["cluster_upload_staged_filename"] = getattr(uploaded_file, "name", "Cluster-Upload.xlsx")
+        st.session_state["cluster_upload_staged_hash"] = validation.content_hash
+        st.session_state["cluster_upload_staged_valid"] = True
+        st.session_state["cluster_upload_staged_errors"] = []
+        st.session_state["cluster_upload_staged_uploaded_at"] = _now_iso()
+        st.session_state["cluster_upload_staged_oe_mapping_count"] = validation.oe_mapping_count
+        st.session_state["cluster_upload_staged_jf_mapping_count"] = validation.jf_mapping_count
+        return {"status": "staged", "validation": validation, "active_source": active_source}
+
+    st.session_state["cluster_upload_staged_bytes"] = None
+    st.session_state["cluster_upload_staged_filename"] = getattr(uploaded_file, "name", "Cluster-Upload.xlsx")
+    st.session_state["cluster_upload_staged_hash"] = validation.content_hash
+    st.session_state["cluster_upload_staged_valid"] = False
+    st.session_state["cluster_upload_staged_errors"] = list(validation.errors)
+    st.session_state["cluster_upload_staged_uploaded_at"] = _now_iso()
+    st.session_state["cluster_upload_staged_oe_mapping_count"] = validation.oe_mapping_count
+    st.session_state["cluster_upload_staged_jf_mapping_count"] = validation.jf_mapping_count
+    return {"status": "invalid", "validation": validation, "active_source": active_source}
+
+
+def _apply_staged_cluster_upload(
+    *,
+    persisted_local_path: str | None = None,
+    external_file_path: str | None = None,
+) -> dict:
+    staged = _get_staged_cluster_state()
+    if not staged["bytes"] or not staged["is_valid"]:
+        return {"success": False, "message": "Es liegt kein gueltiger staged Upload zum Anwenden vor."}
+
+    persist_result = persist_cluster_upload_bytes(staged["bytes"], target_path=persisted_local_path)
+    if not persist_result.get("success"):
+        return {
+            "success": False,
+            "message": f"Cluster-Upload konnte nicht gespeichert werden: {persist_result.get('error', 'unbekannt')}",
+            "persist_result": persist_result,
+        }
+
+    st.session_state["cluster_upload_ignore_hash"] = staged["hash"]
+    st.session_state["cluster_override_active"] = True
+    st.session_state["cluster_override_activated_at"] = persist_result.get("written_at") or _now_iso()
+    st.session_state["active_cluster_source_mode"] = "ui_upload"
+    st.session_state["active_cluster_source_subtype"] = SUBTYPE_UI_UPLOAD_PERSISTED
+
+    invalidation = invalidate_cluster_dependent_state(st.session_state, reason="cluster_apply_now")
+    _clear_staged_cluster_state()
+    active_source = _refresh_active_cluster_source_state(
+        persisted_local_path=persisted_local_path,
+        external_file_path=external_file_path,
+    )
+
+    return {
+        "success": True,
+        "message": "Cluster-Upload wurde aktiviert und lokal gespeichert.",
+        "persist_result": persist_result,
+        "invalidation": invalidation,
+        "active_source": active_source,
+    }
+
+
+def _delete_cluster_uploads(
+    *,
+    persisted_local_path: str | None = None,
+    external_file_path: str | None = None,
+) -> dict:
+    staged = _get_staged_cluster_state()
+    current_active = get_active_cluster_source(
+        session_state=st.session_state,
+        persisted_local_path=persisted_local_path,
+        external_file_path=external_file_path,
+    )
+    if staged["hash"]:
+        st.session_state["cluster_upload_ignore_hash"] = staged["hash"]
+    elif current_active.content_hash:
+        st.session_state["cluster_upload_ignore_hash"] = current_active.content_hash
+    _clear_staged_cluster_state()
+
+    delete_result = delete_persisted_cluster_upload(target_path=persisted_local_path)
+    st.session_state["cluster_override_active"] = False
+    st.session_state.pop("cluster_override_activated_at", None)
+    clear_active_cluster_source_from_session(st.session_state)
+    invalidation = invalidate_cluster_dependent_state(st.session_state, reason="cluster_delete_uploads")
+    active_source = _refresh_active_cluster_source_state(
+        persisted_local_path=persisted_local_path,
+        external_file_path=external_file_path,
+    )
+
+    return {
+        "success": delete_result.get("success", False),
+        "delete_result": delete_result,
+        "invalidation": invalidation,
+        "active_source": active_source,
+    }
+
+
+def _render_active_cluster_source(active_source) -> None:
+    st.markdown("**Aktive Clusterquelle**")
+    st.markdown(f"- Modus: `{active_source.mode}`")
+    st.markdown(f"- Subtyp: `{active_source.subtype}`")
+    st.markdown(f"- Status: `{active_source.status}`")
+    st.markdown(f"- Label: {active_source.display_label or '-'}")
+    if active_source.filename or active_source.source_path:
+        st.markdown(f"- Datei: `{active_source.filename or active_source.source_path}`")
+    st.markdown(f"- OE-Mappings: `{active_source.oe_mapping_count}`")
+    st.markdown(f"- JF-Mappings: `{active_source.jf_mapping_count}`")
+    if active_source.subtype == SUBTYPE_UI_UPLOAD_PERSISTED:
+        st.caption("Aktiv aus persistierter lokaler Kopie des UI-Uploads.")
+    elif active_source.subtype == SUBTYPE_INPUT_EXTERNAL:
+        st.caption("Aktiv aus externer Input-Ordner-Datei.")
+    elif active_source.subtype == SUBTYPE_SYNTHETIC_FALLBACK:
+        st.caption("Kein realer Clusterstand aktiv. Synthetic-Fallback ist aktiv.")
+    elif active_source.source_path:
+        st.caption(f"Quelle: {active_source.source_path}")
+
+
+def _render_staged_cluster_state() -> None:
+    staged = _get_staged_cluster_state()
+    if not staged["filename"] and not staged["errors"]:
+        return
+
+    st.markdown("**Staged Upload**")
+    st.markdown(f"- Datei: `{staged['filename'] or '-'}`")
+    st.markdown(
+        f"- Status: `{'gueltig, noch nicht aktiv' if staged['is_valid'] and staged['bytes'] else 'ungueltig / nicht aktiv'}`"
+    )
+    st.markdown(f"- OE-Mappings: `{staged['oe_mapping_count']}`")
+    st.markdown(f"- JF-Mappings: `{staged['jf_mapping_count']}`")
+    st.caption("Der staged Upload wird erst nach Klick auf 'Apply now' aktiv.")
+    if staged["errors"]:
+        for err in staged["errors"]:
+            st.error(err)
+
 
 def render_settings_page():
+    _ensure_global_uploads()
+    active_cluster_source = _refresh_active_cluster_source_state()
+
     set_metric_page_hint(
         t("settings.metric_hint")
     )
@@ -50,6 +319,7 @@ def render_settings_page():
 
     st.title(t("settings.title"))
     st.caption(t("settings.subtitle"))
+    _render_cluster_feedback()
 
     st.divider()
 
@@ -67,13 +337,20 @@ def render_settings_page():
             with diag_col1:
                 st.markdown(f"**{t('settings.data_sources_status')}**")
                 for group in SourceService.GROUPS.keys():
-                    status = SourceService.derive_group_status(group, uploads, original_dir, cluster_dir)
-                    st.markdown(f"- **{group}**: {status.origin.value} ({status.completeness_label})")
+                    if group == "Clusterinformationen":
+                        st.markdown(
+                            f"- **{group}**: {active_cluster_source.display_label} "
+                            f"(`{active_cluster_source.subtype}`, {active_cluster_source.status})"
+                        )
+                    else:
+                        status = SourceService.derive_group_status(group, uploads, original_dir, cluster_dir)
+                        st.markdown(f"- **{group}**: {status.origin.value} ({status.completeness_label})")
             
             with diag_col2:
                 st.markdown(f"**{t('settings.active_settings')}**")
-                oe_map, jf_map = load_cluster_mappings()
-                st.markdown(f"- **{t('settings.cluster_mappings', oe=len(oe_map), jf=len(jf_map))}**")
+                st.markdown(
+                    f"- **{t('settings.cluster_mappings', oe=active_cluster_source.oe_mapping_count, jf=active_cluster_source.jf_mapping_count)}**"
+                )
                 tvoed_ok = st.session_state.get("tvoed_available", False)
                 st.markdown(
                     f"- **{t('settings.pay_table_status', status=t('settings.pay_table_active') if tvoed_ok else t('settings.pay_table_fallback'))}**"
@@ -129,7 +406,10 @@ def render_settings_page():
         if st.session_state["global_uploads"]:
             st.success(f"✅ {t('settings.uploads_active', count=len(st.session_state['global_uploads']))}")
             if st.button(t("settings.delete_uploads")):
+                 delete_result = _delete_cluster_uploads()
                  st.session_state["global_uploads"] = {}
+                 fallback = delete_result["active_source"].display_label
+                 _set_cluster_feedback("info", f"Alle Uploads wurden entfernt. Aktive Clusterquelle: {fallback}.")
                  st.rerun()
 
     st.divider()
@@ -165,26 +445,49 @@ def render_settings_page():
             up_cluster = st.file_uploader(t("settings.cluster_upload_mapping"), type=["xlsx"], key="up_cluster_mappings")
             
             if up_cluster:
-                success, msg = validate_and_save_clusters(up_cluster)
-                if success:
-                    # Register in session state for SourceService and Loader
-                    if "global_uploads" not in st.session_state:
-                         st.session_state["global_uploads"] = {}
-                    st.session_state["global_uploads"]["Cluster"] = up_cluster.getvalue()
-                    
-                    st.success(msg)
-                    if st.button(t("settings.cluster_apply_now")):
+                stage_result = _stage_cluster_upload(up_cluster)
+                if stage_result["status"] == "matches_active":
+                    st.info("Die ausgewaehlte Clusterdatei ist bereits als aktive Quelle gespeichert.")
+
+            _render_staged_cluster_state()
+
+            staged = _get_staged_cluster_state()
+            button_col1, button_col2 = st.columns(2)
+            with button_col1:
+                apply_disabled = not (staged["bytes"] and staged["is_valid"])
+                if st.button(t("settings.cluster_apply_now"), disabled=apply_disabled, key="cluster_apply_now_button"):
+                    apply_result = _apply_staged_cluster_upload()
+                    if apply_result["success"]:
                         bump_cache_version("data_prep")
-                        st.session_state["show_reload_success"] = True
-                        st.rerun()
-                else:
-                    st.error(msg)
-                    
-        # Check if file exists (considering session override)
-        cluster_override = st.session_state.get("global_uploads", {}).get("Cluster")
-        oe_map, jf_map = load_cluster_mappings(cluster_override)
-        if oe_map or jf_map:
-            st.info(t("settings.cluster_active_mappings", oe=len(oe_map), jf=len(jf_map)))
+                        _set_cluster_feedback("success", apply_result["message"])
+                    else:
+                        _set_cluster_feedback("error", apply_result["message"])
+                    st.rerun()
+            with button_col2:
+                delete_disabled = (
+                    not staged["filename"]
+                    and not st.session_state.get("cluster_override_active", False)
+                    and not os.path.exists(os.path.join(BASE_DIR, "config", "cluster_mapping.xlsx"))
+                )
+                if st.button(t("settings.delete_uploads"), disabled=delete_disabled, key="cluster_delete_uploads_button"):
+                    delete_result = _delete_cluster_uploads()
+                    if delete_result["success"]:
+                        fallback_label = delete_result["active_source"].display_label
+                        _set_cluster_feedback("success", f"User-Override entfernt. Neue aktive Clusterquelle: {fallback_label}.")
+                    else:
+                        _set_cluster_feedback("error", "Cluster-Upload konnte nicht vollstaendig entfernt werden.")
+                    st.rerun()
+
+        active_cluster_source = _refresh_active_cluster_source_state()
+        _render_active_cluster_source(active_cluster_source)
+        if active_cluster_source.oe_mapping_count or active_cluster_source.jf_mapping_count:
+            st.info(
+                t(
+                    "settings.cluster_active_mappings",
+                    oe=active_cluster_source.oe_mapping_count,
+                    jf=active_cluster_source.jf_mapping_count,
+                )
+            )
 
     st.divider()
 

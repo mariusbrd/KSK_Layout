@@ -39,7 +39,12 @@ from abgaenge import (
 
 # Shared Components
 from dataloader.loader import load_and_prepare_data, load_atz_data_cached
-from dataloader.cluster_manager import is_clustering_active
+from dataloader.cluster_manager import load_cluster_mappings_from_source
+from dataloader.cluster_resolver import (
+    deserialize_active_cluster_source,
+    get_active_cluster_source,
+    invalidate_cluster_dependent_state,
+)
 from dataloader.jobfamily_service import JobFamilyService
 from components.sidebar import render_global_filters, apply_filters, apply_event_filters, render_filter_status, apply_robust_filter, get_effective_metric_view, set_metric_page_hint
 from utils.i18n import t
@@ -59,6 +64,39 @@ def _get_result_tab_labels() -> list[str]:
     ]
 
 
+def _get_attrition_cluster_context(summary: Optional[dict[str, Any]]):
+    summary = summary or {}
+    active_cluster_source = deserialize_active_cluster_source(summary.get("active_cluster_source"))
+    if active_cluster_source is None:
+        active_cluster_source = get_active_cluster_source(session_state=st.session_state)
+
+    cluster_source_signature = (
+        summary.get("active_cluster_source_signature")
+        or getattr(active_cluster_source, "source_signature", None)
+    )
+    cluster_mapping_bundle = load_cluster_mappings_from_source(active_cluster_source)
+    cluster_is_active = bool(cluster_mapping_bundle.oe_map or cluster_mapping_bundle.jf_map)
+    return active_cluster_source, cluster_mapping_bundle, cluster_source_signature, cluster_is_active
+
+
+def _clear_stale_abgaenge_results():
+    for key in [
+        "abgaenge_results",
+        "abgaenge_global_result",
+        "abgaenge_params",
+        "abgaenge_ui_state",
+        "abgaenge_timestamp",
+        "abgaenge_cluster_source_signature",
+    ]:
+        st.session_state.pop(key, None)
+
+
+def _abgaenge_results_match_cluster_signature(current_cluster_source_signature: Optional[str]) -> bool:
+    if "abgaenge_global_result" not in st.session_state:
+        return False
+    return st.session_state.get("abgaenge_cluster_source_signature") == current_cluster_source_signature
+
+
 def main():
     _render_page_intro()
     metric_choice, metric_hint = get_effective_metric_view(["Köpfe", "MAK"], fallback="MAK")
@@ -70,7 +108,13 @@ def main():
     try:
         # 1. Load Central Data (Consistent with Kompakt)
         # Loader automatically picks up 'global_uploads' from session_state (see loader.py)
-        snapshot_df, history_df, _, _ = load_and_prepare_data()
+        snapshot_df, history_df, _, summary = load_and_prepare_data()
+        (
+            active_cluster_source,
+            cluster_mapping_bundle,
+            cluster_source_signature,
+            cluster_is_active,
+        ) = _get_attrition_cluster_context(summary)
 
         # 2. Render Sidebar Filters
         render_global_filters(snapshot_df, history_df)
@@ -79,9 +123,7 @@ def main():
         with st.sidebar:
             st.divider()
             if st.button(t("attrition.reset_results"), use_container_width=True, help=t("attrition.reset_results.help")):
-                for key in ["abgaenge_results", "abgaenge_global_result", "abgaenge_params"]:
-                    if key in st.session_state:
-                         del st.session_state[key]
+                _clear_stale_abgaenge_results()
                 st.rerun()
         
         # 3. GLOBAL DATA PREPARATION (Filters applied LATER for View)
@@ -183,7 +225,7 @@ def main():
         df_ma = df_employee_agg
 
         # P07: Sync valid Job Families
-        valid_jfs = JobFamilyService.get_active_jobfamilies(df_ma)
+        valid_jfs = JobFamilyService.get_active_jobfamilies(df_ma, cluster_mapping_bundle=cluster_mapping_bundle)
         
         # Cleanup Session State selections if they are invalid
         if "selected_jobfamilies" in st.session_state:
@@ -198,6 +240,14 @@ def main():
         return
     
     # df_ma is now the GLOBAL Aggregated Dataset.
+    if not _abgaenge_results_match_cluster_signature(cluster_source_signature) and (
+        "abgaenge_global_result" in st.session_state or "abgaenge_results" in st.session_state
+    ):
+        invalidate_cluster_dependent_state(
+            st.session_state,
+            reason="abgaenge_cluster_source_changed",
+        )
+        st.info("Gespeicherte Abgangs-Ergebnisse wurden verworfen, weil sich die aktive Clusterquelle geändert hat.")
 
     default_start = get_current_stichtag().date()
     default_end = date(default_start.year + 2, default_start.month, default_start.day)
@@ -600,10 +650,12 @@ def main():
 
             # --- Save (unfiltered) ---
             import datetime
+            global_result["cluster_source_signature"] = cluster_source_signature
             st.session_state["abgaenge_global_result"] = global_result
             st.session_state["abgaenge_params"] = params
             st.session_state["abgaenge_ui_state"] = ui_state
             st.session_state["abgaenge_timestamp"] = datetime.datetime.now().strftime("%d.%m.%Y, %H:%M:%S")
+            st.session_state["abgaenge_cluster_source_signature"] = cluster_source_signature
             st.success(t("attrition.success.computed"))
             st.rerun()
             
@@ -691,6 +743,7 @@ def main():
         "events_raw": events,
         "events": events,
         "params": last_run_params,
+        "cluster_source_signature": cluster_source_signature,
         "filters": {
             "org": st.session_state.get("selected_org_units", []),
             "jf": st.session_state.get("selected_jobfamilies", []),
@@ -988,7 +1041,7 @@ def main():
 
         # ── Section 4: Cluster-Analyse (OE) ──
         st.markdown(t("attrition.overview.cluster_oe.heading"))
-        if is_clustering_active():
+        if cluster_is_active:
             if "OE-Cluster" in events.columns:
                 # Get full set of clusters for consistent Y-axis
                 all_clusters = sorted(df_ma["OE-Cluster"].unique().tolist())
