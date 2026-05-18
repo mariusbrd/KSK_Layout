@@ -5,15 +5,37 @@ Streamlit-basiertes HR-Analytics-Dashboard fuer Banken und Finanzdienstleister.
 """
 
 import streamlit as st
+import json
 from pathlib import Path
 
-from components.setup_wizard import needs_setup, render_setup_wizard
 from components.ui_shell import inject_ui_theme
-from config.settings import DEFAULT_COHORTS, PAGE_CONFIG
+from config.settings import DEFAULT_COHORTS, JOBFAMILIES_CONFIG_PATH, PAGE_CONFIG
 from utils.cache_utils import ensure_cache_bootstrap
 from utils.i18n import initialize_language_state, t
 
 SIDEBAR_BRAND_LOGO = Path(__file__).resolve().parent / "assets" / "sidebar_brand.svg"
+APP_DIR = Path(__file__).resolve().parent
+
+
+def needs_setup() -> bool:
+    """Lightweight setup check that avoids importing the full wizard at app startup."""
+    if st.session_state.get("skip_wizard", False):
+        return False
+
+    config_path = APP_DIR / JOBFAMILIES_CONFIG_PATH
+    try:
+        with config_path.open("r", encoding="utf-8") as handle:
+            definitions = json.load(handle)
+    except Exception:
+        return True
+
+    return not bool((definitions or {}).get("jobfamilies"))
+
+
+def render_setup_wizard() -> bool:
+    from components.setup_wizard import render_setup_wizard as _render_setup_wizard
+
+    return _render_setup_wizard()
 
 # =============================================================================
 # PAGE CONFIGURATION
