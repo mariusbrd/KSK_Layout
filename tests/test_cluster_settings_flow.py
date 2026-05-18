@@ -246,6 +246,31 @@ def test_same_upload_is_not_restaged_on_every_run(tmp_path):
     assert st.session_state["cluster_upload_staged_uploaded_at"] == first_uploaded_at
 
 
+def test_same_as_active_upload_is_ignored_after_first_match(tmp_path):
+    module = _load_settings_module()
+    external = tmp_path / "OE_Cluster.xlsx"
+    persisted = tmp_path / "cluster_mapping.xlsx"
+    payload = _build_cluster_workbook_bytes(oe_cluster="Active", jf_cluster="Active-JF")
+    persisted.write_bytes(payload)
+
+    upload = DummyUpload(payload, "active.xlsx")
+    first = module._stage_cluster_upload(
+        upload,
+        persisted_local_path=str(persisted),
+        external_file_path=str(external),
+    )
+    second = module._stage_cluster_upload(
+        upload,
+        persisted_local_path=str(persisted),
+        external_file_path=str(external),
+    )
+
+    assert first["status"] == "matches_active"
+    assert second["status"] == "ignored_same_upload"
+    assert st.session_state["cluster_upload_ignore_hash"] == first["validation"].content_hash
+    assert st.session_state.get("cluster_upload_staged_filename") is None
+
+
 def test_stage_cluster_upload_surfaces_real_exception_and_clears_staged_state(tmp_path):
     module = _load_settings_module()
     external = tmp_path / "OE_Cluster.xlsx"

@@ -272,6 +272,7 @@ def _stage_cluster_upload(
         and active_source.content_hash == validation.content_hash
     ):
         _clear_staged_cluster_state()
+        st.session_state["cluster_upload_ignore_hash"] = validation.content_hash
         _cluster_debug_log("staging_result", status="matches_active", validation_hash=validation.content_hash)
         return {
             "status": "matches_active",
