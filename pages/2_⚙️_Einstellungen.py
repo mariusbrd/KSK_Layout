@@ -616,7 +616,6 @@ def render_settings_page():
                     else:
                         _set_cluster_feedback("error", apply_result["message"])
                     _reset_cluster_uploader_widget()
-                    _cluster_rerun("cluster_apply_now")
             with button_col2:
                 delete_disabled = (
                     not staged["filename"]
@@ -631,7 +630,6 @@ def render_settings_page():
                     else:
                         _set_cluster_feedback("error", "Cluster-Upload konnte nicht vollstaendig entfernt werden.")
                     _reset_cluster_uploader_widget()
-                    _cluster_rerun("cluster_delete_uploads")
 
         active_cluster_source = _refresh_active_cluster_source_state()
         _cluster_debug_log(

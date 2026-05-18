@@ -371,3 +371,85 @@ def test_render_settings_page_does_not_rerun_on_plain_cluster_upload(monkeypatch
     history = st.session_state.get("cluster_upload_debug_history", [])
     assert any(entry["event"] == "staging_result" and entry.get("status") == "staged" for entry in history)
     assert not any(entry["event"] == "rerun_called" and entry.get("reason") == "cluster_upload_staged" for entry in history)
+
+
+def test_render_settings_page_does_not_rerun_on_cluster_apply(monkeypatch):
+    module = _load_settings_module()
+
+    import utils.settings_loader as settings_loader
+
+    reruns: list[tuple] = []
+    payload = _build_cluster_workbook_bytes(oe_cluster="Staged", jf_cluster="Staged-JF")
+    st.session_state.update(
+        {
+            "global_uploads": {},
+            "show_reload_success": False,
+            "tvoed_available": False,
+            "tvoed_lookup": {},
+            "cluster_upload_staged_bytes": payload,
+            "cluster_upload_staged_filename": "staged.xlsx",
+            "cluster_upload_staged_hash": "abc123",
+            "cluster_upload_staged_valid": True,
+            "cluster_upload_staged_errors": [],
+            "cluster_upload_staged_oe_mapping_count": 1,
+            "cluster_upload_staged_jf_mapping_count": 1,
+        }
+    )
+
+    module.render_metric_selector_only = lambda *args, **kwargs: None
+    module.set_metric_page_hint = lambda *args, **kwargs: None
+    module.t = lambda key, **kwargs: key
+    module.load_and_prepare_data = lambda *args, **kwargs: (
+        pd.DataFrame({"Organisationseinheit": ["OE1"], "Planstelle": ["P1"]}),
+        pd.DataFrame(),
+        pd.DataFrame(),
+        {},
+    )
+    module.load_jobfamily_definitions = lambda *args, **kwargs: {}
+    module.SourceService.GROUPS = {}
+    module.bump_cache_version = lambda *args, **kwargs: None
+
+    def fake_apply(*args, **kwargs):
+        module._clear_staged_cluster_state()
+        return {"success": True, "message": "ok"}
+
+    module._apply_staged_cluster_upload = fake_apply
+    monkeypatch.setattr(settings_loader, "get_setting", lambda key, default=None: default)
+    monkeypatch.setattr(settings_loader, "set_setting", lambda *args, **kwargs: None)
+    monkeypatch.setattr(settings_loader, "save_user_settings", lambda *args, **kwargs: None)
+    monkeypatch.setattr(settings_loader, "load_user_settings", lambda *args, **kwargs: {})
+
+    for fn in ["title", "subheader", "caption", "divider", "markdown", "info", "warning", "success", "error", "write", "dataframe", "download_button"]:
+        monkeypatch.setattr(module.st, fn, lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.st, "container", lambda *args, **kwargs: DummyContext())
+    monkeypatch.setattr(module.st, "expander", lambda *args, **kwargs: DummyContext())
+    monkeypatch.setattr(module.st, "form", lambda *args, **kwargs: DummyContext())
+    monkeypatch.setattr(
+        module.st,
+        "columns",
+        lambda spec: [DummyContext() for _ in range(spec if isinstance(spec, int) else len(spec))],
+    )
+    monkeypatch.setattr(module.st, "spinner", lambda *args, **kwargs: DummyContext())
+    monkeypatch.setattr(
+        module.st,
+        "button",
+        lambda *args, **kwargs: kwargs.get("key") == "cluster_apply_now_button",
+    )
+    monkeypatch.setattr(module.st, "form_submit_button", lambda *args, **kwargs: False)
+    monkeypatch.setattr(module.st, "date_input", lambda label, value=None, **kwargs: value)
+    monkeypatch.setattr(module.st, "checkbox", lambda label, value=False, **kwargs: value)
+    monkeypatch.setattr(
+        module.st,
+        "number_input",
+        lambda label, value=None, min_value=None, **kwargs: value if value is not None else min_value,
+    )
+    monkeypatch.setattr(module.st, "selectbox", lambda label, options, index=0, **kwargs: options[index])
+    monkeypatch.setattr(module.st, "text_input", lambda label, value="", **kwargs: value)
+    monkeypatch.setattr(module.st, "rerun", lambda *args, **kwargs: reruns.append((args, kwargs)))
+    monkeypatch.setattr(module.st, "file_uploader", lambda *args, **kwargs: None)
+
+    module.render_settings_page()
+
+    assert reruns == []
+    history = st.session_state.get("cluster_upload_debug_history", [])
+    assert not any(entry["event"] == "rerun_called" and entry.get("reason") == "cluster_apply_now" for entry in history)
