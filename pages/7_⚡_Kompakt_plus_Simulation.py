@@ -28,6 +28,7 @@ from components.sidebar import (
     render_global_filters,
     set_metric_page_hint,
 )
+from components.ui_compat import download_button_compat
 from components.ui_shell import render_active_filter_banner, render_context_box, render_section_intro
 from dataloader.compact_simulation_engine import simulate_compact_snapshot
 from dataloader.cluster_manager import load_cluster_mappings_from_source
@@ -35,6 +36,15 @@ from dataloader.cluster_resolver import deserialize_active_cluster_source, get_a
 from dataloader.loader import load_and_prepare_data, load_atz_data_cached
 from kpi_reference import get_current_stichtag
 from utils.compact_page_loader import load_compact_page_module
+from utils.compact_simulation_export import (
+    EXCEL_MIME,
+    build_compact_simulation_export_bytes,
+)
+from utils.status_quo_baseline import (
+    build_forecast_vs_status_quo_jobfamily,
+    build_status_quo_jobfamily_summary,
+    build_status_quo_snapshot,
+)
 from utils.i18n import t
 from utils.settings_loader import get_setting
 from zugaenge.params import default_params as default_zugaenge_params
@@ -82,6 +92,7 @@ def _clear_simulation_cache():
         "compact_sim_cluster_source_signature",
         "compact_sim_prepared_df",
         "compact_sim_metadata",
+        "compact_sim_audit_tables",
         "compact_sim_target_date_cached",
     ]:
         st.session_state.pop(key, None)
@@ -351,6 +362,47 @@ def _render_summary_cards(base_date: pd.Timestamp, display_target: pd.Timestamp,
     )
 
 
+def _metric_totals(df: pd.DataFrame) -> dict[str, float]:
+    active = df.copy()
+    if "Is_Vacant" in active.columns:
+        active = active[active["Is_Vacant"] != True].copy()
+    heads = int(active["PersNr"].nunique()) if "PersNr" in active.columns else int(len(active))
+    mak_col = "MAK_Reporting" if "MAK_Reporting" in active.columns else "MAK_Calculated"
+    eur_col = "EUR_Reporting" if "EUR_Reporting" in active.columns else "Total_Cost_Year"
+    return {
+        "heads": heads,
+        "mak": float(pd.to_numeric(active.get(mak_col, 0), errors="coerce").fillna(0).sum()),
+        "eur": float(pd.to_numeric(active.get(eur_col, 0), errors="coerce").fillna(0).sum()),
+    }
+
+
+def _render_status_quo_comparison(status_quo_df: pd.DataFrame, forecast_df: pd.DataFrame, base_date: pd.Timestamp):
+    status_totals = _metric_totals(status_quo_df)
+    forecast_totals = _metric_totals(forecast_df)
+    cols = st.columns(3)
+    cols[0].metric("Köpfe", f"{forecast_totals['heads']:,.0f}".replace(",", "."), f"{forecast_totals['heads'] - status_totals['heads']:+,.0f}".replace(",", "."))
+    cols[1].metric("MAK", f"{forecast_totals['mak']:,.1f}".replace(",", "X").replace(".", ",").replace("X", "."), f"{forecast_totals['mak'] - status_totals['mak']:+.1f}".replace(".", ","))
+    cols[2].metric("EUR", f"{forecast_totals['eur']:,.0f} €".replace(",", "."), f"{forecast_totals['eur'] - status_totals['eur']:+,.0f} €".replace(",", "."))
+
+    comparison = build_forecast_vs_status_quo_jobfamily(status_quo_df, forecast_df, base_date)
+    if not comparison.empty:
+        display_cols = [
+            "Jobfamily",
+            "Köpfe_StatusQuo",
+            "Köpfe_Forecast",
+            "Delta_Köpfe",
+            "MAK_StatusQuo",
+            "MAK_Forecast",
+            "Delta_MAK",
+            "Interpretation_Flag",
+        ]
+        st.dataframe(
+            comparison[display_cols].sort_values("Delta_Köpfe", ascending=False),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
 def main():
     _inject_page_styles()
     _render_hero()
@@ -442,13 +494,24 @@ def main():
                 )
 
             prepared_df = compact.prepare_compact_data(sim_result.future_snapshot_df)
+            status_quo_prepared_df = compact.prepare_compact_data(
+                build_status_quo_snapshot(snapshot_df, base_date)
+            )
             st.session_state["compact_sim_signature"] = current_signature
             st.session_state["compact_sim_cluster_source_signature"] = cluster_source_signature
             st.session_state["compact_sim_prepared_df"] = prepared_df
+            st.session_state["compact_sim_status_quo_df"] = status_quo_prepared_df
             st.session_state["compact_sim_metadata"] = sim_result.metadata
+            st.session_state["compact_sim_audit_tables"] = sim_result.audit_tables
             st.session_state["compact_sim_target_date_cached"] = target_date
         else:
             prepared_df = st.session_state["compact_sim_prepared_df"]
+            status_quo_prepared_df = st.session_state.get("compact_sim_status_quo_df")
+            if status_quo_prepared_df is None:
+                status_quo_prepared_df = compact.prepare_compact_data(
+                    build_status_quo_snapshot(snapshot_df, base_date)
+                )
+                st.session_state["compact_sim_status_quo_df"] = status_quo_prepared_df
 
         cached_target = st.session_state.get("compact_sim_target_date_cached")
         display_target = pd.Timestamp(cached_target).normalize() if cached_target is not None else target_date
@@ -466,6 +529,30 @@ def main():
             base_date=base_date,
             display_target=display_target,
             meta=st.session_state.get("compact_sim_metadata", {}),
+        )
+        export_metadata = {
+            **st.session_state.get("compact_sim_metadata", {}),
+            "exclusions": get_setting("exclusions", {}),
+            "include_future_hires": get_setting("include_future_hires", False),
+            "salary_automation": get_setting("salary_automation", {}),
+        }
+        export_bytes = build_compact_simulation_export_bytes(
+            prepared_df=prepared_df,
+            abgaenge_params=abgaenge_params,
+            zugaenge_params=zugaenge_params,
+            metadata=export_metadata,
+            active_cluster_source=active_cluster_source,
+            audit_tables=st.session_state.get("compact_sim_audit_tables", {}),
+            status_quo_df=status_quo_prepared_df,
+            status_quo_date=base_date,
+        )
+        download_button_compat(
+            "Simulationsergebnisse als Excel exportieren",
+            data=export_bytes,
+            file_name=f"KompaktPlus_Simulation_{display_target:%Y%m%d}.xlsx",
+            mime=EXCEL_MIME,
+            key="compact_plus_simulation_export",
+            use_container_width=True,
         )
         set_metric_page_hint(None)
         render_global_filters(prepared_df, history_df)

@@ -72,6 +72,85 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _format_upload_exception(prefix: str, exc: Exception) -> str:
+    return f"{prefix}: {type(exc).__name__}: {exc}"
+
+
+def _get_cluster_uploader_key() -> str:
+    nonce = int(st.session_state.get("cluster_upload_uploader_nonce", 0) or 0)
+    return f"up_cluster_mappings_{nonce}"
+
+
+def _reset_cluster_uploader_widget() -> None:
+    st.session_state["cluster_upload_uploader_nonce"] = int(
+        st.session_state.get("cluster_upload_uploader_nonce", 0) or 0
+    ) + 1
+
+
+def _cluster_debug_log(event: str, **fields) -> None:
+    history = list(st.session_state.get("cluster_upload_debug_history", []) or [])
+    run_no = int(st.session_state.get("cluster_upload_debug_run_no", 0) or 0)
+    entry = {
+        "run_no": run_no,
+        "ts": _now_iso(),
+        "event": event,
+        "uploader_key": _get_cluster_uploader_key(),
+        "uploader_nonce": int(st.session_state.get("cluster_upload_uploader_nonce", 0) or 0),
+        "staged_name": st.session_state.get("cluster_upload_staged_filename"),
+        "staged_hash": st.session_state.get("cluster_upload_staged_hash"),
+        "active_source_subtype": st.session_state.get("active_cluster_source_subtype"),
+        "active_source_signature": st.session_state.get("active_cluster_source_signature"),
+        "cluster_override_active": bool(st.session_state.get("cluster_override_active", False)),
+        "cluster_upload_ignore_hash": st.session_state.get("cluster_upload_ignore_hash"),
+        "cluster_processing": st.session_state.get("cluster_upload_processing"),
+        "cluster_busy": st.session_state.get("cluster_upload_busy"),
+        "cluster_disabled": st.session_state.get("cluster_upload_disabled"),
+    }
+    entry.update(fields)
+    history.append(entry)
+    st.session_state["cluster_upload_debug_history"] = history[-20:]
+
+
+def _cluster_rerun(reason: str) -> None:
+    _cluster_debug_log("rerun_called", reason=reason)
+    st.rerun()
+
+
+def _safe_upload_debug_meta(uploaded_file) -> dict:
+    if uploaded_file is None:
+        return {
+            "uploader_has_file": False,
+            "upload_name": None,
+            "upload_size": 0,
+            "upload_hash": None,
+        }
+    try:
+        raw = uploaded_file.getvalue()
+    except Exception as exc:
+        return {
+            "uploader_has_file": True,
+            "upload_name": getattr(uploaded_file, "name", None),
+            "upload_size": None,
+            "upload_hash": None,
+            "upload_meta_error": _format_upload_exception("Upload-Metadaten konnten nicht gelesen werden", exc),
+        }
+    return {
+        "uploader_has_file": True,
+        "upload_name": getattr(uploaded_file, "name", None),
+        "upload_size": len(raw),
+        "upload_hash": validate_cluster_upload(raw).content_hash if raw else None,
+    }
+
+
+def _render_cluster_debug_panel() -> None:
+    history = list(st.session_state.get("cluster_upload_debug_history", []) or [])
+    with st.expander("Cluster Upload Debug", expanded=False):
+        if not history:
+            st.caption("Noch keine Cluster-Upload-Debug-Einträge.")
+            return
+        st.dataframe(pd.DataFrame(history), use_container_width=True, hide_index=True)
+
+
 def _ensure_global_uploads() -> dict:
     if "global_uploads" not in st.session_state or not isinstance(st.session_state.get("global_uploads"), dict):
         st.session_state["global_uploads"] = {}
@@ -146,15 +225,40 @@ def _stage_cluster_upload(
     external_file_path: str | None = None,
 ) -> dict:
     if uploaded_file is None:
+        _cluster_debug_log("staging_skipped", uploader_has_file=False)
         return {"status": "no_upload"}
 
-    validation = validate_cluster_upload(uploaded_file)
-    uploaded_bytes = uploaded_file.getvalue()
+    _cluster_debug_log("staging_called", **_safe_upload_debug_meta(uploaded_file))
+
+    try:
+        validation = validate_cluster_upload(uploaded_file)
+        uploaded_bytes = uploaded_file.getvalue()
+    except Exception as exc:
+        _clear_staged_cluster_state()
+        message = _format_upload_exception("Clusterdatei konnte nicht verarbeitet werden", exc)
+        _cluster_debug_log("staging_result", status="exception", message=message)
+        return {
+            "status": "exception",
+            "message": message,
+        }
+
     ignored_hash = st.session_state.get("cluster_upload_ignore_hash")
     if validation.content_hash and ignored_hash and validation.content_hash == ignored_hash:
+        _cluster_debug_log("staging_result", status="ignored_same_upload", validation_hash=validation.content_hash)
         return {"status": "ignored_same_upload", "validation": validation}
     if validation.content_hash and ignored_hash and validation.content_hash != ignored_hash:
         st.session_state.pop("cluster_upload_ignore_hash", None)
+
+    staged_hash = st.session_state.get("cluster_upload_staged_hash")
+    if validation.content_hash and staged_hash and validation.content_hash == staged_hash:
+        is_valid = bool(st.session_state.get("cluster_upload_staged_valid", False))
+        status = "already_staged_valid" if is_valid else "already_staged_invalid"
+        _cluster_debug_log("staging_result", status=status, validation_hash=validation.content_hash)
+        return {
+            "status": status,
+            "validation": validation,
+        }
+
     active_source = get_active_cluster_source(
         session_state=st.session_state,
         persisted_local_path=persisted_local_path,
@@ -168,6 +272,7 @@ def _stage_cluster_upload(
         and active_source.content_hash == validation.content_hash
     ):
         _clear_staged_cluster_state()
+        _cluster_debug_log("staging_result", status="matches_active", validation_hash=validation.content_hash)
         return {
             "status": "matches_active",
             "validation": validation,
@@ -183,6 +288,7 @@ def _stage_cluster_upload(
         st.session_state["cluster_upload_staged_uploaded_at"] = _now_iso()
         st.session_state["cluster_upload_staged_oe_mapping_count"] = validation.oe_mapping_count
         st.session_state["cluster_upload_staged_jf_mapping_count"] = validation.jf_mapping_count
+        _cluster_debug_log("staging_result", status="staged", validation_hash=validation.content_hash)
         return {"status": "staged", "validation": validation, "active_source": active_source}
 
     st.session_state["cluster_upload_staged_bytes"] = None
@@ -193,6 +299,7 @@ def _stage_cluster_upload(
     st.session_state["cluster_upload_staged_uploaded_at"] = _now_iso()
     st.session_state["cluster_upload_staged_oe_mapping_count"] = validation.oe_mapping_count
     st.session_state["cluster_upload_staged_jf_mapping_count"] = validation.jf_mapping_count
+    _cluster_debug_log("staging_result", status="invalid", validation_hash=validation.content_hash, errors=list(validation.errors))
     return {"status": "invalid", "validation": validation, "active_source": active_source}
 
 
@@ -201,12 +308,15 @@ def _apply_staged_cluster_upload(
     persisted_local_path: str | None = None,
     external_file_path: str | None = None,
 ) -> dict:
+    _cluster_debug_log("apply_called")
     staged = _get_staged_cluster_state()
     if not staged["bytes"] or not staged["is_valid"]:
+        _cluster_debug_log("apply_result", success=False, reason="no_valid_staged_upload")
         return {"success": False, "message": "Es liegt kein gueltiger staged Upload zum Anwenden vor."}
 
     persist_result = persist_cluster_upload_bytes(staged["bytes"], target_path=persisted_local_path)
     if not persist_result.get("success"):
+        _cluster_debug_log("apply_result", success=False, reason="persist_failed", persist_error=persist_result.get("error"))
         return {
             "success": False,
             "message": f"Cluster-Upload konnte nicht gespeichert werden: {persist_result.get('error', 'unbekannt')}",
@@ -220,10 +330,18 @@ def _apply_staged_cluster_upload(
     st.session_state["active_cluster_source_subtype"] = SUBTYPE_UI_UPLOAD_PERSISTED
 
     invalidation = invalidate_cluster_dependent_state(st.session_state, reason="cluster_apply_now")
+    _cluster_debug_log("invalidate_called", removed_count=invalidation.get("removed_count", 0), reason="cluster_apply_now")
     _clear_staged_cluster_state()
     active_source = _refresh_active_cluster_source_state(
         persisted_local_path=persisted_local_path,
         external_file_path=external_file_path,
+    )
+    _cluster_debug_log(
+        "apply_result",
+        success=True,
+        persisted_path=persist_result.get("path"),
+        persisted_signature=persist_result.get("source_signature"),
+        active_source_signature=getattr(active_source, "source_signature", None),
     )
 
     return {
@@ -240,6 +358,7 @@ def _delete_cluster_uploads(
     persisted_local_path: str | None = None,
     external_file_path: str | None = None,
 ) -> dict:
+    _cluster_debug_log("delete_called")
     staged = _get_staged_cluster_state()
     current_active = get_active_cluster_source(
         session_state=st.session_state,
@@ -257,10 +376,12 @@ def _delete_cluster_uploads(
     st.session_state.pop("cluster_override_activated_at", None)
     clear_active_cluster_source_from_session(st.session_state)
     invalidation = invalidate_cluster_dependent_state(st.session_state, reason="cluster_delete_uploads")
+    _cluster_debug_log("invalidate_called", removed_count=invalidation.get("removed_count", 0), reason="cluster_delete_uploads")
     active_source = _refresh_active_cluster_source_state(
         persisted_local_path=persisted_local_path,
         external_file_path=external_file_path,
     )
+    _cluster_debug_log("delete_result", success=delete_result.get("success", False), active_source_signature=getattr(active_source, "source_signature", None))
 
     return {
         "success": delete_result.get("success", False),
@@ -311,6 +432,12 @@ def _render_staged_cluster_state() -> None:
 def render_settings_page():
     _ensure_global_uploads()
     active_cluster_source = _refresh_active_cluster_source_state()
+    st.session_state["cluster_upload_debug_run_no"] = int(st.session_state.get("cluster_upload_debug_run_no", 0) or 0) + 1
+    _cluster_debug_log(
+        "run_start",
+        active_source_path=getattr(active_cluster_source, "source_path", None),
+        active_source_status=getattr(active_cluster_source, "status", None),
+    )
 
     set_metric_page_hint(
         t("settings.metric_hint")
@@ -442,12 +569,36 @@ def render_settings_page():
         with c_col2:
             st.markdown(f"**{t('settings.cluster_step2')}**")
             st.caption(t("settings.cluster_step2.caption"))
-            up_cluster = st.file_uploader(t("settings.cluster_upload_mapping"), type=["xlsx"], key="up_cluster_mappings")
+            up_cluster = st.file_uploader(
+                t("settings.cluster_upload_mapping"),
+                type=["xlsx"],
+                key=_get_cluster_uploader_key(),
+            )
+            _cluster_debug_log("uploader_observed", **_safe_upload_debug_meta(up_cluster))
             
             if up_cluster:
                 stage_result = _stage_cluster_upload(up_cluster)
                 if stage_result["status"] == "matches_active":
-                    st.info("Die ausgewaehlte Clusterdatei ist bereits als aktive Quelle gespeichert.")
+                    _reset_cluster_uploader_widget()
+                    _cluster_debug_log("uploader_reset_requested", reason="cluster_upload_matches_active")
+                    st.info("Die ausgewaehlte Clusterdatei ist bereits aktiv.")
+                elif stage_result["status"] == "staged":
+                    _reset_cluster_uploader_widget()
+                    _cluster_debug_log("uploader_reset_requested", reason="cluster_upload_staged")
+                elif stage_result["status"] == "invalid":
+                    errors = stage_result.get("validation").errors if stage_result.get("validation") else []
+                    message = "Clusterdatei ist ungueltig."
+                    if errors:
+                        message = "Clusterdatei ist ungueltig: " + " | ".join(str(err) for err in errors)
+                    _reset_cluster_uploader_widget()
+                    _cluster_debug_log("uploader_reset_requested", reason="cluster_upload_invalid")
+                    st.error(message)
+                elif stage_result["status"] == "exception":
+                    _reset_cluster_uploader_widget()
+                    _cluster_debug_log("uploader_reset_requested", reason="cluster_upload_exception")
+                    st.error(stage_result["message"])
+                elif stage_result["status"] in {"already_staged_valid", "already_staged_invalid", "ignored_same_upload"}:
+                    pass
 
             _render_staged_cluster_state()
 
@@ -459,10 +610,12 @@ def render_settings_page():
                     apply_result = _apply_staged_cluster_upload()
                     if apply_result["success"]:
                         bump_cache_version("data_prep")
+                        _cluster_debug_log("cache_bump_called", namespace="data_prep")
                         _set_cluster_feedback("success", apply_result["message"])
                     else:
                         _set_cluster_feedback("error", apply_result["message"])
-                    st.rerun()
+                    _reset_cluster_uploader_widget()
+                    _cluster_rerun("cluster_apply_now")
             with button_col2:
                 delete_disabled = (
                     not staged["filename"]
@@ -476,9 +629,15 @@ def render_settings_page():
                         _set_cluster_feedback("success", f"User-Override entfernt. Neue aktive Clusterquelle: {fallback_label}.")
                     else:
                         _set_cluster_feedback("error", "Cluster-Upload konnte nicht vollstaendig entfernt werden.")
-                    st.rerun()
+                    _reset_cluster_uploader_widget()
+                    _cluster_rerun("cluster_delete_uploads")
 
         active_cluster_source = _refresh_active_cluster_source_state()
+        _cluster_debug_log(
+            "post_cluster_refresh",
+            active_source_path=getattr(active_cluster_source, "source_path", None),
+            active_source_status=getattr(active_cluster_source, "status", None),
+        )
         _render_active_cluster_source(active_cluster_source)
         if active_cluster_source.oe_mapping_count or active_cluster_source.jf_mapping_count:
             st.info(
@@ -488,6 +647,7 @@ def render_settings_page():
                     jf=active_cluster_source.jf_mapping_count,
                 )
             )
+        _render_cluster_debug_panel()
 
     st.divider()
 

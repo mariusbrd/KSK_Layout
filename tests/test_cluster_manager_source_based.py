@@ -4,13 +4,16 @@ import pandas as pd
 import streamlit as st
 
 from dataloader.cluster_manager import (
+    ClusterUIDimensions,
     apply_clusters_to_snapshot,
     apply_clusters_to_snapshot_from_source,
     delete_persisted_cluster_upload,
     get_active_cluster_file,
     load_cluster_mappings,
     load_cluster_mappings_from_source,
+    load_cluster_ui_dimensions_from_source,
     persist_cluster_upload_bytes,
+    resolve_forecast_ui_dimensions,
     validate_and_save_clusters,
     validate_cluster_upload,
 )
@@ -189,6 +192,102 @@ def test_load_cluster_mappings_from_source_supports_persisted_external_and_synth
     assert synthetic_bundle.jf_map == {}
 
 
+def test_load_cluster_ui_dimensions_from_source_uses_active_file_values(tmp_path):
+    persisted = tmp_path / "cluster_mapping.xlsx"
+    payload = io.BytesIO()
+    with pd.ExcelWriter(payload, engine="xlsxwriter") as writer:
+        pd.DataFrame(
+            {
+                "Organisationseinheit": ["OE2", "OE1"],
+                "Cluster": ["Cluster-B", "Cluster-A"],
+            }
+        ).to_excel(writer, sheet_name="OrgUnits", index=False)
+        pd.DataFrame(
+            {
+                "Organisationseinheit": ["OE1", "OE2"],
+                "Planstelle": ["P1", "P2"],
+                "Jobfamily Cluster": ["JF-B", "JF-A"],
+            }
+        ).to_excel(writer, sheet_name="JobFamilies", index=False)
+    persisted.write_bytes(payload.getvalue())
+
+    source = _build_source(
+        mode=MODE_UI_UPLOAD,
+        subtype=SUBTYPE_UI_UPLOAD_PERSISTED,
+        source_path=str(persisted),
+        source_signature="persisted-ui-sig",
+    )
+
+    ui_dimensions = load_cluster_ui_dimensions_from_source(source)
+
+    assert ui_dimensions.is_source_backed is True
+    assert ui_dimensions.org_units == ["OE1", "OE2"]
+    assert ui_dimensions.oe_clusters == ["Cluster-A", "Cluster-B"]
+    assert ui_dimensions.job_family_clusters == ["JF-A", "JF-B"]
+    assert ui_dimensions.org_unit_to_cluster_map["OE1"] == "Cluster-A"
+
+
+def test_resolve_forecast_ui_dimensions_falls_back_to_snapshot_when_no_active_file():
+    snapshot = pd.DataFrame(
+        {
+            "Organisationseinheit": ["OE Snap 2", "OE Snap 1"],
+            "OE-Cluster": ["OE-Cluster-B", "OE-Cluster-A"],
+            "Jobfamily": ["JF Snapshot 2", "JF Snapshot 1"],
+        }
+    )
+    source = _build_source(
+        mode=MODE_SYNTHETIC,
+        subtype=SUBTYPE_SYNTHETIC_FALLBACK,
+        source_signature="synthetic-sig",
+    )
+
+    ui_dimensions = resolve_forecast_ui_dimensions(snapshot, source)
+
+    assert ui_dimensions.is_source_backed is False
+    assert ui_dimensions.org_units == ["OE Snap 1", "OE Snap 2"]
+    assert ui_dimensions.oe_clusters == ["OE-Cluster-A", "OE-Cluster-B"]
+    assert ui_dimensions.job_family_clusters == ["JF Snapshot 1", "JF Snapshot 2"]
+
+
+def test_load_cluster_ui_dimensions_switches_between_different_files(tmp_path):
+    file_a = tmp_path / "cluster_a.xlsx"
+    file_b = tmp_path / "cluster_b.xlsx"
+
+    payload_a = io.BytesIO()
+    with pd.ExcelWriter(payload_a, engine="xlsxwriter") as writer:
+        pd.DataFrame({"Organisationseinheit": ["OE A"], "Cluster": ["Cluster A"]}).to_excel(writer, sheet_name="OrgUnits", index=False)
+        pd.DataFrame({"Organisationseinheit": ["OE A"], "Planstelle": ["P1"], "Jobfamily Cluster": ["JF A"]}).to_excel(writer, sheet_name="JobFamilies", index=False)
+    payload_b = io.BytesIO()
+    with pd.ExcelWriter(payload_b, engine="xlsxwriter") as writer:
+        pd.DataFrame({"Organisationseinheit": ["OE B"], "Cluster": ["Cluster B"]}).to_excel(writer, sheet_name="OrgUnits", index=False)
+        pd.DataFrame({"Organisationseinheit": ["OE B"], "Planstelle": ["P2"], "Jobfamily Cluster": ["JF B"]}).to_excel(writer, sheet_name="JobFamilies", index=False)
+
+    file_a.write_bytes(payload_a.getvalue())
+    file_b.write_bytes(payload_b.getvalue())
+
+    dims_a = load_cluster_ui_dimensions_from_source(
+        _build_source(
+            mode=MODE_UI_UPLOAD,
+            subtype=SUBTYPE_UI_UPLOAD_PERSISTED,
+            source_path=str(file_a),
+            source_signature="sig-a",
+        )
+    )
+    dims_b = load_cluster_ui_dimensions_from_source(
+        _build_source(
+            mode=MODE_UI_UPLOAD,
+            subtype=SUBTYPE_UI_UPLOAD_PERSISTED,
+            source_path=str(file_b),
+            source_signature="sig-b",
+        )
+    )
+
+    assert dims_a.org_units == ["OE A"]
+    assert dims_b.org_units == ["OE B"]
+    assert dims_a.job_family_clusters == ["JF A"]
+    assert dims_b.job_family_clusters == ["JF B"]
+
+
 def test_apply_clusters_to_snapshot_from_source_enriches_snapshot(tmp_path):
     persisted = tmp_path / "cluster_mapping.xlsx"
     persisted.write_bytes(_build_cluster_workbook_bytes(oe_cluster="Persisted", jf_cluster="Persisted-JF"))
@@ -210,8 +309,10 @@ def test_apply_clusters_to_snapshot_from_source_enriches_snapshot(tmp_path):
 
     assert result.loc[0, "OE-Cluster"] == "Persisted"
     assert result.loc[0, "JF-Cluster"] == "Persisted-JF"
+    assert result.loc[0, "Jobfamily"] == "Persisted-JF"
     assert result.loc[1, "OE-Cluster"] == "Unclustered"
     assert result.loc[1, "JF-Cluster"] == "Sonstiges"
+    assert result.loc[1, "Jobfamily"] == "Sonstiges"
 
 
 def test_legacy_wrappers_continue_to_return_usable_results(tmp_path, monkeypatch):

@@ -7,7 +7,7 @@ project a future personnel snapshot that can be consumed by the Kompakt page.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -33,8 +33,34 @@ from dataloader.loader import (
     enrich_snapshot_data,
     normalize_education_series,
 )
+from dataloader.mak_allocation import apply_person_mak_allocation
+from dataloader.mak_allocation import build_mak_allocation_audit
 from kpi_reference import get_current_stichtag
 from utils.settings_loader import get_setting
+from utils.audit_helpers import (
+    build_65plus_audit,
+    build_65plus_decision_list,
+    build_azubi_flow_audit,
+    build_azubi_takeover_decision_list,
+    build_azubi_takeover_target_audit,
+    build_mak_decision_list,
+    build_mak_abgaenge_check,
+    build_mak_column_consistency_check,
+    build_mak_correction_decision_15,
+    build_mak_deep_dive_15_cases,
+    build_mak_fuehrung_vertrieb_decision,
+    build_mak_fuehrung_vertrieb_check,
+    build_mak_lineage_audit,
+    build_mak_origin_classification,
+    build_mak_person_audit,
+    build_mak_policy_impact,
+    build_mak_reconciliation_bridge,
+    build_mak_source_pattern_classification,
+    build_mak_source_row_audit_15,
+    build_mak_target_value_scenarios,
+    build_mak_zugaenge_check,
+    build_sonstiges_audit,
+)
 from zugaenge.enrichment import build_jf_to_cluster_map, enrich_zugaenge_events
 from zugaenge.forecast import run_forecast_zugaenge
 from zugaenge.params import default_params as default_zugaenge_params
@@ -98,6 +124,7 @@ class CompactSimulationResult:
     abgaenge_result: Dict[str, Any]
     zugaenge_result: Dict[str, Any]
     metadata: Dict[str, Any]
+    audit_tables: Dict[str, pd.DataFrame] = field(default_factory=dict)
 
 
 def _normalize_tariff_group(value: Any) -> str:
@@ -420,6 +447,19 @@ def _prepare_employee_forecast_base(
         "Vertragsart",
         "Text Gehaltsband",
         "Bewertung Tarifgruppe",
+        "BsGrd_Source",
+        "snapshot_BsGrd",
+        "Personen_MAK_Source",
+        "Personen_MAK",
+        "person_mak_source",
+        "bsgrd_lineage_flag",
+        "Planstellen_Soll_MAK",
+        "MAK_Technical_Uncorrected",
+        "Allocation_Weight",
+        "MAK_Reporting",
+        "MAK_Adjustment_Delta",
+        "MAK_Allocation_Flag",
+        "MAK_Allocation_Comment",
     ]
     for col in optional_first_cols:
         if col in df_ma.columns:
@@ -700,6 +740,12 @@ def _update_existing_rows(
             "Status kundenindividuell",
             "OE-Cluster",
             "JF-Cluster",
+            "Personen_MAK",
+            "Personen_MAK_Source",
+            "BsGrd_Source",
+            "snapshot_BsGrd",
+            "person_mak_source",
+            "bsgrd_lineage_flag",
         ]
         for col in sync_cols:
             if col in future_df.columns and col in emp.index:
@@ -732,29 +778,47 @@ def _append_new_people_rows(
     final_employee_df: pd.DataFrame,
     zugaenge_result: Dict[str, Any],
 ) -> pd.DataFrame:
-    events = zugaenge_result.get("events", pd.DataFrame())
-    if events.empty:
-        return future_df
-
-    positive_types = {"Azubi_Hire", "Trainee_Hire", "New_Hire"}
-    new_events = events[events["type"].isin(positive_types)].copy()
-    if new_events.empty:
-        return future_df
-
     existing_ids = set(_normalize_persnr_series(base_snapshot_df["PersNr"].dropna()))
     final_state = final_employee_df.copy()
+    if final_state.empty or "PersNr" not in final_state.columns:
+        return future_df
+
     final_state["PersNr"] = _normalize_persnr_series(final_state["PersNr"])
     final_state = final_state.drop_duplicates(subset=["PersNr"], keep="last").set_index("PersNr")
+    active_mask = final_state.get("active", False) == True
+    forecast_flag = (
+        final_state.get("is_forecast", pd.Series(False, index=final_state.index))
+        .replace({pd.NA: False, None: False})
+        .infer_objects(copy=False)
+        .astype(bool)
+    )
+    forecast_prefix = final_state.index.to_series().astype(str).str.match(r"^(AZ|TR|NH)_", na=False)
+    final_new_people = final_state[active_mask & (forecast_flag | forecast_prefix)].copy()
+    final_new_people = final_new_people[~final_new_people.index.isin(existing_ids)]
+    if final_new_people.empty:
+        return future_df
+
+    events = zugaenge_result.get("events", pd.DataFrame())
+    if not events.empty and "persnr" in events.columns:
+        event_lookup = events.copy()
+        event_lookup["persnr"] = _normalize_persnr_series(event_lookup["persnr"])
+        event_lookup = event_lookup.drop_duplicates(subset=["persnr"], keep="last").set_index("persnr")
+    else:
+        event_lookup = pd.DataFrame()
 
     rows_to_append = []
-    for _, event in new_events.iterrows():
-        pid = _normalize_persnr_series(pd.Series([event.get("persnr", "")])).iloc[0]
-        if not pid or pid in existing_ids or pid not in final_state.index:
-            continue
-
-        emp = final_state.loc[pid]
+    for pid, emp in final_new_people.sort_index().iterrows():
         if isinstance(emp, pd.DataFrame):
             emp = emp.iloc[0]
+        if not pid or pid in existing_ids:
+            continue
+
+        if not event_lookup.empty and pid in event_lookup.index:
+            event = event_lookup.loc[pid]
+            if isinstance(event, pd.DataFrame):
+                event = event.iloc[-1]
+        else:
+            event = pd.Series(dtype=object)
 
         candidate = {col: pd.NA for col in future_df.columns}
         candidate["PersNr"] = pid
@@ -780,11 +844,17 @@ def _append_new_people_rows(
         candidate["ist_atz_fr"] = False
         candidate["Sollarbeitszeit"] = 39.0
         candidate["Soll_FTE"] = 1.0
-        candidate["MAK_Calculated"] = float(emp.get("mak", event.get("mak", 0.0)) or 0.0)
+        candidate["MAK_Calculated"] = float(emp.get("mak", emp.get("MAK_Calculated", event.get("mak", 0.0))) or 0.0)
         candidate["MAK"] = candidate["MAK_Calculated"]
         candidate["mak"] = candidate["MAK_Calculated"]
         candidate["BsGrd"] = float(emp.get("BsGrd", candidate["MAK_Calculated"] * 100.0) or 0.0)
         candidate["FTE_person"] = candidate["BsGrd"] / 100.0
+        candidate["Personen_MAK"] = float(emp.get("Personen_MAK", candidate["FTE_person"]) or 0.0)
+        candidate["Personen_MAK_Source"] = float(emp.get("Personen_MAK_Source", candidate["Personen_MAK"]) or 0.0)
+        candidate["BsGrd_Source"] = float(emp.get("BsGrd_Source", candidate["Personen_MAK_Source"] * 100.0) or 0.0)
+        candidate["snapshot_BsGrd"] = candidate["BsGrd"]
+        candidate["person_mak_source"] = "Personen_MAK_Source"
+        candidate["bsgrd_lineage_flag"] = "ok_source_bsgrd_used"
         candidate["FTE_assigned"] = candidate["FTE_person"] * candidate["Soll_FTE"]
 
         vacancy_mask = future_df.get("Is_Vacant", pd.Series(False, index=future_df.index)) == True
@@ -814,6 +884,13 @@ def _append_new_people_rows(
 
     new_rows_df = pd.DataFrame(rows_to_append)
     new_rows_df = new_rows_df.reindex(columns=future_df.columns, fill_value=pd.NA)
+    all_na_cols = [
+        col
+        for col in new_rows_df.columns
+        if col in future_df.columns and new_rows_df[col].isna().all()
+    ]
+    if all_na_cols:
+        new_rows_df = new_rows_df.drop(columns=all_na_cols)
     return pd.concat([future_df, new_rows_df], ignore_index=True)
 
 
@@ -859,7 +936,110 @@ def _finalize_future_snapshot(
     future_df = calculate_cost_vectorized(future_df, st.session_state.get("tvoed_lookup", {}))
     future_df = enrich_snapshot_data(future_df, stichtag=target_date)
     future_df = apply_exclusions(future_df, get_setting("exclusions", {}))
+    future_df = apply_person_mak_allocation(future_df)
     return future_df
+
+
+def _build_simulation_audit_tables(
+    *,
+    future_snapshot_df: pd.DataFrame,
+    final_employee_df: pd.DataFrame,
+    zugaenge_result: Dict[str, Any],
+    target_date: pd.Timestamp,
+    abgaenge_params: Dict[str, Any],
+    lineage_stages: Optional[Dict[str, pd.DataFrame]] = None,
+    base_snapshot_df: Optional[pd.DataFrame] = None,
+    abgaenge_result: Optional[Dict[str, Any]] = None,
+) -> Dict[str, pd.DataFrame]:
+    events_df = zugaenge_result.get("events", pd.DataFrame()) if zugaenge_result else pd.DataFrame()
+    abg_events_df = abgaenge_result.get("events_person_level", pd.DataFrame()) if abgaenge_result else pd.DataFrame()
+    mak_audit = build_mak_person_audit(future_snapshot_df)
+    azubi_flow = build_azubi_flow_audit(
+        final_employee_df,
+        events_df,
+        target_date,
+        final_snapshot_df=future_snapshot_df,
+    )
+    age65_audit = build_65plus_audit(future_snapshot_df, abgaenge_params)
+    takeover_audit = build_azubi_takeover_target_audit(
+        final_employee_df,
+        events_df,
+        target_date,
+        final_snapshot_df=future_snapshot_df,
+    )
+    mak_decision = build_mak_decision_list(mak_audit)
+    lineage_stages = lineage_stages or {"07_final_future_snapshot": future_snapshot_df}
+    lineage = build_mak_lineage_audit(
+        lineage_stages,
+        base_snapshot_df if base_snapshot_df is not None else pd.DataFrame(),
+        abg_events_df,
+        events_df,
+    )
+    mak_origin = build_mak_origin_classification(lineage)
+    source_rows_15 = build_mak_source_row_audit_15(
+        base_snapshot_df if base_snapshot_df is not None else pd.DataFrame(),
+        mak_origin,
+    )
+    source_patterns = build_mak_source_pattern_classification(source_rows_15)
+    correction_decision = build_mak_correction_decision_15(source_patterns)
+    known_mak_ids = {
+        "002588", "003002", "003640", "004183", "004435",
+        "004670", "004705", "004797", "003761", "004378",
+        "005639", "002791", "004671", "004730", "005621",
+    }
+    bsgrd_lineage_15 = pd.DataFrame()
+    if "PersNr" in future_snapshot_df.columns:
+        work = future_snapshot_df.copy()
+        work["PersNr"] = _normalize_persnr_series(work["PersNr"])
+        work = work[work["PersNr"].isin(known_mak_ids)].copy()
+        if not work.empty:
+            bsgrd_lineage_15 = work.groupby("PersNr", dropna=False).agg(
+                BsGrd_in_Mitarbeiter_xlsx=("BsGrd_Source", "max"),
+                Anzahl_Mitarbeiterzeilen=("PersNr", lambda _x: 1),
+                BsGrd_nach_Mitarbeiter_Load=("BsGrd_Source", "max"),
+                BsGrd_nach_Planstellen_Join_je_Zeile=("snapshot_BsGrd", lambda x: " | ".join(map(str, pd.Series(x).dropna().unique()))),
+                BsGrd_nach_prepare_employee_forecast_base=("BsGrd_Source", "max"),
+                BsGrd_im_final_snapshot=("snapshot_BsGrd", "max"),
+                Personen_MAK_alt=("MAK_Technical_Uncorrected", "sum"),
+                Personen_MAK_neu=("Personen_MAK", "max"),
+                MAK_Reporting=("MAK_Reporting", "sum"),
+                Ursache_BsGrd_Abweichung=("bsgrd_lineage_flag", "first"),
+            ).reset_index()
+            bsgrd_lineage_15["empfohlene_Korrektur"] = "Personen_MAK_Source als fuehrende Reporting-Kapazitaet verwenden"
+    return {
+        "MAK_Personen_Audit": mak_audit,
+        "MAK_Allocation_Audit": build_mak_allocation_audit(future_snapshot_df),
+        "Azubi_Flow_Audit": azubi_flow,
+        "Sonstiges_Audit": build_sonstiges_audit(future_snapshot_df),
+        "65plus_Audit": age65_audit,
+        "Azubi_Takeover_Target_Audit": takeover_audit,
+        "Azubi_Takeover_Decision_List": build_azubi_takeover_decision_list(takeover_audit),
+        "MAK_Decision_List": mak_decision,
+        "MAK_Policy_Impact": build_mak_policy_impact(future_snapshot_df, mak_decision),
+        "MAK_Lineage_Audit": lineage,
+        "MAK_Origin_Classification": mak_origin,
+        "MAK_Reconciliation_Bridge": build_mak_reconciliation_bridge(lineage, abg_events_df, events_df),
+        "MAK_Deep_Dive_15_Cases": build_mak_deep_dive_15_cases(lineage, mak_origin),
+        "MAK_Fuehrung_Vertrieb_Check": build_mak_fuehrung_vertrieb_check(lineage, mak_decision),
+        "MAK_Column_Consistency_Check": build_mak_column_consistency_check(future_snapshot_df),
+        "MAK_Abgaenge_Check": build_mak_abgaenge_check(lineage, abg_events_df),
+        "MAK_Zugaenge_Check": build_mak_zugaenge_check(
+            lineage,
+            events_df,
+            base_snapshot_df if base_snapshot_df is not None else pd.DataFrame(),
+        ),
+        "MAK_Source_Row_Audit_15": source_rows_15,
+        "MAK_BsGrd_Lineage_15": bsgrd_lineage_15,
+        "MAK_Source_Pattern_Classification": source_patterns,
+        "MAK_Correction_Decision_15": correction_decision,
+        "MAK_Target_Value_Scenarios": build_mak_target_value_scenarios(future_snapshot_df, correction_decision),
+        "MAK_Fuehrung_Vertrieb_Decision": build_mak_fuehrung_vertrieb_decision(
+            source_rows_15,
+            source_patterns,
+            correction_decision,
+        ),
+        "65plus_Decision_List": build_65plus_decision_list(age65_audit),
+    }
 
 
 def simulate_compact_snapshot(
@@ -908,7 +1088,21 @@ def simulate_compact_snapshot(
             "cluster_source_signature": cluster_source_signature,
         }
         future_employees = _prepare_employee_forecast_base(future_snapshot, df_atz, target_date)
-        return CompactSimulationResult(future_snapshot, future_employees, empty_abg, empty_zug, metadata)
+        audit_tables = _build_simulation_audit_tables(
+            future_snapshot_df=future_snapshot,
+            final_employee_df=future_employees,
+            zugaenge_result=empty_zug,
+            target_date=target_date,
+            abgaenge_params=abgaenge_params,
+            lineage_stages={
+                "01_rohdaten_ausgangsbestand": current_snapshot,
+                "02_forecast_base": future_employees,
+                "07_final_future_snapshot": future_snapshot,
+            },
+            base_snapshot_df=current_snapshot,
+            abgaenge_result=empty_abg,
+        )
+        return CompactSimulationResult(future_snapshot, future_employees, empty_abg, empty_zug, metadata, audit_tables)
 
     employee_base = _prepare_employee_forecast_base(current_snapshot, df_atz, base_date)
 
@@ -967,12 +1161,14 @@ def simulate_compact_snapshot(
         target_date=target_date,
         atz_status_df=atz_status_df,
     )
+    snapshot_after_update_existing = future_snapshot.copy()
     future_snapshot = _append_new_people_rows(
         future_df=future_snapshot,
         base_snapshot_df=current_snapshot,
         final_employee_df=final_employee_df,
         zugaenge_result=zugaenge_result,
     )
+    snapshot_after_append = future_snapshot.copy()
     future_snapshot = _finalize_future_snapshot(
         future_snapshot,
         target_date,
@@ -989,6 +1185,24 @@ def simulate_compact_snapshot(
         "zugaenge_events": len(zugaenge_result.get("events", pd.DataFrame())),
         "cluster_source_signature": cluster_source_signature,
     }
+    audit_tables = _build_simulation_audit_tables(
+        future_snapshot_df=future_snapshot,
+        final_employee_df=final_employee_df,
+        zugaenge_result=zugaenge_result,
+        target_date=target_date,
+        abgaenge_params=abgaenge_params,
+        lineage_stages={
+            "01_rohdaten_ausgangsbestand": current_snapshot,
+            "02_forecast_base": employee_base,
+            "03_nach_abgaenge": employee_after_abg,
+            "04_nach_zugaenge": final_employee_df,
+            "05_nach_update_existing_rows": snapshot_after_update_existing,
+            "06_nach_append_new_people_rows": snapshot_after_append,
+            "07_final_future_snapshot": future_snapshot,
+        },
+        base_snapshot_df=current_snapshot,
+        abgaenge_result=abgaenge_result,
+    )
 
     return CompactSimulationResult(
         future_snapshot_df=future_snapshot,
@@ -996,4 +1210,5 @@ def simulate_compact_snapshot(
         abgaenge_result=abgaenge_result,
         zugaenge_result=zugaenge_result,
         metadata=metadata,
+        audit_tables=audit_tables,
     )

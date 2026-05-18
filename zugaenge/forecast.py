@@ -504,7 +504,7 @@ def _simulate_azubis(
 
     # --- Phase 2: Distribute Dimension Values for Retained Azubis ---
     if retained_info:
-        unit_to_cluster = _get_unit_to_cluster_map(df_state)
+        unit_to_cluster = params.get("org_unit_to_cluster_map", {}) or _get_unit_to_cluster_map(df_state)
         conversion_edu_choices, conversion_edu_weights = _build_education_distribution(
             df_state,
             allowed_values=[
@@ -578,6 +578,11 @@ def _simulate_azubis(
                 "cohort": eintritt.year if pd.notna(eintritt) else "Unknown"
             }
             current_mak = float(row.get("mak", 0.0))
+            # Fachlich parametrisierbare Zielwerte fuer die Uebernahme.
+            # Zielvertragsart / Ziel-Mitarbeitergruppe koennen spaeter als UI-Parameter
+            # in azubi_params verschoben werden.
+            takeover_contract_type = azubi_params.get("takeover_contract_type", "Unbefristet")
+            takeover_employee_group = azubi_params.get("takeover_employee_group", "Angestellte")
 
             # Update State
             df_state.loc[persnr, "Jobfamily"] = new_jf 
@@ -589,7 +594,25 @@ def _simulate_azubis(
             
             df_state.loc[persnr, "TrfGr"] = entry_tariff
             df_state.loc[persnr, "St"] = entry_step
+            # MAK nach Uebernahme: fachlich parametrisierbar ueber
+            # azubi.azubi_mak_after_takeover.
             df_state.loc[persnr, "mak"] = mak_after
+            if "MAK_Calculated" in df_state.columns:
+                df_state.loc[persnr, "MAK_Calculated"] = mak_after
+            if "MAK" in df_state.columns:
+                df_state.loc[persnr, "MAK"] = mak_after
+            if "BsGrd" in df_state.columns:
+                df_state.loc[persnr, "BsGrd"] = mak_after * 100.0
+            if "FTE_person" in df_state.columns:
+                df_state.loc[persnr, "FTE_person"] = mak_after
+            # Kostenlogik nach Uebernahme wird im Kompakt-Snapshot mit der
+            # zentralen TVoeD-Kostenfunktion neu berechnet.
+            if "Total_Cost_Year" in df_state.columns:
+                df_state.loc[persnr, "Total_Cost_Year"] = pd.NA
+            df_state.loc[persnr, "active"] = True
+            df_state.loc[persnr, "Vertragsart"] = takeover_contract_type
+            df_state.loc[persnr, "MitarbGruppenbez."] = takeover_employee_group
+            df_state.loc[persnr, "Status kundenindividuell"] = "Aktives Beschäftigungsverhältnis"
             df_state.loc[persnr, "Ausbildung"] = new_education
             if INTERNAL_EDUCATION_COL in df_state.columns:
                 df_state.loc[persnr, INTERNAL_EDUCATION_COL] = new_education
@@ -625,6 +648,8 @@ def _simulate_azubis(
                 "St": entry_step,
                 "Jobfamily": new_jf,
                 "Ausbildung": new_education,
+                "Vertragsart": takeover_contract_type,
+                "MitarbGruppenbez.": takeover_employee_group,
                 # Carry original JF (saved by Fix 4) for audit/export; enables tracing
                 # which original Jobfamily each converted Azubi came from.
                 "Jobfamily_pre_azubi": row.get("Jobfamily_pre_azubi"),
@@ -936,6 +961,7 @@ def _simulate_hires(
 
     strategy = hire_params.get("strategy", "Fill Vacancies")
     target_unit = hire_params.get("target_org_unit", None)
+    unit_to_cluster_map = params.get("org_unit_to_cluster_map", {}) or _get_unit_to_cluster_map(df_state)
     
     # Matrix Distribution Logic
     dist_list = hire_params.get("distribution", [])
@@ -1016,6 +1042,7 @@ def _simulate_hires(
         else:
             org_unit = _resolve_org_unit(strategy, target_unit, all_org_units, [], rng)
             plan_stelle = org_unit 
+            oe_c = unit_to_cluster_map.get(org_unit, oe_c)
 
         # If NOT a replacement (or replacement lacked info? No, we stick to leaver info if available),
         # Apply Matrix Distribution for JF/Cluster
@@ -1104,9 +1131,10 @@ def run_forecast_zugaenge(
         df_state.sort_index(inplace=True)
         
     # Get all OrgUnits for random assignment
-    all_org_units = []
-    if "Organisationseinheit" in df_state.columns:
+    all_org_units = list(params.get("available_org_units", []) or [])
+    if not all_org_units and "Organisationseinheit" in df_state.columns:
         all_org_units = df_state["Organisationseinheit"].dropna().unique().tolist()
+    configured_org_unit_to_cluster_map = params.get("org_unit_to_cluster_map", {}) or {}
 
     # Generate Periods (Monthly)
     if end_date is None:
@@ -1175,7 +1203,7 @@ def run_forecast_zugaenge(
         
         # 3. New Azubis (NEW Hire entry)
         if params.get("azubi", {}).get("active", True):
-            period_unit_to_cluster_map = _get_unit_to_cluster_map(df_state) if n_az > 0 else None
+            period_unit_to_cluster_map = configured_org_unit_to_cluster_map or (_get_unit_to_cluster_map(df_state) if n_az > 0 else None)
             _simulate_new_azubis(
                 df_state,
                 params,

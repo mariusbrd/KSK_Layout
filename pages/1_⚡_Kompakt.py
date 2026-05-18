@@ -27,6 +27,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from abgaenge.schemas import normalize_persnr
 from components.ui_compat import dataframe_compat, download_button_compat
 from dataloader.loader import load_and_prepare_data
+from dataloader.jobfamily_service import JOBFAMILY_UNMAPPED, normalize_jobfamily_column, normalize_jobfamily_series
 from dataloader.soll_ist_koepfe_engine import build_soll_ist_koepfe_result
 from components.sidebar import render_global_filters, apply_filters, get_filter_summary, get_global_metric_view, normalize_global_metric_view, set_metric_page_hint
 from utils.text_normalization import normalize_dashboard_text, normalize_display_text
@@ -37,8 +38,10 @@ from config.settings import (
     EDUCATION_GROUPS, EDUCATION_HIERARCHY,
 )
 from dataloader.jobfamily_matcher import assign_jobfamilies, load_jobfamily_definitions
+from utils.compact_ist_export import build_compact_ist_demographics_export_bytes
 from utils.i18n import get_language, t
 from utils.plot_helpers import apply_legend_bottom
+from utils.settings_loader import get_setting
 
 # Scroll Navigation
 try:
@@ -416,77 +419,8 @@ def _has_compatible_jobfamily(df: pd.DataFrame) -> bool:
         return False
     if df.empty:
         return True
-    jobfamily = df["Jobfamily"]
-    if jobfamily.isna().any():
-        return False
+    jobfamily = normalize_jobfamily_series(df["Jobfamily"])
     return jobfamily.astype(str).str.strip().ne("").all()
-
-    # Jobfamily zuweisen
-    try:
-        definitions = load_jobfamily_definitions()
-        if definitions and "Planstelle" in df.columns:
-            df = assign_jobfamilies(df, definitions)
-        else:
-            df["Jobfamily"] = "(nicht zugeordnet)"
-            raise RuntimeError("jobfamily_fallback_guard")
-            main_options = ["📈 IST-Analyse", "🎯 IST vs SOLL"]
-            if "compact_main_view" not in st.session_state:
-                st.session_state["compact_main_view"] = main_options[0]
-
-            main_view = st.segmented_control(
-                "Analysebereich",
-                options=main_options,
-                key="compact_main_view",
-                label_visibility="collapsed",
-            )
-
-            if main_view == "📈 IST-Analyse":
-                ist_options = ["👥 Köpfe", "📊 MAK", "💰 EUR"]
-                if "compact_ist_view" not in st.session_state:
-                    st.session_state["compact_ist_view"] = ist_options[0]
-
-                ist_view = st.segmented_control(
-                    "IST-Unteransicht",
-                    options=ist_options,
-                    key="compact_ist_view",
-                    label_visibility="collapsed",
-                )
-
-                if ist_view == "👥 Köpfe":
-                    render_ist_koepfe_tab(filtered_df)
-                elif ist_view == "📊 MAK":
-                    render_ist_mak_tab(filtered_df)
-                else:
-                    render_ist_eur_tab(filtered_df)
-
-                return
-
-            soll_options = ["🔢 Köpfe", "🎯 MAK", "💶 EUR"]
-            if "compact_soll_view" not in st.session_state:
-                st.session_state["compact_soll_view"] = soll_options[0]
-
-            soll_view = st.segmented_control(
-                "SOLL-Unteransicht",
-                options=soll_options,
-                key="compact_soll_view",
-                label_visibility="collapsed",
-            )
-
-            if soll_view == "🔢 Köpfe":
-                # prepared_df (not filtered_df) wird verwendet, damit vakante
-                # Planstellen enthalten sind (Geschlecht-/Arbeitszeit-Filter
-                # wuerden leere Person-Zeilen herausfiltern).
-                render_ist_soll_koepfe_tab(prepared_df)
-            elif soll_view == "🎯 MAK":
-                render_ist_vs_soll_mak_tab(filtered_df)
-            else:
-                render_ist_vs_soll_eur_tab(filtered_df)
-
-            return
-            df["Jobfamily"] = "(nicht zugeordnet)"
-            df["Jobfamily"] = "(nicht zugeordnet)"
-    except Exception:
-        df["Jobfamily"] = "(nicht zugeordnet)"
 
     # Betriebszugehörigkeit-Bins
     if "Betriebszugehörigkeit_Jahre" in df.columns:
@@ -559,9 +493,11 @@ def _prepare_compact_data_clean(snapshot_df: pd.DataFrame) -> pd.DataFrame:
             if definitions and "Planstelle" in df.columns:
                 df = assign_jobfamilies(df, definitions)
             else:
-                df["Jobfamily"] = "(nicht zugeordnet)"
+                df["Jobfamily"] = JOBFAMILY_UNMAPPED
         except Exception:
-            df["Jobfamily"] = "(nicht zugeordnet)"
+            df["Jobfamily"] = JOBFAMILY_UNMAPPED
+
+    df = normalize_jobfamily_column(df)
 
     if "Betriebszugehörigkeit_Jahre" in df.columns:
         tenure_years = pd.to_numeric(df["Betriebszugehörigkeit_Jahre"], errors="coerce")
@@ -683,12 +619,13 @@ def get_ist_koepfe(df: pd.DataFrame) -> int:
 
 
 def get_ist_eur(df: pd.DataFrame) -> float:
-    if "Total_Cost_Year" in df.columns:
+    cost_col = "EUR_Reporting" if "EUR_Reporting" in df.columns else "Total_Cost_Year"
+    if cost_col in df.columns:
         if "PersNr" in df.columns:
             from dataloader.kpi_engine import get_unique_employees
             emp = get_unique_employees(df)
-            return emp["Total_Cost_Year"].sum()
-        return df["Total_Cost_Year"].sum()
+            return emp[cost_col].sum()
+        return df[cost_col].sum()
     return 0.0
 
 
@@ -772,6 +709,9 @@ def create_breakdown_table(df: pd.DataFrame, dimension_col: str, value_col: str,
             agg_df.columns = [dimension_col, "IST"]
         else:
             agg_df = emp_df.groupby(dimension_col, observed=True).size().reset_index(name="IST")
+    elif value_col in ("MAK_Reporting", "EUR_Reporting") and "PersNr" in df.columns:
+        agg_df = df.groupby(dimension_col, observed=True)[value_col].sum().reset_index()
+        agg_df.columns = [dimension_col, "IST"]
     elif value_col in ("MAK_Calculated", "mak", "MAK", "FTE_person", "Total_Cost_Year") and "PersNr" in df.columns:
         # Person-level Metriken: Deduplizieren nach PersNr mit summierten
         # Kapazitaetsspalten aus get_unique_employees().
@@ -869,6 +809,9 @@ def _create_breakdown_table_clean(
             agg_df.columns = [dimension_col, "IST"]
         else:
             agg_df = emp_df.groupby(dimension_col, observed=True).size().reset_index(name="IST")
+    elif value_col in ("MAK_Reporting", "EUR_Reporting") and "PersNr" in df.columns:
+        agg_df = df.groupby(dimension_col, observed=True)[value_col].sum().reset_index()
+        agg_df.columns = [dimension_col, "IST"]
     elif value_col in ("MAK_Calculated", "mak", "MAK", "FTE_person", "Total_Cost_Year") and "PersNr" in df.columns:
         from dataloader.kpi_engine import get_unique_employees
 
@@ -2442,7 +2385,7 @@ def render_ist_mak_tab(df: pd.DataFrame, print_mode: bool = False):
 
             render_single_breakdown(
                 emp_df, dimension_name, dimension_col,
-                value_col=next((c for c in ("MAK_Calculated", "mak", "MAK") if c in emp_df.columns), "FTE_assigned"),
+                value_col=next((c for c in ("MAK_Reporting", "MAK_Calculated", "mak", "MAK") if c in emp_df.columns), "FTE_assigned"),
                 value_type="mak",
                 key_prefix="ist_mak",
                 print_mode=print_mode
@@ -2519,7 +2462,8 @@ def render_ist_eur_tab(df: pd.DataFrame, print_mode: bool = False):
     """Rendert den IST-EUR Tab mit allen Themenfeldern untereinander."""
     emp_df = df[~df["Is_Vacant"]] if "Is_Vacant" in df.columns else df
 
-    if "Total_Cost_Year" not in emp_df.columns:
+    cost_col = "EUR_Reporting" if "EUR_Reporting" in emp_df.columns else "Total_Cost_Year"
+    if cost_col not in emp_df.columns:
         st.warning("Kostenfeld 'Total_Cost_Year' nicht verfügbar.")
         return
 
@@ -2561,7 +2505,7 @@ def render_ist_eur_tab(df: pd.DataFrame, print_mode: bool = False):
 
             render_single_breakdown(
                 emp_df, dimension_name, dimension_col,
-                value_col="Total_Cost_Year",
+                value_col=cost_col,
                 value_type="eur",
                 key_prefix="ist_eur",
                 print_mode=print_mode
@@ -2645,7 +2589,8 @@ def render_ist_vs_soll_mak_tab(df: pd.DataFrame, print_mode: bool = False):
 
 def render_ist_vs_soll_eur_tab(df: pd.DataFrame, print_mode: bool = False):
     """Rendert den IST vs SOLL EUR Tab mit allen Themenfeldern untereinander."""
-    if "Total_Cost_Year" not in df.columns:
+    cost_col = "EUR_Reporting" if "EUR_Reporting" in df.columns else "Total_Cost_Year"
+    if cost_col not in df.columns:
         st.warning("IST-Kosten nicht verfügbar.")
         return
 
@@ -2690,7 +2635,7 @@ def render_ist_vs_soll_eur_tab(df: pd.DataFrame, print_mode: bool = False):
 
             render_single_comparison(
                 df, dimension_name, dimension_col,
-                ist_col="Total_Cost_Year",
+                ist_col=cost_col,
                 soll_col="Soll_Cost_Year",
                 value_type="eur",
                 key_prefix="ist_vs_soll_eur",
@@ -5137,6 +5082,21 @@ def main():
         # Hinweis: Job Family Filter ist jetzt global in Sidebar (render_global_filters)
         render_global_filters(prepared_df, history_df)
         
+        with st.sidebar:
+            st.divider()
+            compact_ist_export = build_compact_ist_demographics_export_bytes(
+                prepared_df=prepared_df,
+                stichtag=get_setting("stichtag", summary.get("stichtag", "unbekannt") if isinstance(summary, dict) else "unbekannt"),
+            )
+            download_button_compat(
+                label="IST-Demografie als Excel exportieren",
+                data=compact_ist_export,
+                file_name=f"Kompakt_IST_Demografie_{datetime.now():%Y%m%d}.xlsx",
+                mime=_EXCEL_MIME,
+                key="compact_ist_demographics_export",
+                width="stretch",
+            )
+
         # Druck-Modus Toggle
         with st.sidebar:
             st.divider()

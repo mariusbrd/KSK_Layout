@@ -39,7 +39,7 @@ from abgaenge import (
 
 # Shared Components
 from dataloader.loader import load_and_prepare_data, load_atz_data_cached
-from dataloader.cluster_manager import load_cluster_mappings_from_source
+from dataloader.cluster_manager import load_cluster_mappings_from_source, resolve_forecast_ui_dimensions
 from dataloader.cluster_resolver import (
     deserialize_active_cluster_source,
     get_active_cluster_source,
@@ -49,6 +49,24 @@ from dataloader.jobfamily_service import JobFamilyService
 from components.sidebar import render_global_filters, apply_filters, apply_event_filters, render_filter_status, apply_robust_filter, get_effective_metric_view, set_metric_page_hint
 from utils.i18n import t
 from utils.plot_helpers import apply_legend_bottom
+
+
+def _cluster_widget_key(base_key: str, cluster_source_signature: Optional[str]) -> str:
+    suffix = str(cluster_source_signature or "no_cluster_source").strip() or "no_cluster_source"
+    return f"{base_key}_{suffix}"
+
+
+def _get_param_dimension_values(
+    df_ma: pd.DataFrame,
+    active_cluster_source,
+    cluster_mapping_bundle,
+) -> tuple[list[str], list[str]]:
+    resolved = resolve_forecast_ui_dimensions(
+        df_ma,
+        active_cluster_source,
+        mapping_bundle=cluster_mapping_bundle,
+    )
+    return resolved.org_units, resolved.job_family_clusters
 
 
 def _render_page_intro():
@@ -224,13 +242,21 @@ def main():
         # Use aggregated data for forecast
         df_ma = df_employee_agg
 
-        # P07: Sync valid Job Families
-        valid_jfs = JobFamilyService.get_active_jobfamilies(df_ma, cluster_mapping_bundle=cluster_mapping_bundle)
+        # P07: Resolve active UI dimensions from the active cluster source.
+        active_org_units, valid_jfs = _get_param_dimension_values(
+            df_ma,
+            active_cluster_source,
+            cluster_mapping_bundle,
+        )
+        sidebar_jobfamilies = JobFamilyService.get_active_jobfamilies(
+            df_ma,
+            cluster_mapping_bundle=cluster_mapping_bundle,
+        )
         
         # Cleanup Session State selections if they are invalid
         if "selected_jobfamilies" in st.session_state:
             st.session_state["selected_jobfamilies"] = JobFamilyService.sanitize_selection(
-                st.session_state["selected_jobfamilies"], valid_jfs
+                st.session_state["selected_jobfamilies"], sidebar_jobfamilies
             )
     except FileNotFoundError as e:
         st.error(str(e))
@@ -346,8 +372,7 @@ def main():
             
             atz_unique_vals = []
             if atz_dim == "OrgUnit":
-                if "Organisationseinheit" in df_ma.columns:
-                    atz_unique_vals = sorted([str(x) for x in df_ma["Organisationseinheit"].dropna().unique()])
+                atz_unique_vals = active_org_units
             else:
                 atz_unique_vals = valid_jfs
             
@@ -377,7 +402,7 @@ def main():
                 df_atz_matrix,
                 use_container_width=True,
                 height=min(400, 50 + len(atz_dim_items) * 35),
-                key="atz_matrix_editor_live",
+                key=_cluster_widget_key("atz_matrix_editor_live", cluster_source_signature),
                 disabled=not use_atz_matrix,
                 column_config={
                     t("attrition.atz.probability_pct"): st.column_config.NumberColumn(
@@ -444,8 +469,7 @@ def main():
             # 1. Determine dimension values
             unique_vals = []
             if quit_dim == "OrgUnit":
-                if "Organisationseinheit" in df_ma.columns:
-                    unique_vals = sorted([str(x) for x in df_ma["Organisationseinheit"].dropna().unique()])
+                unique_vals = active_org_units
             else:
                 unique_vals = valid_jfs
             
@@ -482,7 +506,7 @@ def main():
                 use_container_width=True,
                 height=min(400, 50 + len(dim_items) * 35),
                 disabled=not use_quit_matrix,
-                key="quit_matrix_editor_live_fixed",
+                key=_cluster_widget_key("quit_matrix_editor_live_fixed", cluster_source_signature),
                 column_config=col_conf
             )
 

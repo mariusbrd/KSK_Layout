@@ -43,7 +43,7 @@ from zugaenge.enrichment import build_jf_to_cluster_map, enrich_zugaenge_events,
 
 # Shared Components
 from dataloader.loader import load_and_prepare_data, load_atz_data_cached, calculate_mak_vectorized, calculate_cost_vectorized
-from dataloader.cluster_manager import load_cluster_mappings_from_source
+from dataloader.cluster_manager import load_cluster_mappings_from_source, resolve_forecast_ui_dimensions
 from dataloader.cluster_resolver import (
     deserialize_active_cluster_source,
     get_active_cluster_source,
@@ -84,6 +84,23 @@ def _get_hybrid_cluster_context(summary: Optional[dict[str, Any]]):
     cluster_mapping_bundle = load_cluster_mappings_from_source(active_cluster_source)
     cluster_is_active = bool(cluster_mapping_bundle.oe_map or cluster_mapping_bundle.jf_map)
     return active_cluster_source, cluster_mapping_bundle, cluster_source_signature, cluster_is_active
+
+
+def _cluster_widget_key(base_key: str, cluster_source_signature: Optional[str]) -> str:
+    suffix = str(cluster_source_signature or "no_cluster_source").strip() or "no_cluster_source"
+    return f"{base_key}_{suffix}"
+
+
+def _get_active_dimension_values(
+    df_ma: pd.DataFrame,
+    active_cluster_source,
+    cluster_mapping_bundle,
+):
+    return resolve_forecast_ui_dimensions(
+        df_ma,
+        active_cluster_source,
+        mapping_bundle=cluster_mapping_bundle,
+    )
 
 def _hybrid_results_match_cluster_signature(current_cluster_source_signature: Optional[str]) -> bool:
     if "hybrid_abg_res" not in st.session_state or "hybrid_zug_res" not in st.session_state:
@@ -372,7 +389,31 @@ def _prepare_hybrid_employee_snapshot(
 
 
 @st.cache_data
-def _build_hybrid_distribution_base(df_ma: pd.DataFrame) -> pd.DataFrame:
+def _build_hybrid_distribution_base(df_ma: pd.DataFrame, resolved_dimensions: dict) -> pd.DataFrame:
+    if resolved_dimensions.get("is_source_backed"):
+        base = pd.DataFrame(columns=["Jobfamily", "OE-Cluster", "Count"])
+        if {"JF-Cluster", "OE-Cluster"}.issubset(df_ma.columns):
+            base = (
+                df_ma.groupby(["JF-Cluster", "OE-Cluster"])
+                .size()
+                .reset_index(name="Count")
+                .rename(columns={"JF-Cluster": "Jobfamily"})
+            )
+
+        job_family_clusters = list(resolved_dimensions.get("job_family_clusters", []) or [])
+        oe_clusters = list(resolved_dimensions.get("oe_clusters", []) or [])
+        if job_family_clusters and oe_clusters:
+            combinations = pd.MultiIndex.from_product(
+                [job_family_clusters, oe_clusters],
+                names=["Jobfamily", "OE-Cluster"],
+            ).to_frame(index=False)
+            base = combinations.merge(base, on=["Jobfamily", "OE-Cluster"], how="left")
+            base["Count"] = base["Count"].fillna(0.0)
+
+        total_n = float(base["Count"].sum()) if "Count" in base.columns and not base.empty else 0.0
+        base["Share %"] = (base["Count"] / total_n).round(4) if total_n > 0 else 0.0
+        return base[["Jobfamily", "OE-Cluster", "Share %"]]
+
     dist_base = df_ma.groupby(["Jobfamily", "OE-Cluster"]).size().reset_index(name="Count")
     dist_base["Share %"] = (dist_base["Count"] / dist_base["Count"].sum()).round(4)
     return dist_base.sort_values(["Count", "Jobfamily", "OE-Cluster"], ascending=[False, True, True]).reset_index(drop=True)
@@ -737,7 +778,15 @@ def main():
             df_atz,
             current_stichtag=pd.Timestamp(get_current_stichtag()),
         )
-        
+        resolved_dimensions = _get_active_dimension_values(
+            df_ma,
+            active_cluster_source,
+            cluster_mapping_bundle,
+        )
+        active_org_units = resolved_dimensions.org_units
+        active_jobfamily_values = resolved_dimensions.job_family_clusters
+        active_oe_clusters = resolved_dimensions.oe_clusters
+
     except FileNotFoundError as e:
         st.error(str(e))
         return
@@ -826,8 +875,7 @@ def main():
                     atz_dim = st.radio("Dimension für ATZ", options=["JobFamily", "OrgUnit"], index=0 if params_abg["atz"].get("atz_dimension", "JobFamily") == "JobFamily" else 1, horizontal=True, key="hy_atz_dim")
 
                 # Matrix Editor logic (percent scale)
-                atz_col_name = "organisationseinheit" if atz_dim == "OrgUnit" else "Jobfamily"
-                atz_unique_vals = sorted([str(x) for x in df_ma[atz_col_name.capitalize() if atz_col_name == "Jobfamily" else "Organisationseinheit"].dropna().unique()])
+                atz_unique_vals = active_org_units if atz_dim == "OrgUnit" else active_jobfamily_values
                 atz_dim_items = ["Default"] + atz_unique_vals
                 atz_pct = migrate_to_percent(params_abg["atz"].get("atz_matrix", {}))
                 atz_editor_data = []
@@ -837,7 +885,7 @@ def main():
                 df_atz_matrix = pd.DataFrame(atz_editor_data).set_index(atz_dim)
                 edited_atz_df = st.data_editor(
                     df_atz_matrix, use_container_width=True, height=300,
-                    key="hy_atz_editor", disabled=not use_atz_matrix,
+                    key=_cluster_widget_key("hy_atz_editor", cluster_source_signature), disabled=not use_atz_matrix,
                     column_config={"Wahrscheinlichkeit (%)": st.column_config.NumberColumn(
                         "Wahrscheinlichkeit (%)", min_value=0.0, max_value=100.0, step=0.5, format="%.1f"
                     )},
@@ -861,8 +909,7 @@ def main():
                     quit_dim = st.radio("Dimension", options=["JobFamily", "OrgUnit"], index=0, horizontal=True, key="hy_quit_dim")
                 
                 # Quit Matrix Editor (percent scale)
-                q_col = "Organisationseinheit" if quit_dim == "OrgUnit" else "Jobfamily"
-                q_unique = sorted([str(x) for x in df_ma[q_col].dropna().unique()])
+                q_unique = active_org_units if quit_dim == "OrgUnit" else active_jobfamily_values
                 q_cohorts = ["alter_unter_30", "alter_30_45", "alter_45_55", "alter_55_plus"]
                 q_labels = {"alter_unter_30": "u30 (%)", "alter_30_45": "30-45 (%)", "alter_45_55": "45-55 (%)", "alter_55_plus": "ü55 (%)"}
                 q_items = ["Default"] + q_unique
@@ -881,7 +928,7 @@ def main():
                     )
                 edited_q_df = st.data_editor(
                     df_q_matrix, use_container_width=True, height=300,
-                    key="hy_quit_editor", disabled=not use_quit_matrix,
+                    key=_cluster_widget_key("hy_quit_editor", cluster_source_signature), disabled=not use_quit_matrix,
                     column_config=q_col_conf,
                 )
                 new_quit_matrix = {c: {str(k): float(v[c]) for k, v in edited_q_df.iterrows()} for c in q_cohorts}
@@ -922,8 +969,8 @@ def main():
                     key="hy_rad_az_dim"
                 )
 
-            valid_units = sorted(df_ma["Organisationseinheit"].dropna().astype(str).unique())
-            valid_jfs = sorted(df_ma["Jobfamily"].dropna().astype(str).unique())
+            valid_units = active_org_units
+            valid_jfs = active_jobfamily_values
             az_matrix_vals = valid_units if az_dim == "OrgUnit" else valid_jfs
 
             az_takeover_matrix = render_distribution_matrix(
@@ -931,7 +978,7 @@ def main():
                 dimension=az_dim,
                 current_matrix=migrate_to_percent(params_zug["azubi"].get("takeover_matrix", {})),
                 valid_vals=az_matrix_vals,
-                key_prefix="hy_az_takeover_matrix",
+                key_prefix=_cluster_widget_key("hy_az_takeover_matrix", cluster_source_signature),
                 disabled=not use_az_matrix
             )
 
@@ -955,8 +1002,8 @@ def main():
             
             # Distribution Matrix for New Hires
             with st.expander("📊 Verteilung Neueinstellungen (Matrix)", expanded=False):
-                dist_base = _build_hybrid_distribution_base(df_ma)[["Jobfamily", "OE-Cluster", "Share %"]]
-                edited_dist = st.data_editor(dist_base, use_container_width=True, key="hy_hire_dist_mat", column_config={"Share %": st.column_config.NumberColumn(format="%.2f")})
+                dist_base = _build_hybrid_distribution_base(df_ma, resolved_dimensions.to_dict())[["Jobfamily", "OE-Cluster", "Share %"]]
+                edited_dist = st.data_editor(dist_base, use_container_width=True, key=_cluster_widget_key("hy_hire_dist_mat", cluster_source_signature), column_config={"Share %": st.column_config.NumberColumn(format="%.2f")})
                 hire_distribution = edited_dist.to_dict("records")
         
         st.markdown("---")
@@ -995,6 +1042,10 @@ def main():
         "random_seed": random_seed,
     }
     final_params_abg = build_abgaenge_params_from_ui(ui_state_abg)
+
+    jf_to_cluster_map = build_jf_to_cluster_map(df_ma)
+    if resolved_dimensions.is_source_backed:
+        jf_to_cluster_map.update({value: value for value in active_jobfamily_values})
     
     final_params_zug = {
         "azubi": {
@@ -1010,10 +1061,12 @@ def main():
             "use_takeover_matrix": use_az_matrix,
             "takeover_dimension": az_dim,
             "takeover_matrix": percent_to_weights(az_takeover_matrix),
-            "jf_to_cluster_map": build_jf_to_cluster_map(df_ma),
+            "jf_to_cluster_map": jf_to_cluster_map,
         },
         "trainee": {"active": comp_trainee, "new_cases_per_year": trainee_count, "duration_years": trainee_dur, "salary_group": "E 12", "strategy": tr_strat, "target_org_unit": None},
         "new_hires": {"active": comp_hires, "count_per_year": hire_count, "strategy": hire_strat, "target_org_unit": None, "distribution": hire_distribution},
+        "available_org_units": active_org_units,
+        "org_unit_to_cluster_map": resolved_dimensions.org_unit_to_cluster_map,
         "random_seed": random_seed
     }
 

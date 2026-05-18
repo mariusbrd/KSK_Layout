@@ -57,7 +57,11 @@ def get_unique_employees(snapshot_df: pd.DataFrame) -> pd.DataFrame:
     # MAK-Spalten müssen ebenso summiert werden, sonst wird bei Mehrfachplanstellen
     # nur die erste Zeile gewertet → IST-MAK Unterzählung (Bug K1 aus MAK-Dossier).
     sum_cols = []
-    for col in ("Sollarbeitszeit", "Soll_FTE", "MAK_Calculated", "MAK", "mak", "BsGrd", "Total_Cost_Year"):
+    for col in (
+        "Sollarbeitszeit", "Soll_FTE", "MAK_Reporting", "EUR_Reporting",
+        "MAK_Technical_Uncorrected", "MAK_Calculated", "MAK", "mak",
+        "BsGrd", "Total_Cost_Year",
+    ):
         if col in besetzt.columns:
             sum_cols.append(col)
     
@@ -90,6 +94,8 @@ def compute_headcount(snapshot_df: pd.DataFrame) -> int:
 def compute_fte_roh(snapshot_df: pd.DataFrame) -> float:
     """FTE roh = Sum(BsGrd/100) aller unique Mitarbeitenden."""
     emp = get_unique_employees(snapshot_df)
+    if "Personen_MAK" in emp.columns:
+        return round(float(emp["Personen_MAK"].fillna(0).sum()), 2)
     return round((emp["BsGrd"].fillna(0) / 100.0).sum(), 2)
 
 
@@ -100,7 +106,7 @@ def compute_fte_effektiv(snapshot_df: pd.DataFrame) -> float:
     Spalten-Priorität: MAK_Calculated → mak → MAK → manuell aus BsGrd.
     """
     emp = get_unique_employees(snapshot_df)
-    for col in ("MAK_Calculated", "mak", "MAK"):
+    for col in ("MAK_Reporting", "MAK_Calculated", "mak", "MAK"):
         if col in emp.columns:
             return round(float(emp[col].fillna(0).sum()), 2)
     # Fallback: manuell berechnen
@@ -340,7 +346,11 @@ def compute_readme_summary(snapshot_df: pd.DataFrame) -> Dict:
         "total_fte": fte_roh,
         "total_mak": fte_effektiv,
         "total_soll_fte": snapshot_df["Soll_FTE"].sum() if "Soll_FTE" in snapshot_df.columns else 0,
-        "total_cost": snapshot_df["Total_Cost_Year"].sum() if "Total_Cost_Year" in snapshot_df.columns else 0,
+        "total_cost": (
+            snapshot_df["EUR_Reporting"].sum()
+            if "EUR_Reporting" in snapshot_df.columns
+            else snapshot_df["Total_Cost_Year"].sum() if "Total_Cost_Year" in snapshot_df.columns else 0
+        ),
 
         # Vakanzen
         "vacancy_count": plan["vakanzen"],

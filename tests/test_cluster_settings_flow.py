@@ -34,6 +34,21 @@ class DummyUpload:
         return self._data
 
 
+class BrokenUpload:
+    name = "broken.xlsx"
+
+    def getvalue(self) -> bytes:
+        raise RuntimeError("boom")
+
+
+class DummyContext:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
 def _build_cluster_workbook_bytes(
     *,
     oe_cluster: str = "OE-Cluster-A",
@@ -204,3 +219,130 @@ def test_active_source_and_staged_state_are_kept_consistent_in_session(tmp_path)
     assert st.session_state["cluster_upload_staged_valid"] is True
     assert st.session_state["cluster_upload_staged_hash"]
     assert st.session_state["cluster_upload_staged_uploaded_at"]
+
+
+def test_same_upload_is_not_restaged_on_every_run(tmp_path):
+    module = _load_settings_module()
+    external = tmp_path / "OE_Cluster.xlsx"
+    persisted = tmp_path / "cluster_mapping.xlsx"
+    external.write_bytes(_build_cluster_workbook_bytes(oe_cluster="External", jf_cluster="External-JF"))
+
+    upload = DummyUpload(_build_cluster_workbook_bytes(oe_cluster="Staged", jf_cluster="Staged-JF"), "staged.xlsx")
+    first = module._stage_cluster_upload(
+        upload,
+        persisted_local_path=str(persisted),
+        external_file_path=str(external),
+    )
+    first_uploaded_at = st.session_state["cluster_upload_staged_uploaded_at"]
+
+    second = module._stage_cluster_upload(
+        upload,
+        persisted_local_path=str(persisted),
+        external_file_path=str(external),
+    )
+
+    assert first["status"] == "staged"
+    assert second["status"] == "already_staged_valid"
+    assert st.session_state["cluster_upload_staged_uploaded_at"] == first_uploaded_at
+
+
+def test_stage_cluster_upload_surfaces_real_exception_and_clears_staged_state(tmp_path):
+    module = _load_settings_module()
+    external = tmp_path / "OE_Cluster.xlsx"
+    persisted = tmp_path / "cluster_mapping.xlsx"
+    external.write_bytes(_build_cluster_workbook_bytes(oe_cluster="External", jf_cluster="External-JF"))
+    st.session_state["cluster_upload_staged_filename"] = "old.xlsx"
+
+    result = module._stage_cluster_upload(
+        BrokenUpload(),
+        persisted_local_path=str(persisted),
+        external_file_path=str(external),
+    )
+
+    assert result["status"] == "exception"
+    assert "RuntimeError" in result["message"]
+    assert "boom" in result["message"]
+    assert st.session_state.get("cluster_upload_staged_filename") is None
+
+
+def test_cluster_uploader_widget_key_can_be_rotated():
+    module = _load_settings_module()
+
+    first = module._get_cluster_uploader_key()
+    module._reset_cluster_uploader_widget()
+    second = module._get_cluster_uploader_key()
+
+    assert first == "up_cluster_mappings_0"
+    assert second == "up_cluster_mappings_1"
+
+
+def test_render_settings_page_does_not_rerun_on_plain_cluster_upload(monkeypatch, tmp_path):
+    module = _load_settings_module()
+    external = tmp_path / "OE_Cluster.xlsx"
+    external.write_bytes(_build_cluster_workbook_bytes(oe_cluster="External", jf_cluster="External-JF"))
+
+    import utils.settings_loader as settings_loader
+
+    upload = DummyUpload(_build_cluster_workbook_bytes(oe_cluster="Staged", jf_cluster="Staged-JF"), "staged.xlsx")
+    reruns: list[tuple] = []
+    st.session_state.update(
+        {
+            "global_uploads": {},
+            "show_reload_success": False,
+            "tvoed_available": False,
+            "tvoed_lookup": {},
+        }
+    )
+
+    module.render_metric_selector_only = lambda *args, **kwargs: None
+    module.set_metric_page_hint = lambda *args, **kwargs: None
+    module.t = lambda key, **kwargs: key
+    module.load_and_prepare_data = lambda *args, **kwargs: (
+        pd.DataFrame({"Organisationseinheit": ["OE1"], "Planstelle": ["P1"]}),
+        pd.DataFrame(),
+        pd.DataFrame(),
+        {},
+    )
+    module.load_jobfamily_definitions = lambda *args, **kwargs: {}
+    module.SourceService.GROUPS = {}
+    monkeypatch.setattr(settings_loader, "get_setting", lambda key, default=None: default)
+    monkeypatch.setattr(settings_loader, "set_setting", lambda *args, **kwargs: None)
+    monkeypatch.setattr(settings_loader, "save_user_settings", lambda *args, **kwargs: None)
+    monkeypatch.setattr(settings_loader, "load_user_settings", lambda *args, **kwargs: {})
+
+    for fn in ["title", "subheader", "caption", "divider", "markdown", "info", "warning", "success", "error", "write", "dataframe", "download_button"]:
+        monkeypatch.setattr(module.st, fn, lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.st, "container", lambda *args, **kwargs: DummyContext())
+    monkeypatch.setattr(module.st, "expander", lambda *args, **kwargs: DummyContext())
+    monkeypatch.setattr(module.st, "form", lambda *args, **kwargs: DummyContext())
+    monkeypatch.setattr(
+        module.st,
+        "columns",
+        lambda spec: [DummyContext() for _ in range(spec if isinstance(spec, int) else len(spec))],
+    )
+    monkeypatch.setattr(module.st, "spinner", lambda *args, **kwargs: DummyContext())
+    monkeypatch.setattr(module.st, "button", lambda *args, **kwargs: False)
+    monkeypatch.setattr(module.st, "form_submit_button", lambda *args, **kwargs: False)
+    monkeypatch.setattr(module.st, "date_input", lambda label, value=None, **kwargs: value)
+    monkeypatch.setattr(module.st, "checkbox", lambda label, value=False, **kwargs: value)
+    monkeypatch.setattr(
+        module.st,
+        "number_input",
+        lambda label, value=None, min_value=None, **kwargs: value if value is not None else min_value,
+    )
+    monkeypatch.setattr(module.st, "selectbox", lambda label, options, index=0, **kwargs: options[index])
+    monkeypatch.setattr(module.st, "text_input", lambda label, value="", **kwargs: value)
+    monkeypatch.setattr(module.st, "rerun", lambda *args, **kwargs: reruns.append((args, kwargs)))
+    monkeypatch.setattr(
+        module.st,
+        "file_uploader",
+        lambda label, *args, **kwargs: upload if "cluster_upload_mapping" in str(label) else None,
+    )
+
+    module.render_settings_page()
+    module.render_settings_page()
+
+    assert reruns == []
+    history = st.session_state.get("cluster_upload_debug_history", [])
+    assert any(entry["event"] == "staging_result" and entry.get("status") == "staged" for entry in history)
+    assert not any(entry["event"] == "rerun_called" and entry.get("reason") == "cluster_upload_staged" for entry in history)

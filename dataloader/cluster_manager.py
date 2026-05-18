@@ -56,6 +56,19 @@ class ValidationResult:
         return asdict(self)
 
 
+@dataclass
+class ClusterUIDimensions:
+    org_units: list[str] = field(default_factory=list)
+    oe_clusters: list[str] = field(default_factory=list)
+    job_family_clusters: list[str] = field(default_factory=list)
+    org_unit_to_cluster_map: dict[str, str] = field(default_factory=dict)
+    source_signature: Optional[str] = None
+    is_source_backed: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 def _hash_bytes(data: Optional[bytes]) -> Optional[str]:
     if data is None:
         return None
@@ -87,6 +100,20 @@ def _now_iso() -> str:
 
 def _count_nonempty(series: pd.Series) -> int:
     return int(series.fillna("").astype(str).str.strip().ne("").sum())
+
+
+def _unique_nonempty_strings(
+    series: pd.Series,
+    *,
+    exclude: Optional[set[str]] = None,
+) -> list[str]:
+    excluded = {str(item).strip().casefold() for item in (exclude or set())}
+    values = {
+        text
+        for text in series.fillna("").astype(str).str.strip()
+        if text and text.casefold() not in excluded and text.casefold() not in {"nan", "none"}
+    }
+    return sorted(values)
 
 
 def _extract_source_bytes(active_cluster_source: ActiveClusterSource) -> Optional[bytes]:
@@ -285,6 +312,62 @@ def _build_mapping_bundle_from_excel(
     )
 
 
+def _build_cluster_ui_dimensions_from_excel(
+    xls: Optional[pd.ExcelFile],
+    *,
+    source_signature: Optional[str],
+    is_source_backed: bool,
+) -> ClusterUIDimensions:
+    if xls is None:
+        return ClusterUIDimensions(
+            source_signature=source_signature,
+            is_source_backed=is_source_backed,
+        )
+
+    try:
+        df_oe = pd.read_excel(xls, sheet_name="OrgUnits")
+        df_jf = pd.read_excel(xls, sheet_name="JobFamilies")
+    except Exception:
+        return ClusterUIDimensions(
+            source_signature=source_signature,
+            is_source_backed=is_source_backed,
+        )
+
+    org_units: list[str] = []
+    oe_clusters: list[str] = []
+    org_unit_to_cluster_map: dict[str, str] = {}
+    job_family_clusters: list[str] = []
+
+    if not df_oe.empty and {"Organisationseinheit", "Cluster"}.issubset(df_oe.columns):
+        org_units = _unique_nonempty_strings(df_oe["Organisationseinheit"])
+        oe_clusters = _unique_nonempty_strings(df_oe["Cluster"])
+
+        valid_oe = df_oe.copy()
+        valid_oe["Organisationseinheit"] = valid_oe["Organisationseinheit"].fillna("").astype(str).str.strip()
+        valid_oe["Cluster"] = valid_oe["Cluster"].fillna("").astype(str).str.strip()
+        valid_oe = valid_oe[(valid_oe["Organisationseinheit"] != "") & (valid_oe["Cluster"] != "")]
+        org_unit_to_cluster_map = valid_oe.set_index("Organisationseinheit")["Cluster"].to_dict()
+
+    if not df_jf.empty:
+        jf_cluster_col = None
+        if "Jobfamily Cluster" in df_jf.columns:
+            jf_cluster_col = "Jobfamily Cluster"
+        elif "Cluster" in df_jf.columns:
+            jf_cluster_col = "Cluster"
+
+        if jf_cluster_col:
+            job_family_clusters = _unique_nonempty_strings(df_jf[jf_cluster_col])
+
+    return ClusterUIDimensions(
+        org_units=org_units,
+        oe_clusters=oe_clusters,
+        job_family_clusters=job_family_clusters,
+        org_unit_to_cluster_map=org_unit_to_cluster_map,
+        source_signature=source_signature,
+        is_source_backed=is_source_backed,
+    )
+
+
 def _validate_cluster_bytes(data: Optional[bytes]) -> ValidationResult:
     if data is None:
         return ValidationResult(
@@ -393,6 +476,25 @@ def _load_cluster_mappings_from_source_cached(
     return _build_mapping_bundle_from_excel(
         xls,
         source_signature=source_signature,
+    )
+
+
+@st.cache_data
+def _load_cluster_ui_dimensions_from_source_cached(
+    source_subtype: str,
+    source_signature: Optional[str],
+    source_path: Optional[str],
+    source_bytes: Optional[bytes],
+) -> ClusterUIDimensions:
+    xls = _read_excel_from_source(
+        source_subtype=source_subtype,
+        source_path=source_path,
+        source_bytes=source_bytes,
+    )
+    return _build_cluster_ui_dimensions_from_excel(
+        xls,
+        source_signature=source_signature,
+        is_source_backed=True,
     )
 
 
@@ -600,6 +702,98 @@ def load_cluster_mappings_from_source(active_cluster_source: ActiveClusterSource
     )
 
 
+def load_cluster_ui_dimensions_from_source(
+    active_cluster_source: ActiveClusterSource,
+) -> ClusterUIDimensions:
+    """
+    Load UI dimension values from one explicitly resolved active cluster source.
+    """
+    if active_cluster_source is None:
+        return ClusterUIDimensions(is_source_backed=False)
+
+    source_signature = getattr(active_cluster_source, "source_signature", None)
+    if not getattr(active_cluster_source, "is_valid", False):
+        return ClusterUIDimensions(
+            source_signature=source_signature,
+            is_source_backed=False,
+        )
+
+    source_subtype = getattr(active_cluster_source, "subtype", SUBTYPE_SYNTHETIC_FALLBACK)
+    source_path = getattr(active_cluster_source, "source_path", None)
+    source_bytes = _extract_source_bytes(active_cluster_source)
+
+    if source_subtype == SUBTYPE_SYNTHETIC_FALLBACK or getattr(active_cluster_source, "mode", None) == MODE_SYNTHETIC:
+        return ClusterUIDimensions(
+            source_signature=source_signature,
+            is_source_backed=False,
+        )
+
+    return _load_cluster_ui_dimensions_from_source_cached(
+        source_subtype=source_subtype,
+        source_signature=source_signature,
+        source_path=os.path.abspath(source_path) if source_path else None,
+        source_bytes=source_bytes,
+    )
+
+
+def resolve_forecast_ui_dimensions(
+    df_snapshot: Optional[pd.DataFrame],
+    active_cluster_source: ActiveClusterSource,
+    *,
+    mapping_bundle: Optional[ClusterMappingBundle] = None,
+) -> ClusterUIDimensions:
+    """
+    Resolve the forecast-page UI source of truth.
+
+    If a real cluster file is active, use its OrgUnits / OE-Clusters /
+    Jobfamily-Clusters directly. Otherwise retain the existing snapshot-based
+    fallback behaviour.
+    """
+    source_dimensions = load_cluster_ui_dimensions_from_source(active_cluster_source)
+    if source_dimensions.is_source_backed:
+        return source_dimensions
+
+    from dataloader.jobfamily_service import JobFamilyService
+
+    snapshot = df_snapshot.copy() if df_snapshot is not None else pd.DataFrame()
+
+    org_units = (
+        _unique_nonempty_strings(snapshot["Organisationseinheit"])
+        if "Organisationseinheit" in snapshot.columns
+        else []
+    )
+    oe_clusters = (
+        _unique_nonempty_strings(snapshot["OE-Cluster"], exclude={"Unclustered"})
+        if "OE-Cluster" in snapshot.columns
+        else []
+    )
+    job_family_values = JobFamilyService.get_active_jobfamilies(
+        snapshot if not snapshot.empty else None,
+        cluster_mapping_bundle=mapping_bundle,
+    )
+
+    org_unit_to_cluster_map: dict[str, str] = {}
+    if {"Organisationseinheit", "OE-Cluster"}.issubset(snapshot.columns):
+        valid = snapshot[["Organisationseinheit", "OE-Cluster"]].dropna().copy()
+        valid["Organisationseinheit"] = valid["Organisationseinheit"].astype(str).str.strip()
+        valid["OE-Cluster"] = valid["OE-Cluster"].astype(str).str.strip()
+        valid = valid[(valid["Organisationseinheit"] != "") & (valid["OE-Cluster"] != "")]
+        org_unit_to_cluster_map = (
+            valid.drop_duplicates("Organisationseinheit")
+            .set_index("Organisationseinheit")["OE-Cluster"]
+            .to_dict()
+        )
+
+    return ClusterUIDimensions(
+        org_units=org_units,
+        oe_clusters=oe_clusters,
+        job_family_clusters=job_family_values,
+        org_unit_to_cluster_map=org_unit_to_cluster_map,
+        source_signature=source_dimensions.source_signature,
+        is_source_backed=False,
+    )
+
+
 @st.cache_data
 def _load_cluster_mappings_cached(
     uploaded_file_bytes: Optional[bytes],
@@ -704,7 +898,24 @@ def apply_clusters_to_snapshot_from_source(
                 s_pos = result["Planstelle"].astype(str).str.strip()
                 keys = list(zip(s_org, s_pos))
                 tuple_res = pd.Series([jf_map.get(k) for k in keys], index=result.index)
-                result["JF-Cluster"] = tuple_res.fillna(enrich_jf_clusters(result, jf_map))
+                source_cluster_values = {
+                    str(value).strip()
+                    for value in jf_map.values()
+                    if str(value).strip() not in {"", "nan", "Unclustered"}
+                }
+                if "Jobfamily" in result.columns:
+                    existing_jobfamily = result["Jobfamily"].astype(str).str.strip()
+                    existing_cluster = existing_jobfamily.where(existing_jobfamily.isin(source_cluster_values))
+                else:
+                    existing_cluster = pd.Series(pd.NA, index=result.index)
+                cluster_res = (
+                    tuple_res
+                    .fillna(existing_cluster)
+                    .fillna(enrich_jf_clusters(result, jf_map))
+                    .fillna("Sonstiges")
+                )
+                result["JF-Cluster"] = cluster_res
+                result["Jobfamily"] = cluster_res
             else:
                 result["JF-Cluster"] = enrich_jf_clusters(result, jf_map)
         else:
@@ -768,6 +979,7 @@ def is_clustering_active(uploaded_file: Optional[bytes] = None) -> bool:
 
 __all__ = [
     "CLUSTER_FILE",
+    "ClusterUIDimensions",
     "EXTERNAL_CLUSTER_FILE",
     "ValidationResult",
     "apply_clusters_to_snapshot",
@@ -780,7 +992,9 @@ __all__ = [
     "is_clustering_active_for_source",
     "load_cluster_mappings",
     "load_cluster_mappings_from_source",
+    "load_cluster_ui_dimensions_from_source",
     "persist_cluster_upload_bytes",
+    "resolve_forecast_ui_dimensions",
     "validate_and_save_clusters",
     "validate_cluster_upload",
 ]

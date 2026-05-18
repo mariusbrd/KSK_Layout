@@ -189,6 +189,69 @@ def test_page7_simulation_signature_changes_with_cluster_signature():
     assert sig_a != sig_b
 
 
+def test_page7_simulation_signature_changes_with_target_date():
+    module = _load_page7_module()
+
+    sig_a = module._build_simulation_signature(
+        target_date=pd.Timestamp("2026-12-31"),
+        base_date=pd.Timestamp("2025-12-31"),
+        abgaenge_params={},
+        zugaenge_params={},
+        cluster_source_signature="cluster-sig-a",
+    )
+    sig_b = module._build_simulation_signature(
+        target_date=pd.Timestamp("2027-12-31"),
+        base_date=pd.Timestamp("2025-12-31"),
+        abgaenge_params={},
+        zugaenge_params={},
+        cluster_source_signature="cluster-sig-a",
+    )
+
+    assert sig_a != sig_b
+
+
+def test_page7_simulation_signature_changes_with_abgaenge_params():
+    module = _load_page7_module()
+
+    sig_a = module._build_simulation_signature(
+        target_date=pd.Timestamp("2026-12-31"),
+        base_date=pd.Timestamp("2025-12-31"),
+        abgaenge_params={"quit": {"quit_rate_base": 0.05}},
+        zugaenge_params={},
+        cluster_source_signature="cluster-sig-a",
+    )
+    sig_b = module._build_simulation_signature(
+        target_date=pd.Timestamp("2026-12-31"),
+        base_date=pd.Timestamp("2025-12-31"),
+        abgaenge_params={"quit": {"quit_rate_base": 0.08}},
+        zugaenge_params={},
+        cluster_source_signature="cluster-sig-a",
+    )
+
+    assert sig_a != sig_b
+
+
+def test_page7_simulation_signature_changes_with_zugaenge_params():
+    module = _load_page7_module()
+
+    sig_a = module._build_simulation_signature(
+        target_date=pd.Timestamp("2026-12-31"),
+        base_date=pd.Timestamp("2025-12-31"),
+        abgaenge_params={},
+        zugaenge_params={"new_hires": {"count_per_year": 10}},
+        cluster_source_signature="cluster-sig-a",
+    )
+    sig_b = module._build_simulation_signature(
+        target_date=pd.Timestamp("2026-12-31"),
+        base_date=pd.Timestamp("2025-12-31"),
+        abgaenge_params={},
+        zugaenge_params={"new_hires": {"count_per_year": 20}},
+        cluster_source_signature="cluster-sig-a",
+    )
+
+    assert sig_a != sig_b
+
+
 def test_page7_recomputes_when_cluster_signature_changes(monkeypatch):
     module = _load_page7_module()
     st.session_state.clear()

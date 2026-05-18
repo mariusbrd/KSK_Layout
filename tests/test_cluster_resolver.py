@@ -193,6 +193,14 @@ def test_invalidate_cluster_dependent_state_removes_expected_keys():
         "compact_sim_metadata": object(),
         "compact_sim_target_date_cached": object(),
         "ui_matrix_snapshot": object(),
+        "atz_matrix_editor_live": object(),
+        "quit_matrix_editor_live_fixed": object(),
+        "az_takeover_matrix_editor": object(),
+        "hire_dist_matrix": object(),
+        "hy_atz_editor": object(),
+        "hy_quit_editor": object(),
+        "hy_az_takeover_matrix_editor": object(),
+        "hy_hire_dist_mat": object(),
         "untouched_key": "keep-me",
     }
 
@@ -203,4 +211,12 @@ def test_invalidate_cluster_dependent_state_removes_expected_keys():
     assert "abgaenge_results" not in session_state
     assert "compact_sim_signature" not in session_state
     assert "compact_sim_cluster_source_signature" not in session_state
+    assert "atz_matrix_editor_live" not in session_state
+    assert "quit_matrix_editor_live_fixed" not in session_state
+    assert "az_takeover_matrix_editor" not in session_state
+    assert "hire_dist_matrix" not in session_state
+    assert "hy_atz_editor" not in session_state
+    assert "hy_quit_editor" not in session_state
+    assert "hy_az_takeover_matrix_editor" not in session_state
+    assert "hy_hire_dist_mat" not in session_state
     assert session_state["untouched_key"] == "keep-me"

@@ -45,6 +45,7 @@ from dataloader.cluster_resolver import (
     serialize_active_cluster_source,
     store_active_cluster_source_in_session,
 )
+from dataloader.mak_allocation import apply_person_mak_allocation
 from kpi_reference import get_current_stichtag
 
 ID_PAD_LENGTH = 6
@@ -614,14 +615,13 @@ def _load_tvoed_lookup_cached(
 
 def _apply_jobfamilies(snapshot_df: pd.DataFrame) -> pd.DataFrame:
     from dataloader.jobfamily_matcher import assign_jobfamilies, load_jobfamily_definitions
+    from dataloader.jobfamily_service import normalize_jobfamily_column
 
     try:
         definitions = load_jobfamily_definitions()
-        return assign_jobfamilies(snapshot_df, definitions)
+        return normalize_jobfamily_column(assign_jobfamilies(snapshot_df, definitions))
     except Exception:
-        if "Jobfamily" not in snapshot_df.columns:
-            snapshot_df["Jobfamily"] = "UNMAPPED"
-        return snapshot_df
+        return normalize_jobfamily_column(snapshot_df)
 
 
 @st.cache_data
@@ -669,6 +669,7 @@ def _load_and_prepare_data_cached(
         )
         snapshot_df = _zero_out_azubi_mak(snapshot_df)
         snapshot_df = apply_exclusions(snapshot_df, context["exclusions"])
+        snapshot_df = apply_person_mak_allocation(snapshot_df)
 
         summary = get_data_summary(snapshot_df)
         summary["data_source_type"] = "Eigene Daten (Upload)"
@@ -708,6 +709,7 @@ def _load_and_prepare_data_cached(
             )
             snapshot_df = _zero_out_azubi_mak(snapshot_df)
             snapshot_df = apply_exclusions(snapshot_df, context["exclusions"])
+            snapshot_df = apply_person_mak_allocation(snapshot_df)
 
             history_df = generate_history_from_snapshot(snapshot_df)
             org_df = create_org_structure(original["planstellen"])
@@ -730,6 +732,7 @@ def _load_and_prepare_data_cached(
     )
     snapshot_df = _zero_out_azubi_mak(snapshot_df)
     snapshot_df = apply_exclusions(snapshot_df, context["exclusions"])
+    snapshot_df = apply_person_mak_allocation(snapshot_df)
 
     summary = get_data_summary(snapshot_df)
     summary["data_source_type"] = "Synthetische Testdaten"
@@ -1229,6 +1232,51 @@ def calculate_mak_vectorized(df: pd.DataFrame, atz_fr_persnr_set: set = None) ->
     return df_out
 
 
+def _build_person_capacity_source(mitarbeiter: pd.DataFrame) -> pd.DataFrame:
+    """Build one stable person MAK source row before the Planstellen join."""
+    cols = ["PersNr", "BsGrd_Source", "Personen_MAK_Source", "bsgrd_lineage_flag"]
+    if mitarbeiter is None or mitarbeiter.empty or "PersNr" not in mitarbeiter.columns:
+        return pd.DataFrame(columns=cols)
+
+    work = mitarbeiter.copy()
+    work["PersNr"] = normalize_persnr(work["PersNr"])
+    if "BsGrd" not in work.columns:
+        out = work[["PersNr"]].drop_duplicates().copy()
+        out["BsGrd_Source"] = pd.NA
+        out["Personen_MAK_Source"] = pd.NA
+        out["bsgrd_lineage_flag"] = "source_bsgrd_missing_fallback_used"
+        return out[cols]
+
+    work["BsGrd_Source"] = pd.to_numeric(work["BsGrd"], errors="coerce")
+    grouped = work.groupby("PersNr", dropna=False)["BsGrd_Source"]
+    out = grouped.first().reset_index()
+    nunique = grouped.nunique(dropna=True).reset_index(name="_bsgrd_nunique")
+    out = out.merge(nunique, on="PersNr", how="left")
+    out["Personen_MAK_Source"] = out["BsGrd_Source"] / 100.0
+    out["bsgrd_lineage_flag"] = "ok_source_bsgrd_used"
+    out.loc[out["BsGrd_Source"].isna(), "bsgrd_lineage_flag"] = "source_bsgrd_missing_fallback_used"
+    out.loc[out["_bsgrd_nunique"].fillna(0).gt(1), "bsgrd_lineage_flag"] = "person_capacity_conflict"
+    return out.drop(columns=["_bsgrd_nunique"])[cols]
+
+
+def _mark_bsgrd_lineage(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    if "BsGrd_Source" not in out.columns:
+        out["BsGrd_Source"] = pd.NA
+    if "Personen_MAK_Source" not in out.columns:
+        out["Personen_MAK_Source"] = pd.NA
+    if "bsgrd_lineage_flag" not in out.columns:
+        out["bsgrd_lineage_flag"] = "source_bsgrd_missing_fallback_used"
+    out["snapshot_BsGrd"] = pd.to_numeric(out["BsGrd"], errors="coerce") if "BsGrd" in out.columns else pd.NA
+    source_bsgrd = pd.to_numeric(out["BsGrd_Source"], errors="coerce")
+    snapshot_bsgrd = pd.to_numeric(out["snapshot_BsGrd"], errors="coerce")
+    differs = source_bsgrd.notna() & snapshot_bsgrd.notna() & source_bsgrd.sub(snapshot_bsgrd).abs().gt(1e-6)
+    out.loc[differs & out["bsgrd_lineage_flag"].eq("ok_source_bsgrd_used"), "bsgrd_lineage_flag"] = "snapshot_bsgrd_differs_from_source"
+    gt100 = source_bsgrd.le(100) & snapshot_bsgrd.gt(100)
+    out.loc[gt100 & ~out["bsgrd_lineage_flag"].eq("person_capacity_conflict"), "bsgrd_lineage_flag"] = "snapshot_bsgrd_gt_100_but_source_le_100"
+    return out
+
+
 def combine_to_snapshot(
     mitarbeiter,
     planstellen,
@@ -1279,6 +1327,7 @@ def combine_to_snapshot(
             (mitarbeiter["Austritt"].isna()) | 
             (mitarbeiter["Austritt"] >= stichtag)
         ]
+    person_capacity_source = _build_person_capacity_source(mitarbeiter)
 
     ausbildung = ausbildung.copy()
     ausbildung["Personalnummer"] = normalize_persnr(ausbildung["Personalnummer"])
@@ -1288,6 +1337,8 @@ def combine_to_snapshot(
     df = clean_planstellen(planstellen)
 
     df = df.merge(mitarbeiter, left_on="Personalnummer", right_on="PersNr", how="left", suffixes=("", "_ma"))
+    if not person_capacity_source.empty:
+        df = df.merge(person_capacity_source, on="PersNr", how="left")
     df = df.merge(ausbildung[["Personalnummer", "BV Ausbildungsgruppentext"]], left_on="Personalnummer", right_on="Personalnummer", how="left", suffixes=("", "_ausb"))
     df = df.rename(columns={"BV Ausbildungsgruppentext": "Ausbildung"})
 
@@ -1305,6 +1356,7 @@ def combine_to_snapshot(
         df["Phase"] = df["Phase"].astype(str).str.strip()
 
     df["Is_Vacant"] = df["Personalnummer"].isna()
+    df = _mark_bsgrd_lineage(df)
     df["FTE_person"] = df["BsGrd"].fillna(0) / 100.0
     df["Soll_FTE"] = df["Sollarbeitszeit"].fillna(0) / 39.0
     # Systemartefakt: Soll_FTE ≈ 0.01 ist ein Platzhalterwert für 0
@@ -1410,6 +1462,7 @@ def create_combined_snapshot(
     mitarbeiter = mitarbeiter.copy()
     if "PersNr" in mitarbeiter.columns:
         mitarbeiter["PersNr"] = normalize_persnr(mitarbeiter["PersNr"])
+    person_capacity_source = _build_person_capacity_source(mitarbeiter)
 
     ausbildung = ausbildung.copy()
     if "Personalnummer" in ausbildung.columns:
@@ -1430,6 +1483,8 @@ def create_combined_snapshot(
         how="left",
         suffixes=("", "_ma")
     )
+    if not person_capacity_source.empty:
+        df = df.merge(person_capacity_source, on="PersNr", how="left")
     
     # Safe Parse Austritt (using safe parsing logic if available, or coerce)
     if "Austritt" in df.columns:
@@ -1512,6 +1567,7 @@ def create_combined_snapshot(
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
+    df = _mark_bsgrd_lineage(df)
     df["FTE_person"] = df["BsGrd"].fillna(0) / 100.0
     df["Soll_FTE"] = df["Sollarbeitszeit"].fillna(39.0) / 39.0
     # Systemartefakt: Soll_FTE ≈ 0.01 ist ein Platzhalterwert für 0

@@ -17,7 +17,7 @@ else:
     sys.path.append(str(BASE_PATH))
 
 from dataloader.loader import load_and_prepare_data, calculate_cost_vectorized, load_original_data, load_atz_data_cached
-from dataloader.cluster_manager import load_cluster_mappings_from_source
+from dataloader.cluster_manager import load_cluster_mappings_from_source, resolve_forecast_ui_dimensions
 from dataloader.cluster_resolver import (
     deserialize_active_cluster_source,
     get_active_cluster_source,
@@ -34,6 +34,59 @@ from utils.ui_helpers import render_distribution_matrix, render_orgunit_mode_hin
 from utils.i18n import t
 from utils.matrix_helpers import migrate_to_percent, percent_to_weights
 from components.sidebar import set_metric_page_hint
+
+
+def _cluster_widget_key(base_key: str, cluster_source_signature: Optional[str]) -> str:
+    suffix = str(cluster_source_signature or "no_cluster_source").strip() or "no_cluster_source"
+    return f"{base_key}_{suffix}"
+
+
+def _get_active_dimension_values(
+    snapshot_df: pd.DataFrame,
+    active_cluster_source,
+    cluster_mapping_bundle,
+):
+    return resolve_forecast_ui_dimensions(
+        snapshot_df,
+        active_cluster_source,
+        mapping_bundle=cluster_mapping_bundle,
+    )
+
+
+def _build_hiring_distribution_base(
+    snapshot_df: pd.DataFrame,
+    resolved_dimensions,
+) -> pd.DataFrame:
+    if resolved_dimensions.is_source_backed:
+        base = pd.DataFrame(columns=["Jobfamily", "OE-Cluster", "Count"])
+        if {"JF-Cluster", "OE-Cluster"}.issubset(snapshot_df.columns):
+            base = (
+                snapshot_df.groupby(["JF-Cluster", "OE-Cluster"])
+                .size()
+                .reset_index(name="Count")
+                .rename(columns={"JF-Cluster": "Jobfamily"})
+            )
+
+        if resolved_dimensions.job_family_clusters and resolved_dimensions.oe_clusters:
+            combinations = pd.MultiIndex.from_product(
+                [resolved_dimensions.job_family_clusters, resolved_dimensions.oe_clusters],
+                names=["Jobfamily", "OE-Cluster"],
+            ).to_frame(index=False)
+            base = combinations.merge(base, on=["Jobfamily", "OE-Cluster"], how="left")
+            base["Count"] = base["Count"].fillna(0.0)
+
+        total_n = float(base["Count"].sum()) if "Count" in base.columns and not base.empty else 0.0
+        base["Share %"] = (base["Count"] / total_n).round(4) if total_n > 0 else 0.0
+        return base[["Jobfamily", "OE-Cluster", "Share %"]]
+
+    if "Jobfamily" in snapshot_df.columns and "OE-Cluster" in snapshot_df.columns:
+        dist_base = snapshot_df.groupby(["Jobfamily", "OE-Cluster"]).size().reset_index(name="Count")
+        total_n = dist_base["Count"].sum()
+        dist_base["Share %"] = (dist_base["Count"] / total_n).round(4)
+        dist_base = dist_base.sort_values("Share %", ascending=False).reset_index(drop=True)
+        return dist_base[["Jobfamily", "OE-Cluster", "Share %"]]
+
+    return pd.DataFrame([{"Jobfamily": "Angestellte", "OE-Cluster": "Sonstiges", "Share %": 1.0}])
 
 
 def _render_page_intro():
@@ -177,6 +230,14 @@ def main():
         df_employee_agg_global["active"] = True  # Snapshot assumption
         
         snapshot_df = df_employee_agg_global # Use Global for Forecast logic
+        resolved_dimensions = _get_active_dimension_values(
+            snapshot_df,
+            active_cluster_source,
+            cluster_mapping_bundle,
+        )
+        active_org_units = resolved_dimensions.org_units
+        active_jobfamily_values = resolved_dimensions.job_family_clusters
+        active_oe_clusters = resolved_dimensions.oe_clusters
 
     except Exception as e:
         st.error(t("hiring.error.load", error=e))
@@ -228,9 +289,10 @@ def main():
                 
                 azubi_target = None
                 if az_strat == "OrgUnit":
-                    # Use units from original raw data or aggregated? Aggregated is fine.
-                    units = sorted(snapshot_df["Organisationseinheit"].dropna().astype(str).unique())
-                    azubi_target = st.selectbox(t("hiring.azubi.target_unit"), units, key="az_unit")
+                    if active_org_units:
+                        azubi_target = st.selectbox(t("hiring.azubi.target_unit"), active_org_units, key="az_unit")
+                    else:
+                        st.info("Keine Org-Units in der aktiven Clusterquelle verfügbar.")
                     
                 # Optional: Salary Config
                 c5, c6 = st.columns(2)
@@ -278,9 +340,9 @@ def main():
                         key="rad_az_dim"
                     )
                 
-                # Extract valid values from snapshot
-                valid_units = sorted(snapshot_df["Organisationseinheit"].dropna().astype(str).unique())
-                valid_jfs = sorted(snapshot_df["Jobfamily"].dropna().astype(str).unique())
+                # Extract valid values from the active source of truth
+                valid_units = active_org_units
+                valid_jfs = active_jobfamily_values
                 az_matrix_vals = valid_units if az_dim == "OrgUnit" else valid_jfs
 
                 # Initialize matrix: if empty, start with an even distribution (100/n each)
@@ -295,7 +357,7 @@ def main():
                     dimension=az_dim,
                     current_matrix=current_az_matrix_pct,
                     valid_vals=az_matrix_vals,
-                    key_prefix="az_takeover_matrix",
+                    key_prefix=_cluster_widget_key("az_takeover_matrix", cluster_source_signature),
                     disabled=not use_az_matrix,
                     default_value=0.0,
                 )
@@ -326,8 +388,10 @@ def main():
                 
                 trainee_target = None
                 if tr_strat == "OrgUnit":
-                     units = sorted(snapshot_df["Organisationseinheit"].dropna().astype(str).unique())
-                     trainee_target = st.selectbox("Ziel-Einheit (Trainee)", units, key="tr_unit")
+                     if active_org_units:
+                         trainee_target = st.selectbox("Ziel-Einheit (Trainee)", active_org_units, key="tr_unit")
+                     else:
+                         st.info("Keine Org-Units in der aktiven Clusterquelle verfügbar.")
                  
             st.divider()
             
@@ -351,28 +415,17 @@ def main():
                 
                 hire_target = None
                 if hire_strat == "OrgUnit":
-                     units = sorted(snapshot_df["Organisationseinheit"].dropna().astype(str).unique())
-                     hire_target = st.selectbox("Ziel-Einheit (Hire)", units, key="hi_unit")
+                     if active_org_units:
+                         hire_target = st.selectbox("Ziel-Einheit (Hire)", active_org_units, key="hi_unit")
+                     else:
+                         st.info("Keine Org-Units in der aktiven Clusterquelle verfügbar.")
 
                 # --- New Hire Distribution Matrix ---
                 with st.expander(t("hiring.hires.distribution.heading"), expanded=False):
                     st.caption(t("hiring.hires.distribution.caption"))
                     
-                    # 1. Calculate Default Distribution from Snapshot
-                    # Group by JobFamily and OE-Cluster
-                    if "Jobfamily" in snapshot_df.columns and "OE-Cluster" in snapshot_df.columns:
-                        dist_base = snapshot_df.groupby(["Jobfamily", "OE-Cluster"]).size().reset_index(name="Count")
-                        total_n = dist_base["Count"].sum()
-                        dist_base["Share %"] = (dist_base["Count"] / total_n).round(4)
-                        
-                        # Sort by Share desc
-                        dist_base = dist_base.sort_values("Share %", ascending=False).reset_index(drop=True)
-                        dist_base = dist_base[["Jobfamily", "OE-Cluster", "Share %"]]
-                    else:
-                        # Fallback if columns missing
-                        dist_base = pd.DataFrame([
-                            {"Jobfamily": "Angestellte", "OE-Cluster": "Sonstiges", "Share %": 1.0}
-                        ])
+                    # 1. Calculate the default distribution from the active source of truth.
+                    dist_base = _build_hiring_distribution_base(snapshot_df, resolved_dimensions)
 
                     # 2. Render Editor
                     edited_dist = st.data_editor(
@@ -388,7 +441,7 @@ def main():
                         },
                         use_container_width=True,
                         num_rows="dynamic",
-                        key="hire_dist_matrix"
+                        key=_cluster_widget_key("hire_dist_matrix", cluster_source_signature)
                     )
                     
                     # 3. Normalize check (visual feedback)
@@ -472,6 +525,10 @@ def main():
                         st.write(f"- {k}: {v}")
 
         # Build Params
+        jf_to_cluster_map = build_jf_to_cluster_map(snapshot_df)
+        if resolved_dimensions.is_source_backed:
+            jf_to_cluster_map.update({value: value for value in active_jobfamily_values})
+
         run_params = {
             "azubi": {
                 "active": use_azubis,
@@ -486,7 +543,7 @@ def main():
                 "use_takeover_matrix": use_az_matrix,
                 "takeover_dimension": az_dim,
                 "takeover_matrix": percent_to_weights(az_takeover_matrix),
-                "jf_to_cluster_map": build_jf_to_cluster_map(snapshot_df),
+                "jf_to_cluster_map": jf_to_cluster_map,
                 "exclude_baseline_azubis": params["azubi"].get("exclude_baseline_azubis", False),
                 "azubi_mak_during_training": params["azubi"].get("azubi_mak_during_training", 0.0),
                 "azubi_mak_after_takeover": params["azubi"].get("azubi_mak_after_takeover", 1.0),
@@ -508,6 +565,8 @@ def main():
                 "target_org_unit": hire_target,
                 "distribution": hire_distribution # Pass the matrix
             },
+            "available_org_units": active_org_units,
+            "org_unit_to_cluster_map": resolved_dimensions.org_unit_to_cluster_map,
             "random_seed": 42
         }
         
@@ -599,6 +658,7 @@ def main():
 
         # Store Result
         st.session_state["zugaenge_global_result"] = res
+        st.session_state["zugaenge_params"] = run_params
         st.session_state["zugaenge_vacancies"] = vacancies
         st.session_state["zugaenge_cluster_source_signature"] = cluster_source_signature
         st.session_state["zugaenge_start_date"] = start_date

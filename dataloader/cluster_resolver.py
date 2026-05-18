@@ -69,6 +69,14 @@ CLUSTER_DEPENDENT_SESSION_KEYS = [
     "compact_sim_metadata",
     "compact_sim_target_date_cached",
     "ui_matrix_snapshot",
+    "atz_matrix_editor_live",
+    "quit_matrix_editor_live_fixed",
+    "az_takeover_matrix_editor",
+    "hire_dist_matrix",
+    "hy_atz_editor",
+    "hy_quit_editor",
+    "hy_az_takeover_matrix_editor",
+    "hy_hire_dist_mat",
 ]
 
 

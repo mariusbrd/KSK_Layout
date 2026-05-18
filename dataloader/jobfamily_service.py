@@ -6,6 +6,53 @@ try:
 except ImportError:  # pragma: no cover - fallback for unit tests outside package
     ClusterMappingBundle = object  # type: ignore[assignment]
 
+
+JOBFAMILY_UNMAPPED = "UNMAPPED"
+_LEGACY_UNMAPPED_VALUES = {
+    "",
+    "nan",
+    "none",
+    "(nicht zugeordnet)",
+    "unmapped",
+}
+
+
+def normalize_jobfamily_value(value: object, default: str = JOBFAMILY_UNMAPPED) -> str:
+    """Normalize legacy or empty Jobfamily values to one shared sentinel."""
+    if pd.isna(value):
+        return default
+
+    text = str(value).strip()
+    if not text:
+        return default
+
+    if text.casefold() in _LEGACY_UNMAPPED_VALUES:
+        return default
+
+    return text
+
+
+def normalize_jobfamily_series(
+    series: pd.Series,
+    default: str = JOBFAMILY_UNMAPPED,
+) -> pd.Series:
+    """Return a normalized Jobfamily series with one canonical fallback value."""
+    return series.apply(lambda value: normalize_jobfamily_value(value, default=default))
+
+
+def normalize_jobfamily_column(
+    df: pd.DataFrame,
+    column: str = "Jobfamily",
+    default: str = JOBFAMILY_UNMAPPED,
+) -> pd.DataFrame:
+    """Ensure a dataframe contains a normalized Jobfamily column."""
+    out = df.copy()
+    if column not in out.columns:
+        out[column] = default
+    else:
+        out[column] = normalize_jobfamily_series(out[column], default=default)
+    return out
+
 class JobFamilyService:
     """
     Single Source of Truth for Job Families.
@@ -26,8 +73,12 @@ class JobFamilyService:
         """
         # 1. Prefer actual Jobfamily values from the current snapshot.
         if df_ma is not None and "Jobfamily" in df_ma.columns:
-            jfs = set(df_ma["Jobfamily"].dropna().unique())
-            return sorted([str(jf).strip() for jf in jfs if str(jf).strip() != ""])
+            normalized = normalize_jobfamily_series(df_ma["Jobfamily"])
+            jfs = {
+                jf for jf in normalized.dropna().astype(str).str.strip().unique()
+                if jf and jf != JOBFAMILY_UNMAPPED
+            }
+            return sorted(jfs)
 
         # 2. Derive Jobfamily keys from explicit mappings where possible.
         jf_map = getattr(cluster_mapping_bundle, "jf_map", {}) or {}

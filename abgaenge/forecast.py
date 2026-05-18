@@ -219,7 +219,7 @@ def _select_quit_prob(row: pd.Series, params: Dict[str, Any], period_year: int) 
         if dimension == "OrgUnit":
             dim_value = str(row.get("Organisationseinheit", "Default"))
         else:
-            dim_value = str(row.get("Jobfamily", "Default"))
+            dim_value = str(row.get("JF-Cluster", row.get("Jobfamily", "Default")))
 
         age_row = matrix.get(age_key, {})
         if dim_value in age_row:
@@ -231,7 +231,7 @@ def _select_quit_prob(row: pd.Series, params: Dict[str, Any], period_year: int) 
 
     # 4. Apply Year/JF Adjustments
     adjustments = quit_params.get("quit_adjustments", {})
-    jf_name = str(row.get("Jobfamily", "Default"))
+    jf_name = str(row.get("JF-Cluster", row.get("Jobfamily", "Default")))
     
     # "more" -> 1.5x, "less" -> 0.5x
     if jf_name in adjustments.get("more", {}) and period_year in adjustments["more"][jf_name]:
@@ -267,7 +267,7 @@ def _select_quit_probs_frame(
         if dimension == "OrgUnit":
             dim_values = eligible.get("Organisationseinheit", pd.Series("Default", index=eligible.index)).astype(str).tolist()
         else:
-            dim_values = eligible.get("Jobfamily", pd.Series("Default", index=eligible.index)).astype(str).tolist()
+            dim_values = eligible.get("JF-Cluster", eligible.get("Jobfamily", pd.Series("Default", index=eligible.index))).astype(str).tolist()
 
         for idx, (age_key, dim_value) in enumerate(zip(age_keys, dim_values)):
             age_row = matrix.get(age_key, {})
@@ -279,7 +279,7 @@ def _select_quit_probs_frame(
     adjustments = quit_params.get("quit_adjustments", {})
     more = adjustments.get("more", {})
     less = adjustments.get("less", {})
-    jf_values = eligible.get("Jobfamily", pd.Series("Default", index=eligible.index)).astype(str).tolist()
+    jf_values = eligible.get("JF-Cluster", eligible.get("Jobfamily", pd.Series("Default", index=eligible.index))).astype(str).tolist()
 
     for idx, jf_name in enumerate(jf_values):
         if jf_name in more and period_year in more[jf_name]:
@@ -303,7 +303,7 @@ def _select_atz_prob(row: pd.Series, params: Dict[str, Any]) -> float:
     if dimension == "OrgUnit":
         dim_value = str(row.get("Organisationseinheit", "Default"))
     else:
-        dim_value = str(row.get("Jobfamily", "Default"))
+        dim_value = str(row.get("JF-Cluster", row.get("Jobfamily", "Default")))
 
     # Flat lookup (no age cohorts)
     if dim_value in matrix:
@@ -332,7 +332,7 @@ def _select_atz_probs_frame(
         if dimension == "OrgUnit":
             dim_values = eligible.get("Organisationseinheit", pd.Series("Default", index=eligible.index)).astype(str).tolist()
         else:
-            dim_values = eligible.get("Jobfamily", pd.Series("Default", index=eligible.index)).astype(str).tolist()
+            dim_values = eligible.get("JF-Cluster", eligible.get("Jobfamily", pd.Series("Default", index=eligible.index))).astype(str).tolist()
 
         default_prob = float(matrix["Default"]) if "Default" in matrix else base
         probs = np.array([float(matrix.get(dim_value, default_prob)) for dim_value in dim_values], dtype=float)
