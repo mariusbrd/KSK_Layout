@@ -67,6 +67,11 @@ CLUSTER_STAGED_KEYS = (
     "cluster_upload_staged_jf_mapping_count",
 )
 
+CLUSTER_ACTIVE_SESSION_KEYS = (
+    "cluster_upload_active_bytes",
+    "cluster_upload_active_filename",
+)
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -180,6 +185,17 @@ def _render_cluster_feedback() -> None:
 def _clear_staged_cluster_state() -> None:
     for key in CLUSTER_STAGED_KEYS:
         st.session_state.pop(key, None)
+
+
+def _clear_active_cluster_session_state() -> None:
+    for key in CLUSTER_ACTIVE_SESSION_KEYS:
+        st.session_state.pop(key, None)
+
+
+def _should_persist_cluster_upload_to_disk() -> bool:
+    if str(os.environ.get("KSK_DISABLE_DISK_CLUSTER_UPLOADS", "")).strip().lower() in {"1", "true", "yes"}:
+        return False
+    return not os.path.abspath(BASE_DIR).replace("\\", "/").startswith("/mount/src/")
 
 
 def _get_staged_cluster_state() -> dict:
@@ -315,20 +331,30 @@ def _apply_staged_cluster_upload(
         _cluster_debug_log("apply_result", success=False, reason="no_valid_staged_upload")
         return {"success": False, "message": "Es liegt kein gueltiger staged Upload zum Anwenden vor."}
 
-    persist_result = persist_cluster_upload_bytes(staged["bytes"], target_path=persisted_local_path)
-    if not persist_result.get("success"):
-        _cluster_debug_log("apply_result", success=False, reason="persist_failed", persist_error=persist_result.get("error"))
-        return {
-            "success": False,
-            "message": f"Cluster-Upload konnte nicht gespeichert werden: {persist_result.get('error', 'unbekannt')}",
-            "persist_result": persist_result,
-        }
+    persist_result = None
+    if _should_persist_cluster_upload_to_disk():
+        persist_result = persist_cluster_upload_bytes(staged["bytes"], target_path=persisted_local_path)
+        if not persist_result.get("success"):
+            _cluster_debug_log("apply_result", success=False, reason="persist_failed", persist_error=persist_result.get("error"))
+            return {
+                "success": False,
+                "message": f"Cluster-Upload konnte nicht gespeichert werden: {persist_result.get('error', 'unbekannt')}",
+                "persist_result": persist_result,
+            }
+
+    if persist_result:
+        _clear_active_cluster_session_state()
+    else:
+        st.session_state["cluster_upload_active_bytes"] = staged["bytes"]
+        st.session_state["cluster_upload_active_filename"] = staged["filename"] or "Cluster-Upload.xlsx"
 
     st.session_state["cluster_upload_ignore_hash"] = staged["hash"]
     st.session_state["cluster_override_active"] = True
-    st.session_state["cluster_override_activated_at"] = persist_result.get("written_at") or _now_iso()
+    st.session_state["cluster_override_activated_at"] = (persist_result or {}).get("written_at") or _now_iso()
     st.session_state["active_cluster_source_mode"] = "ui_upload"
-    st.session_state["active_cluster_source_subtype"] = SUBTYPE_UI_UPLOAD_PERSISTED
+    st.session_state["active_cluster_source_subtype"] = (
+        SUBTYPE_UI_UPLOAD_PERSISTED if persist_result else "ui_upload.session"
+    )
 
     invalidation = invalidate_cluster_dependent_state(st.session_state, reason="cluster_apply_now")
     _cluster_debug_log("invalidate_called", removed_count=invalidation.get("removed_count", 0), reason="cluster_apply_now")
@@ -340,14 +366,14 @@ def _apply_staged_cluster_upload(
     _cluster_debug_log(
         "apply_result",
         success=True,
-        persisted_path=persist_result.get("path"),
-        persisted_signature=persist_result.get("source_signature"),
+        persisted_path=(persist_result or {}).get("path"),
+        persisted_signature=(persist_result or {}).get("source_signature"),
         active_source_signature=getattr(active_source, "source_signature", None),
     )
 
     return {
         "success": True,
-        "message": "Cluster-Upload wurde aktiviert und lokal gespeichert.",
+        "message": "Cluster-Upload wurde aktiviert." if not persist_result else "Cluster-Upload wurde aktiviert und lokal gespeichert.",
         "persist_result": persist_result,
         "invalidation": invalidation,
         "active_source": active_source,
@@ -371,6 +397,7 @@ def _delete_cluster_uploads(
     elif current_active.content_hash:
         st.session_state["cluster_upload_ignore_hash"] = current_active.content_hash
     _clear_staged_cluster_state()
+    _clear_active_cluster_session_state()
 
     delete_result = delete_persisted_cluster_upload(target_path=persisted_local_path)
     st.session_state["cluster_override_active"] = False
@@ -620,6 +647,7 @@ def render_settings_page():
                 delete_disabled = (
                     not staged["filename"]
                     and not st.session_state.get("cluster_override_active", False)
+                    and not st.session_state.get("cluster_upload_active_bytes")
                     and not os.path.exists(os.path.join(BASE_DIR, "config", "cluster_mapping.xlsx"))
                 )
                 if st.button(t("settings.delete_uploads"), disabled=delete_disabled, key="cluster_delete_uploads_button"):

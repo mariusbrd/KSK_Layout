@@ -137,6 +137,35 @@ def test_apply_now_persists_upload_and_activates_user_override(tmp_path):
     assert st.session_state.get("cluster_upload_staged_bytes") is None
 
 
+def test_apply_now_uses_session_upload_when_disk_persistence_is_disabled(monkeypatch, tmp_path):
+    module = _load_settings_module()
+    external = tmp_path / "OE_Cluster.xlsx"
+    persisted = tmp_path / "cluster_mapping.xlsx"
+    external.write_bytes(_build_cluster_workbook_bytes(oe_cluster="External", jf_cluster="External-JF"))
+
+    module._refresh_active_cluster_source_state(
+        persisted_local_path=str(persisted),
+        external_file_path=str(external),
+    )
+    module._stage_cluster_upload(
+        DummyUpload(_build_cluster_workbook_bytes(oe_cluster="Session", jf_cluster="Session-JF"), "session.xlsx"),
+        persisted_local_path=str(persisted),
+        external_file_path=str(external),
+    )
+    monkeypatch.setattr(module, "_should_persist_cluster_upload_to_disk", lambda: False)
+
+    result = module._apply_staged_cluster_upload(
+        persisted_local_path=str(persisted),
+        external_file_path=str(external),
+    )
+
+    assert result["success"] is True
+    assert persisted.exists() is False
+    assert result["active_source"].subtype == "ui_upload.session"
+    assert st.session_state["cluster_upload_active_filename"] == "session.xlsx"
+    assert st.session_state.get("cluster_upload_staged_bytes") is None
+
+
 def test_delete_uploads_removes_staged_and_persisted_and_falls_back_to_input_folder(tmp_path):
     module = _load_settings_module()
     external = tmp_path / "OE_Cluster.xlsx"

@@ -110,14 +110,13 @@ def load_hr_data(
     if needs_generate:
         if auto_generate:
             try:
-                from dataloader.synthetic import generate_synthetic_data, save_to_excel
-
-                os.makedirs(os.path.dirname(filepath), exist_ok=True)
+                from dataloader.synthetic import generate_synthetic_data
 
                 data_dict = generate_synthetic_data()
-                save_to_excel(data_dict, filepath)
+                if not st.session_state.get("suppress_data_status_messages", False):
+                    st.success("Testdaten erfolgreich generiert.")
+                return data_dict
 
-                st.success("✅ Testdaten erfolgreich generiert!")
             except Exception as e:
                 st.error(f"❌ Fehler beim Generieren der Testdaten: {str(e)}")
                 raise
