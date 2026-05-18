@@ -27,6 +27,9 @@ from typing import Dict, List
 
 VORSTAND_KEY = "vorstand"
 RUHEND_KEY = "ruhend_bv"
+AUSBILDUNG_NACHWUCHS_KEY = "ausbildung_nachwuchs"
+JOBFAMILY_VALIDATION_SPECIAL_KEY = "jobfamily_validation_special_positions"
+SOLLARBEITSZEIT_001_KEY = "sollarbeitszeit_001_positions"
 
 # Alle 99XX-Gruppen als separate Einträge
 PA_GROUPS: List[tuple[str, str]] = [
@@ -50,9 +53,39 @@ PA_GROUPS: List[tuple[str, str]] = [
     ("99XX", "Sonstige 99XX (Dummy/Versorgungsbezüge)"),
 ]
 
+JOBFAMILY_VALIDATION_SPECIAL_PLAN_IDS = {
+    "50001903", "50002084", "50002093", "50002126", "50002400",
+    "50010382", "50010385", "50010394", "50010613", "50010614",
+    "50010749", "50011753", "50014256", "50014311", "50016270",
+    "50028579", "50028681", "50028683", "50028689", "50028692",
+    "50029046", "50029163", "50029197", "50029199", "50029201",
+    "50029202", "50029239", "50029240", "50029245", "50029246",
+    "50029247", "50029856", "50029895", "50030165", "50030360",
+    "50030437", "50031295", "50034246", "50035886", "50039021",
+    "50040886", "50041219", "50041859", "50041920", "50041956",
+    "50046321", "50046421", "50046547", "50046548", "50046549",
+    "50046551", "50046592", "50046593", "50046878", "50048341",
+    "50048342", "50048764", "50048766", "50048809", "50048965",
+    "50049158", "50049545", "50049595", "50049701", "50049901",
+    "50049902", "50050763", "50050776", "50051622", "50054377",
+    "50054682", "50055993", "50056337", "50056772", "50062368",
+    "50062459", "50063611", "50064630", "50065990", "50066581",
+    "50066920", "50066921",
+}
+
+SPECIAL_GROUPS: List[tuple[str, str]] = [
+    (AUSBILDUNG_NACHWUCHS_KEY, "Ausbildung / Nachwuchs"),
+    (JOBFAMILY_VALIDATION_SPECIAL_KEY, "Jobfamily-Validierung: Sonderplanstellen"),
+    (SOLLARBEITSZEIT_001_KEY, "Planstellen mit Sollarbeitszeit = 0,01"),
+]
+
 
 def _normalize_oe(series: pd.Series) -> pd.Series:
     """Normalisiert OE-Kürzel: strip, .0-Suffix entfernen (z. B. '9900.0' → '9900')."""
+    return series.astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+
+
+def _normalize_code(series: pd.Series) -> pd.Series:
     return series.astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
 
 
@@ -124,6 +157,42 @@ def build_group_masks(df: pd.DataFrame) -> Dict[str, pd.Series]:
     else:
         for code, _ in PA_GROUPS:
             masks[code] = false_mask.copy()
+
+    ausbildung_mask = false_mask.copy()
+    if "MitarbGruppenbez." in df.columns:
+        ausbildung_mask = ausbildung_mask | (
+            df["MitarbGruppenbez."].astype(str).str.strip() == "Auszubildende"
+        )
+    if "Vertragsart" in df.columns:
+        ausbildung_mask = ausbildung_mask | (
+            df["Vertragsart"].astype(str).str.strip() == "Ausbildung"
+        )
+    if "TrfGr" in df.columns:
+        ausbildung_mask = ausbildung_mask | (
+            df["TrfGr"].astype(str).str.contains("TVA", case=False, na=False)
+        )
+    if "Organisationseinheit" in df.columns:
+        ausbildung_mask = ausbildung_mask | (
+            df["Organisationseinheit"].astype(str).str.contains(
+                "Bankkaufleute|Finanzassistenten|Duale Studenten|Auszubildende|Büromanagement|Versicherungen",
+                case=False,
+                na=False,
+            )
+        )
+    masks[AUSBILDUNG_NACHWUCHS_KEY] = ausbildung_mask
+
+    if "Planstellennr" in df.columns:
+        masks[JOBFAMILY_VALIDATION_SPECIAL_KEY] = (
+            _normalize_code(df["Planstellennr"]).isin(JOBFAMILY_VALIDATION_SPECIAL_PLAN_IDS)
+        )
+    else:
+        masks[JOBFAMILY_VALIDATION_SPECIAL_KEY] = false_mask.copy()
+
+    if "Sollarbeitszeit" in df.columns:
+        sollarbeitszeit = pd.to_numeric(df["Sollarbeitszeit"], errors="coerce")
+        masks[SOLLARBEITSZEIT_001_KEY] = sollarbeitszeit.sub(0.01).abs().le(1e-9)
+    else:
+        masks[SOLLARBEITSZEIT_001_KEY] = false_mask.copy()
 
     return masks
 
@@ -213,7 +282,7 @@ def get_all_group_stats(df: pd.DataFrame) -> pd.DataFrame:
     group_defs = [
         (VORSTAND_KEY, "Vorstand"),
         (RUHEND_KEY, "Ruhendes Beschäftigungsverhältnis"),
-    ] + [(code, label) for code, label in PA_GROUPS]
+    ] + [(code, label) for code, label in PA_GROUPS] + [(key, label) for key, label in SPECIAL_GROUPS]
 
     rows = []
     for key, label in group_defs:
@@ -238,7 +307,7 @@ def get_group_detail(df: pd.DataFrame, group_key: str) -> pd.DataFrame:
             "PersNr", "Kürzel OrgEinheit", "Organisationseinheit",
             "MitarbGruppenbez.", "Jobfamily", "TrfGr", "St",
             "Status kundenindividuell", "Soll_FTE", "MAK_Calculated",
-            "Is_Vacant", "ATZ_Status", "Vertragsart",
+            "Is_Vacant", "ATZ_Status", "Vertragsart", "Planstellennr", "Planstelle",
         ]
         if c in sub.columns
     ]

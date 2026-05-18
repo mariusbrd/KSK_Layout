@@ -507,6 +507,15 @@ def apply_exclusions(df: pd.DataFrame, exclusions: Dict[str, Any]) -> pd.DataFra
         if "99XX" in ex_org_units:
             explicit_pa_codes = {c for c in ex_org_units if c != "99XX"}
             exclusion_mask |= s_ou.str.startswith("99") & ~s_ou.isin(explicit_pa_codes)
+
+    special_groups = exclusions.get("special_groups") or []
+    if special_groups:
+        from utils.exclusion_groups import build_group_masks
+
+        group_masks = build_group_masks(df_out)
+        for group_key in special_groups:
+            if group_key in group_masks:
+                exclusion_mask |= group_masks[group_key]
             
     # --- Anwendung der Exklusion (Vacating) ---
     if exclusion_mask.any():

@@ -27,9 +27,10 @@ from utils.exclusion_groups import (
     VORSTAND_KEY,
     RUHEND_KEY,
     PA_GROUPS,
+    SPECIAL_GROUPS,
 )
 from dataloader.kpi_engine import get_unique_employees
-from utils.settings_loader import get_setting, set_setting
+from utils.settings_loader import DEFAULT_EXCLUSIONS, get_setting, set_setting
 from utils.cache_utils import bump_cache_version
 from utils.plot_helpers import apply_legend_bottom
 from utils.i18n import t
@@ -66,20 +67,29 @@ def _fmt_pct(v: float) -> str:
     return f"{v:.1f} %"
 
 
-def _persist_exclusions(vorstand: bool, ruhend_bv: bool, org_units: list, planstellen_follow_person: bool = False):
+def _persist_exclusions(
+    vorstand: bool,
+    ruhend_bv: bool,
+    org_units: list,
+    special_groups: list | None = None,
+    planstellen_follow_person: bool = False,
+):
     """Speichert Exklusions-Einstellungen in Settings und Session State."""
     # dict.fromkeys: dedupliziert und erhält Reihenfolge (verhindert T3c-Inkonsistenz)
     org_units_clean = list(dict.fromkeys(org_units))
+    special_groups_clean = list(dict.fromkeys(special_groups or []))
     updated = {
         "vorstand": vorstand,
         "ruhend_bv": ruhend_bv,
         "planstellen_follow_person": planstellen_follow_person,
         "org_units": org_units_clean,
+        "special_groups": special_groups_clean,
     }
     set_setting("exclusions", updated)
     st.session_state["exclude_vorstand"] = vorstand
     st.session_state["exclude_ruhend"] = ruhend_bv
     st.session_state["exclude_org_units"] = org_units_clean
+    st.session_state["exclude_special_groups"] = special_groups_clean
     # Cache leeren: prepare_compact_data() ist @st.cache_data und würde sonst veraltete
     # Exklusions-Stände zurückliefern, da apply_exclusions() in load_and_prepare_data()
     # neue Settings erst nach Cache-Invalidierung wirksam werden.
@@ -87,12 +97,7 @@ def _persist_exclusions(vorstand: bool, ruhend_bv: bool, org_units: list, planst
 
 
 def _load_current_exclusions() -> dict:
-    all_pa_codes = [code for code, _ in PA_GROUPS]
-    return get_setting("exclusions", {
-        "vorstand": True,
-        "ruhend_bv": True,
-        "org_units": all_pa_codes,
-    })
+    return get_setting("exclusions", dict(DEFAULT_EXCLUSIONS))
 
 
 def _bar_chart(df_stats: pd.DataFrame, y_col: str, title: str, y_label: str,
@@ -150,6 +155,9 @@ _GROUP_LABEL_KEYS = {
     "9990": "exclusion.group.9990",
     "9999": "exclusion.group.9999",
     "99XX": "exclusion.group.99xx",
+    "ausbildung_nachwuchs": "exclusion.group.ausbildung_nachwuchs",
+    "jobfamily_validation_special_positions": "exclusion.group.jobfamily_validation_special_positions",
+    "sollarbeitszeit_001_positions": "exclusion.group.sollarbeitszeit_001_positions",
 }
 
 
@@ -192,6 +200,7 @@ def main():
     # ── Aktuelle Exklusions-Einstellungen ────────────────────────────────────
     current_ex = _load_current_exclusions()
     ex_org_units: list = current_ex.get("org_units", [])
+    ex_special_groups: list = current_ex.get("special_groups") or []
 
     # ── Gruppen-Stats berechnen ───────────────────────────────────────────────
     df_stats = get_all_group_stats(snapshot_df)
@@ -219,6 +228,7 @@ def main():
     if current_ex.get("ruhend_bv"):
         ex_keys.add(RUHEND_KEY)
     ex_keys.update(ex_org_units)
+    ex_keys.update(ex_special_groups)
 
     # Exkludierte Kennzahlen via Union-Maske (verhindert Doppelzählung bei Mehrfachzuordnung,
     # z. B. Zeilen die gleichzeitig Ruhendes BV UND OE 9900 sind)
@@ -289,16 +299,33 @@ def main():
     st.caption(t("exclusion.group_exclusions.caption"))
 
     # Bulk-Aktionen (nur session state — kein Persist, Nutzer bestätigt unten)
-    bulk_col1, bulk_col2 = st.columns(2)
+    bulk_col1, bulk_col2, bulk_col3 = st.columns(3)
     if bulk_col1.button(t("exclusion.action.exclude_all"), key="btn_ex_all", use_container_width=True):
         for k, _l, _c in [(VORSTAND_KEY, "", "special"), (RUHEND_KEY, "", "special")] + \
-                         [(code, "", "pa") for code, _ in PA_GROUPS]:
+                         [(code, "", "pa") for code, _ in PA_GROUPS] + \
+                         [(key, "", "special_group") for key, _ in SPECIAL_GROUPS]:
             st.session_state[f"ex_chk_{k}"] = True
         st.rerun()
     if bulk_col2.button(t("exclusion.action.include_all"), key="btn_in_all", use_container_width=True):
         for k, _l, _c in [(VORSTAND_KEY, "", "special"), (RUHEND_KEY, "", "special")] + \
-                         [(code, "", "pa") for code, _ in PA_GROUPS]:
+                         [(code, "", "pa") for code, _ in PA_GROUPS] + \
+                         [(key, "", "special_group") for key, _ in SPECIAL_GROUPS]:
             st.session_state[f"ex_chk_{k}"] = False
+        st.rerun()
+    if bulk_col3.button(t("exclusion.action.jobfamily_validation_preset"), key="btn_jf_validation_preset", use_container_width=True):
+        pa_validation_codes = {code for code, _ in PA_GROUPS if code not in {"9999", "99XX"}}
+        special_validation_keys = {key for key, _ in SPECIAL_GROUPS}
+        for k, _l, cat in [(VORSTAND_KEY, "", "special"), (RUHEND_KEY, "", "special")] + \
+                          [(code, "", "pa") for code, _ in PA_GROUPS] + \
+                          [(key, "", "special_group") for key, _ in SPECIAL_GROUPS]:
+            if k == VORSTAND_KEY:
+                st.session_state[f"ex_chk_{k}"] = False
+            elif k == RUHEND_KEY:
+                st.session_state[f"ex_chk_{k}"] = True
+            elif cat == "pa":
+                st.session_state[f"ex_chk_{k}"] = k in pa_validation_codes
+            else:
+                st.session_state[f"ex_chk_{k}"] = k in special_validation_keys
         st.rerun()
 
     st.markdown("&nbsp;", unsafe_allow_html=True)
@@ -315,7 +342,9 @@ def main():
     GROUP_ORDER = [
         (VORSTAND_KEY, _group_label(VORSTAND_KEY, "Vorstand"), "special"),
         (RUHEND_KEY, _group_label(RUHEND_KEY, "Ruhendes Beschäftigungsverhältnis"), "special"),
-    ] + [(code, _group_label(code, label), "pa") for code, label in PA_GROUPS]
+    ] + [(code, _group_label(code, label), "pa") for code, label in PA_GROUPS] + [
+        (key, _group_label(key, label), "special_group") for key, label in SPECIAL_GROUPS
+    ]
 
     # Session-State für Checkboxen initialisieren (nur beim ersten Laden)
     for key, _label, _cat in GROUP_ORDER:
@@ -325,6 +354,8 @@ def main():
                 st.session_state[ck] = current_ex.get("vorstand", False)
             elif key == RUHEND_KEY:
                 st.session_state[ck] = current_ex.get("ruhend_bv", False)
+            elif _cat == "special_group":
+                st.session_state[ck] = key in ex_special_groups
             else:
                 st.session_state[ck] = key in ex_org_units
 
@@ -369,7 +400,7 @@ def main():
 
         # Gruppe Label
         with cols[0]:
-            if category == "special":
+            if category in {"special", "special_group"}:
                 st.markdown(f"<span style='{row_style}font-weight:600'>{label}</span>",
                             unsafe_allow_html=True)
             else:
@@ -412,6 +443,8 @@ def main():
     pending_ruhend = st.session_state.get(f"ex_chk_{RUHEND_KEY}", current_ex.get("ruhend_bv", False))
     pending_org = [key for key, _l, cat in GROUP_ORDER
                    if cat == "pa" and st.session_state.get(f"ex_chk_{key}", False)]
+    pending_special = [key for key, _l, cat in GROUP_ORDER
+                       if cat == "special_group" and st.session_state.get(f"ex_chk_{key}", False)]
 
     current_follow = current_ex.get("planstellen_follow_person", False)
 
@@ -419,6 +452,7 @@ def main():
         pending_vorstand != current_ex.get("vorstand", False)
         or pending_ruhend != current_ex.get("ruhend_bv", False)
         or set(pending_org) != set(current_ex.get("org_units", []))
+        or set(pending_special) != set(current_ex.get("special_groups") or [])
     )
 
     if has_pending:
@@ -443,7 +477,13 @@ def main():
             key="btn_apply_excl_ma",
             help=t("exclusion.action.apply_employees.help"),
         ):
-            _persist_exclusions(pending_vorstand, pending_ruhend, pending_org, planstellen_follow_person=False)
+            _persist_exclusions(
+                pending_vorstand,
+                pending_ruhend,
+                pending_org,
+                pending_special,
+                planstellen_follow_person=False,
+            )
             st.rerun()
 
     with btn_col_b:
@@ -454,7 +494,13 @@ def main():
             key="btn_apply_excl_all",
             help=t("exclusion.action.apply_dashboard.help"),
         ):
-            _persist_exclusions(pending_vorstand, pending_ruhend, pending_org, planstellen_follow_person=True)
+            _persist_exclusions(
+                pending_vorstand,
+                pending_ruhend,
+                pending_org,
+                pending_special,
+                planstellen_follow_person=True,
+            )
             st.rerun()
 
     st.markdown("---")
@@ -470,6 +516,7 @@ def main():
     if fresh_ex.get("ruhend_bv"):
         fresh_ex_keys.add(RUHEND_KEY)
     fresh_ex_keys.update(fresh_ex.get("org_units", []))
+    fresh_ex_keys.update(fresh_ex.get("special_groups") or [])
 
     tab_planst, tab_mak = st.tabs([t("exclusion.tab.positions"), t("exclusion.tab.target_fte")])
 

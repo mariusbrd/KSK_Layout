@@ -31,6 +31,11 @@ from dataloader.cluster_resolver import (
 from utils.cache_utils import coerce_file_bytes, get_file_signature
 
 
+def _normalize_plan_id(value) -> str:
+    text = "" if pd.isna(value) else str(value).strip()
+    return text[:-2] if text.endswith(".0") else text
+
+
 # Path for persistent cluster mapping
 # BASE_DIR imported from config.settings
 # Technical role in the target model: ui_upload.persisted_local_copy
@@ -285,7 +290,23 @@ def _build_mapping_bundle_from_excel(
         if "Planstelle" in df_jf.columns and "Jobfamily Cluster" in df_jf.columns:
             df_jf["Planstelle"] = df_jf["Planstelle"].fillna("").astype(str).str.strip()
             df_jf["Jobfamily Cluster"] = df_jf["Jobfamily Cluster"].fillna("").astype(str).str.strip()
-            if "Organisationseinheit" in df_jf.columns:
+            if "Planstellennr" in df_jf.columns and "Organisationseinheit" in df_jf.columns:
+                df_jf["Planstellennr"] = df_jf["Planstellennr"].map(_normalize_plan_id)
+                df_jf["Organisationseinheit"] = df_jf["Organisationseinheit"].fillna("").astype(str).str.strip()
+                for _, row in df_jf.iterrows():
+                    value = row["Jobfamily Cluster"]
+                    org = row["Organisationseinheit"]
+                    pos = row["Planstelle"]
+                    plan_id = row["Planstellennr"]
+                    if (
+                        value in ("", "nan", "Unclustered")
+                        or org in ("", "nan")
+                        or pos in ("", "nan")
+                        or plan_id in ("", "nan")
+                    ):
+                        continue
+                    jf_map[(org, pos, plan_id)] = value
+            elif "Organisationseinheit" in df_jf.columns:
                 df_jf["Organisationseinheit"] = df_jf["Organisationseinheit"].fillna("").astype(str).str.strip()
                 for _, row in df_jf.iterrows():
                     value = row["Jobfamily Cluster"]
@@ -893,7 +914,36 @@ def apply_clusters_to_snapshot_from_source(
     else:
         first_key = next(iter(jf_map.keys()))
         if isinstance(first_key, tuple):
-            if "Organisationseinheit" in result.columns and "Planstelle" in result.columns:
+            if (
+                len(first_key) == 3
+                and "Organisationseinheit" in result.columns
+                and "Planstelle" in result.columns
+                and "Planstellennr" in result.columns
+            ):
+                s_org = result["Organisationseinheit"].astype(str).str.strip()
+                s_pos = result["Planstelle"].astype(str).str.strip()
+                s_plan = result["Planstellennr"].map(_normalize_plan_id)
+                keys = list(zip(s_org, s_pos, s_plan))
+                tuple_res = pd.Series([jf_map.get(k) for k in keys], index=result.index)
+                source_cluster_values = {
+                    str(value).strip()
+                    for value in jf_map.values()
+                    if str(value).strip() not in {"", "nan", "Unclustered"}
+                }
+                if "Jobfamily" in result.columns:
+                    existing_jobfamily = result["Jobfamily"].astype(str).str.strip()
+                    existing_cluster = existing_jobfamily.where(existing_jobfamily.isin(source_cluster_values))
+                else:
+                    existing_cluster = pd.Series(pd.NA, index=result.index)
+                cluster_res = (
+                    tuple_res
+                    .fillna(existing_cluster)
+                    .fillna(enrich_jf_clusters(result, jf_map))
+                    .fillna("Sonstiges")
+                )
+                result["JF-Cluster"] = cluster_res
+                result["Jobfamily"] = cluster_res
+            elif "Organisationseinheit" in result.columns and "Planstelle" in result.columns:
                 s_org = result["Organisationseinheit"].astype(str).str.strip()
                 s_pos = result["Planstelle"].astype(str).str.strip()
                 keys = list(zip(s_org, s_pos))

@@ -1,11 +1,11 @@
 {
-    "stichtag": "2025-12-31",
+    "stichtag": "2026-05-20",
     "simulation": {
         "horizon_months": 99
     },
     "include_future_hires": true,
     "exclusions": {
-        "vorstand": true,
+        "vorstand": false,
         "ruhend_bv": true,
         "planstellen_follow_person": true,
         "org_units": [
@@ -24,9 +24,12 @@
             "9975",
             "9980",
             "9981",
-            "9990",
-            "9999",
-            "99XX"
+            "9990"
+        ],
+        "special_groups": [
+            "ausbildung_nachwuchs",
+            "jobfamily_validation_special_positions",
+            "sollarbeitszeit_001_positions"
         ]
     }
 }
