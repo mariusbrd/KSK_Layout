@@ -7,6 +7,12 @@ import streamlit as st
 
 from abgaenge.forecast import _select_atz_prob, _select_quit_prob
 from dataloader.cluster_manager import apply_clusters_to_snapshot_from_source
+from dataloader.cluster_resolver import (
+    MODE_UI_UPLOAD,
+    STATUS_ACTIVE,
+    SUBTYPE_UI_UPLOAD_SESSION,
+    serialize_active_cluster_source,
+)
 from dataloader.cluster_resolver import ActiveClusterSource
 
 
@@ -189,3 +195,55 @@ def test_abgaenge_uploaded_cluster_jobfamilies_are_displayed_and_used(tmp_path):
     assert row["Jobfamily"] == "Uploaded Critical JF"
     assert row["JF-Cluster"] == "Uploaded Critical JF"
     assert _select_quit_prob(row, params, 2027) == 0.42
+
+
+def test_abgaenge_dimensions_rehydrate_session_upload_from_session_state():
+    module = _load_page_module()
+    st.session_state.clear()
+
+    payload = io.BytesIO()
+    with pd.ExcelWriter(payload, engine="xlsxwriter") as writer:
+        pd.DataFrame(
+            {
+                "Organisationseinheit": ["OE Session"],
+                "Cluster": ["Cluster Session"],
+            }
+        ).to_excel(writer, sheet_name="OrgUnits", index=False)
+        pd.DataFrame(
+            {
+                "Planstelle": ["P Session"],
+                "Jobfamily Cluster": ["Session Uploaded JF"],
+            }
+        ).to_excel(writer, sheet_name="JobFamilies", index=False)
+    upload_bytes = payload.getvalue()
+    st.session_state["cluster_upload_active_bytes"] = upload_bytes
+
+    session_source = ActiveClusterSource(
+        mode=MODE_UI_UPLOAD,
+        subtype=SUBTYPE_UI_UPLOAD_SESSION,
+        status=STATUS_ACTIVE,
+        is_active=True,
+        is_valid=True,
+        priority_rank=1,
+        display_label="UI-Upload (Session)",
+        description="Session upload",
+        source_path=None,
+        session_key="cluster_upload_active_bytes",
+        filename="cluster.xlsx",
+        file_exists=False,
+        content_hash="session-upload-test",
+        source_signature="session-upload-sig",
+        oe_mapping_count=1,
+        jf_mapping_count=1,
+        debug_meta={"source_bytes_present": True},
+    )
+    st.session_state["active_cluster_source"] = serialize_active_cluster_source(session_source)
+
+    org_units, job_families = module._get_param_dimension_values(
+        pd.DataFrame({"Organisationseinheit": ["Snapshot OE"], "Jobfamily": ["Snapshot JF"]}),
+        session_source,
+        None,
+    )
+
+    assert org_units == ["OE Session"]
+    assert job_families == ["Session Uploaded JF"]

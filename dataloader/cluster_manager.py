@@ -130,6 +130,35 @@ def _extract_source_bytes(active_cluster_source: ActiveClusterSource) -> Optiona
     return None
 
 
+def _rehydrate_session_cluster_source(active_cluster_source: ActiveClusterSource) -> ActiveClusterSource:
+    """Restore session-upload bytes when a serialized source only kept metadata."""
+    if active_cluster_source is None:
+        return active_cluster_source
+    if getattr(active_cluster_source, "subtype", None) != SUBTYPE_UI_UPLOAD_SESSION:
+        return active_cluster_source
+    if _extract_source_bytes(active_cluster_source) is not None:
+        return active_cluster_source
+
+    session_state = getattr(st, "session_state", None)
+    if session_state is None:
+        return active_cluster_source
+
+    session_key = getattr(active_cluster_source, "session_key", None) or "cluster_upload_active_bytes"
+    session_bytes = coerce_file_bytes(session_state.get(session_key))
+    if session_bytes is None and session_key != "cluster_upload_active_bytes":
+        session_bytes = coerce_file_bytes(session_state.get("cluster_upload_active_bytes"))
+    if session_bytes is None:
+        current_source = get_active_cluster_source(session_state=session_state)
+        if getattr(current_source, "subtype", None) == SUBTYPE_UI_UPLOAD_SESSION:
+            session_bytes = _extract_source_bytes(current_source)
+    if session_bytes is None:
+        return active_cluster_source
+
+    active_cluster_source.debug_meta = dict(getattr(active_cluster_source, "debug_meta", {}) or {})
+    active_cluster_source.debug_meta["source_bytes"] = session_bytes
+    return active_cluster_source
+
+
 def _build_active_source_from_bytes(
     upload_bytes: bytes,
     *,
@@ -700,6 +729,8 @@ def load_cluster_mappings_from_source(active_cluster_source: ActiveClusterSource
     if active_cluster_source is None:
         return ClusterMappingBundle(oe_map={}, jf_map={}, source_signature=None)
 
+    active_cluster_source = _rehydrate_session_cluster_source(active_cluster_source)
+
     if not getattr(active_cluster_source, "is_valid", False):
         return ClusterMappingBundle(
             oe_map={},
@@ -731,6 +762,8 @@ def load_cluster_ui_dimensions_from_source(
     """
     if active_cluster_source is None:
         return ClusterUIDimensions(is_source_backed=False)
+
+    active_cluster_source = _rehydrate_session_cluster_source(active_cluster_source)
 
     source_signature = getattr(active_cluster_source, "source_signature", None)
     if not getattr(active_cluster_source, "is_valid", False):
