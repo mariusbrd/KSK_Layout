@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from abgaenge.forecast import _select_atz_prob, _select_quit_prob
+from dataloader.cluster_manager import apply_clusters_to_snapshot_from_source
 from dataloader.cluster_resolver import ActiveClusterSource
 
 
@@ -137,3 +138,54 @@ def test_abgaenge_forecast_uses_jf_cluster_for_jobfamily_dimension():
 
     assert _select_atz_prob(row, params) == 0.27
     assert _select_quit_prob(row, params, 2027) == 0.13
+
+
+def test_abgaenge_uploaded_cluster_jobfamilies_are_displayed_and_used(tmp_path):
+    module = _load_page_module()
+    cluster_file = tmp_path / "cluster.xlsx"
+
+    payload = io.BytesIO()
+    with pd.ExcelWriter(payload, engine="xlsxwriter") as writer:
+        pd.DataFrame(
+            {
+                "Organisationseinheit": ["OE Upload"],
+                "Cluster": ["Cluster Upload"],
+            }
+        ).to_excel(writer, sheet_name="OrgUnits", index=False)
+        pd.DataFrame(
+            {
+                "Planstelle": ["P Upload"],
+                "Jobfamily Cluster": ["Uploaded Critical JF"],
+            }
+        ).to_excel(writer, sheet_name="JobFamilies", index=False)
+    cluster_file.write_bytes(payload.getvalue())
+
+    source = _build_source(str(cluster_file), source_signature="cluster-uploaded-jf-sig")
+    df_snapshot = pd.DataFrame(
+        {
+            "Organisationseinheit": ["OE Upload"],
+            "Planstelle": ["P Upload"],
+            "Jobfamily": ["Raw Snapshot JF"],
+            "age": [40],
+        }
+    )
+
+    _, job_families = module._get_param_dimension_values(df_snapshot, source, None)
+    enriched = apply_clusters_to_snapshot_from_source(df_snapshot, source)
+    row = enriched.iloc[0]
+    params = {
+        "quit": {
+            "use_quit_matrix": True,
+            "quit_dimension": "JobFamily",
+            "quit_rate_base": 0.0,
+            "quit_matrix": {
+                "alter_30_45": {"Uploaded Critical JF": 0.42, "Default": 0.0},
+            },
+            "quit_adjustments": {"more": {}, "less": {}},
+        },
+    }
+
+    assert job_families == ["Uploaded Critical JF"]
+    assert row["Jobfamily"] == "Uploaded Critical JF"
+    assert row["JF-Cluster"] == "Uploaded Critical JF"
+    assert _select_quit_prob(row, params, 2027) == 0.42

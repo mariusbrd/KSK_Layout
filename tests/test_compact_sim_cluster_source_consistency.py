@@ -1,4 +1,5 @@
 import importlib.util
+import io
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -6,6 +7,7 @@ import pandas as pd
 import streamlit as st
 
 from dataloader.cluster_resolver import ClusterMappingBundle
+from dataloader.cluster_manager import load_cluster_mappings_from_source
 import dataloader.compact_simulation_engine as engine
 
 
@@ -166,6 +168,140 @@ def test_simulate_compact_snapshot_passes_explicit_cluster_context(monkeypatch):
     assert calls["enrich"]["active_cluster_source_signature"] == "cluster-sig-a"
     assert calls["finalize"] == [(source, bundle)]
     assert result.metadata["cluster_source_signature"] == "cluster-sig-a"
+
+
+def test_simulation_uses_uploaded_cluster_jobfamilies_in_future_snapshot(tmp_path, monkeypatch):
+    cluster_file = tmp_path / "cluster.xlsx"
+    payload = io.BytesIO()
+    with pd.ExcelWriter(payload, engine="xlsxwriter") as writer:
+        pd.DataFrame(
+            {
+                "Organisationseinheit": ["OE Upload"],
+                "Cluster": ["Cluster Upload"],
+            }
+        ).to_excel(writer, sheet_name="OrgUnits", index=False)
+        pd.DataFrame(
+            {
+                "Planstelle": ["P Upload"],
+                "Jobfamily Cluster": ["Uploaded Simulation JF"],
+            }
+        ).to_excel(writer, sheet_name="JobFamilies", index=False)
+    cluster_file.write_bytes(payload.getvalue())
+
+    source = _active_source("cluster-sim-upload-sig")
+    source.source_path = str(cluster_file)
+    bundle = load_cluster_mappings_from_source(source)
+    snapshot_df = pd.DataFrame(
+        {
+            "PersNr": ["000001"],
+            "Personalnummer": ["000001"],
+            "Organisationseinheit": ["OE Upload"],
+            "Planstelle": ["P Upload"],
+            "Jobfamily": ["Raw Snapshot JF"],
+            "GebDatum": [pd.Timestamp("1980-01-01")],
+            "Eintritt": [pd.Timestamp("2010-01-01")],
+            "Austritt": [pd.NaT],
+            "Status kundenindividuell": ["Aktives Beschaeftigungsverhaeltnis"],
+            "Sollarbeitszeit": [39.0],
+            "Soll_FTE": [1.0],
+            "BsGrd": [100.0],
+            "MAK_Calculated": [1.0],
+            "MAK": [1.0],
+            "mak": [1.0],
+            "Is_Vacant": [False],
+        }
+    )
+
+    monkeypatch.setattr(engine, "calculate_mak_vectorized", lambda df, *_args, **_kwargs: df.assign(MAK_Calculated=df.get("MAK_Calculated", 1.0)))
+    monkeypatch.setattr(engine, "calculate_cost_vectorized", lambda df, *_args, **_kwargs: df)
+    monkeypatch.setattr(engine, "enrich_snapshot_data", lambda df, **_kwargs: df)
+    monkeypatch.setattr(engine, "apply_exclusions", lambda df, *_args, **_kwargs: df)
+    monkeypatch.setattr(engine, "apply_person_mak_allocation", lambda df: df)
+    monkeypatch.setattr(engine, "_zero_out_azubi_mak", lambda df: df)
+    monkeypatch.setattr(engine, "_build_simulation_audit_tables", lambda **_kwargs: {})
+
+    result = engine.simulate_compact_snapshot(
+        snapshot_df=snapshot_df,
+        df_atz=pd.DataFrame(),
+        target_date=pd.Timestamp("2025-12-31"),
+        base_date=pd.Timestamp("2025-12-31"),
+        abgaenge_params={"components": {"atz": False, "retirement": False, "quit": False, "ruhend": False}},
+        zugaenge_params={"azubi": {"active": False}, "trainee": {"active": False}, "new_hires": {"active": False}},
+        active_cluster_source=source,
+        cluster_mapping_bundle=bundle,
+        cluster_source_signature="cluster-sim-upload-sig",
+    )
+
+    future = result.future_snapshot_df
+    assert bundle.jf_map["P Upload"] == "Uploaded Simulation JF"
+    assert future.loc[0, "Jobfamily"] == "Uploaded Simulation JF"
+    assert future.loc[0, "JF-Cluster"] == "Uploaded Simulation JF"
+    assert result.metadata["cluster_source_signature"] == "cluster-sim-upload-sig"
+
+
+def test_simulation_maps_uploaded_trainee_alias_to_keine_job_family(tmp_path, monkeypatch):
+    cluster_file = tmp_path / "cluster.xlsx"
+    payload = io.BytesIO()
+    with pd.ExcelWriter(payload, engine="xlsxwriter") as writer:
+        pd.DataFrame(
+            {
+                "Organisationseinheit": ["OE Upload"],
+                "Cluster": ["Cluster Upload"],
+            }
+        ).to_excel(writer, sheet_name="OrgUnits", index=False)
+        pd.DataFrame(
+            {
+                "Planstelle": ["Trainee on the job"],
+                "Jobfamily Cluster": ["Keine Job Family"],
+            }
+        ).to_excel(writer, sheet_name="JobFamilies", index=False)
+    cluster_file.write_bytes(payload.getvalue())
+
+    source = _active_source("cluster-sim-trainee-sig")
+    source.source_path = str(cluster_file)
+    bundle = load_cluster_mappings_from_source(source)
+    snapshot_df = pd.DataFrame(
+        {
+            "PersNr": ["TR_001"],
+            "Personalnummer": ["TR_001"],
+            "Organisationseinheit": ["OE Upload"],
+            "Planstelle": ["Trainee"],
+            "Jobfamily": ["Trainee"],
+            "GebDatum": [pd.Timestamp("2000-01-01")],
+            "Eintritt": [pd.Timestamp("2025-01-01")],
+            "Austritt": [pd.NaT],
+            "Status kundenindividuell": ["Aktives Beschaeftigungsverhaeltnis"],
+            "Sollarbeitszeit": [39.0],
+            "Soll_FTE": [1.0],
+            "BsGrd": [100.0],
+            "MAK_Calculated": [1.0],
+            "MAK": [1.0],
+            "mak": [1.0],
+            "Is_Vacant": [False],
+        }
+    )
+
+    monkeypatch.setattr(engine, "calculate_mak_vectorized", lambda df, *_args, **_kwargs: df.assign(MAK_Calculated=df.get("MAK_Calculated", 1.0)))
+    monkeypatch.setattr(engine, "calculate_cost_vectorized", lambda df, *_args, **_kwargs: df)
+    monkeypatch.setattr(engine, "enrich_snapshot_data", lambda df, **_kwargs: df)
+    monkeypatch.setattr(engine, "apply_exclusions", lambda df, *_args, **_kwargs: df)
+    monkeypatch.setattr(engine, "apply_person_mak_allocation", lambda df: df)
+    monkeypatch.setattr(engine, "_zero_out_azubi_mak", lambda df: df)
+    monkeypatch.setattr(engine, "_build_simulation_audit_tables", lambda **_kwargs: {})
+
+    result = engine.simulate_compact_snapshot(
+        snapshot_df=snapshot_df,
+        df_atz=pd.DataFrame(),
+        target_date=pd.Timestamp("2025-12-31"),
+        base_date=pd.Timestamp("2025-12-31"),
+        active_cluster_source=source,
+        cluster_mapping_bundle=bundle,
+        cluster_source_signature="cluster-sim-trainee-sig",
+    )
+
+    future = result.future_snapshot_df
+    assert future.loc[0, "Jobfamily"] == "Keine Job Family"
+    assert future.loc[0, "JF-Cluster"] == "Keine Job Family"
 
 
 def test_page7_simulation_signature_changes_with_cluster_signature():

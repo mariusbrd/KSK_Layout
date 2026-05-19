@@ -215,29 +215,35 @@ def _select_quit_prob(row: pd.Series, params: Dict[str, Any], period_year: int) 
         else:
             age_key = "alter_55_plus"
 
-        # Analyze Dimension
         if dimension == "OrgUnit":
             dim_value = str(row.get("Organisationseinheit", "Default"))
+            dim_candidates = [dim_value, "Default"]
         else:
-            dim_value = str(row.get("JF-Cluster", row.get("Jobfamily", "Default")))
+            dim_candidates = [
+                str(row.get("JF-Cluster", "")),
+                str(row.get("Jobfamily", "")),
+                "Default",
+            ]
 
         age_row = matrix.get(age_key, {})
-        if dim_value in age_row:
-            prob = float(age_row[dim_value])
-        elif "Default" in age_row:
-            prob = float(age_row["Default"])
-        else:
-            prob = base
+        prob = base
+        for dim_value in dim_candidates:
+            if dim_value and dim_value in age_row:
+                prob = float(age_row[dim_value])
+                break
 
     # 4. Apply Year/JF Adjustments
     adjustments = quit_params.get("quit_adjustments", {})
-    jf_name = str(row.get("JF-Cluster", row.get("Jobfamily", "Default")))
+    jf_candidates = [str(row.get("JF-Cluster", "")), str(row.get("Jobfamily", ""))]
     
     # "more" -> 1.5x, "less" -> 0.5x
-    if jf_name in adjustments.get("more", {}) and period_year in adjustments["more"][jf_name]:
-        prob *= 1.5
-    elif jf_name in adjustments.get("less", {}) and period_year in adjustments["less"][jf_name]:
-        prob *= 0.5
+    for jf_name in jf_candidates:
+        if jf_name in adjustments.get("more", {}) and period_year in adjustments["more"][jf_name]:
+            prob *= 1.5
+            break
+        if jf_name in adjustments.get("less", {}) and period_year in adjustments["less"][jf_name]:
+            prob *= 0.5
+            break
         
     return min(1.0, prob)
 
@@ -265,27 +271,36 @@ def _select_quit_probs_frame(
         )
 
         if dimension == "OrgUnit":
-            dim_values = eligible.get("Organisationseinheit", pd.Series("Default", index=eligible.index)).astype(str).tolist()
+            dim_candidates_by_row = [
+                [value, "Default"]
+                for value in eligible.get("Organisationseinheit", pd.Series("Default", index=eligible.index)).astype(str).tolist()
+            ]
         else:
-            dim_values = eligible.get("JF-Cluster", eligible.get("Jobfamily", pd.Series("Default", index=eligible.index))).astype(str).tolist()
+            jf_cluster = eligible.get("JF-Cluster", pd.Series("", index=eligible.index)).astype(str).tolist()
+            jobfamily = eligible.get("Jobfamily", pd.Series("", index=eligible.index)).astype(str).tolist()
+            dim_candidates_by_row = [[cluster, jf, "Default"] for cluster, jf in zip(jf_cluster, jobfamily)]
 
-        for idx, (age_key, dim_value) in enumerate(zip(age_keys, dim_values)):
+        for idx, (age_key, dim_candidates) in enumerate(zip(age_keys, dim_candidates_by_row)):
             age_row = matrix.get(age_key, {})
-            if dim_value in age_row:
-                probs[idx] = float(age_row[dim_value])
-            elif "Default" in age_row:
-                probs[idx] = float(age_row["Default"])
+            for dim_value in dim_candidates:
+                if dim_value and dim_value in age_row:
+                    probs[idx] = float(age_row[dim_value])
+                    break
 
     adjustments = quit_params.get("quit_adjustments", {})
     more = adjustments.get("more", {})
     less = adjustments.get("less", {})
-    jf_values = eligible.get("JF-Cluster", eligible.get("Jobfamily", pd.Series("Default", index=eligible.index))).astype(str).tolist()
+    jf_cluster_values = eligible.get("JF-Cluster", pd.Series("", index=eligible.index)).astype(str).tolist()
+    jobfamily_values = eligible.get("Jobfamily", pd.Series("", index=eligible.index)).astype(str).tolist()
 
-    for idx, jf_name in enumerate(jf_values):
-        if jf_name in more and period_year in more[jf_name]:
-            probs[idx] *= 1.5
-        elif jf_name in less and period_year in less[jf_name]:
-            probs[idx] *= 0.5
+    for idx, jf_candidates in enumerate(zip(jf_cluster_values, jobfamily_values)):
+        for jf_name in jf_candidates:
+            if jf_name in more and period_year in more[jf_name]:
+                probs[idx] *= 1.5
+                break
+            if jf_name in less and period_year in less[jf_name]:
+                probs[idx] *= 0.5
+                break
 
     np.minimum(probs, 1.0, out=probs)
     return probs

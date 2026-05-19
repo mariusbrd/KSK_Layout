@@ -315,6 +315,47 @@ def test_apply_clusters_to_snapshot_from_source_enriches_snapshot(tmp_path):
     assert result.loc[1, "Jobfamily"] == "Sonstiges"
 
 
+def test_apply_clusters_to_snapshot_from_source_supports_planstelle_only_jobfamily_mapping(tmp_path):
+    persisted = tmp_path / "cluster_mapping_planstelle_only.xlsx"
+    payload = io.BytesIO()
+    with pd.ExcelWriter(payload, engine="xlsxwriter") as writer:
+        pd.DataFrame(
+            {
+                "Organisationseinheit": ["OE1"],
+                "Cluster": ["Persisted"],
+            }
+        ).to_excel(writer, sheet_name="OrgUnits", index=False)
+        pd.DataFrame(
+            {
+                "Planstelle": ["P1", "P2"],
+                "Jobfamily Cluster": ["Uploaded-JF-A", "Uploaded-JF-B"],
+            }
+        ).to_excel(writer, sheet_name="JobFamilies", index=False)
+    persisted.write_bytes(payload.getvalue())
+    source = _build_source(
+        mode=MODE_UI_UPLOAD,
+        subtype=SUBTYPE_UI_UPLOAD_PERSISTED,
+        source_path=str(persisted),
+        source_signature="persisted-planstelle-only-sig",
+    )
+    df = pd.DataFrame(
+        {
+            "Organisationseinheit": ["OE1", "OE1", "OE1"],
+            "Planstelle": ["P1", "P2", "P3"],
+            "Jobfamily": ["Raw A", "Raw B", "Raw C"],
+        }
+    )
+
+    result = apply_clusters_to_snapshot_from_source(df, source)
+
+    assert result.loc[0, "JF-Cluster"] == "Uploaded-JF-A"
+    assert result.loc[0, "Jobfamily"] == "Uploaded-JF-A"
+    assert result.loc[1, "JF-Cluster"] == "Uploaded-JF-B"
+    assert result.loc[1, "Jobfamily"] == "Uploaded-JF-B"
+    assert result.loc[2, "JF-Cluster"] == "Sonstiges"
+    assert result.loc[2, "Jobfamily"] == "Sonstiges"
+
+
 def test_legacy_wrappers_continue_to_return_usable_results(tmp_path, monkeypatch):
     st.cache_data.clear()
     st.session_state.clear()

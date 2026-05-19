@@ -912,6 +912,20 @@ def apply_clusters_to_snapshot_from_source(
     if not jf_map:
         result["JF-Cluster"] = enrich_jf_clusters(result, {})
     else:
+        def _source_alias_cluster(source_cluster_values: set[str]) -> pd.Series:
+            alias_target = "Keine Job Family" if "Keine Job Family" in source_cluster_values else None
+            alias_cluster = pd.Series(pd.NA, index=result.index)
+            if not alias_target:
+                return alias_cluster
+
+            text = pd.Series("", index=result.index, dtype="object")
+            for alias_col in ["Planstelle", "Jobfamily", "JF-Cluster"]:
+                if alias_col in result.columns:
+                    text = text.str.cat(result[alias_col].fillna("").astype(str), sep=" ")
+            alias_mask = text.str.contains("trainee|azubi|ausbildung", case=False, na=False)
+            alias_cluster.loc[alias_mask] = alias_target
+            return alias_cluster
+
         first_key = next(iter(jf_map.keys()))
         if isinstance(first_key, tuple):
             if (
@@ -935,9 +949,16 @@ def apply_clusters_to_snapshot_from_source(
                     existing_cluster = existing_jobfamily.where(existing_jobfamily.isin(source_cluster_values))
                 else:
                     existing_cluster = pd.Series(pd.NA, index=result.index)
+                if "JF-Cluster" in result.columns:
+                    existing_jf_cluster = result["JF-Cluster"].astype(str).str.strip()
+                    existing_cluster = existing_cluster.fillna(
+                        existing_jf_cluster.where(existing_jf_cluster.isin(source_cluster_values))
+                    )
+                alias_cluster = _source_alias_cluster(source_cluster_values)
                 cluster_res = (
                     tuple_res
                     .fillna(existing_cluster)
+                    .fillna(alias_cluster)
                     .fillna(enrich_jf_clusters(result, jf_map))
                     .fillna("Sonstiges")
                 )
@@ -958,9 +979,16 @@ def apply_clusters_to_snapshot_from_source(
                     existing_cluster = existing_jobfamily.where(existing_jobfamily.isin(source_cluster_values))
                 else:
                     existing_cluster = pd.Series(pd.NA, index=result.index)
+                if "JF-Cluster" in result.columns:
+                    existing_jf_cluster = result["JF-Cluster"].astype(str).str.strip()
+                    existing_cluster = existing_cluster.fillna(
+                        existing_jf_cluster.where(existing_jf_cluster.isin(source_cluster_values))
+                    )
+                alias_cluster = _source_alias_cluster(source_cluster_values)
                 cluster_res = (
                     tuple_res
                     .fillna(existing_cluster)
+                    .fillna(alias_cluster)
                     .fillna(enrich_jf_clusters(result, jf_map))
                     .fillna("Sonstiges")
                 )
@@ -969,7 +997,36 @@ def apply_clusters_to_snapshot_from_source(
             else:
                 result["JF-Cluster"] = enrich_jf_clusters(result, jf_map)
         else:
-            result["JF-Cluster"] = enrich_jf_clusters(result, jf_map)
+            source_cluster_values = {
+                str(value).strip()
+                for value in jf_map.values()
+                if str(value).strip() not in {"", "nan", "Unclustered"}
+            }
+            if "Planstelle" in result.columns:
+                s_pos = result["Planstelle"].astype(str).str.strip()
+                planstelle_res = s_pos.map(jf_map)
+            else:
+                planstelle_res = pd.Series(pd.NA, index=result.index)
+            if "Jobfamily" in result.columns:
+                existing_jobfamily = result["Jobfamily"].astype(str).str.strip()
+                existing_cluster = existing_jobfamily.where(existing_jobfamily.isin(source_cluster_values))
+            else:
+                existing_cluster = pd.Series(pd.NA, index=result.index)
+            if "JF-Cluster" in result.columns:
+                existing_jf_cluster = result["JF-Cluster"].astype(str).str.strip()
+                existing_cluster = existing_cluster.fillna(
+                    existing_jf_cluster.where(existing_jf_cluster.isin(source_cluster_values))
+                )
+            alias_cluster = _source_alias_cluster(source_cluster_values)
+            cluster_res = (
+                planstelle_res
+                .fillna(existing_cluster)
+                .fillna(alias_cluster)
+                .fillna(enrich_jf_clusters(result, jf_map))
+                .fillna("Sonstiges")
+            )
+            result["JF-Cluster"] = cluster_res
+            result["Jobfamily"] = cluster_res
 
     if "JF-Cluster" in result.columns:
         mask_uncl = (result["JF-Cluster"] == "Unclustered") | result["JF-Cluster"].isna()

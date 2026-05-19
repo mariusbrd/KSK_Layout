@@ -361,6 +361,43 @@ def test_B03_matrix_default_fallback():
     print(f"[OK] B-03 Case2b: Fallback auf base_rate=1.0 -> {len(quits2b)} Quit(s)")
 
 
+def test_B03b_jobfamily_lookup_falls_back_when_jf_cluster_is_generic():
+    """
+    Dashboard integration case:
+    UI rows can be based on Jobfamily while JF-Cluster contains only a generic
+    fallback such as "Sonstiges". The specific Jobfamily rate must still apply.
+    """
+    print("\n[B-03b] Matrix JobFamily: Fallback von generischem JF-Cluster auf Jobfamily")
+
+    df_ma = pd.DataFrame([
+        _make_employee("6101", age_years=35, jobfamily="Hoch"),
+        _make_employee("6102", age_years=35, jobfamily="Null"),
+    ])
+    df_ma["JF-Cluster"] = "Sonstiges"
+
+    matrix = {
+        "alter_30_45": {
+            "Hoch": 1.0,
+            "Null": 0.0,
+            "Default": 0.0,
+        }
+    }
+    params = _params_only_quit(use_matrix=True, matrix=matrix, dimension="JobFamily")
+
+    result = run_forecast_abgaenge(df_ma, EMPTY_ATZ, START, END, FREQ, params)
+    events = result["events_person_level"]
+    quits = events[events["reason_code"] == REASON_QUIT] if not events.empty else pd.DataFrame()
+    quit_persnrs = set(quits["persnr"].tolist()) if not quits.empty else set()
+
+    assert any("6101" in p for p in quit_persnrs), (
+        "[FAIL] B-03b: spezifische Jobfamily-Rate fuer 'Hoch' wurde nicht angewendet"
+    )
+    assert not any("6102" in p for p in quit_persnrs), (
+        f"[FAIL] B-03b: Jobfamily 'Null' hat trotz Rate=0 gekuendigt: {quit_persnrs}"
+    )
+    print("[OK] B-03b: Jobfamily-Rate greift trotz generischem JF-Cluster")
+
+
 def test_B04_age_groups_respected():
     """
     Altersgruppen in der Matrix: Juengere kuendigen (Rate=1.0),
@@ -605,6 +642,7 @@ if __name__ == "__main__":
         test_B01_matrix_by_jobfamily_differentiates_rates,
         test_B02_matrix_by_orgunit_differentiates_rates,
         test_B03_matrix_default_fallback,
+        test_B03b_jobfamily_lookup_falls_back_when_jf_cluster_is_generic,
         test_B04_age_groups_respected,
         test_B05_adjustment_more_increases_rate,
         test_B06_adjustment_less_decreases_rate,
