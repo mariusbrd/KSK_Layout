@@ -680,46 +680,63 @@ def build_compact_simulation_export_bytes(
         else pd.DataFrame()
     )
     audit_tables = dict(audit_tables or {})
-    audit_tables.setdefault("MAK_Personen_Audit", build_mak_person_audit(prepared_df))
-    audit_tables.setdefault("MAK_Allocation_Audit", build_mak_allocation_audit(prepared_df))
-    audit_tables.setdefault("Sonstiges_Audit", build_sonstiges_audit(prepared_df))
-    audit_tables.setdefault("65plus_Audit", build_65plus_audit(prepared_df, abgaenge_params))
-    audit_tables.setdefault("MAK_Decision_List", build_mak_decision_list(audit_tables["MAK_Personen_Audit"]))
-    audit_tables.setdefault("MAK_Policy_Impact", build_mak_policy_impact(prepared_df, audit_tables["MAK_Decision_List"]))
-    audit_tables.setdefault(
-        "Azubi_Takeover_Decision_List",
-        build_azubi_takeover_decision_list(audit_tables.get("Azubi_Takeover_Target_Audit", pd.DataFrame())),
-    )
-    audit_tables.setdefault("65plus_Decision_List", build_65plus_decision_list(audit_tables["65plus_Audit"]))
+    if "MAK_Personen_Audit" not in audit_tables:
+        audit_tables["MAK_Personen_Audit"] = build_mak_person_audit(prepared_df)
+    if "MAK_Allocation_Audit" not in audit_tables:
+        audit_tables["MAK_Allocation_Audit"] = build_mak_allocation_audit(prepared_df)
+    if "Sonstiges_Audit" not in audit_tables:
+        audit_tables["Sonstiges_Audit"] = build_sonstiges_audit(prepared_df)
+    if "65plus_Audit" not in audit_tables:
+        audit_tables["65plus_Audit"] = build_65plus_audit(prepared_df, abgaenge_params)
+    if "MAK_Decision_List" not in audit_tables:
+        audit_tables["MAK_Decision_List"] = build_mak_decision_list(audit_tables["MAK_Personen_Audit"])
+    if "MAK_Policy_Impact" not in audit_tables:
+        audit_tables["MAK_Policy_Impact"] = build_mak_policy_impact(prepared_df, audit_tables["MAK_Decision_List"])
+    if "Azubi_Takeover_Decision_List" not in audit_tables:
+        audit_tables["Azubi_Takeover_Decision_List"] = build_azubi_takeover_decision_list(
+            audit_tables.get("Azubi_Takeover_Target_Audit", pd.DataFrame())
+        )
+    if "65plus_Decision_List" not in audit_tables:
+        audit_tables["65plus_Decision_List"] = build_65plus_decision_list(audit_tables["65plus_Audit"])
     if not status_quo_snapshot.empty:
-        audit_tables.setdefault("StatusQuo_MAK_Allocation_Audit", build_status_quo_mak_allocation_audit(status_quo_snapshot))
-        audit_tables.setdefault("StatusQuo_Validation_Checks", build_status_quo_validation_checks(status_quo_snapshot))
-        audit_tables.setdefault("StatusQuo_Sonstiges_Audit", build_sonstiges_audit(status_quo_snapshot))
-        audit_tables.setdefault("StatusQuo_65plus_Audit", build_65plus_audit(status_quo_snapshot, abgaenge_params))
-        mitarbeiter_for_scope = status_quo_mitarbeiter_df
-        planstellen_for_scope = status_quo_planstellen_df
-        if mitarbeiter_for_scope is None or planstellen_for_scope is None:
-            try:
-                from dataloader.loader import load_original_data
+        if "StatusQuo_MAK_Allocation_Audit" not in audit_tables:
+            audit_tables["StatusQuo_MAK_Allocation_Audit"] = build_status_quo_mak_allocation_audit(status_quo_snapshot)
+        if "StatusQuo_Validation_Checks" not in audit_tables:
+            audit_tables["StatusQuo_Validation_Checks"] = build_status_quo_validation_checks(status_quo_snapshot)
+        if "StatusQuo_Sonstiges_Audit" not in audit_tables:
+            audit_tables["StatusQuo_Sonstiges_Audit"] = build_sonstiges_audit(status_quo_snapshot)
+        if "StatusQuo_65plus_Audit" not in audit_tables:
+            audit_tables["StatusQuo_65plus_Audit"] = build_65plus_audit(status_quo_snapshot, abgaenge_params)
+        missing_audit = audit_tables.get("StatusQuo_Missing_Persons_Audit")
+        if missing_audit is None:
+            mitarbeiter_for_scope = status_quo_mitarbeiter_df
+            planstellen_for_scope = status_quo_planstellen_df
+            if mitarbeiter_for_scope is None or planstellen_for_scope is None:
+                try:
+                    from dataloader.loader import load_original_data
 
-                original_data = load_original_data()
-                mitarbeiter_for_scope = mitarbeiter_for_scope if mitarbeiter_for_scope is not None else original_data.get("mitarbeiter")
-                planstellen_for_scope = planstellen_for_scope if planstellen_for_scope is not None else original_data.get("planstellen")
-            except Exception:
-                mitarbeiter_for_scope = mitarbeiter_for_scope if mitarbeiter_for_scope is not None else pd.DataFrame()
-                planstellen_for_scope = planstellen_for_scope if planstellen_for_scope is not None else pd.DataFrame()
-        missing_audit = build_status_quo_missing_persons_audit(
-            mitarbeiter_for_scope,
-            planstellen_for_scope,
-            status_quo_snapshot,
-            status_quo_date or pd.Timestamp.today(),
-        )
-        audit_tables.setdefault("StatusQuo_Missing_Persons_Audit", missing_audit)
-        audit_tables.setdefault("StatusQuo_Missing_Category_Summary", build_status_quo_missing_category_summary(missing_audit))
-        audit_tables.setdefault(
-            "StatusQuo_Baseline_Scope_Check",
-            build_status_quo_baseline_scope_check(status_quo_snapshot, prepared_df, missing_audit),
-        )
+                    original_data = load_original_data()
+                    mitarbeiter_for_scope = mitarbeiter_for_scope if mitarbeiter_for_scope is not None else original_data.get("mitarbeiter")
+                    planstellen_for_scope = planstellen_for_scope if planstellen_for_scope is not None else original_data.get("planstellen")
+                except Exception:
+                    mitarbeiter_for_scope = mitarbeiter_for_scope if mitarbeiter_for_scope is not None else pd.DataFrame()
+                    planstellen_for_scope = planstellen_for_scope if planstellen_for_scope is not None else pd.DataFrame()
+            missing_audit = build_status_quo_missing_persons_audit(
+                mitarbeiter_for_scope,
+                planstellen_for_scope,
+                status_quo_snapshot,
+                status_quo_date or pd.Timestamp.today(),
+            )
+        if "StatusQuo_Missing_Persons_Audit" not in audit_tables:
+            audit_tables["StatusQuo_Missing_Persons_Audit"] = missing_audit
+        if "StatusQuo_Missing_Category_Summary" not in audit_tables:
+            audit_tables["StatusQuo_Missing_Category_Summary"] = build_status_quo_missing_category_summary(missing_audit)
+        if "StatusQuo_Baseline_Scope_Check" not in audit_tables:
+            audit_tables["StatusQuo_Baseline_Scope_Check"] = build_status_quo_baseline_scope_check(
+                status_quo_snapshot,
+                prepared_df,
+                missing_audit,
+            )
     missing_audit = audit_tables.get("StatusQuo_Missing_Persons_Audit", pd.DataFrame())
     missing_category_summary = audit_tables.get("StatusQuo_Missing_Category_Summary", pd.DataFrame())
     scope_check = audit_tables.get("StatusQuo_Baseline_Scope_Check", pd.DataFrame())

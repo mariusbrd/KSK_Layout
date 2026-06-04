@@ -705,7 +705,57 @@ def _update_existing_rows(
         vacate_mask = future_df["PersNr_norm"].isin(inactive_existing_ids)
         future_df = _vacate_rows(future_df, vacate_mask)
 
-    for pid in sorted(existing_ids & active_ids):
+    active_existing_ids = existing_ids & active_ids
+    active_existing_mask = future_df["PersNr_norm"].isin(active_existing_ids)
+    if active_existing_mask.any():
+        active_person_ids = future_df.loc[active_existing_mask, "PersNr_norm"]
+        future_df.loc[active_existing_mask, "Is_Vacant"] = False
+        future_df.loc[active_existing_mask, "PersNr"] = active_person_ids.values
+        if "Personalnummer" in future_df.columns:
+            future_df.loc[active_existing_mask, "Personalnummer"] = active_person_ids.values
+
+    atz_status_prefilled = "ATZ_Status" in future_df.columns
+    ist_atz_fr_prefilled = "ist_atz_fr" in future_df.columns
+    if active_existing_mask.any():
+        if atz_status_prefilled:
+            future_df.loc[active_existing_mask, "ATZ_Status"] = "Kein ATZ"
+        if ist_atz_fr_prefilled:
+            future_df.loc[active_existing_mask, "ist_atz_fr"] = False
+
+    sync_cols = [
+        "GebDatum",
+        "Eintritt",
+        "Austritt",
+        "Organisationseinheit",
+        "Jobfamily",
+        "TrfGr",
+        "St",
+        "KÃ¼rzel OrgEinheit",
+        "Geschlecht",
+        "Text Gsch",
+        "MitarbGruppenbez.",
+        "Ausbildung",
+        "Vertragsart",
+        "Status kundenindividuell",
+        "OE-Cluster",
+        "JF-Cluster",
+        "Personen_MAK",
+        "Personen_MAK_Source",
+        "BsGrd_Source",
+        "snapshot_BsGrd",
+        "person_mak_source",
+        "bsgrd_lineage_flag",
+    ]
+    if active_existing_mask.any():
+        active_target_ids = future_df.loc[active_existing_mask, "PersNr_norm"]
+        for col in sync_cols:
+            if col in future_df.columns and col in final_df.columns:
+                sync_values = active_target_ids.map(final_df[col])
+                if pd.api.types.is_datetime64_any_dtype(future_df[col]):
+                    sync_values = pd.to_datetime(sync_values, errors="coerce")
+                future_df.loc[active_existing_mask, col] = sync_values
+
+    for pid in sorted(active_existing_ids):
         row_mask = future_df["PersNr_norm"] == pid
         if not row_mask.any():
             continue
@@ -718,46 +768,14 @@ def _update_existing_rows(
         weights = future_df.loc[row_indices, "Soll_FTE"] if "Soll_FTE" in future_df.columns else pd.Series(1.0, index=row_indices)
         mak_values = _distribute_value(float(emp.get("mak", 0.0)), weights)
 
-        future_df.loc[row_indices, "Is_Vacant"] = False
-        future_df.loc[row_indices, "PersNr"] = pid
-        if "Personalnummer" in future_df.columns:
-            future_df.loc[row_indices, "Personalnummer"] = pid
-
-        sync_cols = [
-            "GebDatum",
-            "Eintritt",
-            "Austritt",
-            "Organisationseinheit",
-            "Jobfamily",
-            "TrfGr",
-            "St",
-            "Kürzel OrgEinheit",
-            "Geschlecht",
-            "Text Gsch",
-            "MitarbGruppenbez.",
-            "Ausbildung",
-            "Vertragsart",
-            "Status kundenindividuell",
-            "OE-Cluster",
-            "JF-Cluster",
-            "Personen_MAK",
-            "Personen_MAK_Source",
-            "BsGrd_Source",
-            "snapshot_BsGrd",
-            "person_mak_source",
-            "bsgrd_lineage_flag",
-        ]
-        for col in sync_cols:
-            if col in future_df.columns and col in emp.index:
-                future_df.loc[row_indices, col] = emp.get(col)
 
         if pid in atz_map.index:
             future_df.loc[row_indices, "ATZ_Status"] = atz_map.loc[pid, "ATZ_Status"]
             future_df.loc[row_indices, "ist_atz_fr"] = bool(atz_map.loc[pid, "ist_atz_fr"])
         else:
-            if "ATZ_Status" in future_df.columns:
+            if not atz_status_prefilled and "ATZ_Status" in future_df.columns:
                 future_df.loc[row_indices, "ATZ_Status"] = "Kein ATZ"
-            if "ist_atz_fr" in future_df.columns:
+            if not ist_atz_fr_prefilled and "ist_atz_fr" in future_df.columns:
                 future_df.loc[row_indices, "ist_atz_fr"] = False
 
         future_df.loc[row_indices, "MAK_Calculated"] = mak_values.values
@@ -940,6 +958,7 @@ def _finalize_future_snapshot(
     return future_df
 
 
+@st.cache_data(show_spinner=False, max_entries=8)
 def _build_simulation_audit_tables(
     *,
     future_snapshot_df: pd.DataFrame,

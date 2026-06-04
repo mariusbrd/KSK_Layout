@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import streamlit as st
 
 from dataloader.mak_allocation import (
     apply_person_mak_allocation,
@@ -118,6 +119,7 @@ def _missing_category(row: pd.Series, plan_hits: int) -> tuple[str, str, str, st
     )
 
 
+@st.cache_data(show_spinner=False, max_entries=8)
 def build_status_quo_missing_persons_audit(
     mitarbeiter_df: pd.DataFrame,
     planstellen_df: pd.DataFrame,

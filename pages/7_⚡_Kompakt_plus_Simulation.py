@@ -28,7 +28,7 @@ from components.sidebar import (
     render_global_filters,
     set_metric_page_hint,
 )
-from components.ui_compat import download_button_compat
+from components.ui_compat import button_compat, download_button_compat
 from components.ui_shell import render_active_filter_banner, render_context_box, render_section_intro
 from dataloader.compact_simulation_engine import simulate_compact_snapshot
 from dataloader.cluster_manager import load_cluster_mappings_from_source
@@ -91,9 +91,17 @@ def _clear_simulation_cache():
         "compact_sim_signature",
         "compact_sim_cluster_source_signature",
         "compact_sim_prepared_df",
+        "compact_sim_status_quo_df",
+        "compact_sim_status_quo_signature",
         "compact_sim_metadata",
         "compact_sim_audit_tables",
         "compact_sim_target_date_cached",
+        "compact_sim_abgaenge_params",
+        "compact_sim_zugaenge_params",
+        "compact_sim_active_cluster_source",
+        "compact_sim_export_context",
+        "compact_sim_export_signature",
+        "compact_sim_export_bytes",
     ]:
         st.session_state.pop(key, None)
 
@@ -459,7 +467,7 @@ def main():
             cluster_mapping_bundle,
             cluster_source_signature,
         ) = _get_simulation_cluster_context(summary)
-        current_signature = _build_simulation_signature(
+        draft_signature = _build_simulation_signature(
             target_date=target_date,
             base_date=base_date,
             abgaenge_params=abgaenge_params,
@@ -467,15 +475,18 @@ def main():
             cluster_source_signature=cluster_source_signature,
         )
 
-        cached_signature = st.session_state.get("compact_sim_signature")
+        computed_signature = st.session_state.get("compact_sim_signature")
         has_cached_result = (
             "compact_sim_prepared_df" in st.session_state and
             "compact_sim_metadata" in st.session_state
         )
-        needs_recompute = (not has_cached_result) or (cached_signature != current_signature)
+        simulation_stale = has_cached_result and (computed_signature != draft_signature)
+        needs_recompute = not has_cached_result
 
         if recalc_clicked:
             _clear_simulation_cache()
+            computed_signature = None
+            simulation_stale = False
             needs_recompute = True
 
         if needs_recompute:
@@ -497,21 +508,39 @@ def main():
             status_quo_prepared_df = compact.prepare_compact_data(
                 build_status_quo_snapshot(snapshot_df, base_date)
             )
-            st.session_state["compact_sim_signature"] = current_signature
+            computed_signature = draft_signature
+            st.session_state["compact_sim_signature"] = computed_signature
             st.session_state["compact_sim_cluster_source_signature"] = cluster_source_signature
             st.session_state["compact_sim_prepared_df"] = prepared_df
             st.session_state["compact_sim_status_quo_df"] = status_quo_prepared_df
+            st.session_state["compact_sim_status_quo_signature"] = computed_signature
             st.session_state["compact_sim_metadata"] = sim_result.metadata
             st.session_state["compact_sim_audit_tables"] = sim_result.audit_tables
             st.session_state["compact_sim_target_date_cached"] = target_date
+            st.session_state["compact_sim_abgaenge_params"] = abgaenge_params
+            st.session_state["compact_sim_zugaenge_params"] = zugaenge_params
+            st.session_state["compact_sim_active_cluster_source"] = active_cluster_source
+            st.session_state["compact_sim_export_context"] = {
+                "exclusions": get_setting("exclusions", {}),
+                "include_future_hires": get_setting("include_future_hires", False),
+                "salary_automation": get_setting("salary_automation", {}),
+            }
+            st.session_state.pop("compact_sim_export_signature", None)
+            st.session_state.pop("compact_sim_export_bytes", None)
+            simulation_stale = False
         else:
             prepared_df = st.session_state["compact_sim_prepared_df"]
-            status_quo_prepared_df = st.session_state.get("compact_sim_status_quo_df")
+            status_quo_prepared_df = (
+                st.session_state.get("compact_sim_status_quo_df")
+                if st.session_state.get("compact_sim_status_quo_signature") == computed_signature
+                else None
+            )
             if status_quo_prepared_df is None:
                 status_quo_prepared_df = compact.prepare_compact_data(
                     build_status_quo_snapshot(snapshot_df, base_date)
                 )
                 st.session_state["compact_sim_status_quo_df"] = status_quo_prepared_df
+                st.session_state["compact_sim_status_quo_signature"] = computed_signature
 
         cached_target = st.session_state.get("compact_sim_target_date_cached")
         display_target = pd.Timestamp(cached_target).normalize() if cached_target is not None else target_date
@@ -521,39 +550,69 @@ def main():
             t("sim.status.subtitle"),
         )
         _render_status_box(
-            is_stale=is_stale,
+            is_stale=simulation_stale,
             target_date=target_date,
-            cached_target=display_target if is_stale else None,
+            cached_target=display_target if simulation_stale else None,
         )
         _render_summary_cards(
             base_date=base_date,
             display_target=display_target,
             meta=st.session_state.get("compact_sim_metadata", {}),
         )
-        export_metadata = {
-            **st.session_state.get("compact_sim_metadata", {}),
+        export_context = st.session_state.get("compact_sim_export_context") or {
             "exclusions": get_setting("exclusions", {}),
             "include_future_hires": get_setting("include_future_hires", False),
             "salary_automation": get_setting("salary_automation", {}),
         }
-        export_bytes = build_compact_simulation_export_bytes(
-            prepared_df=prepared_df,
-            abgaenge_params=abgaenge_params,
-            zugaenge_params=zugaenge_params,
-            metadata=export_metadata,
-            active_cluster_source=active_cluster_source,
-            audit_tables=st.session_state.get("compact_sim_audit_tables", {}),
-            status_quo_df=status_quo_prepared_df,
-            status_quo_date=base_date,
+        export_metadata = {
+            **st.session_state.get("compact_sim_metadata", {}),
+            **export_context,
+        }
+        export_signature = computed_signature
+        export_bytes = (
+            st.session_state.get("compact_sim_export_bytes")
+            if export_signature is not None
+            and st.session_state.get("compact_sim_export_signature") == export_signature
+            else None
         )
-        download_button_compat(
-            "Simulationsergebnisse als Excel exportieren",
-            data=export_bytes,
-            file_name=f"KompaktPlus_Simulation_{display_target:%Y%m%d}.xlsx",
-            mime=EXCEL_MIME,
-            key="compact_plus_simulation_export",
+        export_prepare_label = (
+            "Excel-Export der zuletzt berechneten Simulation vorbereiten"
+            if simulation_stale
+            else "Excel-Export vorbereiten"
+        )
+        if export_bytes is None and button_compat(
+            export_prepare_label,
+            key="compact_plus_simulation_prepare_export",
             use_container_width=True,
-        )
+        ):
+            with st.spinner("Excel-Export wird vorbereitet..."):
+                export_bytes = build_compact_simulation_export_bytes(
+                    prepared_df=prepared_df,
+                    abgaenge_params=st.session_state.get("compact_sim_abgaenge_params", abgaenge_params),
+                    zugaenge_params=st.session_state.get("compact_sim_zugaenge_params", zugaenge_params),
+                    metadata=export_metadata,
+                    active_cluster_source=st.session_state.get("compact_sim_active_cluster_source", active_cluster_source),
+                    audit_tables=st.session_state.get("compact_sim_audit_tables", {}),
+                    status_quo_df=status_quo_prepared_df,
+                    status_quo_date=base_date,
+                )
+            st.session_state["compact_sim_export_signature"] = export_signature
+            st.session_state["compact_sim_export_bytes"] = export_bytes
+
+        if export_bytes is not None:
+            export_download_label = (
+                "Zuletzt berechnete Simulation als Excel exportieren"
+                if simulation_stale
+                else "Simulationsergebnisse als Excel exportieren"
+            )
+            download_button_compat(
+                export_download_label,
+                data=export_bytes,
+                file_name=f"KompaktPlus_Simulation_{display_target:%Y%m%d}.xlsx",
+                mime=EXCEL_MIME,
+                key="compact_plus_simulation_export",
+                use_container_width=True,
+            )
         set_metric_page_hint(None)
         render_global_filters(prepared_df, history_df)
 
