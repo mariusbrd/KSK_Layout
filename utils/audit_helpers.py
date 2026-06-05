@@ -8,6 +8,7 @@ import re
 import unicodedata
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 
@@ -163,33 +164,89 @@ def build_mak_person_audit(df: pd.DataFrame) -> pd.DataFrame:
         work["_audit_mak"] = _numeric(work[mak_col])
 
     eur_col = "Total_Cost_Year" if "Total_Cost_Year" in work.columns else None
-    rows = []
-    for persnr, group in work.groupby("PersNr", dropna=False, observed=True):
-        capacity = aggregate_person_capacity(group, policy="audit_only")
-        planstellen = group["Planstelle"] if "Planstelle" in group.columns else pd.Series(dtype=object)
-        rows.append(
-            {
-                "PersNr": str(persnr),
-                "Jobfamily": _first_value(group, "Jobfamily", _first_value(group, "JF-Cluster", "")),
-                "Anzahl_Zeilen": int(len(group)),
-                "Anzahl_Planstellen": int(planstellen.nunique(dropna=True)) if not planstellen.empty else 0,
-                "Planstellenliste": _series_text(planstellen),
-                "MAK_je_Zeile": " | ".join(f"{value:.4f}" for value in group["_audit_mak"].tolist()),
-                "MAK_sum": capacity["MAK_sum"],
-                "MAK_max": capacity["MAK_max"],
-                "EUR_sum": float(_numeric(group[eur_col]).sum()) if eur_col else 0.0,
-                "Vertragsart": _first_value(group, "Vertragsart", ""),
-                "MitarbGruppenbez.": _first_value(group, "MitarbGruppenbez.", ""),
-                "Beschaeftigungsgrad_Kat": _first_value(group, "Beschäftigungsgrad_Kat", ""),
-                "Quelle_Logik": capacity["Quelle_Logik"],
-                "Auffaelligkeit": capacity["Auffaelligkeit"],
-            }
-        )
+    work["_eur"] = _numeric(work[eur_col]) if eur_col else 0.0
 
-    return pd.DataFrame(rows).sort_values(
-        ["MAK_sum", "Anzahl_Zeilen"],
-        ascending=[False, False],
-    ).reset_index(drop=True)
+    g = work.groupby("PersNr", sort=True, dropna=False)
+
+    agg = g.agg(
+        MAK_sum=("_audit_mak", "sum"),
+        MAK_max=("_audit_mak", "max"),
+        EUR_sum=("_eur", "sum"),
+        Anzahl_Zeilen=("_audit_mak", "count"),
+    ).reset_index()
+
+    agg["PersNr"] = agg["PersNr"].astype(str)
+
+    if "Planstelle" in work.columns:
+        agg["Anzahl_Planstellen"] = g["Planstelle"].nunique(dropna=True).values
+        _planst_le1 = agg["Anzahl_Planstellen"] <= 1
+    else:
+        agg["Anzahl_Planstellen"] = 0
+        _planst_le1 = pd.Series(False, index=agg.index)
+
+    if "Jobfamily" in work.columns:
+        _jf = g["Jobfamily"].first()
+        if "JF-Cluster" in work.columns:
+            agg["Jobfamily"] = _jf.fillna(g["JF-Cluster"].first().fillna("")).fillna("").values
+        else:
+            agg["Jobfamily"] = _jf.fillna("").values
+    elif "JF-Cluster" in work.columns:
+        agg["Jobfamily"] = g["JF-Cluster"].first().fillna("").values
+    else:
+        agg["Jobfamily"] = ""
+
+    for _src, _out in [
+        ("Vertragsart", "Vertragsart"),
+        ("MitarbGruppenbez.", "MitarbGruppenbez."),
+        ("Beschäftigungsgrad_Kat", "Beschaeftigungsgrad_Kat"),
+    ]:
+        if _src in work.columns:
+            agg[_out] = g[_src].first().fillna("").values
+        else:
+            agg[_out] = ""
+
+    if "Allow_MAK_gt_1" in work.columns:
+        _allow_gt1 = g["Allow_MAK_gt_1"].first().fillna(False).astype(bool).values
+    else:
+        _allow_gt1 = False
+
+    agg["Auffaelligkeit"] = np.select(
+        [
+            agg["MAK_max"] > 1.000001,
+            (agg["MAK_sum"] > 1.000001) & _allow_gt1,
+            (agg["MAK_sum"] > 1.000001) & _planst_le1,
+            agg["MAK_sum"] > 1.000001,
+        ],
+        [
+            "datenfehler_beschaeftigungsgrad",
+            "mehrfachbeschaeftigung_dokumentiert",
+            "doppelte_planstellenzuordnung_wahrscheinlich",
+            "mehrfachplanstelle_fachlich_pruefen",
+        ],
+        default="unauffaellig",
+    )
+
+    agg["Quelle_Logik"] = f"audit_only:{mak_col or 'keine_mak_spalte'}"
+
+    if "Planstelle" in work.columns:
+        agg["Planstellenliste"] = g["Planstelle"].apply(_series_text).values
+    else:
+        agg["Planstellenliste"] = ""
+
+    agg["MAK_je_Zeile"] = g["_audit_mak"].apply(
+        lambda s: " | ".join(f"{value:.4f}" for value in s.tolist())
+    ).values
+
+    return (
+        agg[[
+            "PersNr", "Jobfamily", "Anzahl_Zeilen", "Anzahl_Planstellen",
+            "Planstellenliste", "MAK_je_Zeile", "MAK_sum", "MAK_max", "EUR_sum",
+            "Vertragsart", "MitarbGruppenbez.", "Beschaeftigungsgrad_Kat",
+            "Quelle_Logik", "Auffaelligkeit",
+        ]]
+        .sort_values(["MAK_sum", "Anzahl_Zeilen"], ascending=[False, False])
+        .reset_index(drop=True)
+    )
 
 
 def build_azubi_flow_audit(
