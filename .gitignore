@@ -84,3 +84,9 @@ config/user_settings.json
 # Dropbox
 .dropbox
 .dropbox.cache
+
+# Credentials / Tokens (NIEMALS COMMITTEN)
+pat.txt
+*.pat
+*.token
+secrets.txt

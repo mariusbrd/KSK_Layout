@@ -8,6 +8,7 @@ import re
 import unicodedata
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 
@@ -163,33 +164,89 @@ def build_mak_person_audit(df: pd.DataFrame) -> pd.DataFrame:
         work["_audit_mak"] = _numeric(work[mak_col])
 
     eur_col = "Total_Cost_Year" if "Total_Cost_Year" in work.columns else None
-    rows = []
-    for persnr, group in work.groupby("PersNr", dropna=False, observed=True):
-        capacity = aggregate_person_capacity(group, policy="audit_only")
-        planstellen = group["Planstelle"] if "Planstelle" in group.columns else pd.Series(dtype=object)
-        rows.append(
-            {
-                "PersNr": str(persnr),
-                "Jobfamily": _first_value(group, "Jobfamily", _first_value(group, "JF-Cluster", "")),
-                "Anzahl_Zeilen": int(len(group)),
-                "Anzahl_Planstellen": int(planstellen.nunique(dropna=True)) if not planstellen.empty else 0,
-                "Planstellenliste": _series_text(planstellen),
-                "MAK_je_Zeile": " | ".join(f"{value:.4f}" for value in group["_audit_mak"].tolist()),
-                "MAK_sum": capacity["MAK_sum"],
-                "MAK_max": capacity["MAK_max"],
-                "EUR_sum": float(_numeric(group[eur_col]).sum()) if eur_col else 0.0,
-                "Vertragsart": _first_value(group, "Vertragsart", ""),
-                "MitarbGruppenbez.": _first_value(group, "MitarbGruppenbez.", ""),
-                "Beschaeftigungsgrad_Kat": _first_value(group, "Beschäftigungsgrad_Kat", ""),
-                "Quelle_Logik": capacity["Quelle_Logik"],
-                "Auffaelligkeit": capacity["Auffaelligkeit"],
-            }
-        )
+    work["_eur"] = _numeric(work[eur_col]) if eur_col else 0.0
 
-    return pd.DataFrame(rows).sort_values(
-        ["MAK_sum", "Anzahl_Zeilen"],
-        ascending=[False, False],
-    ).reset_index(drop=True)
+    g = work.groupby("PersNr", sort=True, dropna=False)
+
+    agg = g.agg(
+        MAK_sum=("_audit_mak", "sum"),
+        MAK_max=("_audit_mak", "max"),
+        EUR_sum=("_eur", "sum"),
+        Anzahl_Zeilen=("_audit_mak", "count"),
+    ).reset_index()
+
+    agg["PersNr"] = agg["PersNr"].astype(str)
+
+    if "Planstelle" in work.columns:
+        agg["Anzahl_Planstellen"] = g["Planstelle"].nunique(dropna=True).values
+        _planst_le1 = agg["Anzahl_Planstellen"] <= 1
+    else:
+        agg["Anzahl_Planstellen"] = 0
+        _planst_le1 = pd.Series(False, index=agg.index)
+
+    if "Jobfamily" in work.columns:
+        _jf = g["Jobfamily"].first()
+        if "JF-Cluster" in work.columns:
+            agg["Jobfamily"] = _jf.fillna(g["JF-Cluster"].first().fillna("")).fillna("").values
+        else:
+            agg["Jobfamily"] = _jf.fillna("").values
+    elif "JF-Cluster" in work.columns:
+        agg["Jobfamily"] = g["JF-Cluster"].first().fillna("").values
+    else:
+        agg["Jobfamily"] = ""
+
+    for _src, _out in [
+        ("Vertragsart", "Vertragsart"),
+        ("MitarbGruppenbez.", "MitarbGruppenbez."),
+        ("Beschäftigungsgrad_Kat", "Beschaeftigungsgrad_Kat"),
+    ]:
+        if _src in work.columns:
+            agg[_out] = g[_src].first().fillna("").values
+        else:
+            agg[_out] = ""
+
+    if "Allow_MAK_gt_1" in work.columns:
+        _allow_gt1 = g["Allow_MAK_gt_1"].first().fillna(False).astype(bool).values
+    else:
+        _allow_gt1 = False
+
+    agg["Auffaelligkeit"] = np.select(
+        [
+            agg["MAK_max"] > 1.000001,
+            (agg["MAK_sum"] > 1.000001) & _allow_gt1,
+            (agg["MAK_sum"] > 1.000001) & _planst_le1,
+            agg["MAK_sum"] > 1.000001,
+        ],
+        [
+            "datenfehler_beschaeftigungsgrad",
+            "mehrfachbeschaeftigung_dokumentiert",
+            "doppelte_planstellenzuordnung_wahrscheinlich",
+            "mehrfachplanstelle_fachlich_pruefen",
+        ],
+        default="unauffaellig",
+    )
+
+    agg["Quelle_Logik"] = f"audit_only:{mak_col or 'keine_mak_spalte'}"
+
+    if "Planstelle" in work.columns:
+        agg["Planstellenliste"] = g["Planstelle"].apply(_series_text).values
+    else:
+        agg["Planstellenliste"] = ""
+
+    agg["MAK_je_Zeile"] = g["_audit_mak"].apply(
+        lambda s: " | ".join(f"{value:.4f}" for value in s.tolist())
+    ).values
+
+    return (
+        agg[[
+            "PersNr", "Jobfamily", "Anzahl_Zeilen", "Anzahl_Planstellen",
+            "Planstellenliste", "MAK_je_Zeile", "MAK_sum", "MAK_max", "EUR_sum",
+            "Vertragsart", "MitarbGruppenbez.", "Beschaeftigungsgrad_Kat",
+            "Quelle_Logik", "Auffaelligkeit",
+        ]]
+        .sort_values(["MAK_sum", "Anzahl_Zeilen"], ascending=[False, False])
+        .reset_index(drop=True)
+    )
 
 
 def build_azubi_flow_audit(
@@ -744,6 +801,9 @@ def _person_stage_summary(
     base_ids: set[str],
     abgang_events: pd.DataFrame,
     zugang_events: pd.DataFrame,
+    *,
+    _abg_lookup: dict | None = None,
+    _zug_lookup: dict | None = None,
 ) -> pd.DataFrame:
     if df is None or df.empty or "PersNr" not in df.columns:
         return pd.DataFrame()
@@ -769,43 +829,109 @@ def _person_stage_summary(
     if "Job" not in work.columns and "Planstelle" in work.columns:
         work["Job"] = work["Planstelle"]
 
-    abg_lookup = _event_lookup(abgang_events, "persnr")
-    zug_lookup = _event_lookup(zugang_events, "persnr")
-    rows = []
-    for pid, rows_df in work.groupby("PersNr", dropna=False):
-        mak_values = rows_df["_mak_value"].tolist()
-        abg_types = abg_lookup.get(pid, "")
-        zug_types = zug_lookup.get(pid, "")
-        is_forecast = str(pid).startswith(("AZ_", "TR_", "NH_")) or bool(_first_value(rows_df, "is_forecast", False))
-        rows.append({
-            "processing_stage": stage,
-            "PersNr": pid,
-            "is_existing_employee": pid in base_ids,
-            "is_forecast_employee": is_forecast,
-            "is_new_hire": str(pid).startswith(("NH_", "TR_", "AZ_")),
-            "is_azubi": bool(_first_value(rows_df, "Ist_Azubi", False)) or "azubi" in _series_text(rows_df.get("Planstelle", pd.Series(dtype=object))).lower(),
-            "is_azubi_takeover": str(pid).startswith("AZ_") and float(sum(mak_values)) > 0,
-            "has_abgang_event": bool(abg_types),
-            "has_zugang_event": bool(zug_types),
-            "event_types": " | ".join([value for value in [abg_types, zug_types] if value]),
-            "Jobfamily": _first_value(rows_df, "Jobfamily", ""),
-            "Planstelle": _series_text(rows_df.get("Planstelle", pd.Series(dtype=object))),
-            "Job": _series_text(rows_df.get("Job", pd.Series(dtype=object))),
-            "Rollenliste": _series_text(rows_df.get("Planstelle", pd.Series(dtype=object))),
-            "Anzahl_Zeilen": int(len(rows_df)),
-            "Anzahl_Planstellen": int(rows_df.get("Planstelle", pd.Series(dtype=object)).dropna().astype(str).str.strip().nunique()),
-            "MAK_column_used": mak_col or "",
-            "MAK_je_Zeile": " | ".join(f"{float(v):.4f}" for v in mak_values),
-            "MAK_sum": float(sum(mak_values)),
-            "MAK_max": float(max(mak_values)) if mak_values else 0.0,
-            "MAK_min": float(min(mak_values)) if mak_values else 0.0,
-            "MAK_person_policy_current": "sum_over_rows",
-            "EUR_sum": float(rows_df["_eur_value"].sum()),
-            "Vertragsart": _first_value(rows_df, "Vertragsart", ""),
-            "MitarbGruppenbez.": _first_value(rows_df, "MitarbGruppenbez.", ""),
-            "source_dataframe": source_dataframe,
-        })
-    return pd.DataFrame(rows)
+    abg_lookup = _abg_lookup if _abg_lookup is not None else _event_lookup(abgang_events, "persnr")
+    zug_lookup = _zug_lookup if _zug_lookup is not None else _event_lookup(zugang_events, "persnr")
+
+    # Stripped Planstelle fuer Anzahl_Planstellen (ohne NaN-Einfuehrung)
+    if "Planstelle" in work.columns:
+        _notna_pl = work["Planstelle"].notna()
+        work["_pl_s"] = pd.NA
+        if _notna_pl.any():
+            work.loc[_notna_pl, "_pl_s"] = (
+                work.loc[_notna_pl, "Planstelle"].astype(str).str.strip()
+            )
+    else:
+        work["_pl_s"] = pd.NA
+
+    # Groupby sortiert (sort=True: identisch mit alter for-Loop-Reihenfolge)
+    g = work.groupby("PersNr", sort=True, dropna=False)
+
+    # Numerische Aggregationen ersetzen den per-Person-Loop
+    agg = g.agg(
+        MAK_sum=("_mak_value", "sum"),
+        MAK_max=("_mak_value", "max"),
+        MAK_min=("_mak_value", "min"),
+        EUR_sum=("_eur_value", "sum"),
+        Anzahl_Zeilen=("_mak_value", "count"),
+    ).reset_index()
+
+    agg["Anzahl_Planstellen"] = g["_pl_s"].nunique(dropna=True).values
+
+    # First-value-Felder (aequivalent zu _first_value mit leerem Fallback)
+    for _col, _fb in [("Jobfamily", ""), ("Vertragsart", ""), ("MitarbGruppenbez.", "")]:
+        if _col in work.columns:
+            agg[_col] = g[_col].first().fillna(_fb).values
+        else:
+            agg[_col] = _fb
+
+    if "is_forecast" in work.columns:
+        agg["_is_fc"] = g["is_forecast"].first().fillna(False).astype(bool).values
+    else:
+        agg["_is_fc"] = False
+
+    if "Ist_Azubi" in work.columns:
+        agg["_ist_az"] = g["Ist_Azubi"].first().fillna(False).astype(bool).values
+    else:
+        agg["_ist_az"] = False
+
+    # Flags per Series-Operationen auf dem Ergebnis-DataFrame
+    _pnr_str = agg["PersNr"].astype(str)
+    agg["is_existing_employee"] = agg["PersNr"].isin(base_ids)
+    agg["is_new_hire"] = _pnr_str.str.startswith(("NH_", "TR_", "AZ_"))
+    agg["is_forecast_employee"] = _pnr_str.str.startswith(("AZ_", "TR_", "NH_")) | agg["_is_fc"]
+    agg["is_azubi_takeover"] = _pnr_str.str.startswith("AZ_") & (agg["MAK_sum"] > 0)
+
+    # Event-Felder aus vorberechneten Lookup-Dicts
+    agg["_abg"] = agg["PersNr"].map(lambda p: abg_lookup.get(p, ""))
+    agg["_zug"] = agg["PersNr"].map(lambda p: zug_lookup.get(p, ""))
+    agg["has_abgang_event"] = agg["_abg"].astype(bool)
+    agg["has_zugang_event"] = agg["_zug"].astype(bool)
+    _abg_m = agg["_abg"].astype(bool)
+    _zug_m = agg["_zug"].astype(bool)
+    agg["event_types"] = ""
+    agg.loc[_abg_m & ~_zug_m, "event_types"] = agg.loc[_abg_m & ~_zug_m, "_abg"]
+    agg.loc[~_abg_m & _zug_m, "event_types"] = agg.loc[~_abg_m & _zug_m, "_zug"]
+    agg.loc[_abg_m & _zug_m, "event_types"] = (
+        agg.loc[_abg_m & _zug_m, "_abg"] + " | " + agg.loc[_abg_m & _zug_m, "_zug"]
+    )
+
+    # String-Listen per groupby.apply — Reihenfolge aus DataFrame erhalten
+    if "Planstelle" in work.columns:
+        _pl_text = g["Planstelle"].apply(_series_text)
+        agg["Planstelle"] = _pl_text.values
+        agg["Rollenliste"] = _pl_text.values   # identisch mit Planstelle
+    else:
+        agg["Planstelle"] = ""
+        agg["Rollenliste"] = ""
+
+    if "Job" in work.columns:
+        agg["Job"] = g["Job"].apply(_series_text).values
+    else:
+        agg["Job"] = ""
+
+    # is_azubi: Ist_Azubi-first OR "azubi" im Planstelle-Text
+    agg["is_azubi"] = agg["_ist_az"] | agg["Planstelle"].str.lower().str.contains("azubi", na=False)
+
+    # MAK_je_Zeile: Float-Format mit Zeilenreihenfolge erhalten
+    agg["MAK_je_Zeile"] = g["_mak_value"].apply(
+        lambda s: " | ".join(f"{float(v):.4f}" for v in s.tolist())
+    ).values
+
+    agg["processing_stage"] = stage
+    agg["MAK_column_used"] = mak_col or ""
+    agg["MAK_person_policy_current"] = "sum_over_rows"
+    agg["source_dataframe"] = source_dataframe
+
+    return agg[[
+        "processing_stage", "PersNr", "is_existing_employee", "is_forecast_employee",
+        "is_new_hire", "is_azubi", "is_azubi_takeover",
+        "has_abgang_event", "has_zugang_event", "event_types",
+        "Jobfamily", "Planstelle", "Job", "Rollenliste",
+        "Anzahl_Zeilen", "Anzahl_Planstellen", "MAK_column_used",
+        "MAK_je_Zeile", "MAK_sum", "MAK_max", "MAK_min",
+        "MAK_person_policy_current", "EUR_sum", "Vertragsart", "MitarbGruppenbez.",
+        "source_dataframe",
+    ]].reset_index(drop=True)
 
 
 def _event_lookup(events_df: pd.DataFrame, persnr_col: str = "persnr") -> dict[str, str]:
@@ -831,8 +957,13 @@ def build_mak_lineage_audit(
     if base_snapshot_df is not None and not base_snapshot_df.empty and "PersNr" in base_snapshot_df.columns:
         base_ids = set(_normalize_persnr_for_audit(base_snapshot_df["PersNr"].dropna()))
     stage_order = list(stages.keys())
+    abg_lookup = _event_lookup(abgaenge_events, "persnr")
+    zug_lookup = _event_lookup(zugaenge_events, "persnr")
     frames = [
-        _person_stage_summary(df, stage, stage, base_ids, abgaenge_events, zugaenge_events)
+        _person_stage_summary(
+            df, stage, stage, base_ids, abgaenge_events, zugaenge_events,
+            _abg_lookup=abg_lookup, _zug_lookup=zug_lookup,
+        )
         for stage, df in stages.items()
     ]
     lineage = pd.concat([frame for frame in frames if frame is not None and not frame.empty], ignore_index=True) if frames else pd.DataFrame()

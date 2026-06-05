@@ -705,69 +705,98 @@ def _update_existing_rows(
         vacate_mask = future_df["PersNr_norm"].isin(inactive_existing_ids)
         future_df = _vacate_rows(future_df, vacate_mask)
 
-    for pid in sorted(existing_ids & active_ids):
+    active_existing_ids = existing_ids & active_ids
+    active_existing_mask = future_df["PersNr_norm"].isin(active_existing_ids)
+    if active_existing_mask.any():
+        active_person_ids = future_df.loc[active_existing_mask, "PersNr_norm"]
+        future_df.loc[active_existing_mask, "Is_Vacant"] = False
+        future_df.loc[active_existing_mask, "PersNr"] = active_person_ids.values
+        if "Personalnummer" in future_df.columns:
+            future_df.loc[active_existing_mask, "Personalnummer"] = active_person_ids.values
+
+    atz_status_prefilled = "ATZ_Status" in future_df.columns
+    ist_atz_fr_prefilled = "ist_atz_fr" in future_df.columns
+    if active_existing_mask.any():
+        if atz_status_prefilled:
+            future_df.loc[active_existing_mask, "ATZ_Status"] = "Kein ATZ"
+        if ist_atz_fr_prefilled:
+            future_df.loc[active_existing_mask, "ist_atz_fr"] = False
+
+    sync_cols = [
+        "GebDatum",
+        "Eintritt",
+        "Austritt",
+        "Organisationseinheit",
+        "Jobfamily",
+        "TrfGr",
+        "St",
+        "KÃ¼rzel OrgEinheit",
+        "Geschlecht",
+        "Text Gsch",
+        "MitarbGruppenbez.",
+        "Ausbildung",
+        "Vertragsart",
+        "Status kundenindividuell",
+        "OE-Cluster",
+        "JF-Cluster",
+        "Personen_MAK",
+        "Personen_MAK_Source",
+        "BsGrd_Source",
+        "snapshot_BsGrd",
+        "person_mak_source",
+        "bsgrd_lineage_flag",
+    ]
+    if active_existing_mask.any():
+        active_target_ids = future_df.loc[active_existing_mask, "PersNr_norm"]
+        for col in sync_cols:
+            if col in future_df.columns and col in final_df.columns:
+                sync_values = active_target_ids.map(final_df[col])
+                if pd.api.types.is_datetime64_any_dtype(future_df[col]):
+                    sync_values = pd.to_datetime(sync_values, errors="coerce")
+                future_df.loc[active_existing_mask, col] = sync_values
+
+    for pid in sorted(active_existing_ids):
         row_mask = future_df["PersNr_norm"] == pid
         if not row_mask.any():
             continue
 
-        emp = final_df.loc[pid]
-        if isinstance(emp, pd.DataFrame):
-            emp = emp.iloc[0]
-
         row_indices = future_df.index[row_mask]
-        weights = future_df.loc[row_indices, "Soll_FTE"] if "Soll_FTE" in future_df.columns else pd.Series(1.0, index=row_indices)
-        mak_values = _distribute_value(float(emp.get("mak", 0.0)), weights)
-
-        future_df.loc[row_indices, "Is_Vacant"] = False
-        future_df.loc[row_indices, "PersNr"] = pid
-        if "Personalnummer" in future_df.columns:
-            future_df.loc[row_indices, "Personalnummer"] = pid
-
-        sync_cols = [
-            "GebDatum",
-            "Eintritt",
-            "Austritt",
-            "Organisationseinheit",
-            "Jobfamily",
-            "TrfGr",
-            "St",
-            "Kürzel OrgEinheit",
-            "Geschlecht",
-            "Text Gsch",
-            "MitarbGruppenbez.",
-            "Ausbildung",
-            "Vertragsart",
-            "Status kundenindividuell",
-            "OE-Cluster",
-            "JF-Cluster",
-            "Personen_MAK",
-            "Personen_MAK_Source",
-            "BsGrd_Source",
-            "snapshot_BsGrd",
-            "person_mak_source",
-            "bsgrd_lineage_flag",
-        ]
-        for col in sync_cols:
-            if col in future_df.columns and col in emp.index:
-                future_df.loc[row_indices, col] = emp.get(col)
 
         if pid in atz_map.index:
             future_df.loc[row_indices, "ATZ_Status"] = atz_map.loc[pid, "ATZ_Status"]
             future_df.loc[row_indices, "ist_atz_fr"] = bool(atz_map.loc[pid, "ist_atz_fr"])
         else:
-            if "ATZ_Status" in future_df.columns:
+            if not atz_status_prefilled and "ATZ_Status" in future_df.columns:
                 future_df.loc[row_indices, "ATZ_Status"] = "Kein ATZ"
-            if "ist_atz_fr" in future_df.columns:
+            if not ist_atz_fr_prefilled and "ist_atz_fr" in future_df.columns:
                 future_df.loc[row_indices, "ist_atz_fr"] = False
 
-        future_df.loc[row_indices, "MAK_Calculated"] = mak_values.values
-        future_df.loc[row_indices, "mak"] = mak_values.values
-        future_df.loc[row_indices, "MAK"] = mak_values.values
-        future_df.loc[row_indices, "BsGrd"] = (mak_values.values * 100.0).round(6)
+    if active_existing_mask.any():
+        ae = future_df.loc[active_existing_mask]
+        mak_lookup = final_df["mak"].fillna(0.0) if "mak" in final_df.columns else pd.Series(0.0, index=final_df.index)
+        total_mak = ae["PersNr_norm"].map(mak_lookup).fillna(0.0)
+        if "Soll_FTE" in future_df.columns:
+            weights = pd.to_numeric(ae["Soll_FTE"], errors="coerce").fillna(0.0)
+            fte_sum = ae.groupby("PersNr_norm")["Soll_FTE"].transform(
+                lambda x: float(pd.to_numeric(x, errors="coerce").fillna(0.0).sum())
+            )
+            count = ae.groupby("PersNr_norm")["PersNr_norm"].transform("count").astype(float)
+            ratio = weights / fte_sum.where(fte_sum > 0, np.nan)
+            ratio = ratio.fillna(1.0 / count)
+            mak_per_row = total_mak * ratio
+            fte_for_assigned = ae["Soll_FTE"].fillna(0.0)
+        else:
+            count = ae.groupby("PersNr_norm")["PersNr_norm"].transform("count").astype(float)
+            mak_per_row = total_mak / count
+            fte_for_assigned = None
+        future_df.loc[active_existing_mask, "MAK_Calculated"] = mak_per_row.values
+        future_df.loc[active_existing_mask, "mak"] = mak_per_row.values
+        future_df.loc[active_existing_mask, "MAK"] = mak_per_row.values
+        future_df.loc[active_existing_mask, "BsGrd"] = (mak_per_row * 100.0).round(6).values
         if "FTE_person" in future_df.columns:
-            future_df.loc[row_indices, "FTE_person"] = mak_values.values
-        if "FTE_assigned" in future_df.columns and "Soll_FTE" in future_df.columns:
-            future_df.loc[row_indices, "FTE_assigned"] = mak_values.values * future_df.loc[row_indices, "Soll_FTE"].fillna(0.0)
+            future_df.loc[active_existing_mask, "FTE_person"] = mak_per_row.values
+        if fte_for_assigned is not None and "FTE_assigned" in future_df.columns:
+            future_df.loc[active_existing_mask, "FTE_assigned"] = (mak_per_row * fte_for_assigned).values
 
     return future_df.drop(columns=["PersNr_norm"], errors="ignore")
 
@@ -940,6 +969,7 @@ def _finalize_future_snapshot(
     return future_df
 
 
+@st.cache_data(show_spinner=False, max_entries=8)
 def _build_simulation_audit_tables(
     *,
     future_snapshot_df: pd.DataFrame,
