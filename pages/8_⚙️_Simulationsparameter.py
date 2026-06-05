@@ -490,15 +490,16 @@ def main() -> None:
 
     render_page_header(
         "Simulationsparameter",
-        "Zentrale, isolierte Parameterstruktur fuer Prognose- und Simulationsannahmen.",
-        "Schritt 1: Diese Seite schreibt nur st.session_state['simulation_params']; bestehende Prognose- und Simulationsseiten bleiben unveraendert.",
+        "Zentrale Annahmen für Prognose- und Simulationsszenarien.",
+        "Diese Seite verwaltet zentrale Annahmen für Abgänge, Zugänge, Hybrid und CompactPlus Simulation. Die CompactPlus-Simulation nutzt diese Parameter bereits produktiv. Prognose Abgänge, Prognose Zugänge und Prognose Hybrid werden in einem späteren Schritt angebunden.",
     )
-    render_context_box(
-        "Technische Skala",
-        "Raten bleiben als Dezimalwerte gespeichert. Matrix-Editoren zeigen Prozentwerte an und speichern sie als Engine-Gewichtungen im Bereich 0 bis 1.",
-        tone="neutral",
-        compact=True,
-    )
+    with st.expander("Technischer Hinweis", expanded=False):
+        render_context_box(
+            "Parameterstruktur",
+            "Die Werte werden in st.session_state['simulation_params'] gehalten. Raten bleiben als Dezimalwerte gespeichert; Matrix-Editoren zeigen Prozentwerte an und speichern sie als Engine-Gewichtungen im Bereich 0 bis 1.",
+            tone="neutral",
+            compact=True,
+        )
 
     if st.sidebar.button("Parameterstruktur zurücksetzen", use_container_width=True):
         reset_simulation_params()
@@ -541,7 +542,7 @@ def main() -> None:
             draft["hybrid"]["zugaenge"].pop("_ui", None)
 
     with tabs[3]:
-        render_section_intro("CompactPlus Simulation", "Spiegelt den Ziel-Stichtag und Simulationsmodus; CompactPlus liest weiterhin die bisherigen produktiven Session-Keys.")
+        render_section_intro("CompactPlus Simulation", "Spiegelt den Ziel-Stichtag und Simulationsmodus; CompactPlus nutzt die zentralen Parameter bereits produktiv.")
         cp = draft["compact_plus"]
         base_date = get_current_stichtag().date()
         default_target = date(base_date.year + 1, base_date.month, base_date.day)
@@ -558,7 +559,7 @@ def main() -> None:
     if c_save.button("simulation_params speichern", type="primary", use_container_width=True):
         save_simulation_params(draft)
         st.success("simulation_params wurde aktualisiert. Bestehende Produktiv-Keys wurden nicht verändert.")
-    c_note.caption("Keine Live-Anbindung: abgaenge_params, zugaenge_params, hybrid_abg_params, hybrid_zug_params und compact_sim_* bleiben unangetastet.")
+    c_note.caption("Aktueller Integrationsstand: CompactPlus Simulation nutzt diese Parameter bereits. Prognose Abgänge, Prognose Zugänge und Prognose Hybrid nutzen weiterhin ihre bisherigen Parameterquellen.")
 
 
 if __name__ == "__main__":
