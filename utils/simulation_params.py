@@ -12,6 +12,7 @@ from zugaenge.params import default_params as default_zugaenge_params
 
 SESSION_KEY = "simulation_params"
 SOURCE_PAGE = "Simulationsparameter"
+INTERNAL_METADATA_KEYS = {"_ui"}
 
 
 def _deep_merge(base: dict[str, Any], overlay: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -148,6 +149,32 @@ def get_simulation_params() -> dict[str, Any]:
     normalized = _deep_merge(default_simulation_params(), current)
     st.session_state[SESSION_KEY] = normalized
     return normalized
+
+
+def _strip_internal_metadata(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            key: _strip_internal_metadata(item)
+            for key, item in value.items()
+            if key not in INTERNAL_METADATA_KEYS
+        }
+    if isinstance(value, list):
+        return [_strip_internal_metadata(item) for item in value]
+    return deepcopy(value)
+
+
+def get_compact_plus_params() -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return engine-ready CompactPlus forecast params from simulation_params.
+
+    The central structure may contain UI-only metadata used by the
+    Simulationsparameter page. CompactPlus should pass only the technical
+    parameter structures to the existing simulation engine and export cache.
+    """
+    params = get_simulation_params()
+    return (
+        _strip_internal_metadata(params["abgaenge"]),
+        _strip_internal_metadata(params["zugaenge"]),
+    )
 
 
 def save_simulation_params(params: Mapping[str, Any]) -> dict[str, Any]:

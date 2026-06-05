@@ -19,7 +19,6 @@ if SRC_PATH.exists():
 else:
     sys.path.append(str(BASE_PATH))
 
-from abgaenge.params import default_params as default_abgaenge_params
 from components.sidebar import (
     filter_dataframe_by_view_filters,
     get_active_view_filters,
@@ -46,8 +45,8 @@ from utils.status_quo_baseline import (
     build_status_quo_snapshot,
 )
 from utils.i18n import t
+from utils.simulation_params import get_compact_plus_params
 from utils.settings_loader import get_setting
-from zugaenge.params import default_params as default_zugaenge_params
 
 
 def _get_atz_input():
@@ -427,8 +426,7 @@ def main():
 
     compact = load_compact_page_module()
     base_date = pd.Timestamp(get_current_stichtag()).normalize()
-    abgaenge_params = st.session_state.get("abgaenge_params", default_abgaenge_params())
-    zugaenge_params = st.session_state.get("zugaenge_params", default_zugaenge_params())
+    abgaenge_params, zugaenge_params = get_compact_plus_params()
 
     default_target = st.session_state.get(
         "compact_sim_target_date",

@@ -3,7 +3,6 @@ from __future__ import annotations
 import ast
 from copy import deepcopy
 from datetime import date
-import json
 from pathlib import Path
 import sys
 from typing import Any
@@ -22,7 +21,6 @@ from kpi_reference import get_current_stichtag
 from utils.matrix_helpers import migrate_to_percent, percent_to_weights
 from utils.simulation_params import (
     get_simulation_params,
-    reset_simulation_params,
     save_simulation_params,
 )
 
@@ -102,7 +100,7 @@ def _quit_matrix_editor(
     key: str,
     disabled: bool = False,
 ) -> dict[str, dict[str, float]]:
-    st.caption(f"Matrix: {dimension} x Alterskohorte. Anzeige in Prozent, Speicherung als Engine-Gewichtung.")
+    st.caption(f"Matrix: {dimension} x Alterskohorte. Werte werden als Prozentangaben gepflegt.")
     matrix_pct = migrate_to_percent(matrix_weights or {})
     names = ["Default"]
     for cohort in AGE_COHORTS:
@@ -207,19 +205,6 @@ def _hire_distribution_editor(value: list[dict[str, Any]], key: str) -> list[dic
     return edited.to_dict("records")
 
 
-def _literal_dict_editor(label: str, value: Any, key: str) -> dict[str, Any]:
-    raw = st.text_area(label, value=str(value or {}), key=key)
-    try:
-        parsed = ast.literal_eval(raw) if raw.strip() else {}
-    except Exception:
-        st.warning(f"{label} konnte nicht gelesen werden; bisherige Struktur bleibt erhalten.")
-        return value if isinstance(value, dict) else {}
-    if not isinstance(parsed, dict):
-        st.warning(f"{label} muss eine Dict-Struktur sein; bisherige Struktur bleibt erhalten.")
-        return value if isinstance(value, dict) else {}
-    return parsed
-
-
 def _render_abgaenge(group: dict[str, Any], key_prefix: str, *, include_ruhend: bool) -> dict[str, Any]:
     params = deepcopy(group)
     ui = deepcopy(params.pop("_ui", {}))
@@ -275,7 +260,7 @@ def _render_abgaenge(group: dict[str, Any], key_prefix: str, *, include_ruhend: 
         use_atz_matrix = m1.checkbox("Detaillierte ATZ-Matrix verwenden", value=bool(atz.get("use_atz_matrix", False)), key=f"{key_prefix}_atz_use_matrix")
         atz_dimension = m2.radio("Dimension für ATZ", ["JobFamily", "OrgUnit"], index=0 if atz.get("atz_dimension", "JobFamily") == "JobFamily" else 1, horizontal=True, key=f"{key_prefix}_atz_dimension")
         atz_matrix_pct = _matrix_flat_editor(
-            label="ATZ-Matrix. Anzeige in Prozent, Speicherung als Engine-Gewichtung.",
+            label="ATZ-Matrix. Werte werden als Prozentangaben gepflegt.",
             dimension=atz_dimension,
             matrix_weights=atz.get("atz_matrix", {}),
             default_percent=float(new_atz_rate) * 100.0,
@@ -302,10 +287,10 @@ def _render_abgaenge(group: dict[str, Any], key_prefix: str, *, include_ruhend: 
             key=f"{key_prefix}_quit_matrix",
             disabled=not use_quit_matrix,
         )
-        st.caption("Kündigungs-Anpassungen: bestehende Struktur more/less mit Jobfamily -> Jahr-Liste.")
+        st.caption("Optionale Zuordnung von Jobfamilien zu Jahren mit höherer oder niedrigerer Kündigungsannahme.")
         adjustments = quit_params.get("quit_adjustments", {"more": {}, "less": {}})
-        adj_more = st.text_area("Mehr Kündigungen (JSON-kompatible Struktur)", value=str(adjustments.get("more", {})), key=f"{key_prefix}_quit_more")
-        adj_less = st.text_area("Weniger Kündigungen (JSON-kompatible Struktur)", value=str(adjustments.get("less", {})), key=f"{key_prefix}_quit_less")
+        adj_more = st.text_area("Mehr Kündigungen", value=str(adjustments.get("more", {})), key=f"{key_prefix}_quit_more")
+        adj_less = st.text_area("Weniger Kündigungen", value=str(adjustments.get("less", {})), key=f"{key_prefix}_quit_less")
         quit_adjustments = {
             "more": adjustments.get("more", {}),
             "less": adjustments.get("less", {}),
@@ -389,32 +374,19 @@ def _render_zugaenge(group: dict[str, Any], key_prefix: str, *, hybrid: bool = F
         s1, s2 = st.columns(2)
         tariff = s1.selectbox("Übernahme-Tarif", TARIFF_GROUPS, index=TARIFF_GROUPS.index(az.get("entry_tariff_group", "E5")) if az.get("entry_tariff_group", "E5") in TARIFF_GROUPS else 0, key=f"{key_prefix}_az_tariff")
         step = s2.number_input("Übernahme-Stufe", 1, 6, int(az.get("entry_step", 1)), key=f"{key_prefix}_az_step")
-        g1, g2, g3 = st.columns(3)
+        g1, g2 = st.columns(2)
         graduation_mode = g1.radio("Abschlussmodus", ["nearest_cycle", "next_cycle"], index=0 if az.get("graduation_mode", "nearest_cycle") == "nearest_cycle" else 1, horizontal=True, key=f"{key_prefix}_az_grad")
-        conv_month = g2.number_input("Übernahme-Monat", 1, 12, int(az.get("azubi_conversion_month", 8)), key=f"{key_prefix}_az_conv_month")
-        conv_day = g3.number_input("Übernahme-Tag", 1, 31, int(az.get("azubi_conversion_day", 1)), key=f"{key_prefix}_az_conv_day")
-        adv1, adv2, adv3 = st.columns(3)
-        mak_during = adv1.number_input("MAK während Ausbildung", 0.0, 1.0, float(az.get("azubi_mak_during_training", 0.0)), 0.05, key=f"{key_prefix}_az_mak_during")
-        mak_after = adv2.number_input("MAK nach Übernahme", 0.0, 1.0, float(az.get("azubi_mak_after_takeover", 1.0)), 0.05, key=f"{key_prefix}_az_mak_after")
-        grace_default = az.get("nearest_cycle_grace_days")
-        grace_input = adv3.text_input("Grace Days nearest_cycle", value="" if grace_default is None else str(grace_default), key=f"{key_prefix}_az_grace")
-        try:
-            nearest_cycle_grace_days = None if grace_input.strip() == "" else int(grace_input)
-        except ValueError:
-            st.warning("Grace Days muss leer oder eine ganze Zahl sein; bisheriger Wert bleibt erhalten.")
-            nearest_cycle_grace_days = grace_default
-        iso = st.checkbox("Nur Prognose-Azubis (Bestand ignorieren)", value=bool(az.get("exclude_baseline_azubis", False)), key=f"{key_prefix}_az_iso")
+        g2.caption("Der Abschlussmodus entspricht der bestehenden Zugänge-Seite.")
         m1, m2 = st.columns(2)
         use_matrix = m1.checkbox("Detailmatrix statt pauschaler Verteilung verwenden", value=bool(az.get("use_takeover_matrix", False)), key=f"{key_prefix}_az_use_matrix")
         takeover_dimension = m2.radio("Dimension für Übernahme", ["JobFamily", "OrgUnit"], index=0 if az.get("takeover_dimension", "JobFamily") == "JobFamily" else 1, horizontal=True, key=f"{key_prefix}_az_dimension")
         takeover_matrix_pct = _distribution_editor(
-            label="Übernahme-Matrix. Anzeige in Prozent, Speicherung als Engine-Gewichtung.",
+            label="Übernahme-Matrix. Werte werden als Prozentangaben gepflegt.",
             matrix_weights=az.get("takeover_matrix", {}),
             dimension=takeover_dimension,
             key=f"{key_prefix}_az_matrix",
             disabled=not use_matrix,
         )
-        jf_to_cluster_map = _literal_dict_editor("JF-zu-Cluster-Map", az.get("jf_to_cluster_map", {}), f"{key_prefix}_az_jf_cluster")
 
     with st.expander("Trainee-Parameter", expanded=False):
         tr = params.get("trainee", {})
@@ -445,16 +417,16 @@ def _render_zugaenge(group: dict[str, Any], key_prefix: str, *, hybrid: bool = F
             "entry_tariff_group": tariff,
             "entry_step": step,
             "graduation_mode": graduation_mode,
-            "nearest_cycle_grace_days": nearest_cycle_grace_days,
-            "exclude_baseline_azubis": iso,
-            "azubi_mak_during_training": mak_during,
-            "azubi_mak_after_takeover": mak_after,
-            "azubi_conversion_month": conv_month,
-            "azubi_conversion_day": conv_day,
+            "nearest_cycle_grace_days": az.get("nearest_cycle_grace_days"),
+            "exclude_baseline_azubis": az.get("exclude_baseline_azubis", False),
+            "azubi_mak_during_training": az.get("azubi_mak_during_training", 0.0),
+            "azubi_mak_after_takeover": az.get("azubi_mak_after_takeover", 1.0),
+            "azubi_conversion_month": az.get("azubi_conversion_month", 8),
+            "azubi_conversion_day": az.get("azubi_conversion_day", 1),
             "use_takeover_matrix": use_matrix,
             "takeover_dimension": takeover_dimension,
             "takeover_matrix": percent_to_weights(takeover_matrix_pct),
-            "jf_to_cluster_map": jf_to_cluster_map,
+            "jf_to_cluster_map": az.get("jf_to_cluster_map", {}),
         },
         "trainee": {
             **params.get("trainee", {}),
@@ -490,29 +462,16 @@ def main() -> None:
 
     render_page_header(
         "Simulationsparameter",
-        "Zentrale Annahmen für Prognose- und Simulationsszenarien.",
-        "Diese Seite verwaltet zentrale Annahmen für Abgänge, Zugänge, Hybrid und CompactPlus Simulation. Die CompactPlus-Simulation nutzt diese Parameter bereits produktiv. Prognose Abgänge, Prognose Zugänge und Prognose Hybrid werden in einem späteren Schritt angebunden.",
+        "Zentrale Annahmen für Prognoseabgänge und Prognosezugänge.",
     )
-    with st.expander("Technischer Hinweis", expanded=False):
-        render_context_box(
-            "Parameterstruktur",
-            "Die Werte werden in st.session_state['simulation_params'] gehalten. Raten bleiben als Dezimalwerte gespeichert; Matrix-Editoren zeigen Prozentwerte an und speichern sie als Engine-Gewichtungen im Bereich 0 bis 1.",
-            tone="neutral",
-            compact=True,
-        )
+    render_context_box(
+        "Integrationsstand",
+        "Diese Parameter steuern die Annahmen für Abgänge und Zugänge. Die Hybrid-Prognose kombiniert diese Logiken. Die CompactPlus-Simulation nutzt die Abgänge- und Zugänge-Parameter, behält ihre eigene Simulationssteuerung jedoch auf der CompactPlus-Seite.",
+        tone="neutral",
+        compact=True,
+    )
 
-    if st.sidebar.button("Parameterstruktur zurücksetzen", use_container_width=True):
-        reset_simulation_params()
-        st.rerun()
-
-    scenario = draft["scenario"]
-    with st.expander("Szenario", expanded=True):
-        c1, c2 = st.columns([1, 2])
-        scenario["name"] = c1.text_input("Name", value=str(scenario.get("name", "Basisszenario")), key="sim_params_scenario_name")
-        scenario["description"] = c2.text_input("Beschreibung", value=str(scenario.get("description", "")), key="sim_params_scenario_desc")
-        st.caption(f"Version: {scenario.get('version', 1)} | Letzte Änderung: {scenario.get('last_modified') or 'noch nicht gespeichert'}")
-
-    tabs = st.tabs(["Prognose Abgänge", "Prognose Zugänge", "Prognose Hybrid", "CompactPlus Simulation", "Struktur"])
+    tabs = st.tabs(["Prognose Abgänge", "Prognose Zugänge"])
 
     with tabs[0]:
         render_section_intro("Prognose Abgänge", "Spiegelt die bestehende Abgänge-Seite; Ruhend bleibt hier wie dort fachlich deaktiviert.")
@@ -522,44 +481,12 @@ def main() -> None:
         render_section_intro("Prognose Zugänge", "Spiegelt die bestehende Zugänge-Seite inklusive Azubi-, Trainee- und Neueinstellungsparametern.")
         draft["zugaenge"] = _render_zugaenge(draft["zugaenge"], "sim_params_zugaenge", hybrid=False)
 
-    with tabs[2]:
-        render_section_intro("Prognose Hybrid", "Spiegelt die Hybrid-spezifischen Abgangs- und Zugangsparameter, ohne die Hybrid-Seite anzubinden.")
-        hybrid_ui = draft["hybrid"].setdefault("_ui", {})
-        base_date = get_current_stichtag().date()
-        default_end = date(base_date.year + 2, base_date.month, base_date.day)
-        hc1, hc2, hc3 = st.columns(3)
-        hybrid_ui["ist_stichtag"] = hc1.date_input("Ist-Stichtag", value=_as_date(hybrid_ui.get("ist_stichtag"), base_date), key="sim_params_hybrid_start")
-        hybrid_ui["forecast_end_date"] = hc2.date_input("Forecast-Ende", value=_as_date(hybrid_ui.get("forecast_end_date"), default_end), key="sim_params_hybrid_end")
-        hybrid_ui["freq"] = {"Monatlich": "M", "Quartalsweise": "Q"}[
-            hc3.selectbox("Frequenz", ["Monatlich", "Quartalsweise"], index=0 if hybrid_ui.get("freq", "M") == "M" else 1, key="sim_params_hybrid_freq")
-        ]
-        h_abg, h_zug = st.tabs(["Hybrid Abgänge", "Hybrid Zugänge"])
-        with h_abg:
-            draft["hybrid"]["abgaenge"] = _render_abgaenge(draft["hybrid"]["abgaenge"], "sim_params_hybrid_abg", include_ruhend=True)
-            draft["hybrid"]["abgaenge"].pop("_ui", None)
-        with h_zug:
-            draft["hybrid"]["zugaenge"] = _render_zugaenge(draft["hybrid"]["zugaenge"], "sim_params_hybrid_zug", hybrid=True)
-            draft["hybrid"]["zugaenge"].pop("_ui", None)
-
-    with tabs[3]:
-        render_section_intro("CompactPlus Simulation", "Spiegelt den Ziel-Stichtag und Simulationsmodus; CompactPlus nutzt die zentralen Parameter bereits produktiv.")
-        cp = draft["compact_plus"]
-        base_date = get_current_stichtag().date()
-        default_target = date(base_date.year + 1, base_date.month, base_date.day)
-        c1, c2 = st.columns(2)
-        cp["target_date"] = c1.date_input("Ziel-Stichtag", value=_as_date(cp.get("target_date"), default_target), min_value=base_date, key="sim_params_compact_target")
-        cp["mode"] = c2.radio("Modus", ["simulation", "actual"], index=0 if cp.get("mode", "simulation") == "simulation" else 1, horizontal=True, key="sim_params_compact_mode")
-
-    with tabs[4]:
-        render_section_intro("Aktuelle zentrale Struktur", "Read-only Vorschau der Struktur, die gespeichert wird.")
-        st.json(json.loads(json.dumps(draft, default=str)))
-
     st.divider()
     c_save, c_note = st.columns([1, 3])
-    if c_save.button("simulation_params speichern", type="primary", use_container_width=True):
+    if c_save.button("Parameter speichern", type="primary", use_container_width=True):
         save_simulation_params(draft)
-        st.success("simulation_params wurde aktualisiert. Bestehende Produktiv-Keys wurden nicht verändert.")
-    c_note.caption("Aktueller Integrationsstand: CompactPlus Simulation nutzt diese Parameter bereits. Prognose Abgänge, Prognose Zugänge und Prognose Hybrid nutzen weiterhin ihre bisherigen Parameterquellen.")
+        st.success("Parameter wurden aktualisiert.")
+    c_note.caption("CompactPlus Simulation nutzt diese Abgänge- und Zugänge-Parameter bereits. Prognose Abgänge, Prognose Zugänge und Prognose Hybrid nutzen weiterhin ihre bisherigen Parameterquellen.")
 
 
 if __name__ == "__main__":
