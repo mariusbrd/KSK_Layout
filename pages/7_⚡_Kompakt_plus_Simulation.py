@@ -491,43 +491,59 @@ def main():
 
         if needs_recompute:
             df_atz = _get_atz_input()
-            with st.spinner(t("sim.controls.spinner")):
-                sim_result = simulate_compact_snapshot(
-                    snapshot_df=snapshot_df,
-                    df_atz=df_atz,
-                    target_date=target_date,
-                    base_date=base_date,
-                    abgaenge_params=abgaenge_params,
-                    zugaenge_params=zugaenge_params,
-                    active_cluster_source=active_cluster_source,
-                    cluster_mapping_bundle=cluster_mapping_bundle,
-                    cluster_source_signature=cluster_source_signature,
-                )
-
-            prepared_df = compact.prepare_compact_data(sim_result.future_snapshot_df)
-            status_quo_prepared_df = compact.prepare_compact_data(
-                build_status_quo_snapshot(snapshot_df, base_date)
+            _progress_placeholder = st.empty()
+            _progress_bar = _progress_placeholder.progress(
+                0, text="Simulation wird vorbereitet ..."
             )
-            computed_signature = draft_signature
-            st.session_state["compact_sim_signature"] = computed_signature
-            st.session_state["compact_sim_cluster_source_signature"] = cluster_source_signature
-            st.session_state["compact_sim_prepared_df"] = prepared_df
-            st.session_state["compact_sim_status_quo_df"] = status_quo_prepared_df
-            st.session_state["compact_sim_status_quo_signature"] = computed_signature
-            st.session_state["compact_sim_metadata"] = sim_result.metadata
-            st.session_state["compact_sim_audit_tables"] = sim_result.audit_tables
-            st.session_state["compact_sim_target_date_cached"] = target_date
-            st.session_state["compact_sim_abgaenge_params"] = abgaenge_params
-            st.session_state["compact_sim_zugaenge_params"] = zugaenge_params
-            st.session_state["compact_sim_active_cluster_source"] = active_cluster_source
-            st.session_state["compact_sim_export_context"] = {
-                "exclusions": get_setting("exclusions", {}),
-                "include_future_hires": get_setting("include_future_hires", False),
-                "salary_automation": get_setting("salary_automation", {}),
-            }
-            st.session_state.pop("compact_sim_export_signature", None)
-            st.session_state.pop("compact_sim_export_bytes", None)
-            simulation_stale = False
+
+            def _update_progress(_step: str, label: str, value: float) -> None:
+                pct = max(0, min(100, int(round(value * 100))))
+                _progress_bar.progress(pct, text=label)
+
+            try:
+                with st.spinner(t("sim.controls.spinner")):
+                    sim_result = simulate_compact_snapshot(
+                        snapshot_df=snapshot_df,
+                        df_atz=df_atz,
+                        target_date=target_date,
+                        base_date=base_date,
+                        abgaenge_params=abgaenge_params,
+                        zugaenge_params=zugaenge_params,
+                        active_cluster_source=active_cluster_source,
+                        cluster_mapping_bundle=cluster_mapping_bundle,
+                        cluster_source_signature=cluster_source_signature,
+                        progress_callback=_update_progress,
+                    )
+
+                _progress_bar.progress(97, text="Schritt 9/9: Kompaktansicht wird vorbereitet ...")
+                prepared_df = compact.prepare_compact_data(sim_result.future_snapshot_df)
+                status_quo_prepared_df = compact.prepare_compact_data(
+                    build_status_quo_snapshot(snapshot_df, base_date)
+                )
+                computed_signature = draft_signature
+                st.session_state["compact_sim_signature"] = computed_signature
+                st.session_state["compact_sim_cluster_source_signature"] = cluster_source_signature
+                st.session_state["compact_sim_prepared_df"] = prepared_df
+                st.session_state["compact_sim_status_quo_df"] = status_quo_prepared_df
+                st.session_state["compact_sim_status_quo_signature"] = computed_signature
+                st.session_state["compact_sim_metadata"] = sim_result.metadata
+                st.session_state["compact_sim_audit_tables"] = sim_result.audit_tables
+                st.session_state["compact_sim_target_date_cached"] = target_date
+                st.session_state["compact_sim_abgaenge_params"] = abgaenge_params
+                st.session_state["compact_sim_zugaenge_params"] = zugaenge_params
+                st.session_state["compact_sim_active_cluster_source"] = active_cluster_source
+                st.session_state["compact_sim_export_context"] = {
+                    "exclusions": get_setting("exclusions", {}),
+                    "include_future_hires": get_setting("include_future_hires", False),
+                    "salary_automation": get_setting("salary_automation", {}),
+                }
+                st.session_state.pop("compact_sim_export_signature", None)
+                st.session_state.pop("compact_sim_export_bytes", None)
+                simulation_stale = False
+                _progress_bar.progress(100, text="Fertig.")
+            except Exception:
+                _progress_placeholder.empty()
+                raise
         else:
             prepared_df = st.session_state["compact_sim_prepared_df"]
             status_quo_prepared_df = (

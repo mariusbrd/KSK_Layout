@@ -1083,6 +1083,7 @@ def simulate_compact_snapshot(
     active_cluster_source: Optional[ActiveClusterSource] = None,
     cluster_mapping_bundle: Optional[ClusterMappingBundle] = None,
     cluster_source_signature: Optional[str] = None,
+    progress_callback: Any = None,
 ) -> CompactSimulationResult:
     """
     Projects the current snapshot to a future target date for use on the
@@ -1097,6 +1098,10 @@ def simulate_compact_snapshot(
         cluster_mapping_bundle=cluster_mapping_bundle,
         cluster_source_signature=cluster_source_signature,
     )
+
+    def _report(step: str, label: str, value: float) -> None:
+        if progress_callback is not None:
+            progress_callback(step, label, value)
 
     current_snapshot = snapshot_df.copy()
     abgaenge_params = abgaenge_params or default_abgaenge_params()
@@ -1134,8 +1139,10 @@ def simulate_compact_snapshot(
         )
         return CompactSimulationResult(future_snapshot, future_employees, empty_abg, empty_zug, metadata, audit_tables)
 
+    _report("start", "Schritt 1/9: Simulation wird vorbereitet ...", 0.05)
     employee_base = _prepare_employee_forecast_base(current_snapshot, df_atz, base_date)
 
+    _report("abgaenge", "Schritt 3/9: Abgänge werden berechnet ...", 0.20)
     abgaenge_result = run_forecast_abgaenge(
         df_ma=employee_base,
         df_atz=df_atz,
@@ -1151,10 +1158,12 @@ def simulate_compact_snapshot(
 
     vacancies = _build_vacancies_from_attrition(employee_base, abgaenge_result)
 
+    _report("events_vacancies", "Schritt 4/9: Ereignisse und Vakanzen werden verarbeitet ...", 0.30)
     run_params_zug = {**zugaenge_params}
     run_params_zug.setdefault("azubi", {})
     run_params_zug["azubi"]["jf_to_cluster_map"] = build_jf_to_cluster_map(current_snapshot)
 
+    _report("zugaenge", "Schritt 5/9: Zugänge werden berechnet ...", 0.42)
     zugaenge_result = run_forecast_zugaenge(
         df_snapshot=employee_after_abg,
         start_date=base_date,
@@ -1185,6 +1194,7 @@ def simulate_compact_snapshot(
     atz_pivot = abgaenge_result.get("tables", {}).get("atz_pivot", pd.DataFrame())
     atz_status_df = _resolve_atz_status_map(atz_pivot, target_date)
 
+    _report("update_existing", "Schritt 6/9: Bestehender Bestand wird aktualisiert ...", 0.55)
     future_snapshot = _update_existing_rows(
         snapshot_df=current_snapshot,
         final_employee_df=final_employee_df,
@@ -1199,6 +1209,7 @@ def simulate_compact_snapshot(
         zugaenge_result=zugaenge_result,
     )
     snapshot_after_append = future_snapshot.copy()
+    _report("finalize_snapshot", "Schritt 7/9: Future Snapshot wird finalisiert ...", 0.65)
     future_snapshot = _finalize_future_snapshot(
         future_snapshot,
         target_date,
@@ -1215,6 +1226,7 @@ def simulate_compact_snapshot(
         "zugaenge_events": len(zugaenge_result.get("events", pd.DataFrame())),
         "cluster_source_signature": cluster_source_signature,
     }
+    _report("audits", "Schritt 8/9: Audit-Tabellen werden erstellt ...", 0.90)
     audit_tables = _build_simulation_audit_tables(
         future_snapshot_df=future_snapshot,
         final_employee_df=final_employee_df,
