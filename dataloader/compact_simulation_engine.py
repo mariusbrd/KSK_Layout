@@ -1108,11 +1108,19 @@ def simulate_compact_snapshot(
     zugaenge_params = zugaenge_params or default_zugaenge_params()
 
     if target_date <= base_date:
-        future_snapshot = _finalize_future_snapshot(
-            current_snapshot.copy(),
-            target_date,
-            active_cluster_source=active_cluster_source,
-            cluster_mapping_bundle=cluster_mapping_bundle,
+        # Identity case (zero-horizon): a simulation up to the base date must not change
+        # the already-finalised snapshot produced by load_and_prepare_data().
+        # Calling _finalize_future_snapshot() on an already-finalised frame re-runs the
+        # full MAK / cost / exclusion pipeline a second time, causing numeric drift
+        # (e.g. FTE_assigned uses .fillna(0.0) the second time but not the first).
+        # We only re-apply cluster mapping (idempotent, no numeric side-effects) so that
+        # an active_cluster_source that differs from the one used in load_and_prepare_data
+        # is still honoured.  All other finalization is intentionally skipped.
+        future_snapshot = current_snapshot.copy()
+        future_snapshot = apply_clusters_to_snapshot_from_source(
+            future_snapshot,
+            active_cluster_source,
+            mapping_bundle=cluster_mapping_bundle,
         )
         empty_abg = {"events_person_level": pd.DataFrame(), "tables": {"atz_pivot": pd.DataFrame()}}
         empty_zug = {"events": pd.DataFrame(), "final_state": pd.DataFrame()}
@@ -1120,6 +1128,10 @@ def simulate_compact_snapshot(
             "base_date": base_date,
             "target_date": target_date,
             "used_simulation": False,
+            "horizon_days": 0,
+            "vacancy_count": int(current_snapshot.get("Is_Vacant", pd.Series(dtype=bool)).sum()),
+            "abgaenge_events": 0,
+            "zugaenge_events": 0,
             "cluster_source_signature": cluster_source_signature,
         }
         future_employees = _prepare_employee_forecast_base(future_snapshot, df_atz, target_date)

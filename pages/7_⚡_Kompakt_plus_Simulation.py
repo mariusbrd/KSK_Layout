@@ -4,6 +4,7 @@ Streamlit page: Kompakt plus Simulation.
 
 from __future__ import annotations
 
+import html as _html
 import json
 from pathlib import Path
 import sys
@@ -42,7 +43,6 @@ from utils.compact_simulation_export import (
 )
 from utils.status_quo_baseline import (
     build_forecast_vs_status_quo_jobfamily,
-    build_status_quo_jobfamily_summary,
     build_status_quo_snapshot,
 )
 from utils.i18n import t
@@ -152,58 +152,60 @@ def _inject_page_styles():
     st.markdown(
         """
         <style>
-        .sim-panel {
-            background: #ffffff;
-            border: 1px solid #dce8f5;
-            border-radius: 14px;
-            padding: 16px 18px;
-            margin-bottom: 16px;
-            box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
+        /* ── Minimal page header ─────────────────────────────────────── */
+        .sim-header {
+            margin: 0 0 18px 0;
+            padding-bottom: 14px;
+            border-bottom: 1px solid #e2e8f0;
         }
-        .sim-panel-title {
+        .sim-header-title-row {
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+            margin-bottom: 3px;
+        }
+        .sim-header-icon {
+            font-size: 1.25rem;
+            line-height: 1;
+            color: #f97316;
+        }
+        .sim-header-title {
             color: #0f172a;
-            font-size: 1rem;
-            font-weight: 700;
-            margin-bottom: 4px;
-        }
-        .sim-panel-subtitle {
-            color: #64748b;
-            font-size: 0.9rem;
-            margin-bottom: 14px;
-            line-height: 1.4;
-        }
-        .sim-control-card {
-            background: #f8fbff;
-            border: 1px solid #dce8f5;
-            border-radius: 12px;
-            padding: 14px;
-            min-height: 112px;
-        }
-        .sim-label {
-            color: #64748b;
-            font-size: 0.76rem;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            margin-bottom: 6px;
-        }
-        .sim-value {
-            color: #0f172a;
-            font-size: 1.18rem;
+            font-size: 1.35rem;
             font-weight: 700;
             line-height: 1.2;
         }
-        .sim-note {
+        .sim-header-sub {
             color: #64748b;
-            font-size: 0.84rem;
-            line-height: 1.35;
-            margin-top: 6px;
+            font-size: 0.88rem;
+            line-height: 1.4;
+            margin: 3px 0 6px 0;
         }
+        .sim-header-meta {
+            color: #94a3b8;
+            font-size: 0.82rem;
+            line-height: 1.4;
+        }
+        .sim-header-meta .sim-meta-sep {
+            margin: 0 5px;
+            color: #cbd5e1;
+        }
+        .sim-header-meta .sim-meta-ok  { color: #16a34a; }
+        .sim-header-meta .sim-meta-warn { color: #b45309; }
+        .sim-header-logic {
+            color: #b0bec5;
+            font-size: 0.78rem;
+            margin-top: 5px;
+            font-style: italic;
+        }
+
+        /* ── Status boxes ────────────────────────────────────────────── */
         .sim-status {
-            border-radius: 14px;
-            padding: 13px 14px;
+            border-radius: 10px;
+            padding: 11px 14px;
             margin: 2px 0 14px 0;
             border: 1px solid transparent;
+            font-size: 0.9rem;
         }
         .sim-status.ok {
             background: #f0fdf4;
@@ -218,7 +220,10 @@ def _inject_page_styles():
         .sim-status strong {
             display: block;
             margin-bottom: 3px;
+            font-size: 0.88rem;
         }
+
+        /* ── Summary grid ────────────────────────────────────────────── */
         .sim-summary-grid {
             display: grid;
             grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -250,41 +255,11 @@ def _inject_page_styles():
             font-size: 0.82rem;
             margin-top: 4px;
         }
-        .sim-filter-box {
-            background: #f8fbff;
-            border: 1px solid #e2e8f0;
-            border-radius: 14px;
-            padding: 11px 14px;
-            margin: 12px 0 18px 0;
-        }
-        .sim-filter-title {
-            color: #475569;
-            font-size: 0.78rem;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            margin-bottom: 3px;
-        }
-        .sim-filter-text {
-            color: #0f172a;
-            font-size: 0.92rem;
-            line-height: 1.35;
-        }
-        .sim-view-note {
-            color: #64748b;
-            font-size: 0.9rem;
-            line-height: 1.4;
-            margin: 2px 0 14px 0;
-        }
         @media (max-width: 980px) {
-            .sim-summary-grid {
-                grid-template-columns: repeat(2, minmax(0, 1fr));
-            }
+            .sim-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         }
         @media (max-width: 640px) {
-            .sim-summary-grid {
-                grid-template-columns: 1fr;
-            }
+            .sim-summary-grid { grid-template-columns: 1fr; }
         }
         </style>
         """,
@@ -292,23 +267,59 @@ def _inject_page_styles():
     )
 
 
-def _render_hero():
-    st.title(f"⚡ {t('sim.title')}")
-    st.caption(t("sim.subtitle"))
-    render_context_box(
-        t("sim.logic.label"),
-        t("sim.logic.text"),
-        tone="info",
-    )
+def _render_page_header(
+    base_date: pd.Timestamp,
+    target_date: pd.Timestamp,
+    has_result: bool,
+    is_stale: bool,
+    metric_view: str,
+    mode: str = "simulation",
+) -> None:
+    sep = '<span class="sim-meta-sep">·</span>'
+    metric_esc = _html.escape(metric_view)
 
+    if mode == "actual":
+        if is_stale:
+            status_token = '<span class="sim-meta-warn">⚠ Nicht aktuell</span>'
+            meta_line = (
+                f"Ist-Stand{sep}Basis {_html.escape(base_date.strftime('%d.%m.%Y'))}"
+                f"{sep}ohne Fortschreibung{sep}{metric_esc}{sep}{status_token}"
+            )
+        elif has_result:
+            meta_line = (
+                f"Ist-Stand{sep}Basis {_html.escape(base_date.strftime('%d.%m.%Y'))}"
+                f"{sep}ohne Fortschreibung{sep}{metric_esc}"
+            )
+        else:
+            meta_line = (
+                f"Ist-Stand{sep}Basis {_html.escape(base_date.strftime('%d.%m.%Y'))}"
+                f"{sep}ohne Fortschreibung{sep}{metric_esc}{sep}Bereit"
+            )
+        logic_text = "Inputdatenbestand wird ohne Fortschreibung ausgewertet."
+    else:
+        if is_stale:
+            status_token = '<span class="sim-meta-warn">⚠ Nicht aktuell</span>'
+        elif has_result:
+            status_token = '<span class="sim-meta-ok">Berechnet</span>'
+        else:
+            status_token = "Bereit"
+        meta_line = (
+            f"Simulation{sep}Basis {_html.escape(base_date.strftime('%d.%m.%Y'))}"
+            f"{sep}Ziel {_html.escape(target_date.strftime('%d.%m.%Y'))}"
+            f"{sep}{metric_esc}{sep}{status_token}"
+        )
+        logic_text = "Fortschreibung auf Basis bestehender Prognose-Logik."
 
-def _render_info_card(label: str, value: str, note: str):
     st.markdown(
         f"""
-        <div class="sim-control-card">
-            <div class="sim-label">{label}</div>
-            <div class="sim-value">{value}</div>
-            <div class="sim-note">{note}</div>
+        <div class="sim-header">
+          <div class="sim-header-title-row">
+            <span class="sim-header-icon">⚡</span>
+            <span class="sim-header-title">{_html.escape(t("sim.title"))}</span>
+          </div>
+          <div class="sim-header-sub">{_html.escape(t("sim.subtitle"))}</div>
+          <div class="sim-header-meta">{meta_line}</div>
+          <div class="sim-header-logic">{_html.escape(logic_text)}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -413,7 +424,6 @@ def _render_status_quo_comparison(status_quo_df: pd.DataFrame, forecast_df: pd.D
 
 def main():
     _inject_page_styles()
-    _render_hero()
 
     compact = load_compact_page_module()
     base_date = pd.Timestamp(get_current_stichtag()).normalize()
@@ -425,39 +435,75 @@ def main():
         (base_date + pd.Timedelta(days=365)).date(),
     )
 
-    render_section_intro(
-        t("sim.controls.section"),
-        t("sim.controls.subtitle"),
+    # Mode reflects the last confirmed user action ("actual" or "simulation")
+    mode = st.session_state.get("compact_plus_mode", "simulation")
+
+    # Determine header state from session before rendering
+    has_result = "compact_sim_prepared_df" in st.session_state
+    cached_target_ts = st.session_state.get("compact_sim_target_date_cached")
+    header_target = (
+        pd.Timestamp(cached_target_ts).normalize()
+        if cached_target_ts is not None
+        else pd.Timestamp(default_target).normalize()
+    )
+    metric_view_header = normalize_global_metric_view(get_global_metric_view())
+
+    # is_stale is not yet known (need signature); status section below handles it
+    _render_page_header(
+        base_date=base_date,
+        target_date=header_target,
+        has_result=has_result,
+        is_stale=False,
+        metric_view=metric_view_header,
+        mode=mode,
     )
 
-    control_col1, control_col2, control_col3 = st.columns([2.2, 1.1, 1.15])
-    with control_col1:
-        st.markdown(f"**{t('sim.controls.date_label')}**")
-        st.caption(t("sim.controls.date_caption"))
+    # ── Controls section ──────────────────────────────────────────────────
+    ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([2, 1, 1])
+    with ctrl_col1:
         target_date_input = st.date_input(
             t("sim.controls.date_label"),
             value=default_target,
             min_value=base_date.date(),
             key="compact_sim_target_date",
-            label_visibility="collapsed",
+            help=t("sim.controls.date_caption"),
         )
-    with control_col2:
-        _render_info_card(
-            t("sim.controls.base_date"),
-            base_date.strftime("%d.%m.%Y"),
-            t("sim.controls.base_note"),
+    with ctrl_col2:
+        st.markdown("<div style='padding-top:1.6rem'></div>", unsafe_allow_html=True)
+        _ist_stand_clicked = st.button(
+            "Ist-Stand auswerten",
+            use_container_width=True,
+            type="secondary",
+            help="Zeigt den aktuellen Inputdatenbestand ohne Fortschreibung (Horizont = 0 Tage).",
         )
-    with control_col3:
-        st.markdown(f"**{t('sim.controls.compute')}**")
-        st.caption(t("sim.controls.compute_caption"))
+    with ctrl_col3:
+        st.markdown("<div style='padding-top:1.6rem'></div>", unsafe_allow_html=True)
+        sim_btn_label = (
+            "Simulation aktualisieren"
+            if has_result and mode == "simulation"
+            else t("sim.controls.compute_button")
+        )
         recalc_clicked = st.button(
-            t("sim.controls.compute_button"),
+            sim_btn_label,
             use_container_width=True,
             type="primary",
             help=t("sim.controls.compute_help"),
         )
+    st.caption(
+        f"Basis-Stichtag: {base_date.strftime('%d.%m.%Y')} — "
+        "Ist-Stand ohne Fortschreibung oder Zukunftsbestand per Simulation auswerten."
+    )
 
-    target_date = pd.Timestamp(target_date_input).normalize()
+    # Commit mode from this run's button clicks (persists for next rerun)
+    if _ist_stand_clicked:
+        st.session_state["compact_plus_mode"] = "actual"
+        mode = "actual"
+    elif recalc_clicked:
+        st.session_state["compact_plus_mode"] = "simulation"
+        mode = "simulation"
+
+    # Actual mode: target == base → engine short-circuits, produces 0 events automatically
+    target_date = base_date if mode == "actual" else pd.Timestamp(target_date_input).normalize()
     is_stale = False
 
     try:
@@ -483,25 +529,30 @@ def main():
         simulation_stale = has_cached_result and (computed_signature != draft_signature)
         needs_recompute = not has_cached_result
 
-        if recalc_clicked:
+        if recalc_clicked or _ist_stand_clicked:
             _clear_simulation_cache()
             computed_signature = None
             simulation_stale = False
             needs_recompute = True
 
+        just_computed = False
         if needs_recompute:
             df_atz = _get_atz_input()
             _progress_placeholder = st.empty()
-            _progress_bar = _progress_placeholder.progress(
-                0, text="Simulation wird vorbereitet ..."
+            progress_init_text = (
+                "Ist-Stand wird geladen ..."
+                if mode == "actual"
+                else "Simulation wird vorbereitet ..."
             )
+            _progress_bar = _progress_placeholder.progress(0, text=progress_init_text)
 
             def _update_progress(_step: str, label: str, value: float) -> None:
                 pct = max(0, min(100, int(round(value * 100))))
                 _progress_bar.progress(pct, text=label)
 
+            spinner_text = "Ist-Stand wird aufbereitet ..." if mode == "actual" else t("sim.controls.spinner")
             try:
-                with st.spinner(t("sim.controls.spinner")):
+                with st.spinner(spinner_text):
                     sim_result = simulate_compact_snapshot(
                         snapshot_df=snapshot_df,
                         df_atz=df_atz,
@@ -540,7 +591,9 @@ def main():
                 st.session_state.pop("compact_sim_export_signature", None)
                 st.session_state.pop("compact_sim_export_bytes", None)
                 simulation_stale = False
-                _progress_bar.progress(100, text="Fertig.")
+                just_computed = True
+                _progress_bar.progress(100, text="Abgeschlossen.")
+                _progress_placeholder.empty()
             except Exception:
                 _progress_placeholder.empty()
                 raise
@@ -561,20 +614,51 @@ def main():
         cached_target = st.session_state.get("compact_sim_target_date_cached")
         display_target = pd.Timestamp(cached_target).normalize() if cached_target is not None else target_date
 
-        render_section_intro(
-            t("sim.status.section"),
-            t("sim.status.subtitle"),
-        )
-        _render_status_box(
-            is_stale=simulation_stale,
-            target_date=target_date,
-            cached_target=display_target if simulation_stale else None,
-        )
+        # ── Status section ────────────────────────────────────────────────
+        if mode == "actual":
+            render_section_intro(
+                "Auswertungsstatus",
+                "Aktualität des ausgewerteten Bestands und Kernergebnisse.",
+            )
+        else:
+            render_section_intro(
+                t("sim.status.section"),
+                t("sim.status.subtitle"),
+            )
+
+        if mode == "actual":
+            if just_computed:
+                st.success(
+                    f"Ist-Stand geladen — Bestand entspricht dem Inputdatenbestand zum Basis-Stichtag **{display_target.strftime('%d.%m.%Y')}**."
+                )
+            else:
+                st.markdown(
+                    f"""
+                    <div class="sim-status ok">
+                        <strong>Ist-Stand aktuell</strong>
+                        Der angezeigte Bestand entspricht dem Inputdatenbestand zum Basis-Stichtag {display_target.strftime("%d.%m.%Y")}.
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+        else:
+            if just_computed:
+                st.success(
+                    f"Simulation erfolgreich berechnet — Bestand für **{display_target.strftime('%d.%m.%Y')}** ist aktuell."
+                )
+            else:
+                _render_status_box(
+                    is_stale=simulation_stale,
+                    target_date=target_date,
+                    cached_target=display_target if simulation_stale else None,
+                )
+
         _render_summary_cards(
             base_date=base_date,
             display_target=display_target,
             meta=st.session_state.get("compact_sim_metadata", {}),
         )
+
         export_context = st.session_state.get("compact_sim_export_context") or {
             "exclusions": get_setting("exclusions", {}),
             "include_future_hires": get_setting("include_future_hires", False),
@@ -591,11 +675,12 @@ def main():
             and st.session_state.get("compact_sim_export_signature") == export_signature
             else None
         )
-        export_prepare_label = (
-            "Excel-Export der zuletzt berechneten Simulation vorbereiten"
-            if simulation_stale
-            else "Excel-Export vorbereiten"
-        )
+        if mode == "actual":
+            export_prepare_label = "Excel-Export des Ist-Stands vorbereiten"
+        elif simulation_stale:
+            export_prepare_label = "Excel-Export der zuletzt berechneten Simulation vorbereiten"
+        else:
+            export_prepare_label = "Excel-Export vorbereiten"
         if export_bytes is None and button_compat(
             export_prepare_label,
             key="compact_plus_simulation_prepare_export",
@@ -616,15 +701,19 @@ def main():
             st.session_state["compact_sim_export_bytes"] = export_bytes
 
         if export_bytes is not None:
-            export_download_label = (
-                "Zuletzt berechnete Simulation als Excel exportieren"
-                if simulation_stale
-                else "Simulationsergebnisse als Excel exportieren"
-            )
+            if mode == "actual":
+                export_download_label = "Ist-Stand als Excel exportieren"
+                export_file_name = f"KompaktPlus_IstStand_{display_target:%Y%m%d}.xlsx"
+            elif simulation_stale:
+                export_download_label = "Zuletzt berechnete Simulation als Excel exportieren"
+                export_file_name = f"KompaktPlus_Simulation_{display_target:%Y%m%d}.xlsx"
+            else:
+                export_download_label = "Simulationsergebnisse als Excel exportieren"
+                export_file_name = f"KompaktPlus_Simulation_{display_target:%Y%m%d}.xlsx"
             download_button_compat(
                 export_download_label,
                 data=export_bytes,
-                file_name=f"KompaktPlus_Simulation_{display_target:%Y%m%d}.xlsx",
+                file_name=export_file_name,
                 mime=EXCEL_MIME,
                 key="compact_plus_simulation_export",
                 use_container_width=True,

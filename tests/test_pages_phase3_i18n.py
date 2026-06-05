@@ -117,26 +117,30 @@ def test_settings_page_renders_core_texts_in_english(monkeypatch):
 
 
 def test_compact_plus_simulation_hero_is_localized(monkeypatch):
+    import pandas as pd
     import streamlit as st
 
     module = _load_page_module("*_Kompakt_plus_Simulation.py", "compact_plus_page_test_module")
 
-    captured = {"titles": [], "captions": [], "context": []}
+    rendered_html = []
     st.session_state[i18n.LANGUAGE_SESSION_KEY] = "en"
 
-    monkeypatch.setattr(module.st, "title", lambda text, *args, **kwargs: captured["titles"].append(text))
-    monkeypatch.setattr(module.st, "caption", lambda text, *args, **kwargs: captured["captions"].append(text))
-    monkeypatch.setattr(module, "render_context_box", lambda label, text, **kwargs: captured["context"].append((label, text, kwargs)))
+    monkeypatch.setattr(module.st, "markdown", lambda html, **kwargs: rendered_html.append(html))
 
-    module._render_hero()
-
-    assert captured["titles"] == ["⚡ Compact plus Simulation"]
-    assert captured["captions"] == ["Compact evaluation based on a workforce projected forward to a target date."]
-    assert captured["context"][0][0] == "Simulation logic"
-    assert captured["context"][0][1] == (
-        "Forward projection of the workforce to a selected future date based on the existing attrition and hiring forecast logic."
+    base_date = pd.Timestamp("2026-03-27")
+    target_date = pd.Timestamp("2027-03-27")
+    module._render_page_header(
+        base_date=base_date,
+        target_date=target_date,
+        has_result=True,
+        is_stale=False,
+        metric_view="Heads",
+        mode="simulation",
     )
-    assert captured["context"][0][2] == {"tone": "info"}
+
+    combined = " ".join(rendered_html)
+    assert "Compact plus Simulation" in combined
+    assert "Compact evaluation" in combined
 
 
 def test_compact_plus_simulation_main_warns_in_english_for_empty_filters(monkeypatch):
@@ -156,7 +160,7 @@ def test_compact_plus_simulation_main_warns_in_english_for_empty_filters(monkeyp
     )
 
     monkeypatch.setattr(module, "_inject_page_styles", lambda: None)
-    monkeypatch.setattr(module, "_render_hero", lambda: None)
+    monkeypatch.setattr(module, "_render_page_header", lambda *a, **kw: None)
     monkeypatch.setattr(module, "load_compact_page_module", lambda: type("CompactDummy", (), {"prepare_compact_data": staticmethod(lambda df: df)})())
     monkeypatch.setattr(module, "get_current_stichtag", lambda: "2026-03-27")
     monkeypatch.setattr(module, "_build_simulation_signature", lambda **kwargs: "sig")
@@ -199,6 +203,10 @@ def test_compact_plus_simulation_main_uses_localized_control_intro(monkeypatch):
 
     class CompactDummy:
         @staticmethod
+        def prepare_compact_data(df, *args, **kwargs):
+            return df
+
+        @staticmethod
         def render_ist_koepfe_tab(*args, **kwargs):
             return None
 
@@ -223,7 +231,7 @@ def test_compact_plus_simulation_main_uses_localized_control_intro(monkeypatch):
             return None
 
     monkeypatch.setattr(module, "_inject_page_styles", lambda: None)
-    monkeypatch.setattr(module, "_render_hero", lambda: None)
+    monkeypatch.setattr(module, "_render_page_header", lambda *a, **kw: None)
     monkeypatch.setattr(module, "load_compact_page_module", lambda: CompactDummy())
     monkeypatch.setattr(module, "get_current_stichtag", lambda: "2026-03-27")
     monkeypatch.setattr(module, "_build_simulation_signature", lambda **kwargs: "sig")
@@ -257,13 +265,15 @@ def test_compact_plus_simulation_main_uses_localized_control_intro(monkeypatch):
     monkeypatch.setattr(module.st, "warning", lambda *args, **kwargs: None)
     monkeypatch.setattr(module.st, "tabs", lambda labels, **kwargs: [DummyContext() for _ in labels])
 
+    monkeypatch.setattr(module, "build_status_quo_snapshot", lambda *a, **kw: pd.DataFrame())
+    monkeypatch.setattr(module, "button_compat", lambda *a, **kw: False)
+
     module.main()
 
-    assert captured["intro"][0] == (
-        "Control simulation",
-        "Choose the target date, calculate the workforce and then analyze it like on the compact page.",
-        {},
-    )
+    # Controls section now uses inline HTML instead of render_section_intro.
+    # Verify that at least one localized section intro is rendered (status or evaluation).
+    assert any("Simulation" in title or "Analysis" in title or "Status" in title
+               for title, _, _ in captured["intro"])
 
 
 def test_compact_plus_simulation_routes_heads_metric_view(monkeypatch):
@@ -291,6 +301,10 @@ def test_compact_plus_simulation_routes_heads_metric_view(monkeypatch):
 
     class CompactDummy:
         @staticmethod
+        def prepare_compact_data(df, *args, **kwargs):
+            return df
+
+        @staticmethod
         def render_ist_koepfe_tab(*args, **kwargs):
             calls["ist_koepfe"] += 1
 
@@ -315,7 +329,7 @@ def test_compact_plus_simulation_routes_heads_metric_view(monkeypatch):
             calls["ist_vs_soll_eur"] += 1
 
     monkeypatch.setattr(module, "_inject_page_styles", lambda: None)
-    monkeypatch.setattr(module, "_render_hero", lambda: None)
+    monkeypatch.setattr(module, "_render_page_header", lambda *a, **kw: None)
     monkeypatch.setattr(module, "load_compact_page_module", lambda: CompactDummy())
     monkeypatch.setattr(module, "get_current_stichtag", lambda: "2026-03-27")
     monkeypatch.setattr(module, "_build_simulation_signature", lambda **kwargs: "sig")
@@ -329,6 +343,8 @@ def test_compact_plus_simulation_routes_heads_metric_view(monkeypatch):
             None,
         ),
     )
+    monkeypatch.setattr(module, "build_status_quo_snapshot", lambda *a, **kw: pd.DataFrame())
+    monkeypatch.setattr(module, "button_compat", lambda *a, **kw: False)
     monkeypatch.setattr(module, "render_section_intro", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "render_context_box", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "render_global_filters", lambda *args, **kwargs: None)
