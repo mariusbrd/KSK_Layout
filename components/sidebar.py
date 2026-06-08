@@ -501,27 +501,6 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
         # ── Zone 2: Filter ──────────────────────────────────────────────
         _render_sidebar_heading(t("sidebar.primary_filters.section"))
 
-        # Zeitraum (aus History)
-        if not history_df.empty and "Date" in history_df.columns:
-            min_date = history_df["Date"].min().date()
-            max_date = history_df["Date"].max().date()
-
-            st.markdown(f"**{t('sidebar.label.period')}**")
-            date_range = st.date_input(
-                t("sidebar.label.period_select"),
-                value=(min_date, max_date),
-                min_value=min_date,
-                max_value=max_date,
-                key="date_range_input",
-                label_visibility="collapsed",
-            )
-
-            # Update session state
-            if isinstance(date_range, tuple) and len(date_range) == 2:
-                st.session_state["date_range"] = date_range
-            else:
-                st.session_state["date_range"] = (min_date, max_date)
-
         # Organisationseinheiten
         # FIX: Use Organisationseinheit (full name) as key, since Kürzel OrgEinheit
         # is NOT unique (e.g. 591 = "Beratungs-Center Herrenberg" AND "Akquisepool Herrenberg").
@@ -549,24 +528,6 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
         )
         st.session_state["selected_org_units"] = selected_orgs
 
-        # Geschlecht
-        gender_map = {"m": "Männlich", "w": "Weiblich"}
-        gender_display_to_code = {v: k for k, v in gender_map.items()}
-        gender_code_to_display = {k: v for k, v in gender_map.items()}
-
-        default_gender_displays = [gender_code_to_display.get(x, x) for x in st.session_state.get("selected_genders", ["m", "w"])]
-        selected_gender_displays = _segmented_multi_gender(
-            t("sidebar.label.gender"),
-            options=[gender_map["m"], gender_map["w"]],
-            default=default_gender_displays,
-            key="gender_segmented",
-        )
-        # Normalize selection back to codes
-        if isinstance(selected_gender_displays, str):
-            selected_gender_displays = [selected_gender_displays]
-        selected_genders = [gender_display_to_code.get(x, x) for x in (selected_gender_displays or [])]
-        st.session_state["selected_genders"] = selected_genders
-
         # Arbeitszeit
         st.markdown(f"**{t('sidebar.label.working_time')}**")
         selected_employment = _multiselect_with_placeholder(
@@ -578,6 +539,35 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
             label_visibility="collapsed",
         )
         st.session_state["selected_employment"] = selected_employment
+
+        # Geschlecht (collapsible, dynamischer Expander-Titel)
+        _cur_genders = st.session_state.get("selected_genders", ["m", "w"])
+        if len(_cur_genders) == 2:
+            _gender_expander_label = f"{t('sidebar.label.gender')} · {t('sidebar.value.gender_both')}"
+        elif len(_cur_genders) == 1:
+            if "m" in _cur_genders:
+                _gender_expander_label = f"{t('sidebar.label.gender')} · {t('sidebar.value.gender_male_only')}"
+            else:
+                _gender_expander_label = f"{t('sidebar.label.gender')} · {t('sidebar.value.gender_female_only')}"
+        else:
+            _gender_expander_label = f"{t('sidebar.label.gender')} · {t('sidebar.value.gender_none')}"
+
+        with st.expander(_gender_expander_label, expanded=False):
+            gender_map = {"m": "Männlich", "w": "Weiblich"}
+            gender_display_to_code = {v: k for k, v in gender_map.items()}
+            gender_code_to_display = {k: v for k, v in gender_map.items()}
+
+            default_gender_displays = [gender_code_to_display.get(x, x) for x in st.session_state.get("selected_genders", ["m", "w"])]
+            selected_gender_displays = _segmented_multi_gender(
+                t("sidebar.label.gender"),
+                options=[gender_map["m"], gender_map["w"]],
+                default=default_gender_displays,
+                key="gender_segmented",
+            )
+            if isinstance(selected_gender_displays, str):
+                selected_gender_displays = [selected_gender_displays]
+            selected_genders = [gender_display_to_code.get(x, x) for x in (selected_gender_displays or [])]
+            st.session_state["selected_genders"] = selected_genders
 
         # Job Families (collapsible)
         with st.expander(t("sidebar.label.job_families"), expanded=False):
@@ -642,30 +632,9 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
         with st.expander(t("sidebar.more_filters.section"), expanded=False):
             _render_sidebar_caption(t("sidebar.more_filters.caption"))
 
-            # Custom Clusters (Optional)
-            has_oe_clusters = "OE-Cluster" in snapshot_df.columns and snapshot_df["OE-Cluster"].nunique() > 1
-            has_jf_clusters = "JF-Cluster" in snapshot_df.columns and snapshot_df["JF-Cluster"].nunique() > 1
-
-            if has_oe_clusters or has_jf_clusters:
-                _render_sidebar_section(t("sidebar.cluster.section"))
-
-                if has_oe_clusters:
-                    oe_clusters = sorted(snapshot_df["OE-Cluster"].dropna().unique())
-                    st.session_state["selected_oe_clusters"] = _multiselect_with_placeholder(
-                        t("sidebar.label.oe_clusters_select"),
-                        options=oe_clusters,
-                        default=st.session_state.get("selected_oe_clusters", []),
-                        key="oe_cluster_select"
-                    )
-
-                if has_jf_clusters:
-                    jf_clusters = sorted(snapshot_df["JF-Cluster"].dropna().unique())
-                    st.session_state["selected_jf_clusters"] = _multiselect_with_placeholder(
-                        t("sidebar.label.jf_clusters_select"),
-                        options=jf_clusters,
-                        default=st.session_state.get("selected_jf_clusters", []),
-                        key="jf_cluster_select"
-                    )
+            # Cluster-Filter: Widgets ausgeblendet, Keys neutralisieren um stille Filterung zu verhindern
+            st.session_state["selected_oe_clusters"] = []
+            st.session_state["selected_jf_clusters"] = []
 
             # Qualifikation (Expander with smart label + buttons)
             education_options = []
