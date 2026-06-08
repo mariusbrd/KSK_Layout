@@ -104,12 +104,12 @@ def _get_largest_jobfamily_label(
     compact,
 ) -> tuple[str, str]:
     if mapped_df.empty:
-        return "Keine zugeordnete Jobfamily", "Aktuelle Filter enthalten nur UNMAPPED oder keine Daten."
+        return "Keine zugeordnete Jobgruppe", "Aktuelle Filter enthalten nur UNMAPPED oder keine Daten."
 
     ranking_df = compact.create_breakdown_table(mapped_df, "Jobfamily", metric_config["value_col"])
     ranking_df = ranking_df[ranking_df["Jobfamily"] != JOBFAMILY_UNMAPPED]
     if ranking_df.empty:
-        return "Keine zugeordnete Jobfamily", "Aktuelle Filter enthalten nur UNMAPPED oder keine Daten."
+        return "Keine zugeordnete Jobgruppe", "Aktuelle Filter enthalten nur UNMAPPED oder keine Daten."
 
     top_row = ranking_df.iloc[0]
     return str(top_row["Jobfamily"]), _format_metric_value(float(top_row["IST"]), metric_view, compact)
@@ -142,14 +142,14 @@ def _build_kpis(
             {
                 "title": "Zugeordnete Köpfe",
                 "value": compact.format_number(total_koepfe, 0),
-                "subtitle": "Aktuell sichtbare Mitarbeitende mit Jobfamily-Zuordnung",
+                "subtitle": "Aktuell sichtbare Mitarbeitende mit Jobgruppen-Zuordnung",
                 "icon": "👥",
                 "status": "good",
             },
             {
                 "title": "Frauenanteil",
                 "value": compact.format_percent(female_rate),
-                "subtitle": f"{female_count} Frauen in den sichtbaren Jobfamilies",
+                "subtitle": f"{female_count} Frauen in den sichtbaren Jobgruppen",
                 "icon": "👤",
                 "status": "default",
             },
@@ -161,9 +161,9 @@ def _build_kpis(
                 "status": "default",
             },
             {
-                "title": "Größte Jobfamily",
+                "title": "Größte Jobgruppe",
                 "value": largest_name,
-                "subtitle": f"{largest_value} · {visible_jobfamilies} Jobfamilies sichtbar",
+                "subtitle": f"{largest_value} · {visible_jobfamilies} Jobgruppen sichtbar",
                 "icon": "💼",
                 "status": "default" if unmapped_metric <= 0 else "warning",
             },
@@ -199,9 +199,9 @@ def _build_kpis(
                 "status": "default",
             },
             {
-                "title": "Größte Jobfamily",
+                "title": "Größte Jobgruppe",
                 "value": largest_name,
-                "subtitle": f"{largest_value} · {visible_jobfamilies} Jobfamilies sichtbar",
+                "subtitle": f"{largest_value} · {visible_jobfamilies} Jobgruppen sichtbar",
                 "icon": "💼",
                 "status": "default" if unmapped_metric <= 0 else "warning",
             },
@@ -218,7 +218,7 @@ def _build_kpis(
         {
             "title": "Zugeordnete Kosten",
             "value": compact.format_currency(total_cost),
-            "subtitle": "Sichtbare Jahreskosten in zugeordneten Jobfamilies",
+            "subtitle": "Sichtbare Jahreskosten in zugeordneten Jobgruppen",
             "icon": "💰",
             "status": "good",
         },
@@ -237,9 +237,9 @@ def _build_kpis(
             "status": "default",
         },
         {
-            "title": "Größte Jobfamily",
+            "title": "Größte Jobgruppe",
             "value": largest_name,
-            "subtitle": f"{largest_value} · {visible_jobfamilies} Jobfamilies sichtbar",
+            "subtitle": f"{largest_value} · {visible_jobfamilies} Jobgruppen sichtbar",
             "icon": "💼",
             "status": "default" if unmapped_metric <= 0 else "warning",
         },
@@ -349,8 +349,8 @@ def _render_jobfamily_split_block(
     key_prefix: str,
 ) -> None:
     render_section_intro(
-        f"Jobfamily nach {title}",
-        f"Top-{TOP_JOBFAMILY_COUNT}-Jobfamilies im aktuellen Filterkontext, gestapelt nach {title.lower()}",
+        f"Jobgruppe nach {title}",
+        f"Top-{TOP_JOBFAMILY_COUNT}-Jobgruppen im aktuellen Filterkontext, gestapelt nach {title.lower()}",
     )
 
     agg_df = _aggregate_jobfamily_split(mapped_df, split_col, metric_view, metric_config, compact)
@@ -395,9 +395,9 @@ def _render_jobfamily_split_block(
         excel_data = compact.export_to_excel(
             pivot_df,
             key_prefix=key_prefix,
-            dimension_name=f"Jobfamily x {title}",
+            dimension_name=f"Jobgruppe x {title}",
             value_type=metric_config["value_type"],
-            table_title=f"Jobfamily nach {title}",
+            table_title=f"Jobgruppe nach {title}",
         )
         download_button_compat(
             label="Excel Download",
@@ -419,7 +419,7 @@ def _render_data_quality_block(
 ) -> None:
     render_section_intro(
         "Datenqualität: UNMAPPED",
-        "Die Hauptanalyse oberhalb berücksichtigt nur zugeordnete Jobfamilies. Dieser Block macht den verbleibenden Rest transparent.",
+        "Die Hauptanalyse oberhalb berücksichtigt nur zugeordnete Jobgruppen. Dieser Block macht den verbleibenden Rest transparent.",
     )
 
     total_rows = len(filtered_df)
@@ -466,7 +466,7 @@ def _render_data_quality_block(
     if unmapped_df.empty:
         render_context_box(
             "UNMAPPED aktuell ohne Wirkung",
-            "Im aktuellen Filterkontext liegen keine nicht zugeordneten Jobfamily-Zeilen vor.",
+            "Im aktuellen Filterkontext liegen keine nicht zugeordneten Jobgruppen-Zeilen vor.",
             tone="success",
         )
         return
@@ -514,13 +514,13 @@ def main() -> None:
     compact = load_compact_page_module()
 
     render_page_header(
-        "Jobfamily-Analyse",
+        "Jobgruppen-Analyse",
         "IST-Analyse der aktuell sichtbaren Personalsituation auf Basis des bestehenden Snapshot-Modells.",
         note="Die globale Kennzahl in der Sidebar steuert KPI-Header, Rangliste und Detailblöcke dieser Seite.",
     )
 
     set_metric_page_hint(
-        "Jobfamily-Analyse nutzt den globalen Metrik-Switch direkt für KPIs, Rangliste und Detailblöcke."
+        "Jobgruppen-Analyse nutzt den globalen Metrik-Switch direkt für KPIs, Rangliste und Detailblöcke."
     )
 
     snapshot_df, history_df, _, _ = load_and_prepare_data(show_status_messages=False)
@@ -537,9 +537,9 @@ def main() -> None:
     if selected_jobfamilies or selected_jf_clusters:
         drilldown_parts = []
         if selected_jobfamilies:
-            drilldown_parts.append(f"{len(selected_jobfamilies)} Jobfamily-Filter")
+            drilldown_parts.append(f"{len(selected_jobfamilies)} Jobgruppen-Filter")
         if selected_jf_clusters:
-            drilldown_parts.append(f"{len(selected_jf_clusters)} JF-Cluster-Filter")
+            drilldown_parts.append(f"{len(selected_jf_clusters)} Jobgruppen-Cluster-Filter")
         render_context_box(
             "Drilldown aktiv",
             "Die Seite zeigt aktuell einen verengten Ausschnitt aufgrund aktiver "
@@ -568,7 +568,7 @@ def main() -> None:
 
     if mapped_df.empty:
         render_context_box(
-            "Keine zugeordneten Jobfamilies im aktuellen Ausschnitt",
+            "Keine zugeordneten Jobgruppen im aktuellen Ausschnitt",
             "Im aktuellen Filterkontext sind nur UNMAPPED-Zeilen oder gar keine Daten sichtbar. Die fachliche Hauptanalyse bleibt deshalb leer; der Datenqualitätsblock unten zeigt den verbleibenden Rest transparent an.",
             tone="warning",
         )
@@ -577,18 +577,18 @@ def main() -> None:
 
     render_context_box(
         "Analyseabgrenzung",
-        "Die Hauptanalyse zeigt ausschließlich zugeordnete Jobfamilies. UNMAPPED wird nicht stillschweigend verworfen, sondern separat im Datenqualitätsblock ausgewiesen.",
+        "Die Hauptanalyse zeigt ausschließlich zugeordnete Jobgruppen. UNMAPPED wird nicht stillschweigend verworfen, sondern separat im Datenqualitätsblock ausgewiesen.",
         tone="info",
         compact=True,
     )
 
     render_section_intro(
-        "Jobfamily-Rangliste",
+        "Jobgruppen-Rangliste",
         "Sortiert nach der aktuell gewählten Kennzahl und vollständig im Stil des bestehenden Kompakt-Dashboards aufbereitet.",
     )
     compact.render_single_breakdown(
         mapped_df,
-        "Jobfamilies",
+        "Jobgruppen",
         "Jobfamily",
         value_col=metric_config["value_col"],
         value_type=metric_config["value_type"],

@@ -93,7 +93,7 @@ def render_assignment_matrix(
         st.metric(
             t("jobfamily_matrix.metric.families"),
             f"{len(families)}",
-            help="Anzahl definierter Job Families"
+            help="Anzahl definierter Jobgruppen"
         )
 
     st.divider()
@@ -499,14 +499,14 @@ def render_quick_add_family(
     Returns:
         Name der neuen Family oder None
     """
-    with st.expander("➕ Schnell neue Job Family hinzufügen", expanded=False):
-        st.caption("Erstellen Sie eine neue Job Family direkt aus der Matrix")
+    with st.expander("➕ Schnell neue Jobgruppe hinzufügen", expanded=False):
+        st.caption("Erstellen Sie eine neue Jobgruppe direkt aus der Matrix")
 
         col1, col2 = st.columns([2, 1])
 
         with col1:
             new_name = st.text_input(
-                "Name der Job Family",
+                "Name der Jobgruppe",
                 key="quick_add_family_name",
                 placeholder="z.B. 'IT & Digitalisierung'"
             )
@@ -516,7 +516,7 @@ def render_quick_add_family(
                 if new_name and new_name.strip():
                     # Check if already exists
                     if new_name in definitions.get("jobfamilies", {}):
-                        st.error(f"❌ Job Family '{new_name}' existiert bereits!")
+                        st.error(f"❌ Jobgruppe '{new_name}' existiert bereits!")
                         return None
 
                     # Add new family
@@ -537,7 +537,7 @@ def render_quick_add_family(
                     if on_add_callback:
                         on_add_callback(definitions)
 
-                    st.success(f"✅ Job Family '{new_name}' erstellt!")
+                    st.success(f"✅ Jobgruppe '{new_name}' erstellt!")
                     st.rerun()
 
                     return new_name

@@ -861,7 +861,7 @@ def _build_filter_meta_rows() -> list:
     _add("Organisationseinheiten", ", ".join(org) if org else "alle")
 
     jf = st.session_state.get("selected_jobfamilies", [])
-    _add("Job Families", ", ".join(jf) if jf else "alle")
+    _add("Jobgruppen", ", ".join(jf) if jf else "alle")
 
     cohorts = st.session_state.get("selected_cohorts", [])
     _add("Altersgruppen (Kohorten)", ", ".join(str(c) for c in cohorts) if cohorts else "alle")
@@ -882,7 +882,7 @@ def _build_filter_meta_rows() -> list:
     _add("OE-Cluster", ", ".join(oe_cl) if oe_cl else "alle")
 
     jf_cl = st.session_state.get("selected_jf_clusters", [])
-    _add("JF-Cluster", ", ".join(jf_cl) if jf_cl else "alle")
+    _add("Jobgruppen-Cluster", ", ".join(jf_cl) if jf_cl else "alle")
 
     ex = get_setting("exclusions", {})
     _add("Exkludiert: Vorstand",    "ja" if ex.get("vorstand") else "nein")
@@ -920,8 +920,8 @@ _COL_DESCRIPTIONS = {
     "count":          "Gesamtanzahl Mitarbeitende in diesem Bereich",
     # Dimensions-/Gruppierungsspalten
     "Geschlecht":          "Geschlecht des Mitarbeitenden (M / W / D)",
-    "Jobfamily":           "Jobfamilie (fachliche Eingruppierung der Stelle)",
-    "JF_Cluster":          "Jobfamily-Cluster (aggregierte Jobfamiliengruppe)",
+    "Jobfamily":           "Jobgruppe (fachliche Eingruppierung der Stelle)",
+    "JF_Cluster":          "Jobgruppen-Cluster (aggregierte Jobgruppen-Gruppe)",
     "OE_Cluster":          "Organisationseinheiten-Cluster (aggregierte OE-Gruppe)",
     "Kürzel OrgEinheit":   "Kürzel der Organisationseinheit",
     "OrgEinheit":          "Name der Organisationseinheit",
