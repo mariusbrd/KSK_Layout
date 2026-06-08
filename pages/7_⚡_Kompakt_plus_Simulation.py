@@ -197,6 +197,11 @@ def _inject_page_styles():
             margin-top: 5px;
             font-style: italic;
         }
+        .sim-header-source {
+            color: #64748b;
+            font-size: 0.8rem;
+            margin-top: 3px;
+        }
 
         /* ── Status boxes ────────────────────────────────────────────── */
         .sim-status {
@@ -282,17 +287,17 @@ def _render_page_header(
             status_token = '<span class="sim-meta-warn">⚠ Nicht aktuell</span>'
             meta_line = (
                 f"Ist-Stand{sep}Basis {_html.escape(base_date.strftime('%d.%m.%Y'))}"
-                f"{sep}ohne Fortschreibung{sep}{metric_esc}{sep}{status_token}"
+                f"{sep}{metric_esc}{sep}{status_token}"
             )
         elif has_result:
             meta_line = (
                 f"Ist-Stand{sep}Basis {_html.escape(base_date.strftime('%d.%m.%Y'))}"
-                f"{sep}ohne Fortschreibung{sep}{metric_esc}"
+                f"{sep}{metric_esc}{sep}<span class=\"sim-meta-ok\">Aktiv</span>"
             )
         else:
             meta_line = (
                 f"Ist-Stand{sep}Basis {_html.escape(base_date.strftime('%d.%m.%Y'))}"
-                f"{sep}ohne Fortschreibung{sep}{metric_esc}{sep}Bereit"
+                f"{sep}{metric_esc}{sep}Bereit"
             )
         logic_text = "Inputdatenbestand wird ohne Fortschreibung ausgewertet."
     else:
@@ -319,6 +324,7 @@ def _render_page_header(
           <div class="sim-header-sub">{_html.escape(t("sim.subtitle"))}</div>
           <div class="sim-header-meta">{meta_line}</div>
           <div class="sim-header-logic">{_html.escape(logic_text)}</div>
+          <div class="sim-header-source">Parameterquelle: Simulationsparameter</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -341,38 +347,48 @@ def _render_status_box(is_stale: bool, target_date: pd.Timestamp, cached_target:
         st.markdown(
             f"""
             <div class="sim-status ok">
-                <strong>{t('sim.status.current.title')}</strong>
-                {t('sim.status.current.text', target_date=target_date.strftime("%d.%m.%Y"))}
+                <strong>Simulation aktiv</strong>
+                Fortgeschriebener Bestand zum Ziel-Stichtag {target_date.strftime("%d.%m.%Y")}.
             </div>
             """,
             unsafe_allow_html=True,
         )
 
 
-def _render_summary_cards(base_date: pd.Timestamp, display_target: pd.Timestamp, meta: dict):
+def _render_summary_cards(base_date: pd.Timestamp, display_target: pd.Timestamp, meta: dict, mode: str):
     delta_days = max(0, (display_target - base_date).days)
+    if mode == "actual":
+        date_label = "AUSWERTUNGSSTICHTAG"
+        date_note = "Inputdatenbestand"
+        horizon_note = "Keine Fortschreibung"
+        events_note = "Keine Forecast-Ereignisse"
+    else:
+        date_label = t("sim.summary.target_date")
+        date_note = t("sim.summary.target_note")
+        horizon_note = t("sim.summary.horizon_note")
+        events_note = t("sim.summary.events_note")
     st.markdown(
         f"""
         <div class="sim-summary-grid">
             <div class="sim-summary-card">
-                <div class="sim-summary-label">{t('sim.summary.target_date')}</div>
+                <div class="sim-summary-label">{date_label}</div>
                 <div class="sim-summary-value">{display_target.strftime("%d.%m.%Y")}</div>
-                <div class="sim-summary-note">{t('sim.summary.target_note')}</div>
+                <div class="sim-summary-note">{date_note}</div>
             </div>
             <div class="sim-summary-card">
                 <div class="sim-summary-label">{t('sim.summary.horizon')}</div>
                 <div class="sim-summary-value">{t('sim.summary.horizon_value', days=delta_days)}</div>
-                <div class="sim-summary-note">{t('sim.summary.horizon_note')}</div>
+                <div class="sim-summary-note">{horizon_note}</div>
             </div>
             <div class="sim-summary-card">
                 <div class="sim-summary-label">{t('sim.summary.attrition')}</div>
                 <div class="sim-summary-value">{meta.get('abgaenge_events', 0)}</div>
-                <div class="sim-summary-note">{t('sim.summary.events_note')}</div>
+                <div class="sim-summary-note">{events_note}</div>
             </div>
             <div class="sim-summary-card">
                 <div class="sim-summary-label">{t('sim.summary.hiring')}</div>
                 <div class="sim-summary-value">{meta.get('zugaenge_events', 0)}</div>
-                <div class="sim-summary-note">{t('sim.summary.events_note')}</div>
+                <div class="sim-summary-note">{events_note}</div>
             </div>
         </div>
         """,
@@ -488,8 +504,8 @@ def main():
             help=t("sim.controls.compute_help"),
         )
     st.caption(
-        f"Basis-Stichtag: {base_date.strftime('%d.%m.%Y')} — "
-        "Ist-Stand ohne Fortschreibung oder Zukunftsbestand per Simulation auswerten."
+        "Ist-Stand = Basisdaten ohne Fortschreibung. "
+        "Simulation = Fortschreibung bis zum gewählten Ziel-Datum."
     )
 
     # Commit mode from this run's button clicks (persists for next rerun)
@@ -627,14 +643,14 @@ def main():
         if mode == "actual":
             if just_computed:
                 st.success(
-                    f"Ist-Stand geladen — Bestand entspricht dem Inputdatenbestand zum Basis-Stichtag **{display_target.strftime('%d.%m.%Y')}**."
+                    f"Ist-Stand aktiv — Inputdatenbestand zum Basis-Stichtag **{display_target.strftime('%d.%m.%Y')}**."
                 )
             else:
                 st.markdown(
                     f"""
                     <div class="sim-status ok">
-                        <strong>Ist-Stand aktuell</strong>
-                        Der angezeigte Bestand entspricht dem Inputdatenbestand zum Basis-Stichtag {display_target.strftime("%d.%m.%Y")}.
+                        <strong>Ist-Stand aktiv</strong>
+                        Inputdatenbestand zum Basis-Stichtag {display_target.strftime("%d.%m.%Y")}.
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -655,6 +671,7 @@ def main():
             base_date=base_date,
             display_target=display_target,
             meta=st.session_state.get("compact_sim_metadata", {}),
+            mode=mode,
         )
 
         export_context = st.session_state.get("compact_sim_export_context") or {
@@ -678,7 +695,7 @@ def main():
         elif simulation_stale:
             export_prepare_label = "Excel-Export der zuletzt berechneten Simulation vorbereiten"
         else:
-            export_prepare_label = "Excel-Export vorbereiten"
+            export_prepare_label = "Excel-Export der Simulation vorbereiten"
         if export_bytes is None and button_compat(
             export_prepare_label,
             key="compact_plus_simulation_prepare_export",
