@@ -104,12 +104,12 @@ def _get_largest_jobfamily_label(
     compact,
 ) -> tuple[str, str]:
     if mapped_df.empty:
-        return "Keine zugeordnete Jobfamily", "Aktuelle Filter enthalten nur UNMAPPED oder keine Daten."
+        return "Keine zugeordnete Jobgruppe", "Aktuelle Filter enthalten nur UNMAPPED oder keine Daten."
 
     ranking_df = compact.create_breakdown_table(mapped_df, "Jobfamily", metric_config["value_col"])
     ranking_df = ranking_df[ranking_df["Jobfamily"] != JOBFAMILY_UNMAPPED]
     if ranking_df.empty:
-        return "Keine zugeordnete Jobfamily", "Aktuelle Filter enthalten nur UNMAPPED oder keine Daten."
+        return "Keine zugeordnete Jobgruppe", "Aktuelle Filter enthalten nur UNMAPPED oder keine Daten."
 
     top_row = ranking_df.iloc[0]
     return str(top_row["Jobfamily"]), _format_metric_value(float(top_row["IST"]), metric_view, compact)
@@ -142,28 +142,28 @@ def _build_kpis(
             {
                 "title": "Zugeordnete Köpfe",
                 "value": compact.format_number(total_koepfe, 0),
-                "subtitle": "Aktuell sichtbare Mitarbeitende mit Jobfamily-Zuordnung",
+                "subtitle": "Mitarbeitende mit Zuordnung",
                 "icon": "👥",
                 "status": "good",
             },
             {
                 "title": "Frauenanteil",
                 "value": compact.format_percent(female_rate),
-                "subtitle": f"{female_count} Frauen in den sichtbaren Jobfamilies",
+                "subtitle": f"{female_count} Frauen",
                 "icon": "👤",
                 "status": "default",
             },
             {
                 "title": "ATZ-Quote",
                 "value": f"{atz['quote_headcount_pct']:.1f}%".replace(".", ","),
-                "subtitle": f"{atz['gesamt']} Mitarbeitende in ATZ",
+                "subtitle": f"{atz['gesamt']} Mitarbeitende",
                 "icon": "⏰",
                 "status": "default",
             },
             {
-                "title": "Größte Jobfamily",
+                "title": "Größte Jobgruppe",
                 "value": largest_name,
-                "subtitle": f"{largest_value} · {visible_jobfamilies} Jobfamilies sichtbar",
+                "subtitle": f"{largest_value} · {visible_jobfamilies} sichtbar",
                 "icon": "💼",
                 "status": "default" if unmapped_metric <= 0 else "warning",
             },
@@ -199,9 +199,9 @@ def _build_kpis(
                 "status": "default",
             },
             {
-                "title": "Größte Jobfamily",
+                "title": "Größte Jobgruppe",
                 "value": largest_name,
-                "subtitle": f"{largest_value} · {visible_jobfamilies} Jobfamilies sichtbar",
+                "subtitle": f"{largest_value} · {visible_jobfamilies} sichtbar",
                 "icon": "💼",
                 "status": "default" if unmapped_metric <= 0 else "warning",
             },
@@ -218,7 +218,7 @@ def _build_kpis(
         {
             "title": "Zugeordnete Kosten",
             "value": compact.format_currency(total_cost),
-            "subtitle": "Sichtbare Jahreskosten in zugeordneten Jobfamilies",
+            "subtitle": "Sichtbare Jahreskosten in zugeordneten Jobgruppen",
             "icon": "💰",
             "status": "good",
         },
@@ -232,14 +232,14 @@ def _build_kpis(
         {
             "title": "Kosten pro MAK",
             "value": compact.format_currency(cost_per_mak),
-            "subtitle": f"Zugeordneter Anteil am sichtbaren EUR-Volumen: {compact.format_percent(mapped_share)}",
+            "subtitle": f"Zugeordneter Anteil: {compact.format_percent(mapped_share)}",
             "icon": "📊",
             "status": "default",
         },
         {
-            "title": "Größte Jobfamily",
+            "title": "Größte Jobgruppe",
             "value": largest_name,
-            "subtitle": f"{largest_value} · {visible_jobfamilies} Jobfamilies sichtbar",
+            "subtitle": f"{largest_value} · {visible_jobfamilies} sichtbar",
             "icon": "💼",
             "status": "default" if unmapped_metric <= 0 else "warning",
         },
@@ -348,14 +348,9 @@ def _render_jobfamily_split_block(
     compact,
     key_prefix: str,
 ) -> None:
-    render_section_intro(
-        f"Jobfamily nach {title}",
-        f"Top-{TOP_JOBFAMILY_COUNT}-Jobfamilies im aktuellen Filterkontext, gestapelt nach {title.lower()}",
-    )
-
     agg_df = _aggregate_jobfamily_split(mapped_df, split_col, metric_view, metric_config, compact)
     if agg_df.empty:
-        st.info(f"Für den Block `{title}` sind im aktuellen Filterkontext keine auswertbaren Daten vorhanden.")
+        st.info(f"Keine auswertbaren Daten im aktuellen Filterkontext.")
         return
 
     pivot_df = _build_split_pivot(agg_df, split_col)
@@ -389,15 +384,13 @@ def _render_jobfamily_split_block(
     with col_chart:
         st.plotly_chart(fig, use_container_width=True)
     with col_table:
-        st.markdown("**Datentabelle**")
         dataframe_compat(display_df, width="stretch", hide_index=True)
-
         excel_data = compact.export_to_excel(
             pivot_df,
             key_prefix=key_prefix,
-            dimension_name=f"Jobfamily x {title}",
+            dimension_name=f"Jobgruppe x {title}",
             value_type=metric_config["value_type"],
-            table_title=f"Jobfamily nach {title}",
+            table_title=f"Jobgruppe nach {title}",
         )
         download_button_compat(
             label="Excel Download",
@@ -417,11 +410,6 @@ def _render_data_quality_block(
     metric_config: dict[str, str],
     compact,
 ) -> None:
-    render_section_intro(
-        "Datenqualität: UNMAPPED",
-        "Die Hauptanalyse oberhalb berücksichtigt nur zugeordnete Jobfamilies. Dieser Block macht den verbleibenden Rest transparent.",
-    )
-
     total_rows = len(filtered_df)
     unmapped_rows = len(unmapped_df)
     total_metric = _get_metric_total(filtered_df, metric_view, compact)
@@ -429,6 +417,11 @@ def _render_data_quality_block(
     unmapped_share = unmapped_metric / total_metric if total_metric > 0 else 0
     unmapped_employees = len(get_unique_employees(unmapped_df)) if not unmapped_df.empty else 0
     mapped_share = _get_metric_total(mapped_df, metric_view, compact) / total_metric if total_metric > 0 else 0
+
+    if unmapped_rows == 0:
+        st.success("Alle sichtbaren Datensätze sind einer Jobgruppe zugeordnet.")
+        st.caption("UNMAPPED hat im aktuellen Filterkontext keine Wirkung.")
+        return
 
     compact.render_kpi_cards_styled(
         [
@@ -442,7 +435,7 @@ def _render_data_quality_block(
             {
                 "title": "UNMAPPED Mitarbeitende",
                 "value": compact.format_number(unmapped_employees, 0),
-                "subtitle": "Unique Mitarbeitende mit mindestens einer nicht zugeordneten Zeile",
+                "subtitle": "Unique Mitarbeitende mit nicht zugeordneter Zeile",
                 "icon": "👥",
                 "status": "warning" if unmapped_employees > 0 else "good",
             },
@@ -462,14 +455,6 @@ def _render_data_quality_block(
             },
         ]
     )
-
-    if unmapped_df.empty:
-        render_context_box(
-            "UNMAPPED aktuell ohne Wirkung",
-            "Im aktuellen Filterkontext liegen keine nicht zugeordneten Jobfamily-Zeilen vor.",
-            tone="success",
-        )
-        return
 
     render_context_box(
         "Wirkung auf die Hauptanalyse",
@@ -514,13 +499,12 @@ def main() -> None:
     compact = load_compact_page_module()
 
     render_page_header(
-        "Jobfamily-Analyse",
-        "IST-Analyse der aktuell sichtbaren Personalsituation auf Basis des bestehenden Snapshot-Modells.",
-        note="Die globale Kennzahl in der Sidebar steuert KPI-Header, Rangliste und Detailblöcke dieser Seite.",
+        "Jobgruppen-Analyse",
+        "IST-Sicht auf die aktuell sichtbare Personalsituation.",
     )
 
     set_metric_page_hint(
-        "Jobfamily-Analyse nutzt den globalen Metrik-Switch direkt für KPIs, Rangliste und Detailblöcke."
+        "Jobgruppen-Analyse nutzt den globalen Metrik-Switch direkt für KPIs, Rangliste und Detailblöcke."
     )
 
     snapshot_df, history_df, _, _ = load_and_prepare_data(show_status_messages=False)
@@ -537,9 +521,9 @@ def main() -> None:
     if selected_jobfamilies or selected_jf_clusters:
         drilldown_parts = []
         if selected_jobfamilies:
-            drilldown_parts.append(f"{len(selected_jobfamilies)} Jobfamily-Filter")
+            drilldown_parts.append(f"{len(selected_jobfamilies)} Jobgruppen-Filter")
         if selected_jf_clusters:
-            drilldown_parts.append(f"{len(selected_jf_clusters)} JF-Cluster-Filter")
+            drilldown_parts.append(f"{len(selected_jf_clusters)} Jobgruppen-Cluster-Filter")
         render_context_box(
             "Drilldown aktiv",
             "Die Seite zeigt aktuell einen verengten Ausschnitt aufgrund aktiver "
@@ -560,7 +544,7 @@ def main() -> None:
 
     render_section_intro(
         "KPI-Überblick",
-        f"Aktive Kennzahl: {metric_view}. Die KPI-Logik folgt den bestehenden Kompakt-Mustern und bezieht sich auf den aktuellen Filterkontext.",
+        f"Kennzahl: {metric_view} · aktueller Filterkontext",
     )
     kpis = _build_kpis(mapped_df, filtered_df, unmapped_df, metric_view, compact)
     if kpis:
@@ -568,27 +552,20 @@ def main() -> None:
 
     if mapped_df.empty:
         render_context_box(
-            "Keine zugeordneten Jobfamilies im aktuellen Ausschnitt",
+            "Keine zugeordneten Jobgruppen im aktuellen Ausschnitt",
             "Im aktuellen Filterkontext sind nur UNMAPPED-Zeilen oder gar keine Daten sichtbar. Die fachliche Hauptanalyse bleibt deshalb leer; der Datenqualitätsblock unten zeigt den verbleibenden Rest transparent an.",
             tone="warning",
         )
         _render_data_quality_block(filtered_df, mapped_df, unmapped_df, metric_view, metric_config, compact)
         return
 
-    render_context_box(
-        "Analyseabgrenzung",
-        "Die Hauptanalyse zeigt ausschließlich zugeordnete Jobfamilies. UNMAPPED wird nicht stillschweigend verworfen, sondern separat im Datenqualitätsblock ausgewiesen.",
-        tone="info",
-        compact=True,
-    )
-
     render_section_intro(
-        "Jobfamily-Rangliste",
-        "Sortiert nach der aktuell gewählten Kennzahl und vollständig im Stil des bestehenden Kompakt-Dashboards aufbereitet.",
+        "Rangliste der Jobgruppen",
+        "Sortiert nach der aktuell gewählten Kennzahl.",
     )
     compact.render_single_breakdown(
         mapped_df,
-        "Jobfamilies",
+        "Jobgruppen",
         "Jobfamily",
         value_col=metric_config["value_col"],
         value_type=metric_config["value_type"],
@@ -596,7 +573,14 @@ def main() -> None:
         print_mode=False,
     )
 
-    for title, split_col in DETAIL_BLOCKS:
+    render_section_intro(
+        "Zusammensetzung der Top-Jobgruppen",
+        f"Top-{TOP_JOBFAMILY_COUNT}-Jobgruppen im aktuellen Filterkontext.",
+    )
+    for i, (title, split_col) in enumerate(DETAIL_BLOCKS):
+        if i > 0:
+            st.divider()
+        st.subheader(title)
         _render_jobfamily_split_block(
             mapped_df,
             title,
@@ -607,7 +591,17 @@ def main() -> None:
             key_prefix=f"jobfamily_{split_col.lower().replace(' ', '_')}",
         )
 
-    _render_data_quality_block(filtered_df, mapped_df, unmapped_df, metric_view, metric_config, compact)
+    with st.expander("Datenqualität", expanded=False):
+        _render_data_quality_block(filtered_df, mapped_df, unmapped_df, metric_view, metric_config, compact)
+
+    with st.expander("Hinweise zur Methodik", expanded=False):
+        st.markdown(
+            "Die Seite zeigt eine IST-Analyse der aktuell sichtbaren Personalsituation. "
+            "Die globale Kennzahl aus der Sidebar steuert KPI-Header, Rangliste und Detailblöcke.\n\n"
+            "Die Hauptanalyse zeigt zugeordnete Jobgruppen. Nicht zugeordnete Datensätze werden "
+            "im Datenqualitätsblock separat ausgewiesen.\n\n"
+            "Filter und Exklusionen aus der Sidebar definieren den Betrachtungsraum."
+        )
 
 
 if __name__ == "__main__":

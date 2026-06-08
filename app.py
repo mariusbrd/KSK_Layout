@@ -99,7 +99,7 @@ def build_pages():
     return {
         "Analyse": [
             st.Page("pages/1_⚡_Kompakt.py", title=t("navigation.compact")),
-            st.Page("pages/8_💼_Jobfamily_Analyse.py", title="Jobfamily-Analyse"),
+            st.Page("pages/8_💼_Jobfamily_Analyse.py", title="Jobgruppen-Analyse"),
         ],
         "Prognosen": [
             st.Page("pages/3_📉_Prognose_Abgänge.py", title=t("navigation.attrition_forecast")),

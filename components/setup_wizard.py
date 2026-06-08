@@ -72,7 +72,7 @@ def get_wizard_steps() -> list[str]:
 BASE_TEMPLATES = {
     "banken": {
         "name": "Banken & Finanzdienstleister",
-        "description": "Vorgefertigte Job Families fuer Banken und Kreditinstitute",
+        "description": "Vorgefertigte Jobgruppen fuer Banken und Kreditinstitute",
         "icon": "🏦",
         "family_count": 10,
         "jobfamilies": {
@@ -140,7 +140,7 @@ BASE_TEMPLATES = {
     },
     "universal": {
         "name": "Universal / Allgemein",
-        "description": "Branchenuebergreifende Job Families fuer alle Unternehmen",
+        "description": "Branchenuebergreifende Jobgruppen fuer alle Unternehmen",
         "icon": "🏢",
         "family_count": 8,
         "jobfamilies": {
@@ -231,14 +231,14 @@ def render_welcome_step():
 
     st.markdown("""
     Um Ihre Personalanalysen optimal zu strukturieren, benötigen wir
-    **Job Family Definitionen** - Gruppierungen ähnlicher Tätigkeiten.
+    **Jobgruppen-Definitionen** - Gruppierungen ähnlicher Tätigkeiten.
     """)
 
     # Info-Box
     with st.container(border=True):
-        st.markdown("### Was sind Job Families?")
+        st.markdown("### Was sind Jobgruppen?")
         st.markdown("""
-        Job Families gruppieren ähnliche Positionen in Ihrem Unternehmen:
+        Jobgruppen gruppieren ähnliche Positionen in Ihrem Unternehmen:
 
         - **IT & Digitalisierung**: Entwickler, Administratoren, Data Scientists
         - **Beratung & Vertrieb**: Kundenberater, Vertriebsmitarbeiter
@@ -271,7 +271,7 @@ def render_welcome_step():
         st.markdown("""
         **3. Selbst definieren**
 
-        Eigene Job Families von Grund auf anlegen.
+        Eigene Jobgruppen von Grund auf anlegen.
         """)
 
     st.markdown("---")
@@ -304,7 +304,7 @@ def render_source_selection_step():
     """Rendert den Datenquellen-Auswahl-Schritt."""
 
     st.markdown("## Wie möchten Sie starten?")
-    st.markdown("Wählen Sie eine Option für die Erstellung Ihrer Job Families:")
+    st.markdown("Wählen Sie eine Option für die Erstellung Ihrer Jobgruppen:")
 
     st.markdown("---")
 
@@ -314,7 +314,7 @@ def render_source_selection_step():
         with st.container(border=True):
             st.markdown("### 📋 Branchen-Template")
             st.markdown("""
-            Vorgefertigte Job Families für:
+            Vorgefertigte Jobgruppen für:
             - Banken & Finanzdienstleister
             - Versicherungen
             - Universal (branchenübergreifend)
@@ -367,7 +367,7 @@ def render_source_selection_step():
     with st.expander("✏️ Oder: Komplett selbst definieren"):
         st.markdown("""
         Starten Sie mit einer leeren Vorlage und definieren Sie
-        alle Job Families manuell von Grund auf.
+        alle Jobgruppen manuell von Grund auf.
         """)
         if st.button("Leere Vorlage starten", key="btn_custom", use_container_width=True):
             st.session_state["wizard_source"] = "custom"
@@ -446,7 +446,7 @@ def render_template_selection():
 
                 # Metriken
                 col1, col2 = st.columns(2)
-                col1.metric("Job Families", template['family_count'])
+                col1.metric("Jobgruppen", template['family_count'])
 
                 # Matching-Vorschau wenn Daten vorhanden
                 if has_data and snapshot_df is not None:
@@ -456,7 +456,7 @@ def render_template_selection():
 
                 # Vorschau der enthaltenen Families
                 preview = get_template_preview(template['id'])
-                with st.expander(f"Enthaltene Job Families ({template['family_count']})"):
+                with st.expander(f"Enthaltene Jobgruppen ({template['family_count']})"):
                     for family in preview.get('families', []):
                         color = family.get('color', '#808080')
                         st.markdown(
@@ -513,8 +513,8 @@ def render_template_selection():
 def render_import_step():
     """Rendert UI fuer Datei-Import."""
 
-    st.markdown("## 📁 Job Families importieren")
-    st.markdown("Laden Sie Ihre Job Family Definitionen aus einer vorhandenen Datei:")
+    st.markdown("## 📁 Jobgruppen importieren")
+    st.markdown("Laden Sie Ihre Jobgruppen-Definitionen aus einer vorhandenen Datei:")
 
     st.markdown("---")
 
@@ -570,11 +570,11 @@ def render_import_step():
                 if report.get("error"):
                     st.error(report["error"])
                 else:
-                    st.info(f"**{report['families_created']} Job Families** mit "
+                    st.info(f"**{report['families_created']} Jobgruppen** mit "
                            f"**{report['patterns_imported']} Patterns** gefunden")
 
                     # Zeige Families
-                    with st.expander("Enthaltene Job Families", expanded=True):
+                    with st.expander("Enthaltene Jobgruppen", expanded=True):
                         for family_name in list(definitions.get("jobfamilies", {}).keys())[:10]:
                             family = definitions["jobfamilies"][family_name]
                             st.markdown(f"- **{family_name}** ({len(family.get('patterns', []))} Patterns)")
@@ -610,10 +610,10 @@ def render_import_step():
                     # Family-Spalte (Pflicht)
                     default_family = suggestions["family"][0] if suggestions["family"] else columns[1] if len(columns) > 1 else "---"
                     family_col = st.selectbox(
-                        "Job Family Spalte *",
+                        "Jobgruppe Spalte *",
                         columns,
                         index=columns.index(default_family) if default_family in columns else 0,
-                        help="Pflichtfeld: Spalte mit Job Family Namen"
+                        help="Pflichtfeld: Spalte mit Jobgruppen-Namen"
                     )
 
                     # Pattern-Spalte (Optional)
@@ -682,7 +682,7 @@ def render_import_step():
                             st.error(report["error"])
                         else:
                             st.success(
-                                f"✅ **{report['families_created']} Job Families** mit "
+                                f"✅ **{report['families_created']} Jobgruppen** mit "
                                 f"**{report['patterns_imported']} Patterns** importiert"
                             )
 
@@ -694,7 +694,7 @@ def render_import_step():
                             st.session_state["wizard_step"] = 3
                             st.rerun()
                 else:
-                    st.warning("Bitte wählen Sie mindestens die Job Family Spalte aus.")
+                    st.warning("Bitte wählen Sie mindestens die Jobgruppe Spalte aus.")
 
     st.markdown("---")
 
@@ -707,7 +707,7 @@ def render_import_step():
 def render_auto_detection():
     """Rendert UI fuer KI-basierte Auto-Erkennung."""
 
-    st.markdown("## 🤖 Automatische Job Family Erkennung")
+    st.markdown("## 🤖 Automatische Jobgruppen-Erkennung")
     st.markdown("Analysiere Ihre Job-Titel und schlage automatisch Gruppierungen vor:")
 
     st.markdown("---")
@@ -803,7 +803,7 @@ def render_auto_detection():
             st.markdown("---")
 
             # Vorgeschlagene Families
-            st.markdown("### Vorgeschlagene Job Families")
+            st.markdown("### Vorgeschlagene Jobgruppen")
             st.markdown("Bearbeiten Sie die Vorschläge nach Bedarf:")
 
             families = results.get("suggested_families", [])
@@ -949,8 +949,8 @@ def render_auto_detection():
 def render_custom_definition():
     """Rendert UI fuer eigene Definition."""
 
-    st.markdown("## Eigene Job Families definieren")
-    st.markdown("Erstellen Sie Ihre eigenen Job Family Definitionen:")
+    st.markdown("## Eigene Jobgruppen definieren")
+    st.markdown("Erstellen Sie Ihre eigenen Jobgruppen-Definitionen:")
 
     definitions = st.session_state.get("wizard_definitions", {"jobfamilies": {}, "metadata": {"version": "2.0"}})
 
@@ -958,7 +958,7 @@ def render_custom_definition():
 
     # Bestehende Families anzeigen
     if definitions.get("jobfamilies"):
-        st.markdown("### Definierte Job Families")
+        st.markdown("### Definierte Jobgruppen")
 
         for family_name, family_def in list(definitions["jobfamilies"].items()):
             with st.expander(f"**{family_name}** - {len(family_def.get('patterns', []))} Patterns"):
@@ -976,10 +976,10 @@ def render_custom_definition():
     st.markdown("---")
 
     # Neue Family hinzufügen
-    st.markdown("### Neue Job Family hinzufügen")
+    st.markdown("### Neue Jobgruppe hinzufügen")
 
     with st.form("new_family_form"):
-        new_name = st.text_input("Name der Job Family", placeholder="z.B. IT & Digitalisierung")
+        new_name = st.text_input("Name der Jobgruppe", placeholder="z.B. IT & Digitalisierung")
         new_description = st.text_input("Beschreibung", placeholder="z.B. IT-Administration, Entwicklung")
         new_patterns = st.text_area(
             "Patterns (ein Pattern pro Zeile)",
@@ -987,7 +987,7 @@ def render_custom_definition():
             help="Verwenden Sie * als Wildcard. Beispiel: *Berater* matcht alle Titel mit 'Berater'."
         )
 
-        submitted = st.form_submit_button("Job Family hinzufügen", type="primary")
+        submitted = st.form_submit_button("Jobgruppe hinzufügen", type="primary")
 
         if submitted and new_name:
             patterns = [p.strip() for p in new_patterns.split("\n") if p.strip()]
@@ -1017,7 +1017,7 @@ def render_custom_definition():
                 st.session_state["wizard_step"] = 3
                 st.rerun()
         else:
-            st.info("Fügen Sie mindestens eine Job Family hinzu.")
+            st.info("Fügen Sie mindestens eine Jobgruppe hinzu.")
 
 
 def calculate_preview_stats(df: Optional[pd.DataFrame], definitions: Dict) -> Dict:
@@ -1112,7 +1112,7 @@ def render_review_step(df: Optional[pd.DataFrame] = None):
     """Rendert den Review-Schritt mit vollstaendiger Bearbeitungsmoeglichkeit."""
 
     st.markdown("## Zusammenfassung prüfen")
-    st.markdown("Überprüfen Sie Ihre Job Family Definitionen vor dem Speichern:")
+    st.markdown("Überprüfen Sie Ihre Jobgruppen-Definitionen vor dem Speichern:")
 
     definitions = st.session_state.get("wizard_definitions", {})
 
@@ -1137,7 +1137,7 @@ def render_review_step(df: Optional[pd.DataFrame] = None):
 
     # Statistiken mit Mapping-Quote
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Job Families", stats["family_count"])
+    col1.metric("Jobgruppen", stats["family_count"])
     col2.metric("Patterns gesamt", stats["total_patterns"])
 
     if snapshot_df is not None:
@@ -1164,7 +1164,7 @@ def render_review_step(df: Optional[pd.DataFrame] = None):
 
     # Verteilung nach Family (wenn Daten vorhanden)
     if snapshot_df is not None and stats["by_family"]:
-        with st.expander("📊 Verteilung nach Job Family", expanded=False):
+        with st.expander("📊 Verteilung nach Jobgruppe", expanded=False):
             for family_name, count in sorted(stats["by_family"].items(), key=lambda x: -x[1]):
                 color = definitions["jobfamilies"].get(family_name, {}).get("color", "#808080")
                 pct = count / stats["unique_titles"] * 100 if stats["unique_titles"] > 0 else 0
@@ -1180,7 +1180,7 @@ def render_review_step(df: Optional[pd.DataFrame] = None):
     st.markdown("---")
 
     # Family-Übersicht mit vollständiger Bearbeitung
-    st.markdown("### Definierte Job Families")
+    st.markdown("### Definierte Jobgruppen")
 
     # Kopiere Definitionen für Bearbeitung
     families_list = list(definitions.get("jobfamilies", {}).items())
@@ -1295,7 +1295,7 @@ def render_review_step(df: Optional[pd.DataFrame] = None):
     st.markdown("---")
 
     # Neue Family hinzufügen
-    with st.expander("➕ Neue Job Family hinzufügen", expanded=False):
+    with st.expander("➕ Neue Jobgruppe hinzufügen", expanded=False):
         with st.form("quick_add_family"):
             col1, col2 = st.columns(2)
             with col1:
@@ -1430,21 +1430,21 @@ def render_finish_step():
     definitions = st.session_state.get("wizard_definitions", {})
     family_count = len(definitions.get("jobfamilies", {}))
 
-    st.success(f"**{family_count} Job Families** wurden erfolgreich konfiguriert!")
+    st.success(f"**{family_count} Jobgruppen** wurden erfolgreich konfiguriert!")
 
     st.markdown("---")
 
     st.markdown("""
-    ### Ihre Job Families sind eingerichtet:
+    ### Ihre Jobgruppen sind eingerichtet:
 
     - Die Definitionen wurden gespeichert
-    - Sie können jederzeit Änderungen über die **Jobfamilies-Seite** vornehmen
+    - Sie können jederzeit Änderungen über die **Jobgruppen-Analyse-Seite** vornehmen
     - Nutzen Sie die **Matrix-UI** für Feinabstimmungen einzelner Zuordnungen
 
     ### Nächste Schritte
 
-    1. **Dashboard erkunden** - Sehen Sie Ihre Daten nach Job Families aufgeschlüsselt
-    2. **Filter nutzen** - Job Families als Filter in der Sidebar verwenden
+    1. **Dashboard erkunden** - Sehen Sie Ihre Daten nach Jobgruppen aufgeschlüsselt
+    2. **Filter nutzen** - Jobgruppen als Filter in der Sidebar verwenden
     3. **Anpassen** - Matrix-UI für manuelle Zuordnungen nutzen
     """)
 
@@ -1495,8 +1495,8 @@ def render_setup_wizard(df: Optional[pd.DataFrame] = None) -> bool:
     }
     </style>
     <div class="wizard-header">
-        <h1>🚀 Job Families Setup</h1>
-        <p>Konfigurieren Sie Ihre Job Families in wenigen Schritten</p>
+        <h1>🚀 Jobgruppen Setup</h1>
+        <p>Konfigurieren Sie Ihre Jobgruppen in wenigen Schritten</p>
     </div>
     """, unsafe_allow_html=True)
 
