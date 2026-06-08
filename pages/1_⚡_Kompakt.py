@@ -1,4 +1,4 @@
-"""
+﻿"""
 Modul 7: Kompakt-Dashboard
 
 Kondensierte Auswertungsansicht mit allen wichtigen IST und IST vs SOLL Analysen
@@ -132,7 +132,7 @@ COHORT_ORDER = [
 ]
 
 # Ordinale Sortierreihenfolgen für alle Dimensionen mit natürlicher Ordnung
-# Schl?ssel = Spaltenname im DataFrame, Wert = Liste der Kategorien in Reihenfolge
+# Schlüssel = Spaltenname im DataFrame, Wert = Liste der Kategorien in Reihenfolge
 ORDINAL_ORDERS: Dict[str, list] = {
     "Alterskohorte": COHORT_ORDER,
     "Betriebszugehörigkeit_Bin": TENURE_LABELS,
@@ -238,7 +238,7 @@ _COMPACT_FALLBACK_NORMALIZATION = {
     "Betriebszugehörigkeit": "Betriebszugehörigkeit",
     "Vergütung": "Vergütung",
     "Köpfe": "Köpfe",
-    "Gr?nde": "Gründe",
+    "Gründe": "Gründe",
 }
 
 
@@ -269,7 +269,7 @@ def _build_compact_sidebar_hint() -> str:
 
 
 def _is_mojibake(text: str | None) -> bool:
-    return isinstance(text, str) and any(marker in text for marker in ("Ã", "â", "ƒ", "Æ"))
+    return isinstance(text, str) and any(marker in text for marker in (chr(0x00C3), chr(0x00E2), chr(0x0192), chr(0x00C6)))
 
 
 def _sanitize_kpi_icon(icon: str | None, title: str | None) -> str:
@@ -1449,6 +1449,1238 @@ def create_stacked_tariff_comparison_chart(
     return fig
 
 
+PLANLEVEL_CANDIDATE_COLUMNS = [
+    "Planebene",
+    "Ebene",
+    "Führungsebene",
+    "Führungsebene",
+    "Hierarchieebene",
+    "Stellenebene",
+    "Funktionslevel",
+    "Funktions-Level",
+    "Level",
+    "Planstellenebene",
+    "Managementebene",
+    "Rollenebene",
+]
+
+
+def _first_existing_column(df: pd.DataFrame, candidates: tuple[str, ...] | list[str]) -> str | None:
+    for col in candidates:
+        if col in df.columns:
+            return col
+    return None
+
+
+def _numeric_compensation_series(
+    series: pd.Series, default: float = 0.0, kind: str = "fte"
+) -> pd.Series:
+    """Robuste numerische Umwandlung fuer Kennzahlspalten.
+
+    kind="fte"      MAK/FTE/Sollarbeitszeit: X.YYY wird nie als Tausenderformat
+                    behandelt (0.141->0.141, 1.000->1.0).
+    kind="currency" EUR/Kosten: X.YYY mit fuehrender Ziffer 1-9 gilt als Tausender
+                    (1.000->1000), 0.XXX bleibt Dezimalzahl.
+    kind="auto"     wie "fte" (sicherer Fallback).
+
+    Formate:
+      Letzter Trenner = Komma -> deutsches Format  (1.234,56  -> 1234.56)
+      Letzter Trenner = Punkt -> englisches Format  (1,234.56  -> 1234.56)
+      Nur Komma, kein Punkt   -> deutsches Dezimal  (0,141     -> 0.141)
+        Sonderfall: 1,000 -> 1.0 (im deutschen Kontext Komma = Dezimal)
+      Nur Punkt, kein Komma   -> abhaengig von kind (s.o.)
+    """
+    text = series.astype("string").str.strip()
+    text = text.str.replace("\u00a0", "", regex=False).str.replace(" ", "", regex=False)
+
+    has_comma = text.str.contains(",", regex=False).fillna(False)
+    has_dot   = text.str.contains(".", regex=False).fillna(False)
+    both      = has_comma & has_dot
+
+    normalized = text.copy()
+
+    # Beide Trennzeichen: Format anhand des letzten Trenners bestimmen
+    # Deutsch (letzter = Komma): 1.234,56 -> 1234.56 / 59.674.856,62 -> 59674856.62
+    last_is_comma = both & text.str.match(r"^-?[\d.]+,\d+$").fillna(False)
+    # Englisch (letzter = Punkt): 1,234.56 -> 1234.56 / 59,674,856.62 -> 59674856.62
+    last_is_dot   = both & text.str.match(r"^-?[\d,]+\.\d+$").fillna(False)
+
+    normalized = normalized.where(
+        ~last_is_comma,
+        text.str.replace(".", "", regex=False).str.replace(",", ".", regex=False),
+    )
+    normalized = normalized.where(
+        ~last_is_dot,
+        text.str.replace(",", "", regex=False),
+    )
+
+    # Nur Komma, kein Punkt: deutsches Dezimalformat (0,141->0.141, 762,91->762.91)
+    # Hinweis: 1,000 ergibt 1.0 \u2013 im deutschen Kontext korrekt (Komma = Dezimal).
+    only_comma = has_comma & ~has_dot
+    normalized = normalized.where(
+        ~only_comma,
+        text.str.replace(",", ".", regex=False),
+    )
+
+    # Nur Punkt, kein Komma: Tausender-Erkennung je nach kind
+    only_dot  = ~has_comma & has_dot
+    multi_dot = only_dot & normalized.str.count(r"\.").gt(1).fillna(False)
+    if kind == "currency":
+        # Euro: 1.000->1000, aber 0.141 bleibt 0.141 (fuehrende Null != Tausender)
+        single_dot_thousands = (
+            only_dot
+            & normalized.str.match(r"^-?[1-9]\d{0,2}\.\d{3}$").fillna(False)
+        )
+    else:
+        # FTE/MAK/auto: einzelnen Punkt nie als Tausendertrennzeichen entfernen
+        single_dot_thousands = pd.Series(False, index=normalized.index)
+
+    dot_thousands = multi_dot | single_dot_thousands
+    normalized = normalized.where(~dot_thousands, normalized.str.replace(".", "", regex=False))
+
+    return pd.to_numeric(normalized, errors="coerce").fillna(default)
+
+
+def _person_identifier_column(df: pd.DataFrame) -> str | None:
+    """Bevorzugt die ID-Spalte, die tatsaechlich Werte enthaelt."""
+    for col in ("PersNr", "Personalnummer"):
+        if col in df.columns and df[col].notna().any():
+            return col
+    return _first_existing_column(df, ["PersNr", "Personalnummer"])
+
+
+def _clean_compensation_group(value) -> str:
+    if pd.isna(value):
+        return "Nicht zugeordnet"
+    text = str(value).strip().upper().replace(" ", "")
+    if not text or text in ("NAN", "NONE", "<NA>"):
+        return "Nicht zugeordnet"
+    if text.startswith("BIS"):
+        text = text[3:].strip()
+    return text or "Nicht zugeordnet"
+
+
+def _clean_compensation_step(value):
+    if pd.isna(value):
+        return "Nicht zugeordnet"
+    text = str(value).strip().replace("+", "").replace("-", "")
+    if not text or text.upper() in ("NAN", "NONE", "<NA>"):
+        return "Nicht zugeordnet"
+    try:
+        return int(float(text))
+    except (ValueError, TypeError):
+        return str(value).strip() or "Nicht zugeordnet"
+
+
+_IST_OHNE_SOLL_CAT_ORDER = [
+    "Trainee / Ausbildung",
+    "Ruhendes Beschäftigungsverhältnis",
+    "ATZ / Freistellung",
+    "Rente auf Zeit",
+    "Pool- / Sammelplanstelle",
+    "Reguläre aktive Stelle ohne Soll_FTE",
+    "Sonstiger Fall ohne Plan-SOLL",
+]
+
+
+def _classify_ist_ohne_plan_soll(df: pd.DataFrame, out: pd.DataFrame) -> pd.Series:
+    """
+    Klassifiziert besetzte Zeilen mit Soll_FTE = 0 und vorhandenen IST-Werten.
+
+    Gibt "" fuer normale Zeilen (Soll_FTE > 0 oder keine IST-Werte).
+    Prioritaet: Trainee > Ruhendes BV > ATZ > Rente > Pool > Regulaer > Sonstiger.
+    """
+    result = pd.Series("", index=out.index, dtype=str)
+
+    # Basis-Filter
+    _soll_fte = (
+        pd.to_numeric(df["Soll_FTE"], errors="coerce").fillna(0.0)
+        if "Soll_FTE" in df.columns
+        else pd.Series(0.0, index=df.index)
+    )
+    _ist_kopf = out["IST_Kopf"].eq(1) if "IST_Kopf" in out.columns else pd.Series(False, index=out.index)
+    _hat_ist  = (
+        (out["IST_MAK"].gt(0) if "IST_MAK" in out.columns else pd.Series(False, index=out.index))
+        | (out["IST_EUR"].gt(0) if "IST_EUR" in out.columns else pd.Series(False, index=out.index))
+    )
+    _hat_eg = (
+        out["Ist_Entgeltgruppe"].ne("Nicht zugeordnet")
+        if "Ist_Entgeltgruppe" in out.columns
+        else pd.Series(True, index=out.index)
+    )
+    basis = _ist_kopf & _soll_fte.eq(0.0) & _hat_ist & _hat_eg
+
+    if not basis.any():
+        return result
+
+    def _cn(col: str, pattern: str) -> pd.Series:
+        if col not in df.columns:
+            return pd.Series(False, index=df.index)
+        return df[col].fillna("").astype(str).str.lower().str.contains(pattern, regex=True, na=False)
+
+    def _eq(col: str, val: str) -> pd.Series:
+        if col not in df.columns:
+            return pd.Series(False, index=df.index)
+        return df[col].fillna("").astype(str).str.strip() == val
+
+    def _in(col: str, vals: list) -> pd.Series:
+        if col not in df.columns:
+            return pd.Series(False, index=df.index)
+        return df[col].fillna("").astype(str).str.strip().isin(vals)
+
+    # Pool: Planstellennr erscheint mehrfach im Snapshot
+    if "Planstellennr" in out.columns:
+        _plnr_s = out["Planstellennr"].fillna("").astype(str).str.strip()
+        _vc_map = _plnr_s[_plnr_s.ne("")].value_counts().to_dict()
+        is_pool_plnr = _plnr_s.map(lambda x: _vc_map.get(x, 1)).gt(1) & _plnr_s.ne("")
+    else:
+        is_pool_plnr = pd.Series(False, index=out.index)
+
+    _azubi_flag = (
+        df["Ist_Azubi"].fillna(False).astype(bool)
+        if "Ist_Azubi" in df.columns
+        else pd.Series(False, index=df.index)
+    )
+
+    mask_trainee  = basis & (
+        _cn("Vertragsart", r"trainee|ausbildung|werkstudent")
+        | _cn("Planstelle", r"trainee|azubi|ausbildung|werkstudent")
+        | _azubi_flag
+        | _cn("TrfGr", r"tva")
+    )
+    mask_ruhend   = basis & _eq("Status kundenindividuell", "Ruhendes Beschäftigungsverhältnis")
+    mask_atz      = basis & (
+        _eq("Vertragsart", "Altersteilzeit")
+        | _in("Phase", ["FR", "AR"])
+        | _cn("Planstelle", r"altersteilzeit")
+        | _cn("Planstellenkürzel", r"atz")
+    )
+    mask_rente    = basis & (
+        _cn("Planstelle",                 r"rente|vorruhestand")
+        | _cn("Vertragsart",              r"rente|vorruhestand")
+        | _cn("Status kundenindividuell", r"rente|vorruhestand")
+    )
+    mask_pool     = basis & (is_pool_plnr | _cn("Planstelle", r"pool|sammel"))
+    mask_regulaer = (
+        basis
+        & _eq("Status kundenindividuell", "Aktives Beschäftigungsverhältnis")
+        & ~mask_trainee & ~mask_ruhend & ~mask_atz & ~mask_rente & ~mask_pool
+    )
+
+    # Zuweisung: niedrigste Prio zuerst, hoehere ueberschreibt.
+    # Reihenfolge: Ruhendes BV < Pool < Regulaer < Rente < ATZ < Trainee
+    # ATZ ueberschreibt Ruhendes BV, da ATZ fachlich spezifischer ist.
+    result[basis]         = "Sonstiger Fall ohne Plan-SOLL"
+    result[mask_ruhend]   = "Ruhendes Beschäftigungsverhältnis"
+    result[mask_pool]     = "Pool- / Sammelplanstelle"
+    result[mask_regulaer] = "Reguläre aktive Stelle ohne Soll_FTE"
+    result[mask_rente]    = "Rente auf Zeit"
+    result[mask_atz]      = "ATZ / Freistellung"
+    result[mask_trainee]  = "Trainee / Ausbildung"
+
+    return result
+
+
+@st.cache_data
+def build_compact_compensation_planlevel_df(prepared_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Baut eine zentrale, planstellennahe Verguetungsbasis fuer Kompakt.
+
+    Die Funktion erfindet keine neue TVOED-, MAK- oder EUR-Logik, sondern nutzt
+    die bereits im Snapshot vorhandenen Reporting- und Soll-Spalten.
+    """
+    if prepared_df is None or prepared_df.empty:
+        return pd.DataFrame()
+
+    df = prepared_df.copy()
+    out = pd.DataFrame(index=df.index)
+
+    planlevel_col = _first_existing_column(df, PLANLEVEL_CANDIDATE_COLUMNS)
+    if planlevel_col:
+        out["Planebene"] = df[planlevel_col].fillna("Nicht zugeordnet").astype(str).str.strip()
+        out.loc[out["Planebene"].isin(["", "nan", "None", "<NA>"]), "Planebene"] = "Nicht zugeordnet"
+        out["Planebene_Source"] = planlevel_col
+    else:
+        # Fachlich unsicher: Ohne echte Quellspalte wird keine Planebene geraten.
+        out["Planebene"] = "Nicht zugeordnet"
+        out["Planebene_Source"] = "missing"
+
+    passthrough_cols = [
+        "Organisationseinheit",
+        "Kürzel OrgEinheit",
+        "Kürzel OrgEinheit",
+        "OE-Cluster",
+        "JF-Cluster",
+        "Jobfamily",
+        "Planstellennr",
+        "Planstelle",
+        "Planstellenkürzel",
+        "Planstellenkürzel",
+        "Is_Vacant",
+        "Is_Excluded",       # Exklusionsflag aus apply_exclusions()
+        "Exclusion_Group",   # Exklusionsgruppe für Transparenz und Debug
+        "PersNr",
+        "Personalnummer",
+        "Vergütungsklasse",
+        "Vergütungsklasse",
+        # Zusatz-Kontext fuer IST-ohne-Plan-SOLL-Download und Klassifikation
+        "Status kundenindividuell",
+        "Vertragsart",
+        "Phase",
+        "ATZ_Status",
+        "Ausbildung",
+        "Ist_Azubi",
+        "Personalnachname",
+        "Personalvorname",
+    ]
+    for col in passthrough_cols:
+        if col in df.columns and col not in out.columns:
+            out[col] = df[col]
+
+    rename_aliases = {
+        "Kürzel OrgEinheit": "Kürzel OrgEinheit",
+        "Planstellenkürzel": "Planstellenkürzel",
+        "Vergütungsklasse": "Vergütungsklasse",
+    }
+    out = out.rename(columns={old: new for old, new in rename_aliases.items() if old in out.columns and new not in out.columns})
+
+    for col in [
+        "Organisationseinheit",
+        "Kürzel OrgEinheit",
+        "OE-Cluster",
+        "JF-Cluster",
+        "Jobfamily",
+        "Planstellennr",
+        "Planstelle",
+        "Planstellenkürzel",
+        "PersNr",
+        "Personalnummer",
+        "Vergütungsklasse",
+    ]:
+        if col not in out.columns:
+            out[col] = pd.NA
+
+    out["Ist_Entgeltgruppe"] = df["TrfGr"].map(_clean_compensation_group) if "TrfGr" in df.columns else "Nicht zugeordnet"
+    out["Ist_Stufe"] = df["St"].map(_clean_compensation_step) if "St" in df.columns else "Nicht zugeordnet"
+
+    if "Bewertung Tarifgruppe" in df.columns:
+        soll_group = df["Bewertung Tarifgruppe"].map(_clean_compensation_group)
+    else:
+        soll_group = pd.Series("Nicht zugeordnet", index=df.index)
+    if "Text Gehaltsband" in df.columns:
+        fallback_group = df["Text Gehaltsband"].map(_clean_compensation_group)
+        soll_group = soll_group.where(soll_group.ne("Nicht zugeordnet"), fallback_group)
+    out["Soll_Entgeltgruppe"] = soll_group.fillna("Nicht zugeordnet")
+
+    soll_step_col = _first_existing_column(
+        df,
+        ["Soll_Stufe", "Soll Stufe", "Bewertung Stufe", "Stufe Soll", "Sollstufe"],
+    )
+    if soll_step_col:
+        out["Soll_Stufe"] = df[soll_step_col].map(_clean_compensation_step)
+    elif "St" in df.columns:
+        # Fachlich unsicher: Es gibt keine eigene Soll-Stufe; aktuelle Ist-Stufe wird nur transparent gespiegelt.
+        out["Soll_Stufe"] = df["St"].map(_clean_compensation_step)
+    else:
+        out["Soll_Stufe"] = "Nicht zugeordnet"
+
+    ist_mak_col = _first_existing_column(df, ["MAK_Reporting", "MAK_Calculated", "MAK", "FTE_assigned"])
+    out["IST_MAK"] = _numeric_compensation_series(df[ist_mak_col], kind="fte") if ist_mak_col else 0.0
+    out["SOLL_MAK"] = _numeric_compensation_series(df["Soll_FTE"], kind="fte") if "Soll_FTE" in df.columns else 0.0
+    out["DELTA_MAK"] = out["IST_MAK"] - out["SOLL_MAK"]
+
+    ist_eur_col = _first_existing_column(df, ["EUR_Reporting", "Total_Cost_Year"])
+    out["IST_EUR"] = _numeric_compensation_series(df[ist_eur_col], kind="currency") if ist_eur_col else 0.0
+    if "Soll_Cost_Year" in df.columns:
+        out["SOLL_EUR"] = _numeric_compensation_series(df["Soll_Cost_Year"], kind="currency")
+    else:
+        out["SOLL_EUR"] = df.apply(calculate_soll_cost, axis=1)
+    out["DELTA_EUR"] = out["IST_EUR"] - out["SOLL_EUR"]
+
+    is_vacant = df["Is_Vacant"].fillna(False).astype(bool) if "Is_Vacant" in df.columns else pd.Series(False, index=df.index)
+    person_col = _person_identifier_column(df)
+    has_person = df[person_col].notna() if person_col else pd.Series(False, index=df.index)
+    out["IST_Kopf"] = ((~is_vacant) & has_person).astype(int)
+
+    if "Sollarbeitszeit" in df.columns:
+        soll_hours = _numeric_compensation_series(df["Sollarbeitszeit"], default=float("nan"), kind="fte")
+        # SOLL_Kopf ist konservativ als regulaere Planstellenzeile definiert; 0,01 gilt als technisches Artefakt.
+        out["SOLL_Kopf"] = ((soll_hours.fillna(0.0) > 0.015) | soll_hours.isna()).astype(int)
+    elif {"Planstellennr", "Planstelle"}.intersection(df.columns):
+        out["SOLL_Kopf"] = 1
+    else:
+        out["SOLL_Kopf"] = 0
+    out["DELTA_Kopf"] = out["IST_Kopf"] - out["SOLL_Kopf"]
+
+    # ── plan_df: SOLL auf eindeutige gueltige Planstellen korrigieren ─────────
+    # Fachlich: SOLL entsteht aus Planstellen, nicht aus Mitarbeiter-Zeilen.
+    # Doppelte Planstellennr im Snapshot fuehren sonst zu SOLL-Doppelzaehlung.
+
+    # 1. Technische Mini-Planstellen (Sollarbeitszeit <= 0.015 = Systemartefakt)
+    if "Sollarbeitszeit" in df.columns:
+        _soll_az = _numeric_compensation_series(df["Sollarbeitszeit"], default=0.0, kind="fte")
+        out["Is_Technical_Position"] = (_soll_az > 0.0) & (_soll_az <= 0.015)
+    else:
+        out["Is_Technical_Position"] = False
+
+    # 2. Duplikate bei Planstellennr markieren — nur erste Zeile je Planstelle
+    #    zaehlt fuer SOLL (verhindert Doppelzaehlung bei mehrfach gemeldeten Nrn.)
+    if "Planstellennr" in out.columns:
+        _pl_str  = out["Planstellennr"].fillna("").astype(str).str.strip()
+        _has_pl  = _pl_str.ne("")
+        _is_first_pl = ~(_pl_str.where(_has_pl).duplicated(keep="first"))
+        out["Is_Duplicate_Planstelle"] = _has_pl & ~_is_first_pl
+    else:
+        out["Is_Duplicate_Planstelle"] = False
+
+    # 3. SOLL auf Duplikaten auf 0 setzen; Delta danach neu berechnen
+    _dup = out["Is_Duplicate_Planstelle"]
+    if _dup.any():
+        out.loc[_dup, "SOLL_MAK"]  = 0.0
+        out.loc[_dup, "SOLL_EUR"]  = 0.0
+        out.loc[_dup, "SOLL_Kopf"] = 0
+        out["DELTA_MAK"]  = out["IST_MAK"]  - out["SOLL_MAK"]
+        out["DELTA_EUR"]  = out["IST_EUR"]   - out["SOLL_EUR"]
+        out["DELTA_Kopf"] = out["IST_Kopf"]  - out["SOLL_Kopf"]
+
+    # 4. SOLL_Planstellen: semantisch klarerer Name fuer SOLL_Kopf
+    #    Hinweis: SOLL_EUR basiert auf Soll_Cost_Year falls vorhanden,
+    #    sonst auf calculate_soll_cost (TVOEED-Fallback). Quell-Spalten
+    #    Soll_EG_Source / Soll_Cost_Source sind aktuell nicht im Snapshot.
+    out["SOLL_Planstellen"] = out["SOLL_Kopf"]
+
+    # 5. Reporting-Sicht: View-Spalten (exklusionsbereinigtes SOLL fuer UI)
+    #    Is_Excluded kommt aus apply_exclusions() via df. Echte Vakanzen
+    #    (Is_Vacant=True ohne Is_Excluded=True) bleiben im SOLL erhalten.
+    #    Die Dedup-Bereinigung (Is_Duplicate_Planstelle) ist in SOLL_MAK /
+    #    SOLL_Planstellen bereits enthalten — View erbt diese Nullung.
+    _is_excl = (
+        df["Is_Excluded"].fillna(False).astype(bool)
+        if "Is_Excluded" in df.columns
+        else pd.Series(False, index=df.index)
+    )
+    out["SOLL_MAK_View"]         = out["SOLL_MAK"].where(~_is_excl, 0.0)
+    out["SOLL_EUR_View"]         = out["SOLL_EUR"].where(~_is_excl, 0.0)
+    out["SOLL_Planstellen_View"] = out["SOLL_Planstellen"].where(~_is_excl, 0)
+    out["DELTA_MAK_View"]        = out["IST_MAK"]  - out["SOLL_MAK_View"]
+    out["DELTA_EUR_View"]        = out["IST_EUR"]  - out["SOLL_EUR_View"]
+    out["DELTA_Koepfe_View"]     = out["IST_Kopf"] - out["SOLL_Planstellen_View"]
+
+    # 6. Transparenz: besetzte Zeilen mit Soll_FTE=0 klassifizieren
+    out["Ist_ohne_Plan_Soll_Kategorie"] = _classify_ist_ohne_plan_soll(df, out)
+
+    preferred_order = [
+        "Planebene", "Planebene_Source", "Organisationseinheit", "Kürzel OrgEinheit",
+        "OE-Cluster", "JF-Cluster", "Jobfamily", "Planstellennr", "Planstelle",
+        "Planstellenkürzel", "Ist_Entgeltgruppe", "Ist_Stufe", "Soll_Entgeltgruppe",
+        "Soll_Stufe", "IST_MAK", "SOLL_MAK", "DELTA_MAK", "IST_Kopf", "SOLL_Kopf",
+        "SOLL_Planstellen", "DELTA_Kopf", "IST_EUR", "SOLL_EUR", "DELTA_EUR",
+        # Reporting-Sicht View-Spalten (exklusionsbereinigt)
+        "SOLL_MAK_View", "DELTA_MAK_View",
+        "SOLL_EUR_View", "DELTA_EUR_View",
+        "SOLL_Planstellen_View", "DELTA_Koepfe_View",
+        "Is_Vacant", "Is_Excluded", "Exclusion_Group",
+        "Is_Technical_Position", "Is_Duplicate_Planstelle",
+        "Ist_ohne_Plan_Soll_Kategorie",
+        "PersNr", "Personalnummer", "Personalnachname", "Personalvorname",
+        "Vergütungsklasse",
+        "Status kundenindividuell", "Vertragsart", "Phase", "ATZ_Status",
+        "Ausbildung", "Ist_Azubi",
+    ]
+    return out[[col for col in preferred_order if col in out.columns]].reset_index(drop=True)
+
+
+
+def _compensation_metric_columns(metric: str, view: str) -> tuple[str | None, str | None, str | None, str]:
+    # Reporting-Sicht: SOLL und DELTA verwenden View-Spalten (exklusionsbereinigt).
+    # IST bleibt unveraendert (IST_MAK, IST_EUR, IST_Kopf).
+    metric_map = {
+        "MAK":    ("IST_MAK",  "SOLL_MAK_View",          "DELTA_MAK_View",    "MAK"),
+        "Köpfe":  ("IST_Kopf", "SOLL_Planstellen_View",   "DELTA_Koepfe_View", "Köpfe"),
+        "Koepfe": ("IST_Kopf", "SOLL_Planstellen_View",   "DELTA_Koepfe_View", "Köpfe"),
+        "Euro":   ("IST_EUR",  "SOLL_EUR_View",           "DELTA_EUR_View",    "EUR"),
+        "EUR":    ("IST_EUR",  "SOLL_EUR_View",           "DELTA_EUR_View",    "EUR"),
+    }
+    ist_col, soll_col, delta_col, label = metric_map.get(metric, metric_map["MAK"])
+    if view == "IST":
+        return ist_col, None, None, label
+    if view == "SOLL":
+        return soll_col, None, None, label
+    if view == "Delta":
+        return delta_col, None, None, label
+    return ist_col, soll_col, None, label
+
+
+def _compensation_metric_base_columns(metric: str) -> tuple[str, str, str, str]:
+    ist_col, soll_col, _, value_label = _compensation_metric_columns(metric, "IST vs. SOLL")
+    _, _, delta_col, _ = _compensation_metric_columns(metric, "Delta")
+    return ist_col or "IST_MAK", soll_col or "SOLL_MAK", delta_col or "DELTA_MAK", value_label
+
+
+def _aggregate_compensation_for_chart(comp_df: pd.DataFrame, group_cols: list[str], value_col: str) -> pd.DataFrame:
+    work = comp_df.copy()
+    if value_col == "DELTA_Kopf":
+        ist = _aggregate_compensation_for_chart(work, group_cols, "IST_Kopf")
+        soll = work.groupby(group_cols, dropna=False)["SOLL_Kopf"].sum().reset_index()
+        merged = ist.merge(soll, on=group_cols, how="outer").fillna(0)
+        merged[value_col] = merged["IST_Kopf"] - merged["SOLL_Kopf"]
+        return merged[group_cols + [value_col]]
+    if value_col == "DELTA_Koepfe_View":
+        # Reporting-Sicht: IST per PersNr dedupliziert, SOLL aus View-Spalte (exklusionsbereinigt)
+        ist = _aggregate_compensation_for_chart(work, group_cols, "IST_Kopf")
+        soll = work.groupby(group_cols, dropna=False)["SOLL_Planstellen_View"].sum().reset_index()
+        merged = ist.merge(soll, on=group_cols, how="outer").fillna(0)
+        merged[value_col] = merged["IST_Kopf"] - merged["SOLL_Planstellen_View"]
+        return merged[group_cols + [value_col]]
+    if value_col == "IST_Kopf":
+        id_col = _person_identifier_column(work)
+        if id_col in work.columns:
+            active = work[work["IST_Kopf"].fillna(0).gt(0)].copy()
+            # Innerhalb einer Gruppierung wird per PersNr dedupliziert; ueber mehrere Gruppen kann dieselbe Person fachlich mehrfach erscheinen.
+            return active.groupby(group_cols, dropna=False)[id_col].nunique().reset_index(name=value_col)
+    return work.groupby(group_cols, dropna=False)[value_col].sum().reset_index()
+
+
+def _compensation_is_planlevel_available(comp_df: pd.DataFrame) -> bool:
+    return "Planebene_Source" in comp_df.columns and not comp_df["Planebene_Source"].eq("missing").all()
+
+
+def _compensation_grouped_source(
+    comp_df: pd.DataFrame,
+    *,
+    aggregation: str,
+    value_col: str,
+) -> pd.DataFrame:
+    """Aggregiert die vorhandene Compensation-Basis semantisch fuer IST- und SOLL-Spalten."""
+    work = comp_df.copy()
+    uses_soll_dimension = value_col.startswith("SOLL_")
+
+    if aggregation == "Planebene":
+        group_cols = ["_grp_planebene"]
+        work["_grp_planebene"] = work["Planebene"].fillna("Nicht zugeordnet")
+    elif aggregation == "Planebene + Entgeltgruppe":
+        eg_col = "Soll_Entgeltgruppe" if uses_soll_dimension else "Ist_Entgeltgruppe"
+        group_cols = ["_grp_planebene", "_grp_eg"]
+        work["_grp_planebene"] = work["Planebene"].fillna("Nicht zugeordnet")
+        work["_grp_eg"] = work[eg_col].fillna("Nicht zugeordnet")
+    elif aggregation == "Entgeltgruppe + Stufe":
+        eg_col = "Soll_Entgeltgruppe" if uses_soll_dimension else "Ist_Entgeltgruppe"
+        stufe_col = "Soll_Stufe" if uses_soll_dimension else "Ist_Stufe"
+        group_cols = ["_grp_eg", "_grp_stufe"]
+        work["_grp_eg"] = work[eg_col].fillna("Nicht zugeordnet")
+        work["_grp_stufe"] = work[stufe_col].fillna("Nicht zugeordnet")
+    else:
+        eg_col = "Soll_Entgeltgruppe" if uses_soll_dimension else "Ist_Entgeltgruppe"
+        group_cols = ["_grp_eg"]
+        work["_grp_eg"] = work[eg_col].fillna("Nicht zugeordnet")
+
+    agg = _aggregate_compensation_for_chart(work, group_cols, value_col)
+    if aggregation == "Entgeltgruppe + Stufe":
+        agg["_label"] = agg.apply(lambda row: f"{row['_grp_eg']} / Stufe {row['_grp_stufe']}", axis=1)
+    elif aggregation == "Planebene + Entgeltgruppe":
+        agg["_label"] = agg.apply(lambda row: f"{row['_grp_planebene']} / {row['_grp_eg']}", axis=1)
+    else:
+        agg["_label"] = agg[group_cols[0]].astype(str)
+    agg["_is_unassigned"] = agg["_label"].astype(str).str.contains("Nicht zugeordnet", case=False, na=False)
+    return agg[["_label", "_is_unassigned", value_col]]
+
+
+def _build_compensation_chart_source(
+    comp_df: pd.DataFrame,
+    *,
+    metric: str,
+    aggregation: str,
+) -> tuple[pd.DataFrame, str, str, str, str]:
+    ist_col, soll_col, delta_col, value_label = _compensation_metric_base_columns(metric)
+    ist = _compensation_grouped_source(comp_df, aggregation=aggregation, value_col=ist_col)
+    soll = _compensation_grouped_source(comp_df, aggregation=aggregation, value_col=soll_col)
+    source = ist.merge(soll, on="_label", how="outer", suffixes=("_ist", "_soll")).fillna(0)
+    source["_is_unassigned"] = source.get("_is_unassigned_ist", False) | source.get("_is_unassigned_soll", False)
+    source[delta_col] = source[ist_col] - source[soll_col]
+    source["_delta_pct"] = source.apply(
+        lambda row: row[delta_col] / row[soll_col] if row[soll_col] else None,
+        axis=1,
+    )
+    return source[["_label", "_is_unassigned", ist_col, soll_col, delta_col, "_delta_pct"]], ist_col, soll_col, delta_col, value_label
+
+
+def _format_compensation_value(value: float, value_label: str, *, signed: bool = False) -> str:
+    if pd.isna(value):
+        return "-"
+    sign = "+" if signed and value > 0 else ""
+    if value_label == "EUR":
+        abs_value = abs(float(value))
+        prefix = "-" if value < 0 else sign
+        if abs_value >= 1_000_000:
+            return f"{prefix}{abs_value / 1_000_000:.1f} Mio. EUR".replace(".", ",")
+        return f"{prefix}{abs_value / 1_000:.0f} TEUR".replace(",", ".")
+    if value_label == "Köpfe":
+        return f"{sign}{int(round(value)):,}".replace(",", ".")
+    return f"{sign}{value:,.1f}".replace(",", " ").replace(".", ",").replace(" ", ".")
+
+
+def _topn_to_limit(top_n: str) -> int | None:
+    return None if top_n == "Alle" else int(top_n)
+
+
+def _compensation_metric_from_sidebar(value_type: str) -> str:
+    metric_view = _compact_metric_view_label(normalize_global_metric_view(get_global_metric_view()))
+    if metric_view == "Köpfe":
+        return "Köpfe"
+    if metric_view == "EUR":
+        return "Euro"
+    if metric_view == "MAK":
+        return "MAK"
+    return "Euro" if value_type == "eur" else ("Köpfe" if value_type == "koepfe" else "MAK")
+
+
+def create_compensation_planlevel_chart(
+    comp_df: pd.DataFrame,
+    *,
+    metric: str,
+    view: str,
+    aggregation: str,
+    top_n: str = "15",
+    print_mode: bool = False,
+) -> go.Figure:
+    if comp_df.empty:
+        return go.Figure()
+
+    source, ist_col, soll_col, delta_col, value_label = _build_compensation_chart_source(
+        comp_df,
+        metric=metric,
+        aggregation=aggregation,
+    )
+    main = source[~source["_is_unassigned"]].copy()
+    if main.empty:
+        main = source.copy()
+
+    fig = go.Figure()
+    if view == "IST vs. SOLL":
+        main["_sort"] = main[delta_col].abs()
+        main = main.sort_values("_sort", ascending=False)
+        limit = _topn_to_limit(top_n)
+        if limit:
+            main = main.head(limit)
+        main = main.sort_values("_sort", ascending=True)
+        custom = main[[ist_col, soll_col, delta_col, "_delta_pct"]]
+        hover = (
+            "<b>%{y}</b><br>IST: %{customdata[0]:,.1f}<br>SOLL: %{customdata[1]:,.1f}"
+            "<br>Delta: %{customdata[2]:+,.1f}<br>Delta %: %{customdata[3]:.1%}<extra></extra>"
+        )
+        fig.add_trace(go.Bar(y=main["_label"], x=main[ist_col], name="IST", orientation="h", marker_color="#0088DE", customdata=custom, hovertemplate=hover))
+        fig.add_trace(go.Bar(y=main["_label"], x=main[soll_col], name="SOLL", orientation="h", marker_color="#E94D3A", customdata=custom, hovertemplate=hover))
+        fig.update_layout(barmode="group")
+    else:
+        value_col = delta_col if view == "Delta" else (soll_col if view == "SOLL" else ist_col)
+        main["_sort"] = main[delta_col].abs() if view == "Delta" else main[value_col].abs()
+        main = main.sort_values("_sort", ascending=False)
+        limit = _topn_to_limit(top_n)
+        if limit:
+            main = main.head(limit)
+        main = main.sort_values("_sort", ascending=True)
+        colors = main[value_col].apply(lambda x: "#10b981" if x >= 0 else "#E94D3A")
+        hover = (
+            "<b>%{y}</b><br>IST: %{customdata[0]:,.1f}<br>SOLL: %{customdata[1]:,.1f}"
+            "<br>Delta: %{customdata[2]:+,.1f}<br>Delta %: %{customdata[3]:.1%}<extra></extra>"
+        )
+        fig.add_trace(go.Bar(
+            y=main["_label"],
+            x=main[value_col],
+            name=view,
+            orientation="h",
+            marker_color=colors,
+            customdata=main[[ist_col, soll_col, delta_col, "_delta_pct"]],
+            hovertemplate=hover,
+        ))
+
+    n_rows = len(main)
+    view_title = "Top-Abweichungen" if view == "Delta" else view
+    x_title = f"Delta {value_label}" if view == "Delta" else f"{view if view != 'IST vs. SOLL' else 'IST/SOLL'} {value_label}"
+    tickformat = ",.0f" if value_label in ("EUR", "Köpfe") else ",.1f"
+    fig.update_layout(
+        title=dict(text=f"{view_title} {value_label} nach {aggregation}", font=dict(size=15, color="#1e293b"), x=0),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#64748b", size=11),
+        margin=dict(l=10, r=40, t=50, b=35),
+        height=max(320, min(760 if print_mode else 680, n_rows * 34 + 140)),
+        xaxis=dict(title=x_title, showgrid=True, gridcolor="rgba(226, 232, 240, 0.8)", zeroline=True, zerolinecolor="#475569", tickformat=tickformat),
+        yaxis=dict(title="", showgrid=False),
+    )
+    return apply_legend_bottom(fig)
+
+
+def create_compensation_heatmap(
+    comp_df: pd.DataFrame,
+    *,
+    metric: str,
+    view: str,
+) -> go.Figure:
+    heatmap_view = "Delta" if view == "IST vs. SOLL" else view
+    value_col, _, _, value_label = _compensation_metric_columns(metric, heatmap_view)
+    if value_col is None:
+        value_col = _compensation_metric_base_columns(metric)[2]
+
+    source = _compensation_grouped_source(comp_df, aggregation="Entgeltgruppe + Stufe", value_col=value_col)
+    source = source[~source["_is_unassigned"]].copy()
+    if source.empty:
+        return go.Figure()
+    split = source["_label"].str.split(" / Stufe ", expand=True)
+    source["Entgeltgruppe"] = split[0]
+    source["Stufe"] = split[1] if split.shape[1] > 1 else "Nicht zugeordnet"
+    pivot = source.pivot_table(index="Entgeltgruppe", columns="Stufe", values=value_col, aggfunc="sum", fill_value=0)
+    fig = go.Figure(data=go.Heatmap(
+        z=pivot.values,
+        x=[str(c) for c in pivot.columns],
+        y=[str(i) for i in pivot.index],
+        colorscale="RdBu" if heatmap_view == "Delta" else "Blues",
+        reversescale=(heatmap_view == "Delta"),
+        colorbar=dict(title=value_label),
+        hovertemplate="<b>%{y}</b><br>Stufe %{x}<br>Wert: %{z:,.1f}<extra></extra>",
+    ))
+    fig.update_layout(
+        title=dict(text=f"Heatmap Entgeltgruppe x Stufe ({heatmap_view} {value_label})", font=dict(size=15, color="#1e293b"), x=0),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#64748b", size=11),
+        margin=dict(l=10, r=20, t=50, b=35),
+        height=max(320, min(620, len(pivot.index) * 28 + 160)),
+        xaxis=dict(title="Stufe"),
+        yaxis=dict(title="Entgeltgruppe"),
+    )
+    return fig
+
+
+def _format_compensation_detail_table(comp_df: pd.DataFrame) -> pd.DataFrame:
+    display_df = comp_df.copy()
+    for col in ["IST_MAK", "SOLL_MAK", "DELTA_MAK", "SOLL_MAK_View", "DELTA_MAK_View"]:
+        if col in display_df.columns:
+            display_df[col] = display_df[col].apply(lambda x: f"{x:,.2f}".replace(",", " ").replace(".", ",").replace(" ", ".") if pd.notna(x) else "-")
+    for col in ["IST_Kopf", "SOLL_Kopf", "DELTA_Kopf", "SOLL_Planstellen_View", "DELTA_Koepfe_View"]:
+        if col in display_df.columns:
+            display_df[col] = display_df[col].apply(lambda x: f"{int(x):,}".replace(",", ".") if pd.notna(x) else "-")
+    for col in ["IST_EUR", "SOLL_EUR", "DELTA_EUR", "SOLL_EUR_View", "DELTA_EUR_View"]:
+        if col in display_df.columns:
+            display_df[col] = display_df[col].apply(lambda x: format_currency(x) if pd.notna(x) else "-")
+    return display_df
+
+
+
+def _compensation_totals(comp_df: pd.DataFrame, metric: str) -> tuple[float, float, float, float | None, str]:
+    ist_col, soll_col, delta_col, value_label = _compensation_metric_base_columns(metric)
+    all_df = comp_df.assign(_all="Gesamt")
+    ist = _aggregate_compensation_for_chart(all_df, ["_all"], ist_col)
+    soll = _aggregate_compensation_for_chart(all_df, ["_all"], soll_col)
+    ist_value = float(ist[ist_col].sum()) if ist_col in ist.columns else 0.0
+    soll_value = float(soll[soll_col].sum()) if soll_col in soll.columns else 0.0
+    delta_value = ist_value - soll_value
+    fulfillment = ist_value / soll_value if soll_value else None
+    return ist_value, soll_value, delta_value, fulfillment, value_label
+
+
+def _render_compensation_kpis(comp_df: pd.DataFrame, metric: str) -> None:
+    ist_value, soll_value, delta_value, fulfillment, value_label = _compensation_totals(comp_df, metric)
+    status = "good" if delta_value >= 0 else "warning"
+    soll_title    = "SOLL Planstellen" if metric == "K\u00f6pfe" else f"SOLL {value_label}"
+    soll_subtitle = "Eindeutige Planstellen" if metric == "K\u00f6pfe" else "Zielbasis"
+    kpis = [
+        {"title": f"IST {value_label}", "value": _format_compensation_value(ist_value, value_label), "subtitle": "Aktuelle Basis", "icon": "\U0001f4ca", "status": "default"},
+        {"title": soll_title, "value": _format_compensation_value(soll_value, value_label), "subtitle": soll_subtitle, "icon": "\U0001f4ca", "status": "default"},
+        {"title": f"Delta {value_label}", "value": _format_compensation_value(delta_value, value_label, signed=True), "subtitle": "IST - SOLL", "icon": "\u2194", "status": status},
+    ]
+    if metric == "MAK":
+        kpis.append({
+            "title": "Erfüllungsgrad MAK",
+            "value": f"{fulfillment * 100:.1f}%".replace(".", ",") if fulfillment is not None else "-",
+            "subtitle": "IST / SOLL",
+            "icon": "\u2713",
+            "status": "good" if fulfillment is not None and fulfillment >= 0.95 else "warning",
+        })
+    render_kpi_cards_styled(kpis)
+
+
+def _render_compensation_unassigned_box(comp_df: pd.DataFrame, metric: str, aggregation: str) -> None:
+    source, ist_col, soll_col, delta_col, value_label = _build_compensation_chart_source(
+        comp_df,
+        metric=metric,
+        aggregation=aggregation,
+    )
+    unassigned = source[source["_is_unassigned"]]
+    if unassigned.empty:
+        return
+    ist_value = float(unassigned[ist_col].sum())
+    soll_value = float(unassigned[soll_col].sum())
+    delta_value = float(unassigned[delta_col].sum())
+    st.info(
+        "Nicht zugeordnet: "
+        f"IST {_format_compensation_value(ist_value, value_label)} / "
+        f"SOLL {_format_compensation_value(soll_value, value_label)} / "
+        f"Delta {_format_compensation_value(delta_value, value_label, signed=True)}. "
+        "Diese Werte werden aus der Hauptgrafik ausgeblendet und separat als Datenqualitätshinweis gezeigt."
+    )
+
+
+def _build_ist_ohne_plan_soll_summary(comp_df: pd.DataFrame) -> pd.DataFrame | None:
+    """Gibt Aggregation nach Ist_ohne_Plan_Soll_Kategorie zurueck, oder None."""
+    cat_col = "Ist_ohne_Plan_Soll_Kategorie"
+    if cat_col not in comp_df.columns:
+        return None
+    subset = comp_df[comp_df[cat_col].ne("")]
+    if subset.empty:
+        return None
+
+    pers_col = "PersNr" if "PersNr" in comp_df.columns else None
+    pl_col   = "Planstellennr" if "Planstellennr" in comp_df.columns else None
+
+    rows = []
+    for cat in _IST_OHNE_SOLL_CAT_ORDER:
+        g = subset[subset[cat_col] == cat]
+        if g.empty:
+            continue
+        rows.append({
+            "Kategorie":  cat,
+            "Zeilen":     len(g),
+            "Personen":   int(g[pers_col].dropna().astype(str).str.strip().ne("").sum()) if pers_col else len(g),
+            "IST_MAK":    float(g["IST_MAK"].sum()) if "IST_MAK" in g.columns else 0.0,
+            "IST_EUR":    float(g["IST_EUR"].sum()) if "IST_EUR" in g.columns else 0.0,
+            "Planstellen": int(g[pl_col].dropna().astype(str).str.strip().ne("").nunique()) if pl_col else 0,
+        })
+
+    rows.append({
+        "Kategorie":  "GESAMT",
+        "Zeilen":     len(subset),
+        "Personen":   int(subset[pers_col].dropna().astype(str).str.strip().ne("").sum()) if pers_col else len(subset),
+        "IST_MAK":    float(subset["IST_MAK"].sum()) if "IST_MAK" in subset.columns else 0.0,
+        "IST_EUR":    float(subset["IST_EUR"].sum()) if "IST_EUR" in subset.columns else 0.0,
+        "Planstellen": int(subset[pl_col].dropna().astype(str).str.strip().ne("").nunique()) if pl_col else 0,
+    })
+    return pd.DataFrame(rows)
+
+
+def _render_ist_ohne_plan_soll_warning(comp_df: pd.DataFrame, key_prefix: str) -> None:
+    """Warnbox und Detail-Download fuer IST-ohne-Plan-SOLL-Faelle."""
+    cat_col = "Ist_ohne_Plan_Soll_Kategorie"
+    if cat_col not in comp_df.columns:
+        return
+    subset = comp_df[comp_df[cat_col].ne("")]
+    if subset.empty:
+        return
+
+    total_eur     = float(subset["IST_EUR"].sum()) if "IST_EUR" in subset.columns else 0.0
+    total_ist_eur = float(comp_df["IST_EUR"].sum()) if "IST_EUR" in comp_df.columns else 1.0
+    total_mak     = float(subset["IST_MAK"].sum()) if "IST_MAK" in subset.columns else 0.0
+    total_zeilen  = len(subset)
+    pers_col      = "PersNr" if "PersNr" in subset.columns else None
+    total_personen = int(subset[pers_col].dropna().astype(str).str.strip().ne("").sum()) if pers_col else total_zeilen
+    anteil        = total_eur / total_ist_eur if total_ist_eur > 0 else 0.0
+
+    st.warning(
+        f"**IST ohne Plan-SOLL:** {total_zeilen} Planstellenzeilen ({total_personen} Personen) "
+        f"haben IST-Werte, aber Soll_FTE = 0. "
+        f"Sie erscheinen im Delta vollständig als IST ohne SOLL und sollten fachlich geprüft werden."
+    )
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Zeilen",        str(total_zeilen))
+    c2.metric("IST_MAK",       f"{total_mak:.2f}".replace(".", ","))
+    c3.metric("IST_EUR",       f"{total_eur/1e6:.2f} Mio. €".replace(".", ","))
+    c4.metric("Anteil IST_EUR", f"{anteil*100:.1f} %".replace(".", ","))
+
+    regulaer = subset[subset[cat_col] == "Reguläre aktive Stelle ohne Soll_FTE"]
+    if len(regulaer) > 0:
+        reg_mak = float(regulaer["IST_MAK"].sum()) if "IST_MAK" in regulaer.columns else 0.0
+        reg_eur = float(regulaer["IST_EUR"].sum()) if "IST_EUR" in regulaer.columns else 0.0
+        st.error(
+            f"**Datenqualitätsproblem:** {len(regulaer)} reguläre aktive Beschäftigungsverhältnisse "
+            f"haben keine Soll_FTE (IST_MAK {reg_mak:.2f}, IST_EUR {reg_eur/1e6:.2f} Mio. €). "
+            "Bitte Planstellen-Datei prüfen."
+        )
+
+    # Detail-Download
+    detail_cols_wanted = [
+        "PersNr", "Personalnummer", "Personalnachname", "Personalvorname",
+        "Planstellennr", "Planstelle", "Planstellenkürzel",
+        "Organisationseinheit", "Kürzel OrgEinheit",
+        "Status kundenindividuell", "Vertragsart", "Phase", "ATZ_Status",
+        "Ausbildung", "Ist_Azubi",
+        "Ist_Entgeltgruppe", "Ist_Stufe",
+        "IST_MAK", "IST_EUR", "SOLL_MAK", "SOLL_EUR",
+        "Ist_ohne_Plan_Soll_Kategorie",
+    ]
+    detail_df = subset[[c for c in detail_cols_wanted if c in subset.columns]].copy()
+    detail_df = detail_df.rename(columns={"SOLL_MAK": "Soll_FTE", "SOLL_EUR": "Soll_Cost_Year",
+                                          "Ist_Entgeltgruppe": "TrfGr", "Ist_Stufe": "Stufe"})
+
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        detail_df.to_excel(writer, sheet_name="IST ohne Plan-SOLL", index=False)
+        ws = writer.sheets["IST ohne Plan-SOLL"]
+        for col_cells in ws.columns:
+            max_len = max((len(str(c.value or "")) for c in col_cells), default=10)
+            ws.column_dimensions[col_cells[0].column_letter].width = min(max_len + 4, 50)
+    buf.seek(0)
+
+    download_button_compat(
+        label="Download: IST ohne Plan-SOLL",
+        data=buf.getvalue(),
+        file_name=f"{key_prefix}_ist_ohne_plan_soll.xlsx",
+        mime=_EXCEL_MIME,
+        key=f"download_{key_prefix}_ist_ohne_plan_soll",
+        width="stretch",
+    )
+
+
+def _tariff_group_sort_key(label: object) -> float:
+    """Fachlicher Sortierschlüssel für TVöD-Entgeltgruppen (höherer Wert = höherwertige Gruppe).
+
+    AT / Außertariflich → 100
+    E15..E1             → 15.0 .. 1.0  (E9C=9.3, E9B=9.2, E9A=9.1, E9=9.0)
+    TVAöD / Ausbildung  → 0
+    Nicht zugeordnet    → -1
+    Unbekannt           → -2
+    """
+    import re
+    s = str(label).strip()
+    su = re.sub(r"\s+", "", s.upper())
+
+    # AT / Außertariflich
+    if su in ("AT", "AUSSERTARIFLICH", "AUSSERTARIFLICH"):
+        return 100.0
+
+    # E-Gruppen: E1..E15, optional Suffix A/B/C (auch EG-Schreibweise)
+    m = re.match(r"^E(?:G)?(\d+)([ABC]?)$", su)
+    if m:
+        num  = int(m.group(1))
+        frac = {"A": 0.1, "B": 0.2, "C": 0.3}.get(m.group(2), 0.0)
+        return float(num) + frac
+
+    # TVAöD / Ausbildung
+    if any(x in su for x in ("TVAÖD", "TVAOD", "AUSBILDUNG")):
+        return 0.0
+
+    # Leer / Nicht zugeordnet / Sonderzeichen
+    if not s or su in ("-", "NAN", "NONE") or "NICHTZUGEORDNET" in su or su.startswith("NICHT"):
+        return -1.0
+
+    return -2.0
+
+
+def _sort_by_entgeltgruppe(df: pd.DataFrame, *, ascending: bool = True) -> pd.DataFrame:
+    """Fachlich korrekte Sortierung nach TVöD-Entgeltgruppe via _tariff_group_sort_key.
+
+    ascending=True  → E1 zuerst, E15 zuletzt  (für Plotly categoryarray: E15 erscheint oben)
+    ascending=False → E15 zuerst, E1 zuletzt  (für Tabelle: E15 in erster Zeile = oben)
+    """
+    df = df.copy()
+    df["_eg_order"] = df["_label"].apply(_tariff_group_sort_key)
+    return df.sort_values("_eg_order", ascending=ascending).drop(columns=["_eg_order"])
+
+
+def _create_eg_ist_vs_soll_chart(
+    main: pd.DataFrame,
+    *,
+    ist_col: str,
+    soll_col: str,
+    delta_col: str,
+    value_label: str,
+    print_mode: bool = False,
+) -> go.Figure:
+    """Horizontales gruppiertes Balkendiagramm IST vs. SOLL nach Entgeltgruppe (fachlich sortiert)."""
+    if main.empty:
+        return go.Figure()
+    custom = main[[ist_col, soll_col, delta_col, "_delta_pct"]].values
+    hover = (
+        "<b>%{y}</b><br>IST: %{customdata[0]:,.1f}<br>SOLL: %{customdata[1]:,.1f}"
+        "<br>Delta: %{customdata[2]:+,.1f}<br>Delta%%: %{customdata[3]:.1%%}<extra></extra>"
+    )
+    tickformat = ",.0f" if value_label in ("EUR", "Köpfe") else ",.1f"
+    n_rows = len(main)
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        y=main["_label"], x=main[ist_col], name="IST",
+        orientation="h", marker_color="#0088DE", customdata=custom, hovertemplate=hover,
+    ))
+    fig.add_trace(go.Bar(
+        y=main["_label"], x=main[soll_col], name="SOLL",
+        orientation="h", marker_color="#E94D3A", customdata=custom, hovertemplate=hover,
+    ))
+    # categoryarray in ascending order → Plotly maps first item to bottom, last to top
+    # → E15 (last) appears at the top of the chart, E1 / TVAöD at the bottom
+    ordered_labels = main["_label"].tolist()
+    fig.update_layout(
+        barmode="group",
+        title=dict(text=f"IST vs. SOLL {value_label} nach Entgeltgruppe", font=dict(size=15, color="#1e293b"), x=0),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#64748b", size=11),
+        margin=dict(l=10, r=40, t=50, b=35),
+        height=max(320, min(760 if print_mode else 680, n_rows * 34 + 140)),
+        xaxis=dict(
+            title=f"IST/SOLL {value_label}", showgrid=True,
+            gridcolor="rgba(226, 232, 240, 0.8)", zeroline=True,
+            zerolinecolor="#475569", tickformat=tickformat,
+        ),
+        yaxis=dict(
+            title="", showgrid=False,
+            categoryorder="array",
+            categoryarray=ordered_labels,
+        ),
+    )
+    return apply_legend_bottom(fig)
+
+
+def _build_eg_summary_table(
+    main: pd.DataFrame,
+    *,
+    ist_col: str,
+    soll_col: str,
+    delta_col: str,
+    value_label: str,
+) -> pd.DataFrame:
+    """Übersichtstabelle Entgeltgruppe | IST | SOLL | Delta | Delta % mit Gesamtzeile."""
+    rows = []
+    for _, row in main.iterrows():
+        ist_v   = float(row[ist_col])
+        soll_v  = float(row[soll_col])
+        delta_v = float(row[delta_col])
+        pct_raw = row.get("_delta_pct")
+        pct_str = (
+            f"{pct_raw:+.1%}".replace(".", ",")
+            if pct_raw is not None and not pd.isna(pct_raw)
+            else "-"
+        )
+        rows.append({
+            "Entgeltgruppe": row["_label"],
+            "IST":     _format_compensation_value(ist_v, value_label),
+            "SOLL":    _format_compensation_value(soll_v, value_label),
+            "Delta":   _format_compensation_value(delta_v, value_label, signed=True),
+            "Delta %": pct_str,
+        })
+    tot_ist   = float(main[ist_col].sum())
+    tot_soll  = float(main[soll_col].sum())
+    tot_delta = tot_ist - tot_soll
+    tot_pct   = tot_delta / tot_soll if tot_soll else None
+    rows.append({
+        "Entgeltgruppe": "Gesamt",
+        "IST":     _format_compensation_value(tot_ist, value_label),
+        "SOLL":    _format_compensation_value(tot_soll, value_label),
+        "Delta":   _format_compensation_value(tot_delta, value_label, signed=True),
+        "Delta %": f"{tot_pct:+.1%}".replace(".", ",") if tot_pct is not None else "-",
+    })
+    return pd.DataFrame(rows)
+
+
+def render_compensation_planlevel_section(
+    df: pd.DataFrame,
+    *,
+    value_type: str,
+    key_prefix: str,
+    view_mode: str | None = None,
+    print_mode: bool = False,
+) -> None:
+    comp_df = build_compact_compensation_planlevel_df(df)
+    if comp_df.empty:
+        st.warning("Keine Vergütungsdaten verfügbar.")
+        return
+
+    has_planlevel = _compensation_is_planlevel_available(comp_df)
+
+    # Header — an IST-Seite angeglichen (divider=True)
+    st.subheader("IST vs. SOLL nach Entgeltgruppen", divider=True)
+    st.caption("Reporting-Sicht · exklusionsbereinigt · aktive Filter berücksichtigt")
+    if not st.session_state.get("tvoed_available", bool(st.session_state.get("tvoed_lookup", {}))):
+        st.caption("TVÖD-Tabelle nicht verfügbar – Euro-Werte basieren auf konfigurierten Fallback-Werten.")
+
+    # Fest verdrahtete Werte — keine UI-Regler
+    metric      = _compensation_metric_from_sidebar(value_type)
+    aggregation = "Entgeltgruppe"
+
+    _render_ist_ohne_plan_soll_warning(comp_df, key_prefix)
+
+    # Info zu offenen nicht-exkludierten Planstellen (optional, bei relevanter SOLL_EUR-Summe)
+    if "Is_Excluded" in comp_df.columns and "IST_Kopf" in comp_df.columns:
+        _ov_mask = (
+            ~comp_df["Is_Excluded"].fillna(False).astype(bool)
+            & (comp_df["IST_Kopf"].fillna(0) == 0)
+        )
+        if "SOLL_MAK" in comp_df.columns:
+            _ov_mask = _ov_mask & (comp_df["SOLL_MAK"].fillna(0).gt(0) | comp_df["SOLL_EUR"].fillna(0).gt(0))
+        _n_ov_info  = int(_ov_mask.sum())
+        _eur_ov_info = float(comp_df.loc[_ov_mask, "SOLL_EUR_View"].sum()) if "SOLL_EUR_View" in comp_df.columns else 0.0
+        if _n_ov_info > 0 and _eur_ov_info > 1_000:
+            st.caption(
+                f"{_n_ov_info} offene Planstellen sind im SOLL enthalten "
+                f"und erklären ca. {_format_compensation_value(_eur_ov_info, 'EUR')} der Abweichung."
+            )
+
+    # Datenbasis: IST nach Ist_Entgeltgruppe, SOLL nach Soll_Entgeltgruppe, outer join
+    source, ist_col, soll_col, delta_col, value_label = _build_compensation_chart_source(
+        comp_df, metric=metric, aggregation=aggregation,
+    )
+    main = source[~source["_is_unassigned"]].copy()
+    if main.empty:
+        main = source.copy()
+
+    chart_col, table_col = st.columns([1.55, 1])
+
+    with chart_col:
+        # ascending=True: E1 zuerst, E15 zuletzt → categoryarray legt E15 oben in Plotly ab
+        chart_data = _sort_by_entgeltgruppe(main, ascending=True)
+        fig = _create_eg_ist_vs_soll_chart(
+            chart_data,
+            ist_col=ist_col, soll_col=soll_col, delta_col=delta_col,
+            value_label=value_label, print_mode=print_mode,
+        )
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+            key=f"{key_prefix}_comp_eg_chart",
+            config={"displayModeBar": False},
+        )
+
+    with table_col:
+        # ascending=False: E15 zuerst → E15 in erster Tabellenzeile = oben
+        table_data = _sort_by_entgeltgruppe(main, ascending=False)
+        tbl = _build_eg_summary_table(
+            table_data,
+            ist_col=ist_col, soll_col=soll_col, delta_col=delta_col, value_label=value_label,
+        )
+        dataframe_compat(tbl, width="stretch", hide_index=True)
+
+        excel_data = export_to_excel(
+            comp_df,
+            dimension_name="Verguetung auf Planebene" if has_planlevel else "Verguetung nach Entgeltgruppen",
+            value_type=value_type,
+            key_prefix=key_prefix,
+        )
+        download_button_compat(
+            label="Excel Download",
+            data=excel_data,
+            file_name=f"{key_prefix}_verguetung_planebene.xlsx",
+            mime=_EXCEL_MIME,
+            key=f"download_{key_prefix}_verguetung_planebene",
+            width="stretch",
+        )
+
+    _render_compensation_unassigned_box(comp_df, metric, aggregation)
+
+    # Methodik — standardmäßig geschlossen, unterhalb von Grafik/Tabelle
+    with st.expander("Hinweise zur Berechnung", expanded=False):
+        st.markdown(
+            "**Reporting-Sicht:** Aktive Exklusionsgruppen und Filter definieren den Betrachtungsraum. "
+            "IST und SOLL werden innerhalb dieses Scopes verglichen.\n\n"
+            "**Köpfe / Planstellen:** IST zeigt eindeutige Personen je Entgeltgruppe. "
+            "SOLL zeigt gültige Planstellen. "
+            "Personen mit mehreren Planstellen können über mehrere Entgeltgruppen hinweg mehrfach erscheinen."
+        )
+
+    # Debug-Expander nur bei URL-Parameter ?debug=1
+    if bool(st.query_params.get("debug")):
+        with st.expander("Berechnungsprüfung", expanded=True):
+            _n_dup   = int(comp_df["Is_Duplicate_Planstelle"].sum()) if "Is_Duplicate_Planstelle" in comp_df.columns else 0
+            _n_tech  = int(comp_df["Is_Technical_Position"].sum())   if "Is_Technical_Position"   in comp_df.columns else 0
+            _n_excl  = int(comp_df["Is_Excluded"].sum())             if "Is_Excluded"             in comp_df.columns else 0
+            _ist_mak = float(comp_df["IST_MAK"].sum())
+            _ist_eur = float(comp_df["IST_EUR"].sum())
+            _soll_mak_full  = float(comp_df["SOLL_MAK"].sum())
+            _soll_eur_full  = float(comp_df["SOLL_EUR"].sum())
+            _soll_pl_full   = int(comp_df["SOLL_Planstellen"].sum()) if "SOLL_Planstellen" in comp_df.columns else 0
+            _soll_mak_view  = float(comp_df["SOLL_MAK_View"].sum())       if "SOLL_MAK_View"       in comp_df.columns else _soll_mak_full
+            _soll_eur_view  = float(comp_df["SOLL_EUR_View"].sum())       if "SOLL_EUR_View"       in comp_df.columns else _soll_eur_full
+            _soll_pl_view   = int(comp_df["SOLL_Planstellen_View"].sum()) if "SOLL_Planstellen_View" in comp_df.columns else _soll_pl_full
+            _delta_eur_view = _ist_eur - _soll_eur_view
+            _budget_ausch   = _ist_eur / _soll_eur_view * 100 if _soll_eur_view > 0 else 0.0
+
+            _lines = [
+                "**Planstellen-Deduplizierung**",
+                f"- Doppelte Planstellennr (SOLL=0 gesetzt): {_n_dup}",
+                f"- Technische Mini-Planstellen (Soll_FTE ≤ 0,015): {_n_tech}",
+                f"- Exkludierte Zeilen (Is_Excluded=True): {_n_excl}",
+                "",
+                "**MAK — Reporting-Sicht**",
+                f"- IST_MAK:              {_ist_mak:.4f}",
+                f"- SOLL_MAK (Reporting): {_soll_mak_view:.4f}",
+                f"- DELTA_MAK:            {_ist_mak - _soll_mak_view:+.4f}",
+                "",
+                "**EUR — Vollständiger Stellenplan vs. Reporting-Sicht**",
+                f"  *(Basis Soll_Cost_Year — bei TVÖD-Verfügbarkeit exakt, sonst Fallback)*",
+                f"- Vollständiges SOLL_EUR (inkl. Exkl.): {_soll_eur_full:>18,.2f}",
+                f"- Reporting-SOLL_EUR  (ohne Exkl.):     {_soll_eur_view:>18,.2f}",
+                f"- Herausgerechnetes SOLL_EUR:            {_soll_eur_full - _soll_eur_view:>18,.2f}",
+                f"- IST_EUR:                               {_ist_eur:>18,.2f}",
+                f"- DELTA_EUR (Reporting):                 {_delta_eur_view:>+18,.2f}",
+                f"- Budget-Ausschöpfung (Reporting):       {_budget_ausch:.1f} %",
+                "",
+                "**Planstellen — Vollständig vs. Reporting-Sicht**",
+                f"- Vollständig:  {_soll_pl_full}",
+                f"- Reporting:    {_soll_pl_view}",
+                f"- Differenz:    {_soll_pl_full - _soll_pl_view}",
+                "",
+                "**MAK — Vollständig vs. Reporting-Sicht**",
+                f"- Vollständig:  {_soll_mak_full:.4f}",
+                f"- Reporting:    {_soll_mak_view:.4f}",
+                f"- Differenz:    {_soll_mak_full - _soll_mak_view:.4f}",
+            ]
+            if _soll_eur_view == 0.0:
+                _lines += ["", ":warning: SOLL_EUR_View = 0 — prüfe ob TVÖD-Tabelle geladen und TrfGr/Soll_FTE im Snapshot vorhanden sind."]
+            if _n_dup > 5:
+                _lines += ["", f":warning: Mehr als 5 doppelte Planstellennr ({_n_dup}). Bitte Snapshot-Qualität prüfen."]
+            st.markdown("\n".join(_lines))
+
+            if "Exclusion_Group" in comp_df.columns and _n_excl > 0:
+                excl_df = comp_df[comp_df["Is_Excluded"].fillna(False).astype(bool)].copy()
+                grp_agg = excl_df.groupby("Exclusion_Group", dropna=False).agg(
+                    Zeilen          = ("Exclusion_Group", "count"),
+                    SOLL_MAK        = ("SOLL_MAK",        "sum"),
+                    SOLL_EUR        = ("SOLL_EUR",        "sum"),
+                    SOLL_Planstellen= ("SOLL_Planstellen","sum"),
+                ).reset_index()
+                grp_agg["SOLL_MAK"]         = grp_agg["SOLL_MAK"].map(lambda x: f"{x:.3f}")
+                grp_agg["SOLL_EUR"]         = grp_agg["SOLL_EUR"].map(lambda x: f"{x:,.0f} €")
+                grp_agg["SOLL_Planstellen"] = grp_agg["SOLL_Planstellen"].map(lambda x: f"{int(x)}")
+                st.markdown("**Exklusionsgruppen — SOLL in Exklusionen (vollständiger Stellenplan)**")
+                dataframe_compat(grp_agg, width="stretch", hide_index=True)
+
+            if "Is_Excluded" in comp_df.columns and "IST_Kopf" in comp_df.columns:
+                _ov_m = ~comp_df["Is_Excluded"].fillna(False).astype(bool) & (comp_df["IST_Kopf"].fillna(0) == 0)
+                if "SOLL_MAK" in comp_df.columns:
+                    _ov_m = _ov_m & (comp_df["SOLL_MAK"].fillna(0).gt(0) | comp_df["SOLL_EUR"].fillna(0).gt(0))
+                _ov_df  = comp_df[_ov_m].copy()
+                _n_ov   = len(_ov_df)
+                _ov_mak = float(_ov_df["SOLL_MAK_View"].sum()) if "SOLL_MAK_View" in _ov_df.columns else 0.0
+                _ov_eur = float(_ov_df["SOLL_EUR_View"].sum()) if "SOLL_EUR_View" in _ov_df.columns else 0.0
+                st.markdown(
+                    f"**Offene nicht-exkludierte Planstellen** (Is_Excluded=False, IST_Kopf=0, SOLL>0)\n\n"
+                    f"- Anzahl Planstellen: **{_n_ov}**\n"
+                    f"- SOLL_MAK: {_ov_mak:.3f}\n"
+                    f"- SOLL_EUR: {_ov_eur:,.0f} €"
+                )
+                if _n_ov > 0:
+                    _oe_col = next((c for c in ["Kürzel OrgEinheit", "Organisationseinheit"] if c in _ov_df.columns), None)
+                    _eur_col_ov = "SOLL_EUR_View" if "SOLL_EUR_View" in _ov_df.columns else "SOLL_EUR"
+                    if _oe_col:
+                        _top_oe = _ov_df.groupby(_oe_col, dropna=False)[_eur_col_ov].sum().nlargest(5).reset_index()
+                        _top_oe.columns = [_oe_col, "SOLL_EUR"]
+                        _top_oe["SOLL_EUR"] = _top_oe["SOLL_EUR"].map(lambda x: f"{x:,.0f} €")
+                        st.markdown("*Top Organisationseinheiten nach SOLL_EUR:*")
+                        dataframe_compat(_top_oe, width="stretch", hide_index=True)
+                    _ps_cols = [c for c in ["Planstellennr", "Planstelle"] if c in _ov_df.columns]
+                    if _ps_cols:
+                        _top_ps = _ov_df.groupby(_ps_cols, dropna=False)[_eur_col_ov].sum().nlargest(5).reset_index()
+                        _top_ps[_eur_col_ov] = _top_ps[_eur_col_ov].map(lambda x: f"{x:,.0f} €")
+                        st.markdown("*Top Planstellen nach SOLL_EUR:*")
+                        dataframe_compat(_top_ps, width="stretch", hide_index=True)
+
+            _summary = _build_ist_ohne_plan_soll_summary(comp_df)
+            if _summary is not None and not _summary.empty:
+                st.markdown("**IST ohne Plan-SOLL — Kategorisierung**")
+                _sfmt = _summary.copy()
+                _sfmt["IST_MAK"] = _sfmt["IST_MAK"].map(lambda x: f"{x:.3f}")
+                _sfmt["IST_EUR"] = _sfmt["IST_EUR"].map(lambda x: f"{x:,.0f} €")
+                dataframe_compat(_sfmt, width="stretch", hide_index=True)
+
+
 @st.cache_data
 def create_comparison_chart(df: pd.DataFrame, dimension_col: str,
                              title: str = "",
@@ -2132,7 +3364,7 @@ def _render_single_breakdown_clean(
         col_chart, col_table = st.columns([3, 2])
         with col_chart:
             fig = create_stacked_tariff_chart(df, value_col, title="", print_mode=print_mode, value_type=value_type)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_tariff_breakdown_chart")
 
         with col_table:
             st.markdown(f"**{t('compact.common.data_table')}**")
@@ -2243,56 +3475,65 @@ def _render_single_comparison_clean(
     if print_mode:
         st.markdown('<div class="print-block">', unsafe_allow_html=True)
 
-    st.subheader(localized_dimension_name)
+    if not is_verguetung:
+        st.subheader(localized_dimension_name)
 
     if is_verguetung:
-        col_chart, col_table = st.columns([3, 2])
-        with col_chart:
-            fig = create_stacked_tariff_comparison_chart(
-                df,
-                ist_col,
-                soll_col,
-                title="",
-                print_mode=print_mode,
-                value_type=value_type,
-            )
-            st.plotly_chart(fig, use_container_width=True)
+        render_compensation_planlevel_section(
+            df,
+            value_type=value_type,
+            key_prefix=key_prefix,
+            view_mode="IST vs. SOLL",
+            print_mode=print_mode,
+        )
+        with st.expander("Vergütung nach Entgeltgruppe und Stufe anzeigen", expanded=print_mode):
+            col_chart, col_table = st.columns([3, 2])
+            with col_chart:
+                fig = create_stacked_tariff_comparison_chart(
+                    df,
+                    ist_col,
+                    soll_col,
+                    title="",
+                    print_mode=print_mode,
+                    value_type=value_type,
+                )
+                st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_tariff_comparison_chart")
 
-        with col_table:
-            st.markdown(f"**{t('compact.common.data_table')}**")
-            breakdown_df = create_stacked_tariff_breakdown_table(df, ist_col)
-            display_df = breakdown_df.copy()
-            num_cols = [c for c in display_df.columns if c != "Entgeltgruppe"]
-            for col in num_cols:
-                if value_type == "eur":
-                    display_df[col] = display_df[col].apply(
-                        lambda x: format_currency(x) if pd.notna(x) and x != 0 else "-"
-                    )
-                elif value_type == "koepfe":
-                    display_df[col] = display_df[col].apply(
-                        lambda x: f"{int(x):,}".replace(",", ".") if pd.notna(x) and x != 0 else "-"
-                    )
-                else:
-                    display_df[col] = display_df[col].apply(
-                        lambda x: f"{x:,.2f}".replace(",", " ").replace(".", ",").replace(" ", ".")
-                        if pd.notna(x) and x != 0 else "-"
-                    )
+            with col_table:
+                st.markdown(f"**{t('compact.common.data_table')}**")
+                breakdown_df = create_stacked_tariff_breakdown_table(df, ist_col)
+                display_df = breakdown_df.copy()
+                num_cols = [c for c in display_df.columns if c != "Entgeltgruppe"]
+                for col in num_cols:
+                    if value_type == "eur":
+                        display_df[col] = display_df[col].apply(
+                            lambda x: format_currency(x) if pd.notna(x) and x != 0 else "-"
+                        )
+                    elif value_type == "koepfe":
+                        display_df[col] = display_df[col].apply(
+                            lambda x: f"{int(x):,}".replace(",", ".") if pd.notna(x) and x != 0 else "-"
+                        )
+                    else:
+                        display_df[col] = display_df[col].apply(
+                            lambda x: f"{x:,.2f}".replace(",", " ").replace(".", ",").replace(" ", ".")
+                            if pd.notna(x) and x != 0 else "-"
+                        )
 
-            dataframe_compat(display_df, width="stretch", hide_index=True)
-            excel_data = export_to_excel(
-                breakdown_df,
-                dimension_name=localized_dimension_name,
-                value_type=value_type,
-                key_prefix=key_prefix,
-            )
-            download_button_compat(
-                label="Excel Download",
-                data=excel_data,
-                file_name=f"{key_prefix}_verguetungsklassen.xlsx",
-                mime=_EXCEL_MIME,
-                key=f"download_{key_prefix}_{dimension_col}",
-                width="stretch",
-            )
+                dataframe_compat(display_df, width="stretch", hide_index=True)
+                excel_data = export_to_excel(
+                    breakdown_df,
+                    dimension_name=localized_dimension_name,
+                    value_type=value_type,
+                    key_prefix=key_prefix,
+                )
+                download_button_compat(
+                    label="Excel Download",
+                    data=excel_data,
+                    file_name=f"{key_prefix}_verguetungsklassen.xlsx",
+                    mime=_EXCEL_MIME,
+                    key=f"download_{key_prefix}_{dimension_col}",
+                    width="stretch",
+                )
     else:
         breakdown_df = create_breakdown_table(
             df,
@@ -2597,10 +3838,9 @@ def render_ist_vs_soll_eur_tab(df: pd.DataFrame, print_mode: bool = False):
     if "Soll_Cost_Year" not in df.columns:
         st.info("SOLL-Kosten werden aus Tarifgruppe/Step geschätzt.")
 
-    emp_df = df[~df["Is_Vacant"]] if "Is_Vacant" in df.columns else df
-
-    total_ist = get_ist_eur(emp_df)
-    total_soll = get_soll_eur(df)
+    _eur_comp = build_compact_compensation_planlevel_df(df)
+    total_ist  = float(_eur_comp["IST_EUR"].sum())       if "IST_EUR"       in _eur_comp.columns else get_ist_eur(df[~df["Is_Vacant"]] if "Is_Vacant" in df.columns else df)
+    total_soll = float(_eur_comp["SOLL_EUR_View"].sum()) if "SOLL_EUR_View" in _eur_comp.columns else get_soll_eur(df)
     delta = total_ist - total_soll
     erfuellungsgrad = total_ist / total_soll if total_soll > 0 else 0
 
@@ -3162,19 +4402,20 @@ def _render_cover_page_and_toc_clean(filter_summary: str, df: pd.DataFrame) -> N
     st.markdown("<br><br>", unsafe_allow_html=True)
 
     st.subheader("Executive Summary")
-    emp_df = df[~df["Is_Vacant"]] if "Is_Vacant" in df.columns else df
     from dataloader.kpi_engine import compute_planstellen_kpis
 
     plan_kpis = compute_planstellen_kpis(df)
     total_planstellen = plan_kpis["total"]
     total_koepfe = get_ist_koepfe(df)
-    total_mak = get_ist_mak(df)
-    total_cost = get_ist_eur(emp_df)
-    besetzungsgrad = plan_kpis["besetzungsquote"] / 100 if total_planstellen > 0 else 0
     vakanzen = plan_kpis["vakanzen"]
-    total_soll_mak = get_soll_mak(df) if "Soll_FTE" in df.columns else 0
+    besetzungsgrad = plan_kpis["besetzungsquote"] / 100 if total_planstellen > 0 else 0
+
+    _cov_comp = build_compact_compensation_planlevel_df(df)
+    total_mak      = float(_cov_comp["IST_MAK"].sum())       if "IST_MAK"       in _cov_comp.columns else get_ist_mak(df)
+    total_cost     = float(_cov_comp["IST_EUR"].sum())        if "IST_EUR"       in _cov_comp.columns else get_ist_eur(df)
+    total_soll_mak = float(_cov_comp["SOLL_MAK_View"].sum()) if "SOLL_MAK_View" in _cov_comp.columns else get_soll_mak(df)
+    total_soll_cost= float(_cov_comp["SOLL_EUR_View"].sum()) if "SOLL_EUR_View" in _cov_comp.columns else get_soll_eur(df)
     erfuellungsgrad_mak = total_mak / total_soll_mak if total_soll_mak > 0 else 0
-    total_soll_cost = get_soll_eur(df) if "Soll_Cost_Year" in df.columns else 0
     budget_quote = total_cost / total_soll_cost if total_soll_cost > 0 else 0
     mak_status = "🔴" if erfuellungsgrad_mak < 0.85 else ("🟡" if erfuellungsgrad_mak < 0.95 else "🟢")
     budget_status = "🔴" if budget_quote > 1.05 else ("🟢" if budget_quote <= 1.02 else "🟡")
@@ -3786,10 +5027,10 @@ def _render_education_range_section_clean(df: pd.DataFrame,
 def _analyze_ist_vs_soll_mak_data_clean(df: pd.DataFrame) -> dict:
     """Saubere, lokalisierte Variante der Summary für IST vs SOLL MAK."""
     language = get_language()
-    emp_df = df[~df["Is_Vacant"]] if "Is_Vacant" in df.columns else df
 
-    total_ist = get_ist_mak(emp_df)
-    total_soll = get_soll_mak(df)
+    _comp = build_compact_compensation_planlevel_df(df)
+    total_ist  = float(_comp["IST_MAK"].sum())       if "IST_MAK"       in _comp.columns else get_ist_mak(df[~df["Is_Vacant"]] if "Is_Vacant" in df.columns else df)
+    total_soll = float(_comp["SOLL_MAK_View"].sum()) if "SOLL_MAK_View" in _comp.columns else get_soll_mak(df)
     delta = total_ist - total_soll
     erfuellungsgrad = total_ist / total_soll if total_soll > 0 else 0
 
@@ -3886,9 +5127,9 @@ def _render_ist_vs_soll_mak_tab_clean(df: pd.DataFrame, print_mode: bool = False
         st.warning("SOLL-FTE nicht verfügbar." if language == "de" else "Target FTE is not available.")
         return
 
-    emp_df = df[~df["Is_Vacant"]] if "Is_Vacant" in df.columns else df
-    total_ist = get_ist_mak(emp_df)
-    total_soll = get_soll_mak(df)
+    _kpi_comp = build_compact_compensation_planlevel_df(df)
+    total_ist  = float(_kpi_comp["IST_MAK"].sum())       if "IST_MAK"       in _kpi_comp.columns else get_ist_mak(df[~df["Is_Vacant"]] if "Is_Vacant" in df.columns else df)
+    total_soll = float(_kpi_comp["SOLL_MAK_View"].sum()) if "SOLL_MAK_View" in _kpi_comp.columns else get_soll_mak(df)
     delta = total_ist - total_soll
     erfuellungsgrad = total_ist / total_soll if total_soll > 0 else 0
     status = "good" if erfuellungsgrad >= 0.95 else ("warning" if erfuellungsgrad >= 0.85 else "critical")
@@ -3956,10 +5197,9 @@ render_ist_vs_soll_mak_tab = _render_ist_vs_soll_mak_tab_clean
 @st.cache_data
 def analyze_ist_vs_soll_eur_data(df: pd.DataFrame) -> dict:
     """Analysiert IST vs SOLL EUR Daten und erstellt Management Summary."""
-    emp_df = df[~df["Is_Vacant"]] if "Is_Vacant" in df.columns else df
-
-    total_ist = get_ist_eur(emp_df)
-    total_soll = get_soll_eur(df)
+    _eur_sum = build_compact_compensation_planlevel_df(df)
+    total_ist  = float(_eur_sum["IST_EUR"].sum())       if "IST_EUR"       in _eur_sum.columns else get_ist_eur(df[~df["Is_Vacant"]] if "Is_Vacant" in df.columns else df)
+    total_soll = float(_eur_sum["SOLL_EUR_View"].sum()) if "SOLL_EUR_View" in _eur_sum.columns else get_soll_eur(df)
     delta = total_ist - total_soll
     kostenquote = total_ist / total_soll if total_soll > 0 else 0
 
@@ -4362,6 +5602,14 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
         column_config=column_config,
     )
 
+    render_compensation_planlevel_section(
+        df,
+        value_type="koepfe",
+        key_prefix="ist_vs_soll_koepfe",
+        view_mode="IST vs. SOLL",
+        print_mode=print_mode,
+    )
+
     # Excel-Download
     try:
         buf = io.BytesIO()
@@ -4479,7 +5727,7 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
     from utils.plot_helpers import apply_legend_bottom
     fig = apply_legend_bottom(fig)
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key="ist_vs_soll_koepfe_distribution_chart")
     if not_found > 0:
         st.caption(t("compact.ist_soll_heads.distribution.missing_ist_caption", count=not_found))
 
@@ -5207,7 +6455,6 @@ def main():
             page_break()
 
             section_title("IST vs SOLL EUR Vergleich", "💶", anchor="ist-vs-soll-eur")
-            render_ist_vs_soll_eur_tab(filtered_df, print_mode=True)
             render_ist_vs_soll_eur_tab(filtered_df, print_mode=True)
 
             st.markdown('</div>', unsafe_allow_html=True)

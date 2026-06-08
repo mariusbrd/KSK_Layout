@@ -97,13 +97,20 @@ def initialize_session_state():
 def build_pages():
     """Build the localized page navigation configuration."""
     return {
-        t("navigation.section"): [
+        "Analyse": [
             st.Page("pages/1_⚡_Kompakt.py", title=t("navigation.compact")),
             st.Page("pages/8_💼_Jobfamily_Analyse.py", title="Jobfamily-Analyse"),
-            st.Page("pages/7_⚡_Kompakt_plus_Simulation.py", title=t("navigation.compact_plus_simulation")),
+        ],
+        "Prognosen": [
             st.Page("pages/3_📉_Prognose_Abgänge.py", title=t("navigation.attrition_forecast")),
             st.Page("pages/4_📈_Prognose_Zugänge.py", title=t("navigation.hiring_forecast")),
             st.Page("pages/5_🏢_Prognose_Hybrid.py", title=t("navigation.hybrid_forecast")),
+        ],
+        "Simulation": [
+            st.Page("pages/8_⚙️_Simulationsparameter.py", title="Simulationsparameter", icon="⚙️"),
+            st.Page("pages/7_⚡_Kompakt_plus_Simulation.py", title=t("navigation.compact_plus_simulation")),
+        ],
+        "Administration": [
             st.Page("pages/2_⚙️_Einstellungen.py", title=t("navigation.settings")),
             st.Page("pages/6_🔎_Deep_Dive_Exklusionsgruppen.py", title=t("navigation.exclusion_groups")),
         ],
