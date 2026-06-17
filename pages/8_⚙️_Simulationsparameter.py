@@ -279,19 +279,8 @@ def _render_abgaenge(group: dict[str, Any], key_prefix: str, *, include_ruhend: 
             key=f"{key_prefix}_quit_matrix",
             disabled=not use_quit_matrix,
         )
-        st.caption("Optionale Zuordnung von Jobfamilien zu Jahren mit höherer oder niedrigerer Kündigungsannahme.")
         adjustments = quit_params.get("quit_adjustments", {"more": {}, "less": {}})
-        adj_more = st.text_area("Mehr Kündigungen", value=str(adjustments.get("more", {})), key=f"{key_prefix}_quit_more")
-        adj_less = st.text_area("Weniger Kündigungen", value=str(adjustments.get("less", {})), key=f"{key_prefix}_quit_less")
-        quit_adjustments = {
-            "more": adjustments.get("more", {}),
-            "less": adjustments.get("less", {}),
-        }
-        try:
-            quit_adjustments["more"] = ast.literal_eval(adj_more) if adj_more.strip() else {}
-            quit_adjustments["less"] = ast.literal_eval(adj_less) if adj_less.strip() else {}
-        except Exception:
-            st.warning("Anpassungen konnten nicht gelesen werden; bisherige Struktur bleibt erhalten.")
+        quit_adjustments = {"more": adjustments.get("more", {}), "less": adjustments.get("less", {})}
 
     ruhend = params.get("ruhend", {})
     if include_ruhend:

@@ -516,69 +516,8 @@ def main():
                     new_quit_matrix[c][str(dim_val)] = float(row[c])
             params["quit"]["quit_matrix"] = new_quit_matrix
 
-            st.divider()
-            st.markdown("Jahresgenaue Anpassungen (Jobgruppen)")
-            render_context_box("Hinweis", t("attrition.adjustments.info"), tone="neutral", compact=True)
-            
-            # More/Less selections
-            adj_col1, adj_col2 = st.columns(2)
-            
-            # Load current adjustments from session_state or params
             current_adj = params["quit"].get("quit_adjustments", {"more": {}, "less": {}})
-            
-            with adj_col1:
-                st.caption(t("attrition.adjustments.more"))
-                selected_more_jf = st.multiselect(
-                    t("attrition.adjustments.job_families"),
-                    options=valid_jfs, 
-                    default=list(current_adj.get("more", {}).keys()),
-                    key="ms_quit_more_jf"
-                )
-                
-                more_years_map = {}
-                available_years = JobFamilyService.get_available_years(ist_stichtag.year, (forecast_end_date.year - ist_stichtag.year) + 1)
-                
-                for jf in selected_more_jf:
-                    default_years = current_adj.get("more", {}).get(jf, [])
-                    # Sanitize default years to be within available range
-                    default_years = [y for y in default_years if y in available_years]
-                    
-                    years = st.multiselect(
-                        t("attrition.adjustments.years_for", job_family=jf),
-                        options=available_years,
-                        default=default_years,
-                        key=f"ms_more_years_{jf}"
-                    )
-                    if years:
-                        more_years_map[jf] = years
-            
-            with adj_col2:
-                st.caption(t("attrition.adjustments.less"))
-                selected_less_jf = st.multiselect(
-                    t("attrition.adjustments.job_families"),
-                    options=valid_jfs, 
-                    default=list(current_adj.get("less", {}).keys()),
-                    key="ms_quit_less_jf"
-                )
-                
-                less_years_map = {}
-                for jf in selected_less_jf:
-                    default_years = current_adj.get("less", {}).get(jf, [])
-                    default_years = [y for y in default_years if y in available_years]
-
-                    years = st.multiselect(
-                        t("attrition.adjustments.years_for", job_family=jf),
-                        options=available_years,
-                        default=default_years,
-                        key=f"ms_less_years_{jf}"
-                    )
-                    if years:
-                        less_years_map[jf] = years
-            
-            quit_adjustments = {
-                "more": more_years_map,
-                "less": less_years_map
-            }
+            quit_adjustments = {"more": current_adj.get("more", {}), "less": current_adj.get("less", {})}
             params["quit"]["quit_adjustments"] = quit_adjustments
 
     # ── Action Button ──
