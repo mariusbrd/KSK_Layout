@@ -540,34 +540,8 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
         )
         st.session_state["selected_employment"] = selected_employment
 
-        # Geschlecht (collapsible, dynamischer Expander-Titel)
-        _cur_genders = st.session_state.get("selected_genders", ["m", "w"])
-        if len(_cur_genders) == 2:
-            _gender_expander_label = f"{t('sidebar.label.gender')} · {t('sidebar.value.gender_both')}"
-        elif len(_cur_genders) == 1:
-            if "m" in _cur_genders:
-                _gender_expander_label = f"{t('sidebar.label.gender')} · {t('sidebar.value.gender_male_only')}"
-            else:
-                _gender_expander_label = f"{t('sidebar.label.gender')} · {t('sidebar.value.gender_female_only')}"
-        else:
-            _gender_expander_label = f"{t('sidebar.label.gender')} · {t('sidebar.value.gender_none')}"
-
-        with st.expander(_gender_expander_label, expanded=False):
-            gender_map = {"m": "Männlich", "w": "Weiblich"}
-            gender_display_to_code = {v: k for k, v in gender_map.items()}
-            gender_code_to_display = {k: v for k, v in gender_map.items()}
-
-            default_gender_displays = [gender_code_to_display.get(x, x) for x in st.session_state.get("selected_genders", ["m", "w"])]
-            selected_gender_displays = _segmented_multi_gender(
-                t("sidebar.label.gender"),
-                options=[gender_map["m"], gender_map["w"]],
-                default=default_gender_displays,
-                key="gender_segmented",
-            )
-            if isinstance(selected_gender_displays, str):
-                selected_gender_displays = [selected_gender_displays]
-            selected_genders = [gender_display_to_code.get(x, x) for x in (selected_gender_displays or [])]
-            st.session_state["selected_genders"] = selected_genders
+        # Geschlecht ausgeblendet — beide Geschlechter immer aktiv
+        st.session_state["selected_genders"] = ["m", "w"]
 
         # Job Families (collapsible)
         with st.expander(t("sidebar.label.job_families"), expanded=False):
@@ -628,61 +602,11 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
                 with st.expander(f"⚙️ {t('sidebar.action.edit_cohorts')}"):
                     render_cohort_editor()
 
-        # Weitere Filter
-        with st.expander(t("sidebar.more_filters.section"), expanded=False):
-            _render_sidebar_caption(t("sidebar.more_filters.caption"))
-
-            # Cluster-Filter: Widgets ausgeblendet, Keys neutralisieren um stille Filterung zu verhindern
-            st.session_state["selected_oe_clusters"] = []
-            st.session_state["selected_jf_clusters"] = []
-
-            # Qualifikation (Expander with smart label + buttons)
-            education_options = []
-            if "Ausbildung" in snapshot_df.columns:
-                education_options = sorted(snapshot_df["Ausbildung"].dropna().unique())
-
-            edu_selected = st.session_state.get("selected_education", [])
-            edu_label = _smart_label(t("sidebar.label.education"), edu_selected, total=len(education_options))
-
-            with st.expander(edu_label, expanded=False):
-                _render_select_all_reset_row(
-                    select_all_key="edu_select_all",
-                    reset_key="edu_reset",
-                    on_select_all=lambda: st.session_state.__setitem__("selected_education", education_options.copy()),
-                    on_reset=lambda: st.session_state.__setitem__("selected_education", []),
-                )
-
-                selected_education = _multiselect_with_placeholder(
-                    t("sidebar.label.education_select"),
-                    options=education_options,
-                    default=edu_selected,
-                    key="education_select",
-                    label_visibility="collapsed",
-                )
-                st.session_state["selected_education"] = selected_education
-
-            # ATZ-Status (Expander with smart label + buttons)
-            atz_options = ["Kein ATZ", "Arbeitsphase", "Freistellungsphase"]
-            atz_selected = st.session_state.get("selected_atz_status", atz_options)
-            atz_label = _smart_label(t("sidebar.label.atz"), atz_selected, total=len(atz_options))
-
-            with st.expander(atz_label, expanded=False):
-                _render_select_all_reset_row(
-                    select_all_key="atz_select_all",
-                    reset_key="atz_reset",
-                    on_select_all=lambda: st.session_state.__setitem__("selected_atz_status", atz_options.copy()),
-                    on_reset=lambda: st.session_state.__setitem__("selected_atz_status", []),
-                )
-
-                selected_atz = _multiselect_with_placeholder(
-                    t("sidebar.label.atz_select"),
-                    options=atz_options,
-                    default=atz_selected,
-                    format_func=_localized_atz_option,
-                    key="atz_select",
-                    label_visibility="collapsed",
-                )
-                st.session_state["selected_atz_status"] = selected_atz
+        # Weitere Filter ausgeblendet — neutrale Defaults damit keine stille Filterung aktiv ist
+        st.session_state["selected_oe_clusters"] = []
+        st.session_state["selected_jf_clusters"] = []
+        st.session_state["selected_education"] = []
+        st.session_state["selected_atz_status"] = ["Kein ATZ", "Arbeitsphase", "Freistellungsphase"]
 
         # Aktive Filter (kompakt, einklappbar)
         with st.expander(t("sidebar.active_selection.section"), expanded=False):
