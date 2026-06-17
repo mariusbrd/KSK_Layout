@@ -11,6 +11,7 @@ import pandas as pd
 import sys
 import os
 from datetime import datetime, timezone
+import html
 
 # Path setup
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -43,6 +44,7 @@ from config.settings import BASE_DIR
 from components.sidebar import render_metric_selector_only, set_metric_page_hint
 from utils.cache_utils import bump_cache_version
 from utils.i18n import t
+from components.ui_shell import render_context_box, render_page_header, render_section_intro
 
 
 SALARY_AUTOMATION_DEFAULTS = {
@@ -420,41 +422,26 @@ def _delete_cluster_uploads(
 
 
 def _render_active_cluster_source(active_source) -> None:
-    st.markdown("**Aktive Clusterquelle**")
-    st.markdown(f"- Modus: `{active_source.mode}`")
-    st.markdown(f"- Subtyp: `{active_source.subtype}`")
-    st.markdown(f"- Status: `{active_source.status}`")
-    st.markdown(f"- Label: {active_source.display_label or '-'}")
-    if active_source.filename or active_source.source_path:
-        st.markdown(f"- Datei: `{active_source.filename or active_source.source_path}`")
-    st.markdown(f"- OE-Mappings: `{active_source.oe_mapping_count}`")
-    st.markdown(f"- JF-Mappings: `{active_source.jf_mapping_count}`")
-    if active_source.subtype == SUBTYPE_UI_UPLOAD_PERSISTED:
-        st.caption("Aktiv aus persistierter lokaler Kopie des UI-Uploads.")
-    elif active_source.subtype == SUBTYPE_INPUT_EXTERNAL:
-        st.caption("Aktiv aus externer Input-Ordner-Datei.")
-    elif active_source.subtype == SUBTYPE_SYNTHETIC_FALLBACK:
-        st.caption("Kein realer Clusterstand aktiv. Synthetic-Fallback ist aktiv.")
-    elif active_source.source_path:
-        st.caption(f"Quelle: {active_source.source_path}")
+    label = active_source.display_label or active_source.subtype or active_source.mode or "—"
+    st.caption(
+        f"Clusterquelle: {label} · "
+        f"{active_source.oe_mapping_count} OE-Mappings · {active_source.jf_mapping_count} JF-Mappings"
+    )
 
 
 def _render_staged_cluster_state() -> None:
     staged = _get_staged_cluster_state()
     if not staged["filename"] and not staged["errors"]:
         return
-
-    st.markdown("**Staged Upload**")
-    st.markdown(f"- Datei: `{staged['filename'] or '-'}`")
-    st.markdown(
-        f"- Status: `{'gueltig, noch nicht aktiv' if staged['is_valid'] and staged['bytes'] else 'ungueltig / nicht aktiv'}`"
-    )
-    st.markdown(f"- OE-Mappings: `{staged['oe_mapping_count']}`")
-    st.markdown(f"- JF-Mappings: `{staged['jf_mapping_count']}`")
-    st.caption("Der staged Upload wird erst nach Klick auf 'Apply now' aktiv.")
-    if staged["errors"]:
-        for err in staged["errors"]:
-            st.error(err)
+    if staged["is_valid"] and staged["bytes"]:
+        st.caption(
+            f"Bereit zum Aktivieren: {staged['filename']} · "
+            f"{staged['oe_mapping_count']} OE · {staged['jf_mapping_count']} JF"
+        )
+    elif staged["filename"]:
+        st.caption(f"Upload ungültig: {staged['filename']}")
+    for err in staged.get("errors") or []:
+        st.error(err)
 
 
 def render_settings_page():
@@ -472,8 +459,11 @@ def render_settings_page():
     )
     render_metric_selector_only()
 
-    st.title(t("settings.title"))
-    st.caption(t("settings.subtitle"))
+    render_page_header(
+        t("settings.title"),
+        "Zentrale Konfiguration für Datenbasis, Berechnungsparameter, Simulationen und Kostenlogik.",
+    )
+    st.caption("Konfiguration · wirkt nach Neuladen · dashboardweit")
     _render_cluster_feedback()
 
     st.divider()
@@ -516,170 +506,152 @@ def render_settings_page():
             st.session_state["show_reload_success"] = False
 
     # --- Datenmanagement ---
-    st.subheader(t("settings.data_management"))
-    st.caption(t("settings.data_management.caption"))
+    render_section_intro(t("settings.data_management"), t("settings.data_management.caption"))
     
-    with st.expander(f"📁 {t('settings.uploads_expander')}"):
-        if "global_uploads" not in st.session_state:
+    if "global_uploads" not in st.session_state:
+        st.session_state["global_uploads"] = {}
+
+    col_up1, col_up2 = st.columns(2)
+    with col_up1:
+        up_ma = st.file_uploader("Mitarbeiter.xlsx", type=["xlsx"], key="set_up_ma")
+        if up_ma:
+            # Store as BytesIO for persistence
+            st.session_state["global_uploads"]["Mitarbeiter"] = io.BytesIO(up_ma.getvalue())
+        elif "Mitarbeiter" in st.session_state["global_uploads"] and not up_ma:
+            pass
+
+    with col_up2:
+        up_pl = st.file_uploader("Planstellen.xlsx", type=["xlsx"], key="set_up_pl")
+        if up_pl:
+            st.session_state["global_uploads"]["Planstellen"] = io.BytesIO(up_pl.getvalue())
+
+    col_up3, col_up4 = st.columns(2)
+    with col_up3:
+        up_atz = st.file_uploader("ATZ.xlsx", type=["xlsx"], key="set_up_atz")
+        if up_atz:
+            st.session_state["global_uploads"]["ATZ"] = io.BytesIO(up_atz.getvalue())
+
+    with col_up4:
+        up_edu = st.file_uploader("Ausbildung.xlsx", type=["xlsx"], key="set_up_edu")
+        if up_edu:
+            st.session_state["global_uploads"]["Ausbildung"] = io.BytesIO(up_edu.getvalue())
+
+    col_up5, col_up6 = st.columns(2)
+    with col_up5:
+        up_tvoed = st.file_uploader(t("settings.tvoed_optional"), type=["xlsx"], key="set_up_tvoed")
+        if up_tvoed:
+            st.session_state["global_uploads"]["TVÖD"] = io.BytesIO(up_tvoed.getvalue())
+
+    if st.session_state["global_uploads"]:
+        st.caption(f"{t('settings.uploads_active', count=len(st.session_state['global_uploads']))}")
+        if st.button(t("settings.delete_uploads")):
+            delete_result = _delete_cluster_uploads()
             st.session_state["global_uploads"] = {}
-            
-        col_up1, col_up2 = st.columns(2)
-        with col_up1:
-            up_ma = st.file_uploader("Mitarbeiter.xlsx", type=["xlsx"], key="set_up_ma")
-            if up_ma:
-                # Store as BytesIO for persistence
-                st.session_state["global_uploads"]["Mitarbeiter"] = io.BytesIO(up_ma.getvalue())
-            elif "Mitarbeiter" in st.session_state["global_uploads"] and not up_ma:
-                # If widget cleared, keep old? Or clear? 
-                # Standard behavior: clear. But we want persistence across pages.
-                # If user clears widget manually, we remove.
-                # But looking at widget key: if page reloads, key is gone?
-                pass
-
-        with col_up2:
-            up_pl = st.file_uploader("Planstellen.xlsx", type=["xlsx"], key="set_up_pl")
-            if up_pl:
-                st.session_state["global_uploads"]["Planstellen"] = io.BytesIO(up_pl.getvalue())
-
-        col_up3, col_up4 = st.columns(2)
-        with col_up3:
-            up_atz = st.file_uploader("ATZ.xlsx", type=["xlsx"], key="set_up_atz")
-            if up_atz:
-                st.session_state["global_uploads"]["ATZ"] = io.BytesIO(up_atz.getvalue())
-
-        with col_up4:
-            up_edu = st.file_uploader("Ausbildung.xlsx", type=["xlsx"], key="set_up_edu")
-            if up_edu:
-                st.session_state["global_uploads"]["Ausbildung"] = io.BytesIO(up_edu.getvalue())
-
-        col_up5, col_up6 = st.columns(2)
-        with col_up5:
-            up_tvoed = st.file_uploader(t("settings.tvoed_optional"), type=["xlsx"], key="set_up_tvoed")
-            if up_tvoed:
-                st.session_state["global_uploads"]["TVÖD"] = io.BytesIO(up_tvoed.getvalue())
-
-        if st.session_state["global_uploads"]:
-            st.success(f"✅ {t('settings.uploads_active', count=len(st.session_state['global_uploads']))}")
-            if st.button(t("settings.delete_uploads")):
-                 delete_result = _delete_cluster_uploads()
-                 st.session_state["global_uploads"] = {}
-                 fallback = delete_result["active_source"].display_label
-                 _set_cluster_feedback("info", f"Alle Uploads wurden entfernt. Aktive Clusterquelle: {fallback}.")
-                 st.rerun()
+            fallback = delete_result["active_source"].display_label
+            _set_cluster_feedback("info", f"Alle Uploads wurden entfernt. Aktive Clusterquelle: {fallback}.")
+            st.rerun()
 
     st.divider()
 
     # --- Cluster-Management ---
-    st.subheader(t("settings.cluster_management"))
-    st.caption(t("settings.cluster_management.caption"))
+    render_section_intro(t("settings.cluster_management"), t("settings.cluster_management.caption"))
     
-    with st.expander(f"🧩 {t('settings.cluster_expander')}"):
-        c_col1, c_col2 = st.columns(2)
-        
-        with c_col1:
-            st.markdown(f"**{t('settings.cluster_step1')}**")
-            st.caption(t("settings.cluster_step1.caption"))
-            if st.button(f"📥 {t('settings.cluster_generate_template')}"):
-                # Load current data to get unique names/keys
-                with st.spinner(t("settings.cluster_loading_masterdata")):
-                    df_ma, _, _, _ = load_and_prepare_data()
-                    jf_defs = load_jobfamily_definitions()
-                    template_bytes = generate_template_bytes(df_ma, jf_defs)
-                    
-                st.download_button(
-                    label=f"📂 {t('settings.cluster_download_template')}",
-                    data=template_bytes,
-                    file_name="Cluster-Template.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="dl_cluster_template"
-                )
+    c_col1, c_col2 = st.columns(2)
 
-        with c_col2:
-            st.markdown(f"**{t('settings.cluster_step2')}**")
-            st.caption(t("settings.cluster_step2.caption"))
-            up_cluster = st.file_uploader(
-                t("settings.cluster_upload_mapping"),
-                type=["xlsx"],
-                key=_get_cluster_uploader_key(),
+    with c_col1:
+        st.caption(t("settings.cluster_step1"))
+        st.caption(t("settings.cluster_step1.caption"))
+        if st.button(f"📥 {t('settings.cluster_generate_template')}"):
+            with st.spinner(t("settings.cluster_loading_masterdata")):
+                df_ma, _, _, _ = load_and_prepare_data()
+                jf_defs = load_jobfamily_definitions()
+                template_bytes = generate_template_bytes(df_ma, jf_defs)
+            st.download_button(
+                label=f"📂 {t('settings.cluster_download_template')}",
+                data=template_bytes,
+                file_name="Cluster-Template.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_cluster_template"
             )
-            _cluster_debug_log("uploader_observed", **_safe_upload_debug_meta(up_cluster))
-            
-            if up_cluster:
-                stage_result = _stage_cluster_upload(up_cluster)
-                if stage_result["status"] == "matches_active":
-                    _reset_cluster_uploader_widget()
-                    _cluster_debug_log("uploader_reset_requested", reason="cluster_upload_matches_active")
-                    st.info("Die ausgewaehlte Clusterdatei ist bereits aktiv.")
-                elif stage_result["status"] == "staged":
-                    _reset_cluster_uploader_widget()
-                    _cluster_debug_log("uploader_reset_requested", reason="cluster_upload_staged")
-                elif stage_result["status"] == "invalid":
-                    errors = stage_result.get("validation").errors if stage_result.get("validation") else []
-                    message = "Clusterdatei ist ungueltig."
-                    if errors:
-                        message = "Clusterdatei ist ungueltig: " + " | ".join(str(err) for err in errors)
-                    _reset_cluster_uploader_widget()
-                    _cluster_debug_log("uploader_reset_requested", reason="cluster_upload_invalid")
-                    st.error(message)
-                elif stage_result["status"] == "exception":
-                    _reset_cluster_uploader_widget()
-                    _cluster_debug_log("uploader_reset_requested", reason="cluster_upload_exception")
-                    st.error(stage_result["message"])
-                elif stage_result["status"] in {"already_staged_valid", "already_staged_invalid", "ignored_same_upload"}:
-                    pass
 
-            _render_staged_cluster_state()
-
-            staged = _get_staged_cluster_state()
-            button_col1, button_col2 = st.columns(2)
-            with button_col1:
-                apply_disabled = not (staged["bytes"] and staged["is_valid"])
-                if st.button(t("settings.cluster_apply_now"), disabled=apply_disabled, key="cluster_apply_now_button"):
-                    apply_result = _apply_staged_cluster_upload()
-                    if apply_result["success"]:
-                        bump_cache_version("data_prep")
-                        _cluster_debug_log("cache_bump_called", namespace="data_prep")
-                        _set_cluster_feedback("success", apply_result["message"])
-                    else:
-                        _set_cluster_feedback("error", apply_result["message"])
-                    _reset_cluster_uploader_widget()
-            with button_col2:
-                delete_disabled = (
-                    not staged["filename"]
-                    and not st.session_state.get("cluster_override_active", False)
-                    and not st.session_state.get("cluster_upload_active_bytes")
-                    and not os.path.exists(os.path.join(BASE_DIR, "config", "cluster_mapping.xlsx"))
-                )
-                if st.button(t("settings.delete_uploads"), disabled=delete_disabled, key="cluster_delete_uploads_button"):
-                    delete_result = _delete_cluster_uploads()
-                    if delete_result["success"]:
-                        fallback_label = delete_result["active_source"].display_label
-                        _set_cluster_feedback("success", f"User-Override entfernt. Neue aktive Clusterquelle: {fallback_label}.")
-                    else:
-                        _set_cluster_feedback("error", "Cluster-Upload konnte nicht vollstaendig entfernt werden.")
-                    _reset_cluster_uploader_widget()
-
-        active_cluster_source = _refresh_active_cluster_source_state()
-        _cluster_debug_log(
-            "post_cluster_refresh",
-            active_source_path=getattr(active_cluster_source, "source_path", None),
-            active_source_status=getattr(active_cluster_source, "status", None),
+    with c_col2:
+        st.caption(t("settings.cluster_step2"))
+        st.caption(t("settings.cluster_step2.caption"))
+        up_cluster = st.file_uploader(
+            t("settings.cluster_upload_mapping"),
+            type=["xlsx"],
+            key=_get_cluster_uploader_key(),
         )
-        _render_active_cluster_source(active_cluster_source)
-        if active_cluster_source.oe_mapping_count or active_cluster_source.jf_mapping_count:
-            st.info(
-                t(
-                    "settings.cluster_active_mappings",
-                    oe=active_cluster_source.oe_mapping_count,
-                    jf=active_cluster_source.jf_mapping_count,
-                )
+        _cluster_debug_log("uploader_observed", **_safe_upload_debug_meta(up_cluster))
+
+        if up_cluster:
+            stage_result = _stage_cluster_upload(up_cluster)
+            if stage_result["status"] == "matches_active":
+                _reset_cluster_uploader_widget()
+                _cluster_debug_log("uploader_reset_requested", reason="cluster_upload_matches_active")
+                st.info("Die ausgewaehlte Clusterdatei ist bereits aktiv.")
+            elif stage_result["status"] == "staged":
+                _reset_cluster_uploader_widget()
+                _cluster_debug_log("uploader_reset_requested", reason="cluster_upload_staged")
+            elif stage_result["status"] == "invalid":
+                errors = stage_result.get("validation").errors if stage_result.get("validation") else []
+                message = "Clusterdatei ist ungueltig."
+                if errors:
+                    message = "Clusterdatei ist ungueltig: " + " | ".join(str(err) for err in errors)
+                _reset_cluster_uploader_widget()
+                _cluster_debug_log("uploader_reset_requested", reason="cluster_upload_invalid")
+                st.error(message)
+            elif stage_result["status"] == "exception":
+                _reset_cluster_uploader_widget()
+                _cluster_debug_log("uploader_reset_requested", reason="cluster_upload_exception")
+                st.error(stage_result["message"])
+            elif stage_result["status"] in {"already_staged_valid", "already_staged_invalid", "ignored_same_upload"}:
+                pass
+
+        _render_staged_cluster_state()
+
+        staged = _get_staged_cluster_state()
+        button_col1, button_col2 = st.columns(2)
+        with button_col1:
+            apply_disabled = not (staged["bytes"] and staged["is_valid"])
+            if st.button(t("settings.cluster_apply_now"), disabled=apply_disabled, key="cluster_apply_now_button"):
+                apply_result = _apply_staged_cluster_upload()
+                if apply_result["success"]:
+                    bump_cache_version("data_prep")
+                    _cluster_debug_log("cache_bump_called", namespace="data_prep")
+                    _set_cluster_feedback("success", apply_result["message"])
+                else:
+                    _set_cluster_feedback("error", apply_result["message"])
+                _reset_cluster_uploader_widget()
+        with button_col2:
+            delete_disabled = (
+                not staged["filename"]
+                and not st.session_state.get("cluster_override_active", False)
+                and not st.session_state.get("cluster_upload_active_bytes")
+                and not os.path.exists(os.path.join(BASE_DIR, "config", "cluster_mapping.xlsx"))
             )
-        _render_cluster_debug_panel()
+            if st.button(t("settings.delete_uploads"), disabled=delete_disabled, key="cluster_delete_uploads_button"):
+                delete_result = _delete_cluster_uploads()
+                if delete_result["success"]:
+                    fallback_label = delete_result["active_source"].display_label
+                    _set_cluster_feedback("success", f"User-Override entfernt. Neue aktive Clusterquelle: {fallback_label}.")
+                else:
+                    _set_cluster_feedback("error", "Cluster-Upload konnte nicht vollstaendig entfernt werden.")
+                _reset_cluster_uploader_widget()
+
+    active_cluster_source = _refresh_active_cluster_source_state()
+    _cluster_debug_log(
+        "post_cluster_refresh",
+        active_source_path=getattr(active_cluster_source, "source_path", None),
+        active_source_status=getattr(active_cluster_source, "status", None),
+    )
+    _render_active_cluster_source(active_cluster_source)
+    _render_cluster_debug_panel()
 
     st.divider()
 
     # --- Allgemeine Einstellungen (Stichtag) ---
-    st.subheader(t("settings.general"))
+    render_section_intro(t("settings.general"), "Stichtag und Filteroptionen für die Datenauswertung.")
 
     from utils.settings_loader import get_setting, set_setting, save_user_settings, load_user_settings
 
@@ -725,8 +697,7 @@ def render_settings_page():
     st.divider()
 
     # --- Simulations-Parameter ---
-    st.subheader(t("settings.simulation"))
-    st.caption(t("settings.simulation.caption"))
+    render_section_intro(t("settings.simulation"), t("settings.simulation.caption"))
 
     sim_settings = get_setting("simulation", {})
     
@@ -760,27 +731,47 @@ def render_settings_page():
     st.divider()
 
     # --- Gruppen-Ausschlüsse (verschoben) ---
-    st.subheader(t("settings.exclusion_groups"))
-    st.info(t("settings.exclusion_groups.info"))
+    render_section_intro(t("settings.exclusion_groups"))
+    render_context_box("Hinweis", t("settings.exclusion_groups.info"), tone="info")
 
     st.divider()
 
-    # --- TVÖD-Status ---
-    st.subheader(t("settings.compensation"))
-    st.caption(t("settings.compensation.caption"))
+    # --- Entgelt & Kosten ---
+    render_section_intro(
+        t("settings.compensation"),
+        "Konfiguration für Gehaltsberechnung, TVÖD-Logik, Stufenautomatik und Arbeitgeberkosten.",
+    )
+    st.markdown("""
+    <style>
+    .sic-card{background:#f8fbff;border:1px solid #e2ecf7;border-radius:10px;padding:14px 16px 10px;margin-bottom:4px;}
+    .sic-title{font-size:0.74rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid #e2ecf7;}
+    .sic-item{font-size:0.83rem;color:#334155;padding:2px 0;line-height:1.5;}
+    </style>
+    """, unsafe_allow_html=True)
 
     tvoed_available = st.session_state.get("tvoed_available", False)
     tvoed_lookup = st.session_state.get("tvoed_lookup", {})
 
     if tvoed_available:
-        st.success(t("settings.tvoed.loaded", count=len(tvoed_lookup)))
+        render_context_box(
+            "TVÖD-Tabelle geladen",
+            t("settings.tvoed.loaded", count=len(tvoed_lookup)),
+            tone="info",
+            compact=True,
+        )
         with st.expander(t("settings.tvoed.show_groups")):
             groups = sorted(set(g for g, _ in tvoed_lookup.keys()))
-            st.write(", ".join(groups))
+            st.caption(", ".join(groups))
     else:
-        st.warning(t("settings.tvoed.missing"))
+        render_context_box(
+            "TVÖD-Tabelle nicht verfügbar",
+            t("settings.tvoed.missing")
+            + " — Legen Sie TVÖD.xlsx im Ordner Original-Daten ab, um exakte Werte zu verwenden.",
+            tone="warning",
+            compact=True,
+        )
 
-    st.markdown(f"##### {t('settings.salary_automation.heading')}")
+    st.markdown(f"#### {t('settings.salary_automation.heading')}")
     st.caption(t("settings.salary_automation.caption"))
 
     salary_automation = get_setting("salary_automation", {})
@@ -792,23 +783,41 @@ def render_settings_page():
         "all_staff": t("settings.salary_automation.scope.all_staff"),
     }.get(salary_automation.get("scope"), t("settings.salary_automation.scope.new_hires_only"))
 
+    _esc = html.escape
     sa_info_col1, sa_info_col2 = st.columns(2)
     with sa_info_col1:
-        st.markdown(f"**{t('settings.salary_automation.current_logic')}**")
-        st.markdown(f"- **{t('settings.salary_automation.salary_source', source=current_source)}**")
-        st.markdown(f"- **{t('settings.salary_automation.step_source')}**")
-        st.markdown(f"- **{t('settings.salary_automation.system_fallback', step=salary_automation['fallback_step'])}**")
-        st.markdown(f"- **{t('settings.salary_automation.progression')}**")
+        items1 = "".join(
+            f"<div class='sic-item'>· {_esc(line)}</div>"
+            for line in [
+                t("settings.salary_automation.salary_source", source=current_source),
+                t("settings.salary_automation.step_source"),
+                t("settings.salary_automation.system_fallback", step=salary_automation["fallback_step"]),
+                t("settings.salary_automation.progression"),
+            ]
+        )
+        st.markdown(
+            f'<div class="sic-card"><div class="sic-title">{_esc(t("settings.salary_automation.current_logic"))}</div>{items1}</div>',
+            unsafe_allow_html=True,
+        )
     with sa_info_col2:
-        st.markdown(f"**{t('settings.salary_automation.prepared_config')}**")
-        st.markdown(
-            f"- **{t('settings.salary_automation.config_status', status=t('settings.salary_automation.enabled') if salary_automation['enabled'] else t('settings.salary_automation.disabled'))}**"
+        config_status_text = (
+            t("settings.salary_automation.enabled")
+            if salary_automation["enabled"]
+            else t("settings.salary_automation.disabled")
         )
-        st.markdown(f"- **{t('settings.salary_automation.scope', scope=scope_label)}**")
-        st.markdown(
-            f"- **{t('settings.salary_automation.entry', e1=salary_automation['e1_entry_step'], e2=salary_automation['e2_plus_default_entry_step'])}**"
+        items2 = "".join(
+            f"<div class='sic-item'>· {_esc(line)}</div>"
+            for line in [
+                t("settings.salary_automation.config_status", status=config_status_text),
+                t("settings.salary_automation.scope", scope=scope_label),
+                t("settings.salary_automation.entry", e1=salary_automation["e1_entry_step"], e2=salary_automation["e2_plus_default_entry_step"]),
+                t("settings.salary_automation.note"),
+            ]
         )
-        st.markdown(f"- **{t('settings.salary_automation.note')}**")
+        st.markdown(
+            f'<div class="sic-card"><div class="sic-title">{_esc(t("settings.salary_automation.prepared_config"))}</div>{items2}</div>',
+            unsafe_allow_html=True,
+        )
 
     rules_df = pd.DataFrame(
         [
@@ -839,10 +848,11 @@ def render_settings_page():
         ]
     )
 
-    with st.expander(t("settings.salary_automation.rules_expander")):
+    with st.expander("TVÖD-Regeln und Systemstatus"):
         st.dataframe(rules_df, use_container_width=True, hide_index=True)
         st.info(t("settings.salary_automation.rules_info"))
 
+    st.caption("Automatik konfigurieren")
     with st.form("salary_automation_form"):
         sa_col1, sa_col2 = st.columns(2)
 
@@ -954,60 +964,56 @@ def render_settings_page():
         label_visibility="collapsed"
     )
     st.session_state["employer_cost_factor"] = employer_factor
+    st.caption("Beispiel: 1,25 entspricht +25 % Arbeitgebernebenkosten.")
 
     st.markdown(f"##### {t('settings.special_salaries.heading')}")
     st.caption(t("settings.special_salaries.caption"))
 
-    col1, col2 = st.columns(2)
+    st.markdown(f"**{t('settings.special_salaries.trainees')}**")
+    st.caption(t("settings.special_salaries.trainees.caption"))
 
-    with col1:
-        st.markdown(f"**{t('settings.special_salaries.trainees')}**")
-        st.caption(t("settings.special_salaries.trainees.caption"))
-        
-        from config.settings import DEFAULT_AZUBI_SALARIES
-        current_azubi_salaries = st.session_state.get("azubi_salaries", DEFAULT_AZUBI_SALARIES)
-        new_azubi_salaries = {}
-        
-        az_cols = st.columns(2)
-        for year in range(1, 5):
-            c_idx = (year - 1) % 2
-            with az_cols[c_idx]:
-                new_val = st.number_input(
-                    t("settings.special_salaries.trainee_salary", year=year),
-                    min_value=0.0,
-                    value=float(current_azubi_salaries.get(str(year), current_azubi_salaries.get(year, DEFAULT_AZUBI_SALARIES[year]))),
-                    step=100.0,
-                    format="%.2f",
-                    key=f"az_sal_{year}",
-                    help=t("settings.special_salaries.trainee_salary.help", year=year)
-                )
-                new_azubi_salaries[year] = new_val
-        
-        st.session_state["azubi_salaries"] = new_azubi_salaries
+    from config.settings import DEFAULT_AZUBI_SALARIES
+    current_azubi_salaries = st.session_state.get("azubi_salaries", DEFAULT_AZUBI_SALARIES)
+    new_azubi_salaries = {}
 
-    with col2:
-        st.markdown(f"**{t('settings.special_salaries.board')}**")
-        vorstand_input = st.number_input(
-            t("settings.special_salaries.board_salary"),
-            min_value=0.0,
-            max_value=1000000.0,
-            value=None,
-            placeholder=t("settings.special_salaries.board_placeholder"),
-            step=1000.0,
-            key="input_vorstand_gehalt",
-            help=t("settings.special_salaries.board_help"),
-        )
-        if vorstand_input is not None:
-            st.session_state["vorstand_jahresgehalt"] = vorstand_input
-        else:
-            # Wenn leer, Override entfernen -> Loader nutzt Default (200k)
-            if "vorstand_jahresgehalt" in st.session_state:
-                del st.session_state["vorstand_jahresgehalt"]
+    az_cols = st.columns(4)
+    for year in range(1, 5):
+        with az_cols[year - 1]:
+            new_val = st.number_input(
+                t("settings.special_salaries.trainee_salary", year=year),
+                min_value=0.0,
+                value=float(current_azubi_salaries.get(str(year), current_azubi_salaries.get(year, DEFAULT_AZUBI_SALARIES[year]))),
+                step=100.0,
+                format="%.2f",
+                key=f"az_sal_{year}",
+                help=t("settings.special_salaries.trainee_salary.help", year=year)
+            )
+            new_azubi_salaries[year] = new_val
+
+    st.session_state["azubi_salaries"] = new_azubi_salaries
+
+    st.markdown(f"**{t('settings.special_salaries.board')}**")
+    vorstand_input = st.number_input(
+        t("settings.special_salaries.board_salary"),
+        min_value=0.0,
+        max_value=1000000.0,
+        value=None,
+        placeholder=t("settings.special_salaries.board_placeholder"),
+        step=1000.0,
+        key="input_vorstand_gehalt",
+        help=t("settings.special_salaries.board_help"),
+    )
+    if vorstand_input is not None:
+        st.session_state["vorstand_jahresgehalt"] = vorstand_input
+    else:
+        # Wenn leer, Override entfernen -> Loader nutzt Default (200k)
+        if "vorstand_jahresgehalt" in st.session_state:
+            del st.session_state["vorstand_jahresgehalt"]
 
     st.divider()
 
     # --- Hinweis zum Neuladen ---
-    st.info(t("settings.reload_required"))
+    render_context_box("Neuladen erforderlich", t("settings.reload_required"), tone="info")
 
     if st.button(t("settings.reload_data"), type="primary"):
         bump_cache_version("data_prep")

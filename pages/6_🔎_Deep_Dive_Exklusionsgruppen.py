@@ -32,8 +32,9 @@ from utils.exclusion_groups import (
 from dataloader.kpi_engine import get_unique_employees
 from utils.settings_loader import DEFAULT_EXCLUSIONS, get_setting, set_setting
 from utils.cache_utils import bump_cache_version
-from utils.plot_helpers import apply_legend_bottom
+from utils.plot_helpers import AGE_COHORT_ORDER, apply_legend_bottom, get_age_cohort_color_map
 from utils.i18n import t
+from components.ui_shell import render_context_box, render_page_header, render_section_intro
 
 
 # ---------------------------------------------------------------------------
@@ -169,12 +170,315 @@ def _group_label(key: str, fallback: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Strukturelles Profil – Hilfsfunktionen
+# ---------------------------------------------------------------------------
+
+_TOP_N_STRUCT = 10
+_MAX_LABEL_LEN = 35
+
+
+def _clean_category_series(series: pd.Series, fallback: str = "Nicht zugeordnet") -> pd.Series:
+    """Normalisiert eine kategorische Serie: strip, NaN/leer/nan-String → fallback."""
+    cleaned = series.fillna(fallback).astype(str).str.strip()
+    return cleaned.replace({"": fallback, "nan": fallback, "None": fallback, "<NA>": fallback})
+
+
+def _build_top_category_df(
+    group_df: pd.DataFrame,
+    col: str,
+    top_n: int = _TOP_N_STRUCT,
+    soll_col: str | None = None,
+) -> pd.DataFrame:
+    """Aggregiert Top-N Kategorien nach Anzahl, optional mit Soll-MAK-Summe.
+
+    Rückgabe-Columns: 'kategorie', 'anzahl', optional 'soll_mak'.
+    Labels werden auf _MAX_LABEL_LEN Zeichen gekürzt (erst nach Aggregation).
+    """
+    s = _clean_category_series(group_df[col])
+    counts = s.value_counts().head(top_n).reset_index()
+    counts.columns = ["kategorie", "anzahl"]
+
+    if soll_col and soll_col in group_df.columns:
+        soll_num = pd.to_numeric(group_df[soll_col], errors="coerce").fillna(0.0)
+        soll_agg = (
+            pd.DataFrame({"_cat": s, "_soll": soll_num})
+            .groupby("_cat")["_soll"]
+            .sum()
+            .round(2)
+        )
+        counts["soll_mak"] = counts["kategorie"].map(soll_agg).fillna(0.0)
+
+    # Labels kürzen (nach Mapping, damit Soll-MAK-Lookup auf Volllabels basiert)
+    counts["kategorie"] = counts["kategorie"].apply(
+        lambda v: v[: _MAX_LABEL_LEN - 1] + "…" if len(v) > _MAX_LABEL_LEN else v
+    )
+    return counts
+
+
+def _render_structural_profile(group_df: pd.DataFrame) -> None:
+    """Rendert OE- und Planstellen-Charts für die gewählte Gruppe.
+
+    group_df: rohe Snapshot-Zeilen der Gruppe (alle Spalten, inkl. vakante Planstellen).
+    Keine Is_Vacant-Filterung: hier geht es um Planstellenstruktur, nicht Personendemografie.
+    """
+    if group_df.empty:
+        return
+
+    st.subheader("Strukturelles Profil")
+    soll_col = "Soll_FTE" if "Soll_FTE" in group_df.columns else None
+    show_soll = soll_col and float(group_df[soll_col].fillna(0).sum()) > 0
+
+    col_oe_chart, col_ps_chart = st.columns(2)
+
+    # ── Organisationseinheiten ─────────────────────────────────────────────
+    with col_oe_chart:
+        oe_col = next(
+            (c for c in ("Organisationseinheit", "Kürzel OrgEinheit") if c in group_df.columns),
+            None,
+        )
+        if oe_col is None:
+            st.caption("Organisationseinheiten-Daten nicht verfügbar.")
+        else:
+            agg = _build_top_category_df(
+                group_df, oe_col, top_n=_TOP_N_STRUCT,
+                soll_col=soll_col if show_soll else None,
+            )
+            if agg.empty:
+                st.caption("Keine Organisationseinheiten-Daten vorhanden.")
+            else:
+                chart_order = agg["kategorie"].tolist()[::-1]
+                hover = (
+                    [f"Soll-MAK: {_fmt_mak(v)}" for v in agg["soll_mak"]]
+                    if "soll_mak" in agg.columns
+                    else None
+                )
+                fig = go.Figure(go.Bar(
+                    x=agg["anzahl"],
+                    y=agg["kategorie"],
+                    orientation="h",
+                    marker_color=COLORS["accent_blue"],
+                    text=[_fmt_int(v) for v in agg["anzahl"]],
+                    textposition="outside",
+                    hovertext=hover,
+                    hovertemplate="<b>%{y}</b><br>Anzahl: %{x}<br>%{hovertext}<extra></extra>" if hover else None,
+                ))
+                fig.update_layout(
+                    title="Top-Organisationseinheiten nach Planstellen",
+                    xaxis_title="Anzahl",
+                    yaxis_title=None,
+                    height=max(240, len(agg) * 34 + 80),
+                    margin=dict(l=10, r=60, t=40, b=20),
+                    plot_bgcolor="white",
+                    paper_bgcolor="white",
+                    font=dict(color=COLORS["text_primary"]),
+                    xaxis=dict(gridcolor="#F0F0F0"),
+                    yaxis=dict(categoryorder="array", categoryarray=chart_order),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+    # ── Planstellen ────────────────────────────────────────────────────────
+    with col_ps_chart:
+        ps_col = next(
+            (c for c in ("Planstelle", "Planstellennr") if c in group_df.columns),
+            None,
+        )
+        if ps_col is None:
+            st.caption("Planstellen-Daten nicht verfügbar.")
+        else:
+            agg_ps = _build_top_category_df(
+                group_df, ps_col, top_n=_TOP_N_STRUCT,
+                soll_col=soll_col if show_soll else None,
+            )
+            if agg_ps.empty:
+                st.caption("Keine Planstellen-Daten vorhanden.")
+            else:
+                chart_order_ps = agg_ps["kategorie"].tolist()[::-1]
+                hover_ps = (
+                    [f"Soll-MAK: {_fmt_mak(v)}" for v in agg_ps["soll_mak"]]
+                    if "soll_mak" in agg_ps.columns
+                    else None
+                )
+                fig_ps = go.Figure(go.Bar(
+                    x=agg_ps["anzahl"],
+                    y=agg_ps["kategorie"],
+                    orientation="h",
+                    marker_color=COLORS["accent_blue"],
+                    text=[_fmt_int(v) for v in agg_ps["anzahl"]],
+                    textposition="outside",
+                    hovertext=hover_ps,
+                    hovertemplate="<b>%{y}</b><br>Anzahl: %{x}<br>%{hovertext}<extra></extra>" if hover_ps else None,
+                ))
+                fig_ps.update_layout(
+                    title="Top-Planstellen nach Anzahl",
+                    xaxis_title="Anzahl",
+                    yaxis_title=None,
+                    height=max(240, len(agg_ps) * 34 + 80),
+                    margin=dict(l=10, r=60, t=40, b=20),
+                    plot_bgcolor="white",
+                    paper_bgcolor="white",
+                    font=dict(color=COLORS["text_primary"]),
+                    xaxis=dict(gridcolor="#F0F0F0"),
+                    yaxis=dict(categoryorder="array", categoryarray=chart_order_ps),
+                )
+                st.plotly_chart(fig_ps, use_container_width=True)
+
+
+# ---------------------------------------------------------------------------
+# Demografisches Profil – Hilfsfunktionen
+# ---------------------------------------------------------------------------
+
+def _prepare_demo_df(group_df: pd.DataFrame) -> pd.DataFrame:
+    """Gibt Zeilen mit auswertbaren Demografiedaten zurück.
+
+    Primär: Is_Vacant == False (Planstellen mit aktiver Person).
+    Fallback: Zeilen mit bekannter Alterskohorte, weil apply_exclusions() alle
+    Mitglieder aktiver Exklusionsgruppen auf Is_Vacant=True setzt — ein reiner
+    Is_Vacant==False-Filter würde sonst alle PA-Gruppen auf n=0 reduzieren.
+    """
+    if "Is_Vacant" in group_df.columns:
+        occupied = group_df[group_df["Is_Vacant"] == False].copy()  # noqa: E712
+        if not occupied.empty:
+            return occupied
+    # Fallback: Alterskohorte != "Unbekannt" als Proxy für "Person ist zugeordnet"
+    if "Alterskohorte" in group_df.columns:
+        return group_df[
+            group_df["Alterskohorte"].notna() & (group_df["Alterskohorte"] != "Unbekannt")
+        ].copy()
+    return group_df.copy()
+
+
+def _normalize_gender_label(value) -> str:
+    """Normalisiert Geschlechts-Kürzel auf deutsche Langform."""
+    v = str(value).strip().lower()
+    if v in ("m", "maennlich", "männlich"):
+        return "männlich"
+    if v in ("w", "weiblich"):
+        return "weiblich"
+    return str(value)
+
+
+def _render_demo_profile(group_df: pd.DataFrame) -> None:
+    """Rendert Alterskohorten- und Geschlechtsverteilung für die gewählte Gruppe.
+
+    group_df: rohe Snapshot-Zeilen der Gruppe (alle Spalten).
+    Intern gefiltert auf besetzte Planstellen vor der Chart-Erstellung.
+    Datenschutz: Charts nur bei >= 5 auswertbaren Zeilen.
+    """
+    demo_df = _prepare_demo_df(group_df)
+
+    st.subheader("Demografisches Profil")
+    if len(demo_df) < 5:
+        st.caption(
+            "Für diese Gruppe werden aus Datenschutzgründen keine "
+            "demografischen Detailcharts angezeigt."
+        )
+        return
+
+    col_age, col_gender = st.columns(2)
+
+    # ── Alterskohorten ─────────────────────────────────────────────────────
+    with col_age:
+        if "Alterskohorte" not in demo_df.columns:
+            st.caption("Alterskohorten-Daten nicht verfügbar.")
+        else:
+            age_series = demo_df["Alterskohorte"].dropna()
+            age_series = age_series[age_series != "Unbekannt"]
+            if age_series.empty:
+                st.caption("Keine auswertbaren Alterskohorten vorhanden.")
+            else:
+                age_counts = age_series.value_counts()
+                known = [c for c in AGE_COHORT_ORDER if c in age_counts.index]
+                unknown = sorted(c for c in age_counts.index if c not in AGE_COHORT_ORDER)
+                ordered = known + unknown
+                age_counts = age_counts.reindex(ordered).dropna().astype(int)
+
+                cdm = get_age_cohort_color_map(list(age_counts.index))
+                bar_colors = [cdm.get(c, "#B8C0CC") for c in age_counts.index]
+
+                fig = go.Figure(go.Bar(
+                    x=age_counts.values,
+                    y=age_counts.index.tolist(),
+                    orientation="h",
+                    marker_color=bar_colors,
+                    text=[_fmt_int(v) for v in age_counts.values],
+                    textposition="outside",
+                ))
+                fig.update_layout(
+                    title="Alterskohorten der besetzten Planstellen",
+                    xaxis_title="Anzahl",
+                    yaxis_title=None,
+                    height=max(220, len(age_counts) * 32 + 80),
+                    margin=dict(l=10, r=50, t=40, b=20),
+                    plot_bgcolor="white",
+                    paper_bgcolor="white",
+                    font=dict(color=COLORS["text_primary"]),
+                    xaxis=dict(gridcolor="#F0F0F0"),
+                    yaxis=dict(
+                        categoryorder="array",
+                        categoryarray=list(reversed(ordered)),
+                    ),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+    # ── Geschlechtsverteilung ──────────────────────────────────────────────
+    with col_gender:
+        gender_series = None
+        if "Text Gsch" in demo_df.columns:
+            gs = demo_df["Text Gsch"].dropna()
+            gs = gs[gs.astype(str).str.strip() != ""]
+            if not gs.empty:
+                gender_series = gs
+        if gender_series is None and "Geschlecht" in demo_df.columns:
+            gs = demo_df["Geschlecht"].dropna()
+            gs = gs[gs.astype(str).str.strip() != ""]
+            if not gs.empty:
+                gender_series = gs
+
+        if gender_series is None or len(gender_series) == 0:
+            st.caption("Keine auswertbaren Geschlechtswerte vorhanden.")
+        else:
+            gender_series = gender_series.apply(_normalize_gender_label)
+            gender_counts = gender_series.value_counts()
+
+            bar_colors = [
+                COLORS.get("gender_female", "#E94D3A") if g == "weiblich"
+                else COLORS.get("gender_male", "#0088DE") if g == "männlich"
+                else COLORS.get("text_secondary", "#A9A9A9")
+                for g in gender_counts.index
+            ]
+
+            fig = go.Figure(go.Bar(
+                x=gender_counts.values,
+                y=gender_counts.index.tolist(),
+                orientation="h",
+                marker_color=bar_colors,
+                text=[_fmt_int(v) for v in gender_counts.values],
+                textposition="outside",
+            ))
+            fig.update_layout(
+                title="Geschlechtsverteilung der besetzten Planstellen",
+                xaxis_title="Anzahl",
+                yaxis_title=None,
+                height=max(200, len(gender_counts) * 60 + 80),
+                margin=dict(l=10, r=50, t=40, b=20),
+                plot_bgcolor="white",
+                paper_bgcolor="white",
+                font=dict(color=COLORS["text_primary"]),
+                xaxis=dict(gridcolor="#F0F0F0"),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+
+# ---------------------------------------------------------------------------
 # Haupt-Rendering
 # ---------------------------------------------------------------------------
 
 def main():
-    st.title(t("exclusion.title"))
-    st.caption(t("exclusion.subtitle"))
+    render_page_header(
+        t("exclusion.title"),
+        "Definiere den Analyse-Scope des Dashboards: Exklusionsgruppen entfernen ausgewählte "
+        "Planstellen- und Personengruppen aus Mitarbeiter-, Planstellen- und Prognoseanalysen.",
+    )
 
     # ── Daten laden ──────────────────────────────────────────────────────────
     set_metric_page_hint(t("exclusion.metric_hint"))
@@ -258,8 +562,21 @@ def main():
     emp_active = get_unique_employees(active_df)  # dedupliziert auf Mitarbeiterebene
     active_ist_mak = float(resolve_mak_series(emp_active).sum())
 
+    # ── Header-Meta-Zeile ─────────────────────────────────────────────────────
+    scope_label = (
+        t("exclusion.scope.dashboard_full")
+        if current_ex.get("planstellen_follow_person")
+        else t("exclusion.scope.employees_only")
+    )
+    st.caption(
+        f"Vollpopulation · {len(all_masks)} Exklusionsgruppen · "
+        f"{_fmt_int(ex_planstellen)} ausgeschlossen · {_fmt_int(active_planstellen)} aktiv · "
+        f"Scope: {scope_label} · "
+        "Datenbasis: ungefilterter Snapshot, Sidebar-Filter nicht angewendet"
+    )
+
     # ── BEREICH 1: Globale KPIs ───────────────────────────────────────────────
-    st.markdown(t("exclusion.section.overview"))
+    render_section_intro("Übersicht", "Planstellen und MAK-Kapazität im Gesamtüberblick.")
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         _metric_card(t("exclusion.metric.total_positions"), _fmt_int(total_planstellen),
@@ -292,11 +609,10 @@ def main():
                      sub=t("exclusion.metric.active_current_fte.sub"),
                      color=COLORS["accent_green"])
 
-    st.markdown("---")
+    st.divider()
 
     # ── BEREICH 2: Gruppen-Tabelle mit Checkboxen ────────────────────────────
-    st.markdown(t("exclusion.section.group_exclusions"))
-    st.caption(t("exclusion.group_exclusions.caption"))
+    render_section_intro("Gruppen-Ausschlüsse", t("exclusion.group_exclusions.caption"))
 
     # Bulk-Aktionen (nur session state — kein Persist, Nutzer bestätigt unten)
     bulk_col1, bulk_col2, bulk_col3 = st.columns(3)
@@ -503,10 +819,10 @@ def main():
             )
             st.rerun()
 
-    st.markdown("---")
+    st.divider()
 
     # ── BEREICH 3: Charts ─────────────────────────────────────────────────────
-    st.markdown(t("exclusion.section.visualization"))
+    render_section_intro("Visualisierung", "Vergleich exkludierter und aktiver Gruppen nach Planstellen und Soll-MAK.")
 
     # Aktuelle ex_keys neu berechnen (nach möglichem rerun)
     fresh_ex = _load_current_exclusions()
@@ -546,10 +862,10 @@ def main():
         else:
             st.info(t("exclusion.chart.no_data"))
 
-    st.markdown("---")
+    st.divider()
 
     # ── BEREICH 4: Drilldown ──────────────────────────────────────────────────
-    st.markdown(t("exclusion.section.drilldown"))
+    render_section_intro("Drilldown", "Wähle eine Gruppe für das strukturelle und demografische Profil.")
 
     all_group_opts = {label: key for key, label, _ in GROUP_ORDER}
     selected_label = st.selectbox(t("exclusion.select.group"), options=list(all_group_opts.keys()),
@@ -578,11 +894,23 @@ def main():
 
         col_oe, col_jf = st.columns(2)
         with col_oe:
-            st.markdown(f"**{t('exclusion.top_org_units')}**")
-            st.caption(r["top_oes"] if r["top_oes"] != "—" else t("exclusion.info.none"))
+            render_context_box(
+                t("exclusion.top_org_units"),
+                r["top_oes"] if r["top_oes"] != "—" else t("exclusion.info.none"),
+                tone="info",
+                compact=True,
+            )
         with col_jf:
-            st.markdown(f"**{t('exclusion.top_jobfamilies')}**")
-            st.caption(r["top_jfs"] if r["top_jfs"] != "—" else t("exclusion.info.none"))
+            render_context_box(
+                t("exclusion.top_jobfamilies"),
+                r["top_jfs"] if r["top_jfs"] != "—" else t("exclusion.info.none"),
+                tone="info",
+                compact=True,
+            )
+
+        group_mask = all_masks.get(selected_key, pd.Series(False, index=snapshot_df.index))
+        _render_structural_profile(snapshot_df[group_mask])
+        _render_demo_profile(snapshot_df[group_mask])
 
         with st.expander(t("exclusion.expander.rows"), expanded=False):
             detail = get_group_detail(snapshot_df, selected_key)

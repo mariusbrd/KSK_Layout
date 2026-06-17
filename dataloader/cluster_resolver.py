@@ -47,6 +47,7 @@ CLUSTER_DEPENDENT_SESSION_KEYS = [
     "abgaenge_results",
     "abgaenge_global_result",
     "abgaenge_params",
+    "abgaenge_params_cluster_signature",
     "abgaenge_ui_state",
     "abgaenge_timestamp",
     "abgaenge_cluster_source_signature",
@@ -69,14 +70,21 @@ CLUSTER_DEPENDENT_SESSION_KEYS = [
     "compact_sim_metadata",
     "compact_sim_target_date_cached",
     "ui_matrix_snapshot",
-    "atz_matrix_editor_live",
-    "quit_matrix_editor_live_fixed",
+    "atz_matrix_editor_live",        # legacy exact-key fallback
+    "quit_matrix_editor_live_fixed", # legacy exact-key fallback
     "az_takeover_matrix_editor",
     "hire_dist_matrix",
     "hy_atz_editor",
     "hy_quit_editor",
     "hy_az_takeover_matrix_editor",
     "hy_hire_dist_mat",
+]
+
+# Widget-State-Keys, die das Cluster-Signatur-Suffix tragen.
+# Wird für präfixbasierte Löschung in invalidate_cluster_dependent_state verwendet.
+CLUSTER_DEPENDENT_SESSION_KEY_PREFIXES: list[str] = [
+    "atz_matrix_editor_live_",
+    "quit_matrix_editor_live_fixed_",
 ]
 
 
@@ -631,6 +639,27 @@ def invalidate_cluster_dependent_state(session_state: Any, reason: str) -> dict[
         else:
             missing_keys.append(key)
 
+    # Präfixbasierte Löschung für Widget-State-Keys mit Cluster-Signatur-Suffix.
+    # Die tatsächlichen Session-State-Keys heißen z. B. "atz_matrix_editor_live_<SIG>",
+    # nicht der Basis-Name ohne Suffix, der in CLUSTER_DEPENDENT_SESSION_KEYS steht.
+    try:
+        all_keys = list(session_state.keys())
+    except Exception:
+        all_keys = []
+    for key in all_keys:
+        for prefix in CLUSTER_DEPENDENT_SESSION_KEY_PREFIXES:
+            if key.startswith(prefix):
+                try:
+                    del session_state[key]
+                    removed_keys.append(key)
+                except Exception:
+                    try:
+                        session_state.pop(key, None)
+                        removed_keys.append(key)
+                    except Exception:
+                        pass
+                break
+
     return {
         "reason": reason,
         "removed_keys": removed_keys,
@@ -724,6 +753,7 @@ def get_active_cluster_source_from_session(session_state: Any) -> Optional[Activ
 __all__ = [
     "ActiveClusterSource",
     "CLUSTER_DEPENDENT_SESSION_KEYS",
+    "CLUSTER_DEPENDENT_SESSION_KEY_PREFIXES",
     "clear_active_cluster_source_from_session",
     "ClusterMappingBundle",
     "deserialize_active_cluster_source",

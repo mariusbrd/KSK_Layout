@@ -47,6 +47,7 @@ from dataloader.cluster_resolver import (
 )
 from dataloader.jobfamily_service import JobFamilyService
 from components.sidebar import render_global_filters, apply_filters, apply_event_filters, render_filter_status, apply_robust_filter, get_effective_metric_view, set_metric_page_hint
+from components.ui_shell import render_context_box, render_page_header, render_section_intro
 from utils.i18n import t
 from utils.plot_helpers import apply_legend_bottom
 
@@ -54,6 +55,53 @@ from utils.plot_helpers import apply_legend_bottom
 def _cluster_widget_key(base_key: str, cluster_source_signature: Optional[str]) -> str:
     suffix = str(cluster_source_signature or "no_cluster_source").strip() or "no_cluster_source"
     return f"{base_key}_{suffix}"
+
+
+def _sync_params_matrix_dimensions(
+    params: Dict[str, Any],
+    valid_jfs: list[str],
+    active_org_units: list[str],
+) -> Dict[str, Any]:
+    """Reconcile ATZ- und Kündigung-Matrix-Zeilen mit den aktuellen Cluster-Gruppen.
+
+    - Bestehende Werte für weiterhin vorhandene Gruppen bleiben erhalten.
+    - Neu hinzugekommene Gruppen erhalten den aktuellen Default-Wert der Matrix.
+    - Nicht mehr vorhandene Gruppen werden entfernt.
+    - Der „Default"-Schlüssel wird immer beibehalten.
+    Alle Werte bleiben im Gewichtungsmaßstab (0–1), da params aus dem Session-State
+    via build_params_from_ui stammt.
+    """
+    # ATZ-Matrix
+    atz_dim = params["atz"].get("atz_dimension", "JobFamily")
+    current_groups = valid_jfs if atz_dim == "JobFamily" else active_org_units
+    old_atz = params["atz"].get("atz_matrix", {"Default": params["atz"].get("new_atz_rate", 0.05)})
+    default_atz = float(old_atz.get("Default", params["atz"].get("new_atz_rate", 0.05)))
+    new_atz: Dict[str, Any] = {"Default": old_atz.get("Default", default_atz)}
+    for grp in current_groups:
+        new_atz[str(grp)] = old_atz.get(str(grp), default_atz)
+    params["atz"]["atz_matrix"] = new_atz
+
+    # Kündigung-Matrix
+    quit_dim = params["quit"].get("quit_dimension", "JobFamily")
+    current_groups_q = valid_jfs if quit_dim == "JobFamily" else active_org_units
+    old_quit = params["quit"].get("quit_matrix", {})
+    _age_defaults: Dict[str, float] = {
+        "alter_unter_30": 0.12,
+        "alter_30_45": 0.08,
+        "alter_45_55": 0.05,
+        "alter_55_plus": 0.02,
+    }
+    new_quit: Dict[str, Any] = {}
+    for cohort, fallback_rate in _age_defaults.items():
+        old_cohort = old_quit.get(cohort, {})
+        cohort_default = float(old_cohort.get("Default", fallback_rate))
+        new_cohort: Dict[str, Any] = {"Default": cohort_default}
+        for grp in current_groups_q:
+            new_cohort[str(grp)] = old_cohort.get(str(grp), cohort_default)
+        new_quit[cohort] = new_cohort
+    params["quit"]["quit_matrix"] = new_quit
+
+    return params
 
 
 def _get_param_dimension_values(
@@ -273,13 +321,26 @@ def main():
             st.session_state,
             reason="abgaenge_cluster_source_changed",
         )
-        st.info("Gespeicherte Abgangs-Ergebnisse wurden verworfen, weil sich die aktive Clusterquelle geändert hat.")
+        render_context_box(
+            "Hinweis",
+            "Gespeicherte Abgangs-Ergebnisse wurden verworfen, weil sich die aktive Clusterquelle geändert hat.",
+            tone="info",
+            compact=True,
+        )
 
     default_start = get_current_stichtag().date()
     default_end = date(default_start.year + 2, default_start.month, default_start.day)
 
     # ── Parametrierung (Form) ──
-    params = default_params()
+    # Gespeicherte Parameter laden; Fallback auf Defaults beim ersten Aufruf.
+    params = st.session_state.get("abgaenge_params", default_params())
+    # Wenn sich die aktive Cluster-Quelle seit dem letzten Sync geändert hat,
+    # Matrix-Dimensionen an die aktuellen Gruppen anpassen.
+    _last_params_sig = st.session_state.get("abgaenge_params_cluster_signature")
+    if _last_params_sig != cluster_source_signature:
+        params = _sync_params_matrix_dimensions(params, valid_jfs, active_org_units)
+        st.session_state["abgaenge_params"] = params
+        st.session_state["abgaenge_params_cluster_signature"] = cluster_source_signature
     # Ruhend bleibt auf dieser Seite vorerst fachlich deaktiviert.
     params["components"]["ruhend"] = False
     ruhend_new = int(params["ruhend"]["ruhend_new_cases_per_year"])
@@ -287,10 +348,14 @@ def main():
     ruhend_duration = int(params["ruhend"]["ruhend_avg_duration_months"])
     comp_ruhend = False
 
+    render_section_intro(
+        "Prognose-Einstellungen",
+        "Zeitraum, Komponenten und Feinparameter für die Abgangsprognose.",
+    )
+
     with st.form("abgaenge_forecast_form", clear_on_submit=False):
-        st.markdown(t("attrition.settings.section"))
         # ── Row 1: Base Settings (horizontal) ──
-        st.markdown(t("attrition.settings.period_basis"))
+        st.markdown("Zeitraum & Basis")
         submit = False
         freq_options = {
             t("attrition.settings.frequency.month"): "M",
@@ -306,10 +371,10 @@ def main():
         with bc4:
             random_seed = st.number_input(t("attrition.settings.random_seed"), value=int(params["random_seed"]), step=1)
 
-        st.markdown("---")
+        st.divider()
 
         # ── Row 2: Component Toggles (horizontal) ──
-        st.markdown(t("attrition.settings.components"))
+        st.markdown("Komponenten")
         cc1, cc2, cc3 = st.columns(3)
         with cc1:
             comp_atz = st.checkbox(t("attrition.settings.component.atz"), value=params["components"]["atz"])
@@ -318,13 +383,13 @@ def main():
         with cc3:
             comp_quit = st.checkbox(t("attrition.settings.component.quit"), value=params["components"]["quit"])
 
-        st.markdown("---")
+        st.divider()
         st.info(t("attrition.settings.atz_note"))
 
         # ── Row 3: Detail Parameters (sub-expanders) - OUTSIDE FORM for interactivity ──
-        st.markdown(t("attrition.settings.detail_params"))
+        st.markdown("Detail-Parameter")
 
-        with st.expander(t("attrition.expander.atz")):
+        with st.expander(t("attrition.expander.atz"), expanded=False):
             # ── ATZ Row 1: General Constraints ──
             ac1, ac2, ac3, ac4, ac5 = st.columns(5)
             with ac1:
@@ -402,7 +467,7 @@ def main():
                 df_atz_matrix,
                 use_container_width=True,
                 height=min(400, 50 + len(atz_dim_items) * 35),
-                key=_cluster_widget_key("atz_matrix_editor_live", cluster_source_signature),
+                key=_cluster_widget_key("atz_matrix_editor_live", f"{cluster_source_signature}_{atz_dim}"),
                 disabled=not use_atz_matrix,
                 column_config={
                     t("attrition.atz.probability_pct"): st.column_config.NumberColumn(
@@ -417,7 +482,7 @@ def main():
                 new_atz_matrix[str(dim_val)] = float(row[t("attrition.atz.probability_pct")])
             params["atz"]["atz_matrix"] = new_atz_matrix
 
-        with st.expander(t("attrition.expander.retirement")):
+        with st.expander(t("attrition.expander.retirement"), expanded=False):
             rc1, rc2 = st.columns(2)
             with rc1:
                 rent65 = st.slider(t("attrition.retirement.rate_65"), min_value=0.0, max_value=1.0, value=float(params["retirement"]["rent_rate_65"]), step=0.05, key="slide_rent_65")
@@ -506,7 +571,7 @@ def main():
                 use_container_width=True,
                 height=min(400, 50 + len(dim_items) * 35),
                 disabled=not use_quit_matrix,
-                key=_cluster_widget_key("quit_matrix_editor_live_fixed", cluster_source_signature),
+                key=_cluster_widget_key("quit_matrix_editor_live_fixed", f"{cluster_source_signature}_{quit_dim}"),
                 column_config=col_conf
             )
 
@@ -518,8 +583,8 @@ def main():
             params["quit"]["quit_matrix"] = new_quit_matrix
 
             st.divider()
-            st.markdown(t("attrition.adjustments.section"))
-            st.info(t("attrition.adjustments.info"))
+            st.markdown("Jahresgenaue Anpassungen (Jobgruppen)")
+            render_context_box("Hinweis", t("attrition.adjustments.info"), tone="neutral", compact=True)
             
             # More/Less selections
             adj_col1, adj_col2 = st.columns(2)
@@ -583,8 +648,9 @@ def main():
             params["quit"]["quit_adjustments"] = quit_adjustments
 
     # ── Action Button ──
-        st.write("")
-        submit = st.form_submit_button(t("attrition.action.compute"), use_container_width=True)
+        submit_col, _ = st.columns([1, 3])
+        with submit_col:
+            submit = st.form_submit_button(t("attrition.action.compute"), use_container_width=True, type="primary")
 
     # ── Rendering or Calculation Logic ──
     freq = freq_options[freq_label]
@@ -677,6 +743,7 @@ def main():
             global_result["cluster_source_signature"] = cluster_source_signature
             st.session_state["abgaenge_global_result"] = global_result
             st.session_state["abgaenge_params"] = params
+            st.session_state["abgaenge_params_cluster_signature"] = cluster_source_signature
             st.session_state["abgaenge_ui_state"] = ui_state
             st.session_state["abgaenge_timestamp"] = datetime.datetime.now().strftime("%d.%m.%Y, %H:%M:%S")
             st.session_state["abgaenge_cluster_source_signature"] = cluster_source_signature
@@ -690,7 +757,11 @@ def main():
     # ── Rendering Logic (View-Only Zoom from Global Result) ──
     global_result = st.session_state.get("abgaenge_global_result")
     if not global_result:
-        st.info(t("attrition.info.no_forecast"))
+        render_context_box(
+            "Keine Prognose",
+            t("attrition.info.no_forecast"),
+            tone="info",
+        )
         return
 
     last_run_params = st.session_state.get("abgaenge_ui_state", {})
@@ -825,7 +896,7 @@ def main():
     # Header Info
     c1, c2 = st.columns([2, 1])
     with c1:
-        st.write(t("attrition.status.timestamp", timestamp=timestamp))
+        st.markdown(t("attrition.status.timestamp", timestamp=timestamp))
     with c2:
         if drift:
             st.warning(t("attrition.status.params_changed"))
@@ -881,7 +952,7 @@ def main():
             )
         
         st.info(t("attrition.summary.interpretation"))
-        
+
         # P03: Secure Start/End KPI (Robust extraction from Timeline info)
         with st.expander(t("attrition.summary.details.expander"), expanded=False):
             d1, d2, d3, d4 = st.columns(4)
@@ -919,23 +990,23 @@ def main():
 
         # DEBUG OUTPUT
         if st.session_state.get("debug_active", False):
-            with st.expander(t("attrition.debug.expander"), expanded=True):
+            with st.expander(t("attrition.debug.expander"), expanded=False):
                 # 1. Summary Metrics
                 c1, c2, c3 = st.columns(3)
                 with c1:
-                    st.write(f"**{t('attrition.debug.raw_events')}:** `{len(events)}`")
-                    st.write(f"**{t('attrition.debug.exits_heads_sum')}:** `{events['headcount_change'].sum() if not events.empty else 0}`")
+                    st.write(f"{t('attrition.debug.raw_events')}: {len(events)}")
+                    st.write(f"{t('attrition.debug.exits_heads_sum')}: {events['headcount_change'].sum() if not events.empty else 0}")
                 with c2:
                     unique_total = events['persnr'].nunique() if not events.empty else 0
                     unique_hc = events[events['headcount_change'] < 0]['persnr'].nunique() if not events.empty else 0
                     unique_cap = events[(events['headcount_change'] == 0) & (events['mak_change'] < 0)]['persnr'].nunique() if not events.empty else 0
                     
-                    st.write(f"**{t('attrition.debug.unique_people_all')}:** `{unique_total}`")
-                    st.write(f"**- {t('attrition.debug.unique_people_exit')}:** `{unique_hc}`")
-                    st.write(f"**- {t('attrition.debug.unique_people_capacity_only')}:** `{unique_cap}`")
+                    st.write(f"{t('attrition.debug.unique_people_all')}: {unique_total}")
+                    st.write(f"- {t('attrition.debug.unique_people_exit')}: {unique_hc}")
+                    st.write(f"- {t('attrition.debug.unique_people_capacity_only')}: {unique_cap}")
                 
                 with c3:
-                    st.write(f"**{t('attrition.debug.fte_loss_sum')}:** `{events['mak_change'].sum() if not events.empty else 0:.2f}`")
+                    st.write(f"{t('attrition.debug.fte_loss_sum')}: {events['mak_change'].sum() if not events.empty else 0:.2f}")
                     st.caption(t("attrition.debug.fte_loss_caption"))
                     
                     # Logic Overlap Check (ATZ_END vs RETIREMENT)
@@ -945,12 +1016,12 @@ def main():
                         pnr_retirement = set(events[events["reason_code"] == REASON_RETIREMENT]["persnr"])
                         overlap = len(pnr_atz_end & pnr_retirement)
                         color = "red" if overlap > 0 else "green"
-                        st.markdown(f"**{t('attrition.debug.overlap_atz_retirement')}:** :{color}[`{overlap}`]")
+                        st.markdown(f"{t('attrition.debug.overlap_atz_retirement')}: :{color}[{overlap}]")
 
                 st.divider()
                 
                 # 2. Impact Table
-                st.markdown(f"**{t('attrition.debug.events_by_effect')}**")
+                st.markdown(t("attrition.debug.events_by_effect"))
                 if not events.empty:
                     debug_impact = events.groupby("reason_code").agg(
                         Event_Count=("reason_code", "count"),
@@ -966,11 +1037,10 @@ def main():
                     st.table(debug_impact[["Ursache", "Event_Count", "Unique_Pers", "Sum_Headcount", "Sum_MAK"]].round(2))
                 
                 st.divider()
-                st.markdown(f"**{t('attrition.debug.sample_last_events')}**")
+                st.markdown(t("attrition.debug.sample_last_events"))
                 st.dataframe(events.tail(20))
 
     # --- Choice of Metric for Charts ---
-    st.write("")
     st.caption(t("attrition.caption.metric_view", metric=metric_choice))
 
     charts = build_charts(forecast_kpis, events, metric_type=metric_choice)
@@ -994,7 +1064,7 @@ def main():
         
         # UI uses 1 decimal, Debug uses 2
         st.markdown(
-            f"<small>{icon} **Debug ({label})**: UI (gerundet, 1 Dez.): **{global_val:,.1f}{unit}** | Debug (2 Dez.): **{global_val:,.2f}{unit}** | Diff (zu Chart): :{color}[{diff:+.3f}]</small>", 
+            f"<small>{icon} Debug ({label}): UI (gerundet, 1 Dez.): {global_val:,.1f}{unit} | Debug (2 Dez.): {global_val:,.2f}{unit} | Diff (zu Chart): :{color}[{diff:+.3f}]</small>", 
             unsafe_allow_html=True
         )
 
@@ -1069,15 +1139,15 @@ def main():
             if "OE-Cluster" in events.columns:
                 # Get full set of clusters for consistent Y-axis
                 all_clusters = sorted(df_ma["OE-Cluster"].unique().tolist())
-                
+
                 # Filter for Headcount departures (Upper Chart)
                 cluster_events_h = events[events["headcount_change"] < 0].copy()
-                
+
                 # Filter for MAK losses (Lower Chart) - captures ATZ-FR etc.
                 cluster_events_m = events[events["mak_change"] < 0].copy()
-                
+
                 # Layout: Vertical (untereinander)
-                
+
                 # Chart 1: Kopfabgänge
                 st.markdown(t("attrition.overview.cluster_oe.people"))
                 c_stats_h = cluster_events_h.groupby("OE-Cluster").size().reindex(all_clusters, fill_value=0).reset_index(name="Abgänge")
@@ -1138,10 +1208,10 @@ def main():
             if "JF-Cluster" in events.columns:
                 # Get full set of clusters for consistent Y-axis
                 all_jf_clusters = sorted(df_ma["JF-Cluster"].unique().tolist())
-                
-                # Filter for Headcount departures 
+
+                # Filter for Headcount departures
                 cluster_events_h_jf = events[events["headcount_change"] < 0].copy()
-                
+
                 # Filter for MAK losses
                 cluster_events_m_jf = events[events["mak_change"] < 0].copy()
 
@@ -1210,18 +1280,17 @@ def main():
 
     with tab2:
         if events.empty:
-            st.info(t("attrition.info.no_driver_events"))
+            render_context_box("Keine Ereignisse", t("attrition.info.no_driver_events"), tone="info", compact=True)
         else:
             # ── Section 1: Management Summary ──
             st.markdown(t("attrition.drivers.summary.heading"))
-            
             st.info(t("attrition.drivers.summary.info"))
 
             # Data Prep
             summary_df = events.copy()
             summary_df["event_date"] = pd.to_datetime(summary_df["event_date"])
             summary_df["Jahr"] = summary_df["event_date"].dt.to_period("Y").astype(str)
-            
+
             # --- Table A: Headcount ---
             st.markdown(t("attrition.drivers.table.headcount"))
             hc_exits = summary_df[summary_df["headcount_change"] < 0]
@@ -1259,7 +1328,7 @@ def main():
             res_global = st.session_state.get("abgaenge_global_result", {})
             tables = res_global.get("tables", {})
             if not tables:
-                st.info(t("attrition.drivers.info.no_tables"))
+                render_context_box("Keine Daten", t("attrition.drivers.info.no_tables"), tone="info", compact=True)
             else:
                 for name, df in tables.items():
                     if df is None or df.empty:
@@ -1269,7 +1338,7 @@ def main():
 
     with tab3:
         if events.empty:
-            st.info(t("attrition.info.no_person_lists"))
+            render_context_box("Keine Personenlisten", t("attrition.info.no_person_lists"), tone="info", compact=True)
         else:
             for reason in sorted(events["reason_label"].unique().tolist()):
                 reason_df = events[events["reason_label"] == reason]

@@ -761,6 +761,112 @@ def _normalize_filter_values(values) -> list[str]:
     return [re.sub(r"\.0$", "", str(v).strip()) for v in values]
 
 
+_EVENT_FILTER_DIMENSIONS = [
+    "Organisationseinheit",
+    "Kürzel OrgEinheit",
+    "OE-Cluster",
+    "Jobfamily",
+    "JF-Cluster",
+    "Alterskohorte",
+    "Geschlecht",
+    "Arbeitszeit",
+    "Ausbildung",
+    "ATZ_Status",
+    "Planstelle",
+    "TrfGr",
+    "St",
+]
+_EVENT_METRIC_CONTEXT_COLUMNS = ["MAK", "MAK_Calculated", "mak"]
+_EVENT_UNMAPPED = "UNMAPPED"
+
+
+def _normalize_person_id_for_events(series: pd.Series) -> pd.Series:
+    normalized = (
+        series.astype(str)
+        .str.strip()
+        .str.replace(r"\.0$", "", regex=True)
+    )
+    return normalized.map(lambda value: value.zfill(6) if value.isdigit() else value)
+
+
+def _fill_missing_event_dimension_values(series: pd.Series) -> pd.Series:
+    out = series.copy()
+    missing = (
+        out.isna()
+        | out.astype(str).str.strip().isin(["", "nan", "NaN", "None", "<NA>"])
+    )
+    return out.where(~missing, _EVENT_UNMAPPED)
+
+
+def _enrich_event_filter_dimensions(
+    events_df: pd.DataFrame,
+    snapshot_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Ergänzt Eventzeilen vor der Filterung um Stammdaten-Dimensionen.
+
+    Abgangsevents entstehen an verschiedenen Stellen der Forecast-Engine. Nicht
+    jeder Eventtyp trägt dort bereits alle Dashboard-Filterdimensionen. Für die
+    View-Filter muss deshalb vor dem direkten Dimensionsfilter per PersNr
+    konsistent angereichert werden.
+    """
+    result = events_df.copy()
+
+    for col in _EVENT_FILTER_DIMENSIONS + _EVENT_METRIC_CONTEXT_COLUMNS:
+        if col not in result.columns:
+            result[col] = pd.NA
+
+    if (
+        result.empty
+        or snapshot_df is None
+        or snapshot_df.empty
+        or "persnr" not in result.columns
+        or "PersNr" not in snapshot_df.columns
+    ):
+        for col in _EVENT_FILTER_DIMENSIONS:
+            result[col] = _fill_missing_event_dimension_values(result[col])
+        return result
+
+    source = snapshot_df.copy()
+    source["_event_persnr"] = _normalize_person_id_for_events(source["PersNr"])
+
+    if "MAK" not in source.columns:
+        for fallback_col in ["MAK_Calculated", "mak"]:
+            if fallback_col in source.columns:
+                source["MAK"] = source[fallback_col]
+                break
+
+    lookup_cols = [
+        col
+        for col in _EVENT_FILTER_DIMENSIONS + _EVENT_METRIC_CONTEXT_COLUMNS
+        if col in source.columns
+    ]
+    if not lookup_cols:
+        for col in _EVENT_FILTER_DIMENSIONS:
+            result[col] = _fill_missing_event_dimension_values(result[col])
+        return result
+
+    lookup = (
+        source[["_event_persnr"] + lookup_cols]
+        .drop_duplicates("_event_persnr")
+        .set_index("_event_persnr")
+    )
+    event_ids = _normalize_person_id_for_events(result["persnr"])
+
+    for col in lookup_cols:
+        mapped = event_ids.map(lookup[col])
+        missing = (
+            result[col].isna()
+            | result[col].astype(str).str.strip().isin(["", "nan", "NaN", "None", "<NA>"])
+        )
+        result.loc[missing, col] = mapped.loc[missing]
+
+    for col in _EVENT_FILTER_DIMENSIONS:
+        result[col] = _fill_missing_event_dimension_values(result[col])
+
+    return result
+
+
 def _apply_filters_uncached(df: pd.DataFrame, active_filters: dict | None = None) -> pd.DataFrame:
     if df.empty:
         return df
@@ -966,7 +1072,7 @@ def _apply_event_filters_uncached(
         return events_df, 0, 0
 
     n_before = len(events_df)
-    result = events_df.copy()
+    result = _enrich_event_filter_dimensions(events_df, snapshot_df)
     filters = active_filters or {}
 
     result = apply_robust_filter(result, "Organisationseinheit", filters.get("selected_org_units", []))
@@ -981,26 +1087,17 @@ def _apply_event_filters_uncached(
     if filtered_snapshot.empty:
         return pd.DataFrame(columns=result.columns), n_before, 0
 
-    valid_ids = set(
-        filtered_snapshot["PersNr"].astype(str)
-        .str.strip().str.replace(r"\.0$", "", regex=True)
-    )
+    valid_ids = set(_normalize_person_id_for_events(filtered_snapshot["PersNr"]))
 
     if "persnr" not in result.columns:
         return result, n_before, len(result)
 
-    pid_clean = (
-        result["persnr"].astype(str)
-        .str.strip().str.replace(r"\.0$", "", regex=True)
-    )
+    pid_clean = _normalize_person_id_for_events(result["persnr"])
 
     if mode == "attrition":
         result = result[pid_clean.isin(valid_ids)]
     else:
-        all_existing_ids = set(
-            snapshot_df["PersNr"].astype(str)
-            .str.strip().str.replace(r"\.0$", "", regex=True)
-        )
+        all_existing_ids = set(_normalize_person_id_for_events(snapshot_df["PersNr"]))
         mask_is_filtered_existing = pid_clean.isin(valid_ids)
         mask_is_new_hire = ~pid_clean.isin(all_existing_ids)
         result = result[mask_is_filtered_existing | mask_is_new_hire]
