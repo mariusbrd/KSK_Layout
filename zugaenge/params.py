@@ -8,7 +8,7 @@ def default_params() -> Dict[str, Any]:
     return {
         "azubi": {
             "retention_rate": 1.0,  # 100% takeover
-            "new_cases_per_year": 15, # Default new Azubis per year
+            "new_cases_per_year": 0, # Demo: keine neuen Zugänge
             "duration_years": 3.0,
             "strategy": "Random",  # "Random" or "OrgUnit"
             "target_org_unit": None, # If strategy is OrgUnit
@@ -27,14 +27,14 @@ def default_params() -> Dict[str, Any]:
             "jf_to_cluster_map": {}, # For consistent cluster assignment in engine
         },
         "trainee": {
-            "new_cases_per_year": 5,
+            "new_cases_per_year": 0,
             "duration_years": 1.5,
             "salary_group": "E13", # TVöD group
             "strategy": "Random",
             "target_org_unit": None,
         },
         "new_hires": {
-            "count_per_year": 10,
+            "count_per_year": 0,
             "strategy": "Fill Vacancies", # "Random", "OrgUnit", "Fill Vacancies"
             "target_org_unit": None,
         },
