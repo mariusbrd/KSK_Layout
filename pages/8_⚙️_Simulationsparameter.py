@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 from copy import deepcopy
 from datetime import date
+import hashlib
 from pathlib import Path
 import sys
 from typing import Any
@@ -16,6 +17,7 @@ if str(BASE_PATH) not in sys.path:
 
 from abgaenge.params import build_params_from_ui
 from components.ui_shell import render_context_box, render_page_header, render_section_intro
+from dataloader.loader import load_and_prepare_data
 from config.settings import TARIFF_GROUPS
 from kpi_reference import get_current_stichtag
 from utils.matrix_helpers import migrate_to_percent, percent_to_weights
@@ -99,10 +101,17 @@ def _quit_matrix_editor(
     default_percent: float,
     key: str,
     disabled: bool = False,
+    dimension_values: list[str] | None = None,
 ) -> dict[str, dict[str, float]]:
     st.caption(f"Matrix: {dimension} x Alterskohorte. Werte werden als Prozentangaben gepflegt.")
     matrix_pct = migrate_to_percent(matrix_weights or {})
     names = ["Default"]
+    # Prefer live dimension values (from snapshot_df) over saved matrix keys
+    if dimension_values:
+        for v in dimension_values:
+            if str(v) not in names:
+                names.append(str(v))
+    # Keep any names from saved matrix not already covered
     for cohort in AGE_COHORTS:
         for name in (matrix_pct.get(cohort) or {}).keys():
             if name not in names:
@@ -205,7 +214,7 @@ def _hire_distribution_editor(value: list[dict[str, Any]], key: str) -> list[dic
     return edited.to_dict("records")
 
 
-def _render_abgaenge(group: dict[str, Any], key_prefix: str, *, include_ruhend: bool) -> dict[str, Any]:
+def _render_abgaenge(group: dict[str, Any], key_prefix: str, *, include_ruhend: bool, active_org_units: list[str] | None = None, valid_jfs: list[str] | None = None) -> dict[str, Any]:
     params = deepcopy(group)
     ui = deepcopy(params.pop("_ui", {}))
     base_date = get_current_stichtag().date()
@@ -272,12 +281,15 @@ def _render_abgaenge(group: dict[str, Any], key_prefix: str, *, include_ruhend: 
         quit_base = q1.slider("Basisrate p.a.", 0.0, 0.5, float(quit_params.get("quit_rate_base", 0.05)), 0.01, key=f"{key_prefix}_quit_base")
         use_quit_matrix = q2.checkbox("Detaillierte Kündigungsmatrix verwenden", value=bool(quit_params.get("use_quit_matrix", True)), key=f"{key_prefix}_quit_use_matrix")
         quit_dimension = q3.radio("Dimension", ["JobFamily", "OrgUnit"], index=0 if quit_params.get("quit_dimension", "JobFamily") == "JobFamily" else 1, horizontal=True, key=f"{key_prefix}_quit_dimension")
+        _dim_vals = valid_jfs if quit_dimension == "JobFamily" else (active_org_units or [])
+        _dim_hash = hashlib.md5("|".join(_dim_vals).encode()).hexdigest()[:8]
         quit_matrix_pct = _quit_matrix_editor(
             dimension=quit_dimension,
             matrix_weights=quit_params.get("quit_matrix", {}),
             default_percent=float(quit_base) * 100.0,
-            key=f"{key_prefix}_quit_matrix",
+            key=f"{key_prefix}_quit_matrix_{quit_dimension}_{_dim_hash}",
             disabled=not use_quit_matrix,
+            dimension_values=_dim_vals,
         )
         adjustments = quit_params.get("quit_adjustments", {"more": {}, "less": {}})
         quit_adjustments = {"more": adjustments.get("more", {}), "less": adjustments.get("less", {})}
@@ -441,6 +453,20 @@ def main() -> None:
     current = get_simulation_params()
     draft = deepcopy(current)
 
+    # Resolve live dimension values from snapshot (same source as sidebar filter)
+    active_org_units: list[str] = []
+    valid_jfs: list[str] = []
+    try:
+        snapshot_df, _, _, _ = load_and_prepare_data()
+        if "Organisationseinheit" in snapshot_df.columns:
+            active_org_units = sorted(snapshot_df["Organisationseinheit"].dropna().unique().tolist())
+        if "Jobfamily" in snapshot_df.columns:
+            valid_jfs = sorted(
+                snapshot_df[snapshot_df["Jobfamily"] != "UNMAPPED"]["Jobfamily"].dropna().unique().tolist()
+            )
+    except Exception:
+        pass
+
     render_page_header(
         "Simulationsparameter",
         "Zentrale Annahmen für Prognoseabgänge und Prognosezugänge.",
@@ -456,7 +482,7 @@ def main() -> None:
 
     with tabs[0]:
         render_section_intro("Prognose Abgänge", "Spiegelt die bestehende Abgänge-Seite; Ruhend bleibt hier wie dort fachlich deaktiviert.")
-        draft["abgaenge"] = _render_abgaenge(draft["abgaenge"], "sim_params_abgaenge", include_ruhend=False)
+        draft["abgaenge"] = _render_abgaenge(draft["abgaenge"], "sim_params_abgaenge", include_ruhend=False, active_org_units=active_org_units, valid_jfs=valid_jfs)
 
     st.divider()
     c_save, c_note = st.columns([1, 3])
