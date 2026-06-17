@@ -471,15 +471,11 @@ def main() -> None:
         compact=True,
     )
 
-    tabs = st.tabs(["Prognose Abgänge", "Prognose Zugänge"])
+    tabs = st.tabs(["Prognose Abgänge"])
 
     with tabs[0]:
         render_section_intro("Prognose Abgänge", "Spiegelt die bestehende Abgänge-Seite; Ruhend bleibt hier wie dort fachlich deaktiviert.")
         draft["abgaenge"] = _render_abgaenge(draft["abgaenge"], "sim_params_abgaenge", include_ruhend=False)
-
-    with tabs[1]:
-        render_section_intro("Prognose Zugänge", "Spiegelt die bestehende Zugänge-Seite inklusive Azubi-, Trainee- und Neueinstellungsparametern.")
-        draft["zugaenge"] = _render_zugaenge(draft["zugaenge"], "sim_params_zugaenge", hybrid=False)
 
     st.divider()
     c_save, c_note = st.columns([1, 3])
