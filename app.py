@@ -104,8 +104,6 @@ def build_pages():
         ],
         "Prognosen": [
             st.Page("pages/3_📉_Prognose_Abgänge.py", title=t("navigation.attrition_forecast")),
-            st.Page("pages/4_📈_Prognose_Zugänge.py", title=t("navigation.hiring_forecast")),
-            st.Page("pages/5_🏢_Prognose_Hybrid.py", title=t("navigation.hybrid_forecast")),
         ],
         "Simulation": [
             st.Page("pages/8_⚙️_Simulationsparameter.py", title="Simulationsparameter", icon="⚙️"),
