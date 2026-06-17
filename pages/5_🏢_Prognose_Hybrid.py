@@ -58,6 +58,7 @@ from components.sidebar import (
     render_global_filters,
     set_metric_page_hint,
 )
+from components.ui_shell import render_context_box, render_page_header, render_section_intro
 from utils.i18n import t
 from utils.plot_helpers import apply_legend_bottom
 from utils.ui_helpers import render_distribution_matrix, render_orgunit_mode_hint
@@ -169,8 +170,8 @@ def _check_sum(label: str, chart_sum: float, ref_sum: float, unit: str = "Pers",
     color = "green" if is_ok else "red"
     
     st.markdown(
-        f"**{icon} {label}**<br>"
-        f"Chart: `{chart_sum:.1f}` | Ref: `{ref_sum:.1f}` | Diff: `:{color}[{diff:.1f}]`",
+        f"{icon} {label}<br>"
+        f"Chart: {chart_sum:.1f} | Ref: {ref_sum:.1f} | Diff: :{color}[{diff:.1f}]",
         unsafe_allow_html=True
     )
 
@@ -195,7 +196,7 @@ def _render_debug_aggregation(df: pd.DataFrame, group_cols: list[str], label: st
     """
     Renders a standardized debug aggregation table with granular counts.
     """
-    st.markdown(f"**{label}**")
+    st.markdown(label)
     
     if df.empty:
         st.caption("Keine Daten verfügbar.")
@@ -739,8 +740,10 @@ def main():
 
     current_filter_hash = dict_hash(get_filter_bundle())
 
-    st.title(t("hybrid.title"))
-    st.caption(t("hybrid.subtitle"))
+    render_page_header(
+        "Prognose: Hybrid",
+        "Prognose von Hybrid-Szenarien mit Abgängen und Zugängen - getrennt nach MAK und Headcount.",
+    )
     set_metric_page_hint(
         t("hybrid.metric_hint")
     )
@@ -803,10 +806,15 @@ def main():
     params_abg = default_abgaenge_params()
     params_zug = default_zugaenge_params()
 
-    # ── Settings Accordion ──────────────────────────────────────────
-    with st.expander(t("hybrid.settings.expander"), expanded=True):
+    # ── Settings ──────────────────────────────────────────
+    render_section_intro(
+        "Prognose-Einstellungen",
+        "Zeitraum, Komponenten und Feinparameter für die Hybridprognose.",
+    )
+
+    if True:
         # ── Row 1: Base Settings (horizontal) ──
-        st.markdown(t("hybrid.settings.period"))
+        st.markdown("Zeitraum & Basis")
         submit = False
         bc1, bc2, bc3, bc4 = st.columns(4)
         with bc1:
@@ -820,12 +828,12 @@ def main():
         with bc4:
             random_seed = st.number_input(t("attrition.settings.random_seed"), value=int(params_abg["random_seed"]), step=1)
 
-        st.markdown("---")
+        st.divider()
 
         # ── Row 2: Component Toggles (horizontal) ──
-        st.markdown(t("hybrid.settings.components"))
+        st.markdown("Komponenten")
         
-        st.markdown(f"**{t('hybrid.settings.attrition_drivers')}**")
+        st.markdown(t("hybrid.settings.attrition_drivers").rstrip(":"))
         cc1, cc2, cc3, cc4 = st.columns(4)
         with cc1:
             comp_atz = st.checkbox(t("hybrid.settings.component.atz"), value=params_abg["components"]["atz"])
@@ -836,7 +844,7 @@ def main():
         with cc4:
             comp_ruhend = st.checkbox(t("hybrid.settings.component.ruhend"), value=params_abg["components"]["ruhend"])
             
-        st.markdown(f"**{t('hybrid.settings.hiring_drivers')}**")
+        st.markdown(t("hybrid.settings.hiring_drivers").rstrip(":"))
         zc1, zc2, zc3 = st.columns(3)
         with zc1:
             comp_azubi = st.checkbox(t("hybrid.settings.component.azubis"), value=True)
@@ -845,15 +853,15 @@ def main():
         with zc3:
             comp_hires = st.checkbox(t("hybrid.settings.component.new_hires"), value=True)
 
-        st.markdown("---")
+        st.divider()
 
         # ── Row 3: Detail Parameters (sub-expanders) ──
-        st.markdown(t("hybrid.settings.details"))
+        st.markdown("Detail-Parameter")
 
-        t_abg, t_zug = st.tabs([t("hybrid.tabs.attrition"), t("hybrid.tabs.hiring")])
+        st.markdown("Abgänge-Parameter")
 
-        with t_abg:
-            with st.expander("ATZ-Parameter"):
+        if True:
+            with st.expander("ATZ-Parameter", expanded=False):
                 ac1, ac2, ac3, ac4, ac5 = st.columns(5)
                 with ac1:
                     new_atz_base = st.slider("Neue Fälle (Basis)", min_value=0.0, max_value=0.5, value=float(params_abg["atz"].get("new_atz_rate", 0.05)), step=0.005, format="%.3f", key="hy_atz_base")
@@ -892,14 +900,14 @@ def main():
                 )
                 new_atz_matrix = {str(k): float(v["Wahrscheinlichkeit (%)"]) for k, v in edited_atz_df.iterrows()}
 
-            with st.expander("Renten-Parameter"):
+            with st.expander("Renten-Parameter", expanded=False):
                 rc1, rc2 = st.columns(2)
                 with rc1:
                     rent65 = st.slider("Renteneintritt 65+", min_value=0.0, max_value=1.0, value=float(params_abg["retirement"]["rent_rate_65"]), step=0.05, key="hy_rent_65")
                 with rc2:
                     rent60 = st.slider("Frühverrentung 60-64", min_value=0.0, max_value=1.0, value=float(params_abg["retirement"]["rent_rate_60_65"]), step=0.05, key="hy_rent_60")
 
-            with st.expander("Kündigungs-Parameter"):
+            with st.expander("Kündigungs-Parameter", expanded=False):
                 c1, c2, c3 = st.columns([3, 3, 2])
                 with c1:
                     quit_base = st.slider("Basisrate p.a.", min_value=0.0, max_value=0.5, value=float(params_abg["quit"]["quit_rate_base"]), step=0.01, key="hy_quit_base")
@@ -933,86 +941,89 @@ def main():
                 )
                 new_quit_matrix = {c: {str(k): float(v[c]) for k, v in edited_q_df.iterrows()} for c in q_cohorts}
 
-            with st.expander("Ruhend-Parameter"):
+            with st.expander("Ruhend-Parameter", expanded=False):
                 hc1, hc2, hc3 = st.columns(3)
                 ruhend_new = hc1.number_input("Neue Fälle / Jahr", value=int(params_abg["ruhend"]["ruhend_new_cases_per_year"]), step=1, key="hy_ruh_new")
                 ruhend_return = hc2.slider("Rückkehrquote p.a.", min_value=0.0, max_value=1.0, value=float(params_abg["ruhend"]["ruhend_return_rate"]), step=0.05, key="hy_ruh_ret")
                 ruhend_duration = hc3.number_input("Ø Dauer (Monate)", value=int(params_abg["ruhend"]["ruhend_avg_duration_months"]), step=1, key="hy_ruh_dur")
 
-        with t_zug:
-            st.markdown("#### 🎓 Azubis & Trainees")
-            az1, az2, az3, az4 = st.columns(4)
-            azubi_count = az1.number_input("Neue Azubis pro Jahr", 0, 100, int(params_zug["azubi"].get("new_cases_per_year", 15)), key="hy_azu_count")
-            retention = az2.slider("Azubi-Übernahme (%)", 0.0, 1.0, float(params_zug["azubi"]["retention_rate"]), 0.05, key="hy_azu_ret")
-            duration = az3.number_input("Ausbildungsdauer (Jahre)", 1.0, 5.0, float(params_zug["azubi"]["duration_years"]), 0.5, key="hy_azu_dur")
-            azu_isolated = st.checkbox("Nur Prognose-Azubis (Bestand ignorieren)", value=False, key="hy_azu_iso")
-            az_strat = az4.selectbox("Azubi-Verteilung", ["Random", "OrgUnit"], index=0, key="hy_azu_strat")
+        st.markdown("Zugänge-Parameter")
 
-            # --- Azubi Takeover Matrix ---
-            st.markdown("##### Detaillierte Übernahme-Verteilung")
-            az_mc1, az_mc2 = st.columns([1, 1])
-            with az_mc1:
-                use_az_matrix = st.checkbox(
-                    "Detailmatrix statt pauschaler Verteilung verwenden",
-                    value=params_zug["azubi"].get("use_takeover_matrix", False),
-                    help="Wenn aktiviert, wird die nachfolgende Matrix für die Verteilung der Übernahmen genutzt.",
-                    key="hy_chk_use_az_matrix"
+        if True:
+            with st.expander("Azubi-Parameter", expanded=False):
+                st.markdown("Azubis")
+                az1, az2, az3, az4 = st.columns(4)
+                azubi_count = az1.number_input("Neue Azubis pro Jahr", 0, 100, int(params_zug["azubi"].get("new_cases_per_year", 15)), key="hy_azu_count")
+                retention = az2.slider("Azubi-Übernahme (%)", 0.0, 1.0, float(params_zug["azubi"]["retention_rate"]), 0.05, key="hy_azu_ret")
+                duration = az3.number_input("Ausbildungsdauer (Jahre)", 1.0, 5.0, float(params_zug["azubi"]["duration_years"]), 0.5, key="hy_azu_dur")
+                azu_isolated = st.checkbox("Nur Prognose-Azubis (Bestand ignorieren)", value=False, key="hy_azu_iso")
+                az_strat = az4.selectbox("Azubi-Verteilung", ["Random", "OrgUnit"], index=0, key="hy_azu_strat")
+
+                # --- Azubi Takeover Matrix ---
+                st.markdown("Detaillierte Übernahme-Verteilung")
+                az_mc1, az_mc2 = st.columns([1, 1])
+                with az_mc1:
+                    use_az_matrix = st.checkbox(
+                        "Detailmatrix statt pauschaler Verteilung verwenden",
+                        value=params_zug["azubi"].get("use_takeover_matrix", False),
+                        help="Wenn aktiviert, wird die nachfolgende Matrix für die Verteilung der Übernahmen genutzt.",
+                        key="hy_chk_use_az_matrix"
+                    )
+                with az_mc2:
+                    az_dim = st.radio(
+                        "Dimension für Übernahme",
+                        options=["JobFamily", "OrgUnit"],
+                        index=0 if params_zug["azubi"].get("takeover_dimension", "JobFamily") == "JobFamily" else 1,
+                        format_func=lambda x: "Verteilen nach Jobfamily" if x == "JobFamily" else "Verteilen nach Org Unit",
+                        disabled=not use_az_matrix,
+                        horizontal=True,
+                        key="hy_rad_az_dim"
+                    )
+
+                valid_units = active_org_units
+                valid_jfs = active_jobfamily_values
+                az_matrix_vals = valid_units if az_dim == "OrgUnit" else valid_jfs
+
+                az_takeover_matrix = render_distribution_matrix(
+                    label=f"Matrix: {az_dim} (Gewichtung für Übernahme)",
+                    dimension=az_dim,
+                    current_matrix=migrate_to_percent(params_zug["azubi"].get("takeover_matrix", {})),
+                    valid_vals=az_matrix_vals,
+                    key_prefix=_cluster_widget_key("hy_az_takeover_matrix", cluster_source_signature),
+                    disabled=not use_az_matrix
                 )
-            with az_mc2:
-                az_dim = st.radio(
-                    "Dimension für Übernahme",
-                    options=["JobFamily", "OrgUnit"],
-                    index=0 if params_zug["azubi"].get("takeover_dimension", "JobFamily") == "JobFamily" else 1,
-                    format_func=lambda x: "Verteilen nach Jobfamily" if x == "JobFamily" else "Verteilen nach Org Unit",
-                    disabled=not use_az_matrix,
-                    horizontal=True,
-                    key="hy_rad_az_dim"
-                )
 
-            valid_units = active_org_units
-            valid_jfs = active_jobfamily_values
-            az_matrix_vals = valid_units if az_dim == "OrgUnit" else valid_jfs
+                az_tc1, az_tc2 = st.columns(2)
+                az_tarif = az_tc1.selectbox("Übernahme-Tarif", TARIFF_GROUPS, index=TARIFF_GROUPS.index(params_zug["azubi"]["entry_tariff_group"]) if params_zug["azubi"]["entry_tariff_group"] in TARIFF_GROUPS else 5, key="hy_az_tarif")
+                az_step = az_tc2.number_input("Übernahme-Stufe", 1, 6, params_zug["azubi"]["entry_step"], key="hy_az_step")
 
-            az_takeover_matrix = render_distribution_matrix(
-                label=f"Matrix: {az_dim} (Gewichtung für Übernahme)",
-                dimension=az_dim,
-                current_matrix=migrate_to_percent(params_zug["azubi"].get("takeover_matrix", {})),
-                valid_vals=az_matrix_vals,
-                key_prefix=_cluster_widget_key("hy_az_takeover_matrix", cluster_source_signature),
-                disabled=not use_az_matrix
-            )
+                render_orgunit_mode_hint(use_az_matrix, az_dim)
 
-            az_tc1, az_tc2 = st.columns(2)
-            az_tarif = az_tc1.selectbox("Übernahme-Tarif", TARIFF_GROUPS, index=TARIFF_GROUPS.index(params_zug["azubi"]["entry_tariff_group"]) if params_zug["azubi"]["entry_tariff_group"] in TARIFF_GROUPS else 5, key="hy_az_tarif")
-            az_step = az_tc2.number_input("Übernahme-Stufe", 1, 6, params_zug["azubi"]["entry_step"], key="hy_az_step")
-
-            render_orgunit_mode_hint(use_az_matrix, az_dim)
-
-            st.divider()
-
-            tr1, tr2, tr3 = st.columns(3)
-            trainee_count = tr1.number_input("Neue Trainees pro Jahr", 0, 100, params_zug["trainee"]["new_cases_per_year"], key="hy_tra_count")
-            trainee_dur = tr2.number_input("Trainee-Dauer (Jahre)", 0.5, 3.0, params_zug["trainee"]["duration_years"], 0.5, key="hy_tra_dur")
-            tr_strat = tr3.selectbox("Trainee-Verteilung", ["Random", "OrgUnit"], index=0, key="hy_tra_strat")
+            with st.expander("Trainee-Parameter", expanded=False):
+                tr1, tr2, tr3 = st.columns(3)
+                trainee_count = tr1.number_input("Neue Trainees pro Jahr", 0, 100, params_zug["trainee"]["new_cases_per_year"], key="hy_tra_count")
+                trainee_dur = tr2.number_input("Trainee-Dauer (Jahre)", 0.5, 3.0, params_zug["trainee"]["duration_years"], 0.5, key="hy_tra_dur")
+                tr_strat = tr3.selectbox("Trainee-Verteilung", ["Random", "OrgUnit"], index=0, key="hy_tra_strat")
             
-            st.markdown("#### 💼 Neueinstellungen (unabhängig)")
-            h1, h2, h3 = st.columns(3)
-            hire_count = h1.number_input("Einstellungen pro Jahr", 0, 500, params_zug["new_hires"]["count_per_year"], key="hy_hir_count")
-            hire_strat = h2.selectbox("Strategie", ["Random", "OrgUnit", "Fill Vacancies"], index=2, key="hy_hir_strat", help="'Fill Vacancies' nutzt die Abgangsprognose zum Nachbesetzen.")
-            
-            # Distribution Matrix for New Hires
-            with st.expander("📊 Verteilung Neueinstellungen (Matrix)", expanded=False):
+            with st.expander("Neueinstellungen", expanded=False):
+                h1, h2, h3 = st.columns(3)
+                hire_count = h1.number_input("Einstellungen pro Jahr", 0, 500, params_zug["new_hires"]["count_per_year"], key="hy_hir_count")
+                hire_strat = h2.selectbox("Strategie", ["Random", "OrgUnit", "Fill Vacancies"], index=2, key="hy_hir_strat", help="'Fill Vacancies' nutzt die Abgangsprognose zum Nachbesetzen.")
+                
+                # Distribution Matrix for New Hires
+                st.markdown("Verteilung Neueinstellungen (Matrix)")
                 dist_base = _build_hybrid_distribution_base(df_ma, resolved_dimensions.to_dict())[["Jobfamily", "OE-Cluster", "Share %"]]
                 edited_dist = st.data_editor(dist_base, use_container_width=True, key=_cluster_widget_key("hy_hire_dist_mat", cluster_source_signature), column_config={"Share %": st.column_config.NumberColumn(format="%.2f")})
                 hire_distribution = edited_dist.to_dict("records")
         
-        st.markdown("---")
+        st.divider()
 
 
     # ── Action Button ──
-    st.write("")
-    if st.button(t("hybrid.action.compute"), use_container_width=True, key="btn_run_hybrid"):
-        submit = True
+    submit_col, _ = st.columns([1, 3])
+    with submit_col:
+        if st.button(t("hybrid.action.compute"), use_container_width=True, type="primary", key="btn_run_hybrid"):
+            submit = True
 
     has_hybrid_res = _hybrid_results_match_cluster_signature(cluster_source_signature)
 
@@ -1023,10 +1034,19 @@ def main():
             st.session_state,
             reason="hybrid_cluster_source_changed",
         )
-        st.info("Gespeicherte Hybrid-Ergebnisse wurden verworfen, weil sich die aktive Clusterquelle geändert hat.")
+        render_context_box(
+            "Hinweis",
+            "Gespeicherte Hybrid-Ergebnisse wurden verworfen, weil sich die aktive Clusterquelle geändert hat.",
+            tone="info",
+            compact=True,
+        )
 
     if not submit and not has_hybrid_res:
-        st.info(t("hybrid.info.prompt_compute"))
+        render_context_box(
+            "Keine Prognose",
+            t("hybrid.info.prompt_compute"),
+            tone="info",
+        )
         return
 
     # 1. Build Final Params
@@ -1547,7 +1567,7 @@ def main():
 
                 if c_inter == 0 and c_detail > 0 and c_bank > 0:
                     st.error("🚨 KRITISCH: Keine Schnittmenge gefunden! Prüfe Key-Definitionen (PersNr Padding?).")
-                    with st.expander("🔬 Key-Debugging (Sample Rows)", expanded=True):
+                    with st.expander("🔬 Key-Debugging (Sample Rows)", expanded=False):
                          dbg_cols = [c for c in ["event_date", "period_start", "period_end", "persnr", "reason_code", "reason_label", "event_uid"] if c in combined_events_in_scope.columns]
                          
                          st.markdown("**Detail Seite (Top 10):**")

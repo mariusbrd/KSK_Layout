@@ -34,6 +34,7 @@ from utils.ui_helpers import render_distribution_matrix, render_orgunit_mode_hin
 from utils.i18n import t
 from utils.matrix_helpers import migrate_to_percent, percent_to_weights
 from components.sidebar import set_metric_page_hint
+from components.ui_shell import render_context_box, render_page_header, render_section_intro
 
 
 def _cluster_widget_key(base_key: str, cluster_source_signature: Optional[str]) -> str:
@@ -90,8 +91,10 @@ def _build_hiring_distribution_base(
 
 
 def _render_page_intro():
-    st.title(t("hiring.title"))
-    st.caption(t("hiring.subtitle"))
+    render_page_header(
+        "Prognose: Zugänge",
+        "Modelliere zukünftige Zugänge durch Auszubildende, Trainees und Neueinstellungen - mit Wirkung auf Headcount und MAK.",
+    )
 
 
 def _get_settings_tab_labels() -> list[str]:
@@ -254,9 +257,14 @@ def main():
         st.rerun()
 
     # 4. Settings UI
-    with st.expander(t("hiring.settings.expander"), expanded=True):
-        with st.form("forecast_inputs"):
-            st.markdown(t("hiring.settings.period"))
+    render_section_intro(
+        "Prognose-Einstellungen",
+        "Zeitraum, Komponenten und Feinparameter für die Zugangsprognose.",
+    )
+
+    with st.form("forecast_inputs", clear_on_submit=False):
+        with st.container():
+            st.markdown("Zeitraum & Basis")
             col_date1, col_date2 = st.columns(2)
             start_date = col_date1.date_input(t("hiring.settings.start_date"), value=default_start)
             end_date = col_date2.date_input(t("hiring.settings.end_date"), value=default_end)
@@ -264,7 +272,7 @@ def main():
             st.divider()
 
             # --- Row 2: Component Toggles (horizontal) ---
-            st.markdown(t("hiring.settings.components"))
+            st.markdown("Komponenten")
             cc1, cc2, cc3 = st.columns(3)
             with cc1:
                 use_azubis = st.checkbox(t("hiring.settings.component.azubis"), value=True, help=t("hiring.settings.component.azubis.help"))
@@ -275,12 +283,12 @@ def main():
 
             st.divider()
             
-            # --- Settings Tabs ---
-            tab_azubi, tab_trainee, tab_hires = st.tabs(_get_settings_tab_labels())
+            # --- Detail expanders, aligned with the attrition page structure ---
+            st.markdown("Detail-Parameter")
+            detail_labels = ["Azubi-Parameter", "Trainee-Parameter", "Neueinstellungen"]
             
-            with tab_azubi:
+            with st.expander(detail_labels[0], expanded=False):
                 # Azubis
-                st.subheader(t("hiring.settings.section.azubi"))
                 c1, c2, c3, c4 = st.columns(4)
                 azubi_count = c1.number_input(t("hiring.azubi.new_per_year"), 0, 100, params["azubi"].get("new_cases_per_year", 15), key="az_count")
                 retention = c2.slider(t("hiring.azubi.retention_rate"), 0.0, 1.0, float(params["azubi"]["retention_rate"]), 0.05)
@@ -292,7 +300,7 @@ def main():
                     if active_org_units:
                         azubi_target = st.selectbox(t("hiring.azubi.target_unit"), active_org_units, key="az_unit")
                     else:
-                        st.info("Keine Org-Units in der aktiven Clusterquelle verfügbar.")
+                        render_context_box("Hinweis", "Keine Org-Units in der aktiven Clusterquelle verfügbar.", tone="neutral", compact=True)
                     
                 # Optional: Salary Config
                 c5, c6 = st.columns(2)
@@ -312,14 +320,14 @@ def main():
                     )
                 with cg2:
                     if az_graduation_mode == "nearest_cycle":
-                        st.info(t("hiring.azubi.graduation_mode.nearest_cycle.info"))
+                        render_context_box("Hinweis", t("hiring.azubi.graduation_mode.nearest_cycle.info"), tone="neutral", compact=True)
                     else:
                         st.warning(t("hiring.azubi.graduation_mode.next_cycle.warning"))
 
                 st.divider()
 
                 # --- Azubi Takeover Matrix (Refined) ---
-                st.markdown(t("hiring.azubi.takeover_distribution.heading"))
+                st.markdown("Detaillierte Übernahme-Verteilung")
                 
                 az_matrix_col1, az_matrix_col2 = st.columns([1, 1])
                 with az_matrix_col1:
@@ -372,14 +380,13 @@ def main():
                         "matrix": {k: float(v) for k, v in az_takeover_matrix.items() if float(v) > 0}
                     }
                     st.session_state["ui_matrix_snapshot"] = ui_snap
-                    with st.expander("🛠️ Debug: UI Matrix Snapshot", expanded=False):
+                    with st.container():
+                        st.markdown("Debug: UI Matrix Snapshot")
                         st.json(ui_snap)
                  
-            st.divider()
             
-            with tab_trainee:
+            with st.expander(detail_labels[1], expanded=False):
                 # Trainees
-                st.subheader(t("hiring.settings.section.trainee"))
                 t1, t2, t3, t4 = st.columns(4)
                 trainee_count = t1.number_input("Neue Trainees pro Jahr", 0, 100, params["trainee"]["new_cases_per_year"])
                 trainee_dur = t2.number_input("Dauer (Jahre)", 0.5, 3.0, params["trainee"]["duration_years"], 0.5)
@@ -391,13 +398,11 @@ def main():
                      if active_org_units:
                          trainee_target = st.selectbox("Ziel-Einheit (Trainee)", active_org_units, key="tr_unit")
                      else:
-                         st.info("Keine Org-Units in der aktiven Clusterquelle verfügbar.")
+                         render_context_box("Hinweis", "Keine Org-Units in der aktiven Clusterquelle verfügbar.", tone="neutral", compact=True)
                  
-            st.divider()
             
-            with tab_hires:
+            with st.expander(detail_labels[2], expanded=False):
                 # New Hires
-                st.subheader(t("hiring.settings.section.hires"))
                 h1, h2, h3 = st.columns(3)
                 hire_count = h1.number_input(t("hiring.hires.per_year"), 0, 500, params["new_hires"]["count_per_year"])
                 hire_strat = h2.selectbox(
@@ -418,10 +423,11 @@ def main():
                      if active_org_units:
                          hire_target = st.selectbox("Ziel-Einheit (Hire)", active_org_units, key="hi_unit")
                      else:
-                         st.info("Keine Org-Units in der aktiven Clusterquelle verfügbar.")
+                         render_context_box("Hinweis", "Keine Org-Units in der aktiven Clusterquelle verfügbar.", tone="neutral", compact=True)
 
                 # --- New Hire Distribution Matrix ---
-                with st.expander(t("hiring.hires.distribution.heading"), expanded=False):
+                with st.container():
+                    st.markdown("Verteilung nach JobFamily / OE-Cluster")
                     st.caption(t("hiring.hires.distribution.caption"))
                     
                     # 1. Calculate the default distribution from the active source of truth.
@@ -463,7 +469,9 @@ def main():
                 help="Zeigt technische Details zur Azubi-Verteilung und Cluster-Logik vor/nach der Simulation."
             )
 
-            submit = st.form_submit_button(t("hiring.action.compute"), use_container_width=True)
+            submit_col, _ = st.columns([1, 3])
+            with submit_col:
+                submit = st.form_submit_button(t("hiring.action.compute"), use_container_width=True, type="primary")
         
     # Logic: Run calculation OR Load from SessState
     res = None
@@ -480,7 +488,7 @@ def main():
             }
             ui_snap = st.session_state.get("ui_matrix_snapshot", {})
             
-            with st.expander("🛠️ Debug: Diagnose vor Start", expanded=True):
+            with st.expander("🛠️ Debug: Diagnose vor Start", expanded=False):
                 # Consistency Check
                 if ui_snap and sim_snap != ui_snap:
                     st.error("⚠️ INKONSISTENZ: UI Matrix und Simulation Input weichen ab!")
@@ -489,20 +497,20 @@ def main():
                     sim_keys = set(sim_snap["matrix"].keys())
                     
                     with col_diff1:
-                        st.write("**Nur im UI:**", ui_keys - sim_keys if ui_keys != sim_keys else "Keine")
+                        st.write("Nur im UI:", ui_keys - sim_keys if ui_keys != sim_keys else "Keine")
                     with col_diff2:
-                        st.write("**Nur in Simulation:**", sim_keys - ui_keys if sim_keys != ui_keys else "Keine")
+                        st.write("Nur in Simulation:", sim_keys - ui_keys if sim_keys != ui_keys else "Keine")
                         
                     weight_diffs = {k: (ui_snap["matrix"][k], sim_snap["matrix"][k]) 
                                   for k in (ui_keys & sim_keys) if ui_snap["matrix"][k] != sim_snap["matrix"][k]}
                     if weight_diffs:
-                        st.write("**Abweichende Gewichte (UI vs Sim):**", weight_diffs)
+                        st.write("Abweichende Gewichte (UI vs Sim):", weight_diffs)
                 elif ui_snap:
                     st.success("✅ Konsistenz-Check: UI Matrix == Simulation Input")
 
                 col_dbg1, col_dbg2 = st.columns(2)
                 with col_dbg1:
-                    st.markdown("**Matrix Status:**")
+                    st.markdown("Matrix Status:")
                     st.write(f"- Detailmatrix aktiv: {'Ja' if use_az_matrix else 'Nein'}")
                     st.write(f"- Modus: {az_dim}")
                     
@@ -512,14 +520,14 @@ def main():
                         st.write(f"- Summe Gewichte (roh): {sum(weights):.2f}")
                 
                 with col_dbg2:
-                    st.markdown("**Daten-Status:**")
+                    st.markdown("Daten-Status:")
                     if "Jobfamily" in snapshot_df.columns:
                         jfs = snapshot_df["Jobfamily"].dropna().unique()
                         st.write(f"- Aktive Job Families: {len(jfs)}")
                         st.write(f"- Top 5: {', '.join(sorted(list(jfs))[:5])}")
                 
                 if use_az_matrix:
-                    st.markdown("**Top 5 Matrix-Einträge:**")
+                    st.markdown("Top 5 Matrix-Einträge:")
                     sorted_matrix = sorted(az_takeover_matrix.items(), key=lambda x: float(x[1]), reverse=True)
                     for k, v in sorted_matrix[:5]:
                         st.write(f"- {k}: {v}")
@@ -653,7 +661,7 @@ def main():
 
         # 2. Debug Post-Calculation Summary (Step 5 & Debug JF Enrichment)
         if st.session_state.get("chk_forecast_debug", False):
-            with st.expander("📊 Debug: Diagnose nach Simulation", expanded=True):
+            with st.expander("📊 Debug: Diagnose nach Simulation", expanded=False):
                 render_zugaenge_debug_sections(events_df, run_params, snapshot_df)
 
         # Store Result
@@ -680,9 +688,18 @@ def main():
             st.session_state,
             reason="zugaenge_cluster_source_changed",
         )
-        st.info("Gespeicherte Zugangs-Ergebnisse wurden verworfen, weil sich die aktive Clusterquelle geändert hat.")
+        render_context_box(
+            "Hinweis",
+            "Gespeicherte Zugangs-Ergebnisse wurden verworfen, weil sich die aktive Clusterquelle geändert hat.",
+            tone="info",
+            compact=True,
+        )
     else:
-        st.info(t("hiring.info.prompt_compute"))
+        render_context_box(
+            "Keine Prognose",
+            t("hiring.info.prompt_compute"),
+            tone="info",
+        )
         
     
     if res is not None:
@@ -820,7 +837,7 @@ def main():
             
             # DEBUG OUTPUT
             if st.session_state.get("debug_active", False):
-                with st.expander(t("hiring.debug.expander"), expanded=True):
+                with st.expander(t("hiring.debug.expander"), expanded=False):
                     show_technical_debug = st.toggle(
                         t("hiring.debug.toggle_technical"),
                         value=False,
@@ -828,7 +845,7 @@ def main():
                     )
                     
                     if show_technical_debug:
-                        st.markdown(f"**{t('hiring.debug.technical.heading')}**")
+                        st.markdown(t("hiring.debug.technical.heading"))
                         st.caption(t("hiring.debug.technical.caption"))
                         st.write(f"Global Events (Raw): {len(events_df)}")
                         st.write(f"Net Count Sum: {events_df['count'].sum()}")
@@ -858,7 +875,7 @@ def main():
                 icon = "✅" if is_ok else "❌"
                 
                 st.markdown(
-                    f"<small>{icon} **Debug ({label})**: Chart={chart_val:,.1f}{unit} | Global={global_val:,.1f}{unit} | Diff=:{color}[{diff:+.2f}]</small>", 
+                    f"<small>{icon} Debug ({label}): Chart={chart_val:,.1f}{unit} | Global={global_val:,.1f}{unit} | Diff=:{color}[{diff:+.2f}]</small>", 
                     unsafe_allow_html=True
                 )
             
@@ -1018,7 +1035,7 @@ def main():
                         
                         col_d1, col_d2 = st.columns(2)
                         with col_d1:
-                            st.markdown("**Event-Anzahl (Zeilen)**")
+                            st.markdown("Event-Anzahl (Zeilen)")
                             st.write(f"Zugänge gesamt (Inflows): `{len(events_inflows)}`")
                             st.write(f"- Neue Auszubildende: `{len(events_external_azubi)}`")
                             st.write(f"- Übernahmen (intern): `{len(events_internal)}`")
@@ -1029,7 +1046,7 @@ def main():
                             st.caption("*(Hinweis: Die Zugänge-Seite zählt nur Inflows. Ein 'Conversion_Out' kann als technischer Statuswechsel zur Paarbildung auftreten, wird aber nicht als Abgang bewertet.)*")
                         
                         with col_d2:
-                            st.markdown("**Unique Personen (Köpfe)**")
+                            st.markdown("Unique Personen (Köpfe)")
                             st.write(f"Unique Personen (Inflows): `{unique_inflows}`")
                             st.write(f"- Unique Auszubildende: `{unique_ext_azubi}`")
                             st.write(f"- Unique Übernahmen: `{unique_int_conv}`")

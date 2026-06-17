@@ -12,16 +12,16 @@ AGE_COHORT_ORDER: list[str] = [
 ]
 
 AGE_COHORT_COLOR_MAP: dict[str, str] = {
-    "20-24": "#E8EEF5",
-    "25-29": "#D6E2EF",
-    "30-34": "#C3D5E8",
-    "35-39": "#ABC5DD",
-    "40-44": "#8EAFCF",
-    "45-49": "#6F98BF",
-    "50-54": "#527FAC",
-    "55-59": "#396797",
-    "60-64": "#254F7D",
-    "65-69": "#153A5B",
+    "20-24": "#D6EEFF",  # heller Vorlauf (HSL ~205°, 92% L)
+    "25-29": "#C2E6FF",  # heller Vorlauf (HSL ~205°, 88% L)
+    "30-34": "#B3E0FF",  # = Vergütungsklassen Stufe 1
+    "35-39": "#66C2FF",  # = Vergütungsklassen Stufe 2
+    "40-44": "#33AAFF",  # = Vergütungsklassen Stufe 3
+    "45-49": "#0088DE",  # = Vergütungsklassen Stufe 4
+    "50-54": "#0066A8",  # = Vergütungsklassen Stufe 5
+    "55-59": "#004471",  # = Vergütungsklassen Stufe 6
+    "60-64": "#003052",  # dunkler Nachlauf (HSL ~205°, 16% L)
+    "65-69": "#001E33",  # dunkler Nachlauf (HSL ~205°, 10% L)
 }
 
 UNKNOWN_AGE_COHORT_COLOR = "#B8C0CC"
