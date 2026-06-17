@@ -49,6 +49,7 @@ from dataloader.jobfamily_service import JobFamilyService
 from components.sidebar import render_global_filters, apply_filters, apply_event_filters, render_filter_status, apply_robust_filter, get_effective_metric_view, set_metric_page_hint
 from components.ui_shell import render_context_box, render_page_header, render_section_intro
 from utils.i18n import t
+from utils.matrix_helpers import migrate_to_percent
 from utils.plot_helpers import apply_legend_bottom
 
 
