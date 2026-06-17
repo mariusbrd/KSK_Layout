@@ -3795,6 +3795,9 @@ def render_ist_vs_soll_mak_tab(df: pd.DataFrame, print_mode: bool = False):
 
     # Alle Themenfelder für SOLL-Vergleich untereinander darstellen
     for themenfeld, dimensionen in THEMENFELDER_SOLL.items():
+        if themenfeld == "Qualifikation & Beschäftigung":
+            continue
+
         if not print_mode:
             st.markdown(f"### {themenfeld}")
 
