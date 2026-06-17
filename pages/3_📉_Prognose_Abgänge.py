@@ -4,6 +4,7 @@ Streamlit page: Abgänge Prognose.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any, Optional, Dict
 import sys
@@ -115,7 +116,20 @@ def _get_param_dimension_values(
         active_cluster_source,
         mapping_bundle=cluster_mapping_bundle,
     )
-    return resolved.org_units, resolved.job_family_clusters
+    # Prefer OE-Cluster names from the mapping bundle (populated whenever a
+    # cluster file is active) over the raw Organisationseinheiten from snapshot.
+    if cluster_mapping_bundle and cluster_mapping_bundle.oe_map:
+        oe_cluster_names = sorted({
+            str(v).strip()
+            for v in cluster_mapping_bundle.oe_map.values()
+            if v and str(v).strip() and str(v).strip() != "Unclustered"
+        })
+        org_dim_vals = oe_cluster_names if oe_cluster_names else resolved.org_units
+    elif resolved.is_source_backed and resolved.oe_clusters:
+        org_dim_vals = resolved.oe_clusters
+    else:
+        org_dim_vals = resolved.org_units
+    return org_dim_vals, resolved.job_family_clusters
 
 
 def _render_page_intro():
@@ -292,8 +306,15 @@ def main():
         df_ma = df_employee_agg
 
         # P07: Resolve active UI dimensions from the active cluster source.
-        active_org_units, valid_jfs = _get_param_dimension_values(
-            df_ma,
+        # active_org_units mirrors the sidebar OE filter exactly:
+        # snapshot_df["Organisationseinheit"].dropna().unique() — same call,
+        # same data, no cluster-mapping detour.
+        if "Organisationseinheit" in snapshot_df.columns:
+            active_org_units = sorted(snapshot_df["Organisationseinheit"].dropna().unique().tolist())
+        else:
+            active_org_units = []
+        _, valid_jfs = _get_param_dimension_values(
+            snapshot_df,
             active_cluster_source,
             cluster_mapping_bundle,
         )
@@ -354,7 +375,7 @@ def main():
         "Zeitraum, Komponenten und Feinparameter für die Abgangsprognose.",
     )
 
-    with st.form("abgaenge_forecast_form", clear_on_submit=False):
+    with st.container():
         # ── Row 1: Base Settings (horizontal) ──
         st.markdown("Zeitraum & Basis")
         submit = False
@@ -428,19 +449,19 @@ def main():
         with st.expander(t("attrition.expander.quit"), expanded=False):
             # ── Controls Row ──
             c1, c2, c3 = st.columns([3, 3, 2])
-            
+
             with c1:
                 quit_base = st.slider(
                     t("attrition.quit.base_rate"),
-                    min_value=0.0, max_value=0.5, 
-                    value=float(params["quit"]["quit_rate_base"]), 
-                    step=0.01, 
+                    min_value=0.0, max_value=0.5,
+                    value=float(params["quit"]["quit_rate_base"]),
+                    step=0.01,
                     help=t("attrition.quit.base_rate.help"),
                     key="slide_quit_base_live"
                 )
                 params["quit"]["quit_rate_base"] = quit_base
             with c2:
-                st.write("") # Alignment
+                st.write("")  # Alignment
                 use_quit_matrix = st.checkbox(
                     t("attrition.quit.use_matrix"),
                     value=params["quit"].get("use_quit_matrix", True),
@@ -464,14 +485,14 @@ def main():
 
             # ── Matrix Row ──
             st.caption(t("attrition.quit.matrix_caption", dimension=quit_dim))
-            
+
             # 1. Determine dimension values
             unique_vals = []
             if quit_dim == "OrgUnit":
                 unique_vals = active_org_units
             else:
                 unique_vals = valid_jfs
-            
+
             age_cohorts = ["alter_unter_30", "alter_30_45", "alter_45_55", "alter_55_plus"]
             age_labels = {"alter_unter_30": "u30", "alter_30_45": "30-45", "alter_45_55": "45-55", "alter_55_plus": "ü55"}
 
@@ -500,12 +521,17 @@ def main():
                     min_value=0.0, max_value=100.0, step=0.5, format="%.1f"
                 )
 
+            # Key includes a hash of the current dimension values so the editor
+            # resets whenever the available org units / JF clusters change (e.g.
+            # after a new Mitarbeiterdaten upload), not only when the cluster
+            # source signature changes.
+            _dim_vals_hash = hashlib.md5("|".join(dim_items).encode()).hexdigest()[:8]
             edited_df = st.data_editor(
                 df_matrix,
                 use_container_width=True,
                 height=min(400, 50 + len(dim_items) * 35),
                 disabled=not use_quit_matrix,
-                key=_cluster_widget_key("quit_matrix_editor_live_fixed", f"{cluster_source_signature}_{quit_dim}"),
+                key=_cluster_widget_key("quit_matrix_editor_live_fixed", f"{cluster_source_signature}_{quit_dim}_{_dim_vals_hash}"),
                 column_config=col_conf
             )
 
@@ -523,7 +549,7 @@ def main():
     # ── Action Button ──
         submit_col, _ = st.columns([1, 3])
         with submit_col:
-            submit = st.form_submit_button(t("attrition.action.compute"), use_container_width=True, type="primary")
+            submit = st.button(t("attrition.action.compute"), use_container_width=True, type="primary")
 
     # ── Rendering or Calculation Logic ──
     freq = freq_options[freq_label]
