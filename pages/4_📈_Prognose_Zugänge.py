@@ -275,11 +275,11 @@ def main():
             st.markdown("Komponenten")
             cc1, cc2, cc3 = st.columns(3)
             with cc1:
-                use_azubis = st.checkbox(t("hiring.settings.component.azubis"), value=True, help=t("hiring.settings.component.azubis.help"))
+                use_azubis = st.checkbox(t("hiring.settings.component.azubis"), value=False, help=t("hiring.settings.component.azubis.help"))
             with cc2:
-                use_trainees = st.checkbox(t("hiring.settings.component.trainees"), value=True, help=t("hiring.settings.component.trainees.help"))
+                use_trainees = st.checkbox(t("hiring.settings.component.trainees"), value=False, help=t("hiring.settings.component.trainees.help"))
             with cc3:
-                use_newhires = st.checkbox(t("hiring.settings.component.new_hires"), value=True, help=t("hiring.settings.component.new_hires.help"))
+                use_newhires = st.checkbox(t("hiring.settings.component.new_hires"), value=False, help=t("hiring.settings.component.new_hires.help"))
 
             st.divider()
             
