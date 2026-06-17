@@ -408,78 +408,11 @@ def main():
                 fr_years = st.number_input(t("attrition.atz.fr_years"), value=float(params["atz"]["atz_duration_fr_years"]), step=0.5, key="num_atz_fr_years")
                 params["atz"]["atz_duration_fr_years"] = fr_years
 
-            st.divider()
-
-            # ── ATZ Row 2: Matrix Controls ──
-            bc1, bc2 = st.columns([1, 1])
-            with bc1:
-                use_atz_matrix = st.checkbox(
-                    t("attrition.atz.use_matrix"),
-                    value=params["atz"].get("use_atz_matrix", False),
-                    help=t("attrition.atz.use_matrix.help"),
-                    key="chk_use_atz_matrix_live"
-                )
-                params["atz"]["use_atz_matrix"] = use_atz_matrix
-            with bc2:
-                atz_dim = st.radio(
-                    t("attrition.atz.dimension"),
-                    options=["JobFamily", "OrgUnit"],
-                    index=0 if params["atz"].get("atz_dimension", "JobFamily") == "JobFamily" else 1,
-                    help=t("attrition.atz.dimension.help"),
-                    disabled=not use_atz_matrix,
-                    horizontal=True,
-                    key="rad_atz_dim_live"
-                )
-                params["atz"]["atz_dimension"] = atz_dim
-
-            # ── ATZ Row 3: Matrix Editor ──
-            st.caption(t("attrition.atz.matrix_caption", dimension=atz_dim))
-            
-            atz_unique_vals = []
-            if atz_dim == "OrgUnit":
-                atz_unique_vals = active_org_units
-            else:
-                atz_unique_vals = valid_jfs
-            
-            from utils.matrix_helpers import migrate_to_percent
-
-            current_atz_matrix = migrate_to_percent(params["atz"].get("atz_matrix", {}))
-            atz_dim_items = ["Default"] + atz_unique_vals
-            atz_editor_data = []
-
-            for val in atz_dim_items:
-                # Try to get value from old cohort-based structure or new flat structure
-                rate = current_atz_matrix.get(str(val))
-                if rate is None:
-                    # Fallback to "alter_55_plus" if it was old matrix
-                    rate = current_atz_matrix.get("alter_55_plus", {}).get(str(val))
-                if rate is None:
-                    rate = current_atz_matrix.get("Default", new_atz_base * 100)
-
-                atz_editor_data.append({
-                    atz_dim: val,
-                    t("attrition.atz.probability_pct"): float(rate)
-                })
-
-            df_atz_matrix = pd.DataFrame(atz_editor_data).set_index(atz_dim)
-
-            edited_atz_df = st.data_editor(
-                df_atz_matrix,
-                use_container_width=True,
-                height=min(400, 50 + len(atz_dim_items) * 35),
-                key=_cluster_widget_key("atz_matrix_editor_live", f"{cluster_source_signature}_{atz_dim}"),
-                disabled=not use_atz_matrix,
-                column_config={
-                    t("attrition.atz.probability_pct"): st.column_config.NumberColumn(
-                        t("attrition.atz.probability_pct"),
-                        min_value=0.0, max_value=100.0, step=0.5, format="%.1f"
-                    )
-                }
-            )
-
-            new_atz_matrix = {}
-            for dim_val, row in edited_atz_df.iterrows():
-                new_atz_matrix[str(dim_val)] = float(row[t("attrition.atz.probability_pct")])
+            use_atz_matrix = False
+            atz_dim = params["atz"].get("atz_dimension", "JobFamily")
+            new_atz_matrix = params["atz"].get("atz_matrix", {})
+            params["atz"]["use_atz_matrix"] = use_atz_matrix
+            params["atz"]["atz_dimension"] = atz_dim
             params["atz"]["atz_matrix"] = new_atz_matrix
 
         with st.expander(t("attrition.expander.retirement"), expanded=False):

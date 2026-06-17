@@ -256,17 +256,9 @@ def _render_abgaenge(group: dict[str, Any], key_prefix: str, *, include_ruhend: 
         age_max = a3.number_input("Höchstalter", value=int(atz.get("atz_eligible_age_max", 60)), step=1, key=f"{key_prefix}_atz_age_max")
         ar_years = a4.number_input("AR-Dauer (Jahre)", value=float(atz.get("atz_duration_ar_years", 2.5)), step=0.5, key=f"{key_prefix}_atz_ar")
         fr_years = a5.number_input("FR-Dauer (Jahre)", value=float(atz.get("atz_duration_fr_years", 2.5)), step=0.5, key=f"{key_prefix}_atz_fr")
-        m1, m2 = st.columns(2)
-        use_atz_matrix = m1.checkbox("Detaillierte ATZ-Matrix verwenden", value=bool(atz.get("use_atz_matrix", False)), key=f"{key_prefix}_atz_use_matrix")
-        atz_dimension = m2.radio("Dimension für ATZ", ["JobFamily", "OrgUnit"], index=0 if atz.get("atz_dimension", "JobFamily") == "JobFamily" else 1, horizontal=True, key=f"{key_prefix}_atz_dimension")
-        atz_matrix_pct = _matrix_flat_editor(
-            label="ATZ-Matrix. Werte werden als Prozentangaben gepflegt.",
-            dimension=atz_dimension,
-            matrix_weights=atz.get("atz_matrix", {}),
-            default_percent=float(new_atz_rate) * 100.0,
-            key=f"{key_prefix}_atz_matrix",
-            disabled=not use_atz_matrix,
-        )
+        use_atz_matrix = False
+        atz_dimension = atz.get("atz_dimension", "JobFamily")
+        atz_matrix_pct = atz.get("atz_matrix", {})
 
     with st.expander("Renten-Parameter", expanded=False):
         retirement = params.get("retirement", {})
