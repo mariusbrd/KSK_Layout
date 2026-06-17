@@ -5159,6 +5159,9 @@ def _render_ist_vs_soll_mak_tab_clean(df: pd.DataFrame, print_mode: bool = False
         st.markdown("---")
 
     for themenfeld, dimensionen in THEMENFELDER_SOLL.items():
+        if themenfeld == "Qualifikation & Beschäftigung":
+            continue
+
         if not print_mode:
             st.markdown(f"### {themenfeld}")
 
