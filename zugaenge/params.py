@@ -7,7 +7,7 @@ from typing import Dict, Any, List
 def default_params() -> Dict[str, Any]:
     return {
         "azubi": {
-            "retention_rate": 1.0,  # 100% takeover
+            "retention_rate": 0.0,  # Demo: keine Übernahmen, alle Azubis verlassen das System
             "new_cases_per_year": 0, # Demo: keine neuen Zugänge
             "duration_years": 3.0,
             "strategy": "Random",  # "Random" or "OrgUnit"
