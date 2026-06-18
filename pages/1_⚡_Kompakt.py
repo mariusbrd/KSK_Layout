@@ -5955,308 +5955,308 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
                 )
                 st.plotly_chart(fig_bar, use_container_width=True)
 
-    st.markdown("---")
-    st.markdown(t("compact.ist_soll_heads.special_cases.heading"))
-    st.caption(t("compact.ist_soll_heads.special_cases.caption"))
+    with st.expander(t("compact.ist_soll_heads.special_cases.heading").lstrip("# "), expanded=False):
+        st.caption(t("compact.ist_soll_heads.special_cases.caption"))
 
-    if len(no_soll_eg_row) > 0:
-        st.subheader(t("compact.ist_soll_heads.special_cases.no_target.heading"))
-        st.caption(t("compact.ist_soll_heads.special_cases.no_target.caption"))
-        _nosoll_total = int(no_soll_eg_row.sum())
-        _nosoll_kpis = [{
-            "title": "Sonderfälle gesamt",
-            "value": f"{_nosoll_total:,}".replace(",", "."),
-            "subtitle": "Besetzt, aber ohne hinterlegte Soll-EG",
-            "icon": "📎",
-            "status": "warning" if _nosoll_total > 0 else "good",
-        }]
-        render_kpi_cards_styled(_nosoll_kpis)
-        _nosoll_display = pd.Series(0, index=ist_eg_cols)
-        for eg, cnt in no_soll_eg_row.items():
-            if eg in _nosoll_display.index:
-                _nosoll_display[eg] = cnt
-        _nosoll_display["Gesamt"] = _nosoll_total
-        _nosoll_df = _nosoll_display.rename("(Keine Soll-EG)").to_frame().T
-        _nosoll_df.index.name = "Soll-EG"
-        _nosoll_fmt = _nosoll_df.map(_fmt_int)
-        st.dataframe(
-            _nosoll_fmt,
-            use_container_width=True,
-            column_config={col: st.column_config.TextColumn(col, width="small")
-                           for col in _nosoll_fmt.columns},
-        )
 
-    # ── Analyse Überhänge ─────────────────────────────────────────────────────
-    if not print_mode:
-        st.markdown("---")
-        st.subheader(t("compact.ist_soll_heads.overhang.heading"))
-        st.caption(t("compact.ist_soll_heads.overhang.caption"))
-
-        # OE-Exklusion auf Rohdaten anwenden (gleiche Logik wie _build_soll_ist_pivot)
-        from utils.settings_loader import get_setting as _get_setting
-        _ex       = _get_setting("exclusions", {})
-        _ex_units = _ex.get("org_units", [])
-        ueb_base  = df.copy()
-        if _ex_units and "Kürzel OrgEinheit" in ueb_base.columns:
-            _s_ou     = ueb_base["Kürzel OrgEinheit"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
-            _explicit = [u for u in _ex_units if u != "99XX"]
-            _mask_ex  = _s_ou.isin(_explicit)
-            if "99XX" in _ex_units:
-                _mask_ex = _mask_ex | (_s_ou.str.startswith("99") & ~_s_ou.isin(set(_explicit)))
-            ueb_base = ueb_base[~_mask_ex]
-
-        # Optional dieselbe personenbezogene Planstellen-Exklusion wie in der Matrix anwenden.
-        if _ex.get("planstellen_follow_person", False):
-            _person_pl_mask = pd.Series(False, index=ueb_base.index)
-            if _ex.get("vorstand") and "MitarbGruppenbez." in ueb_base.columns:
-                _person_pl_mask |= (
-                    ueb_base["MitarbGruppenbez."].astype(str).str.strip() == "Vorstand"
-                )
-            if _ex.get("ruhend_bv") and "Status kundenindividuell" in ueb_base.columns:
-                _person_pl_mask |= (
-                    ueb_base["Status kundenindividuell"].astype(str).str.strip()
-                    == "Ruhendes Beschäftigungsverhältnis"
-                )
-            if _person_pl_mask.any():
-                ueb_base = ueb_base[~_person_pl_mask]
-
-        # Spalte G: Sollarbeitszeit robust als Zahl lesen
-        # Schwellenwert <= 0.1 erfasst: 0, 0.01 (Systemplatzhalter), 0.1
-        # Leere Werte werden NICHT als 0 interpretiert (errors="coerce" → NaN)
-        if "Sollarbeitszeit" in ueb_base.columns:
-            _soll_az = pd.to_numeric(
-                ueb_base["Sollarbeitszeit"].astype(str)
-                    .str.strip()
-                    .str.replace(",", ".", regex=False),
-                errors="coerce",
-            )
-            _mask_low_az  = _soll_az.notna() & (_soll_az <= 0.1)
-
-            # "Besetzt" robust erkennen: primär über Is_Vacant, fallback auf Personalnummer.
-            if "Is_Vacant" in ueb_base.columns:
-                _mask_has_pnr = ~(ueb_base["Is_Vacant"].fillna(True).astype(bool))
-            elif "Personalnummer" in ueb_base.columns:
-                _pnr_raw = _normalize_personalnummer_keys(ueb_base["Personalnummer"])
-                _mask_has_pnr = _pnr_raw.ne("")
-            else:
-                _mask_has_pnr = pd.Series(False, index=ueb_base.index)
-
-            n_low_az    = int(_mask_low_az.sum())
-            n_ueberhang = int((_mask_low_az & _mask_has_pnr).sum())
-
-            # Überhang-Datensatz für Detailanalysen A / B / C
-            ueb_df = ueb_base[_mask_low_az & _mask_has_pnr].copy()
-
-            # ── Option B: Mehrfachplanstellen-Analyse ─────────────────────────
-            # "Echte Stelle" = Planstelle derselben Person in inkludierten OEs mit Soll > 0.1
-            _az_all = pd.to_numeric(
-                ueb_base["Sollarbeitszeit"].astype(str).str.strip().str.replace(",", ".", regex=False),
-                errors="coerce",
-            )
-            _ueb_persnr = set(_normalize_personalnummer_keys(ueb_df["Personalnummer"]))
-            _ueb_persnr.discard("")
-            _all_for_ueb = ueb_base[
-                _normalize_personalnummer_keys(ueb_base["Personalnummer"]).isin(_ueb_persnr)
-            ]
-            _all_for_ueb_pnr = _normalize_personalnummer_keys(_all_for_ueb["Personalnummer"])
-            _has_real_set = set(
-                _all_for_ueb_pnr.loc[_az_all.reindex(_all_for_ueb.index).gt(0.1)]
-            )
-            _has_real_set.discard("")
-            _ueb_df_pnr = _normalize_personalnummer_keys(ueb_df["Personalnummer"])
-            n_nur_ueberhang = int((~_ueb_df_pnr.isin(_has_real_set)).sum())
-            n_mit_echter = n_ueberhang - n_nur_ueberhang
-
-            st.info(
-                t(
-                    "compact.ist_soll_heads.overhang.quick_interpretation",
-                    total=n_ueberhang,
-                    without_regular=n_nur_ueberhang,
-                    alongside_regular=n_mit_echter,
-                )
+        if len(no_soll_eg_row) > 0:
+            st.subheader(t("compact.ist_soll_heads.special_cases.no_target.heading"))
+            st.caption(t("compact.ist_soll_heads.special_cases.no_target.caption"))
+            _nosoll_total = int(no_soll_eg_row.sum())
+            _nosoll_kpis = [{
+                "title": "Sonderfälle gesamt",
+                "value": f"{_nosoll_total:,}".replace(",", "."),
+                "subtitle": "Besetzt, aber ohne hinterlegte Soll-EG",
+                "icon": "📎",
+                "status": "warning" if _nosoll_total > 0 else "good",
+            }]
+            render_kpi_cards_styled(_nosoll_kpis)
+            _nosoll_display = pd.Series(0, index=ist_eg_cols)
+            for eg, cnt in no_soll_eg_row.items():
+                if eg in _nosoll_display.index:
+                    _nosoll_display[eg] = cnt
+            _nosoll_display["Gesamt"] = _nosoll_total
+            _nosoll_df = _nosoll_display.rename("(Keine Soll-EG)").to_frame().T
+            _nosoll_df.index.name = "Soll-EG"
+            _nosoll_fmt = _nosoll_df.map(_fmt_int)
+            st.dataframe(
+                _nosoll_fmt,
+                use_container_width=True,
+                column_config={col: st.column_config.TextColumn(col, width="small")
+                               for col in _nosoll_fmt.columns},
             )
 
-            # ── KPI-Kacheln (mit Option B) ────────────────────────────────────
-            ueb_kpis = [
-                {
-                    "title":    "Low-AZ-Planstellen gesamt",
-                    "value":    f"{n_low_az:,}".replace(",", "."),
-                    "subtitle": "Alle Planstellen mit Soll-Arbeitszeit 0 oder 0,1",
-                    "icon":     "⏱️",
-                    "status":   "warning" if n_low_az > 0 else "good",
-                },
-                {
-                    "title":    "Besetzte Zusatzstellen",
-                    "value":    f"{n_ueberhang:,}".replace(",", "."),
-                    "subtitle": "Low-AZ-Planstellen mit tatsächlich besetzter Person",
-                    "icon":     "🔴",
-                    "status":   "warning" if n_ueberhang > 0 else "good",
-                },
-                {
-                    "title":    "Ohne reguläre Stelle",
-                    "value":    f"{n_nur_ueberhang:,}".replace(",", "."),
-                    "subtitle": "Person erscheint nur über diese technische Zusatzstelle",
-                    "icon":     "⚠️",
-                    "status":   "warning" if n_nur_ueberhang > 0 else "good",
-                },
-                {
-                    "title":    "Zusätzlich zur regulären Stelle",
-                    "value":    f"{n_mit_echter:,}".replace(",", "."),
-                    "subtitle": "Technische Zusatzstelle neben einer regulären aktiven Stelle",
-                    "icon":     "🔗",
-                    "status":   "default",
-                },
-            ]
-            render_kpi_cards_styled(ueb_kpis)
+        # ── Analyse Überhänge ─────────────────────────────────────────────────────
+        if not print_mode:
+            st.markdown("---")
+            st.subheader(t("compact.ist_soll_heads.overhang.heading"))
+            st.caption(t("compact.ist_soll_heads.overhang.caption"))
 
-            if n_ueberhang > 0:
-                st.markdown("")
-                col_oe, col_eg = st.columns([1, 1], gap="large")
+            # OE-Exklusion auf Rohdaten anwenden (gleiche Logik wie _build_soll_ist_pivot)
+            from utils.settings_loader import get_setting as _get_setting
+            _ex       = _get_setting("exclusions", {})
+            _ex_units = _ex.get("org_units", [])
+            ueb_base  = df.copy()
+            if _ex_units and "Kürzel OrgEinheit" in ueb_base.columns:
+                _s_ou     = ueb_base["Kürzel OrgEinheit"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+                _explicit = [u for u in _ex_units if u != "99XX"]
+                _mask_ex  = _s_ou.isin(_explicit)
+                if "99XX" in _ex_units:
+                    _mask_ex = _mask_ex | (_s_ou.str.startswith("99") & ~_s_ou.isin(set(_explicit)))
+                ueb_base = ueb_base[~_mask_ex]
 
-                # ── Option A: OE-Verteilung ───────────────────────────────────
-                with col_oe:
-                    st.caption(t("compact.ist_soll_heads.overhang.where_caption"))
-                    _oe_col = "Organisationseinheit" if "Organisationseinheit" in ueb_df.columns else "Kürzel OrgEinheit"
-                    oe_counts = (
-                        ueb_df.groupby([_oe_col, "Kürzel OrgEinheit"]).size()
-                        .reset_index(name="n")
-                        .sort_values("n", ascending=False)
-                        .head(10)
-                        .sort_values("n", ascending=True)   # Plotly zeigt unten→oben
+            # Optional dieselbe personenbezogene Planstellen-Exklusion wie in der Matrix anwenden.
+            if _ex.get("planstellen_follow_person", False):
+                _person_pl_mask = pd.Series(False, index=ueb_base.index)
+                if _ex.get("vorstand") and "MitarbGruppenbez." in ueb_base.columns:
+                    _person_pl_mask |= (
+                        ueb_base["MitarbGruppenbez."].astype(str).str.strip() == "Vorstand"
                     )
-                    # Label: "Kürzel — Name"
-                    oe_counts["_label"] = (
-                        oe_counts["Kürzel OrgEinheit"].astype(str)
-                        + " — "
-                        + oe_counts[_oe_col].astype(str)
+                if _ex.get("ruhend_bv") and "Status kundenindividuell" in ueb_base.columns:
+                    _person_pl_mask |= (
+                        ueb_base["Status kundenindividuell"].astype(str).str.strip()
+                        == "Ruhendes Beschäftigungsverhältnis"
                     )
-                    fig_oe = go.Figure(go.Bar(
-                        y=oe_counts["_label"],
-                        x=oe_counts["n"],
-                        orientation="h",
-                        marker=dict(color="#0088DE", line=dict(color="white", width=0.5)),
-                        hovertemplate=t("compact.ist_soll_heads.overhang.where_hover"),
-                        text=oe_counts["n"],
-                        textposition="outside",
-                    ))
-                    fig_oe.update_layout(
-                        plot_bgcolor="rgba(0,0,0,0)",
-                        paper_bgcolor="rgba(0,0,0,0)",
-                        font=dict(color="#64748b", size=11),
-                        margin=dict(l=10, r=40, t=10, b=10),
-                        height=max(250, len(oe_counts) * 34),
-                        xaxis=dict(showgrid=True, gridcolor="rgba(226,232,240,0.8)", zeroline=False),
-                        yaxis=dict(showgrid=False),
-                    )
-                    st.plotly_chart(fig_oe, use_container_width=True)
+                if _person_pl_mask.any():
+                    ueb_base = ueb_base[~_person_pl_mask]
 
-                # ── Option C: Ist-EG Verteilung ───────────────────────────────
-                with col_eg:
-                    st.caption(t("compact.ist_soll_heads.overhang.grading_caption"))
-                    if "TrfGr" in ueb_df.columns:
-                        from config.settings import TARIFF_GROUPS as _TG_UEB
-                        _EG_RANK_UEB = {g: i for i, g in enumerate(_TG_UEB)}
-                        eg_counts = (
-                            ueb_df["TrfGr"].fillna("Unbekannt")
-                            .value_counts()
+            # Spalte G: Sollarbeitszeit robust als Zahl lesen
+            # Schwellenwert <= 0.1 erfasst: 0, 0.01 (Systemplatzhalter), 0.1
+            # Leere Werte werden NICHT als 0 interpretiert (errors="coerce" → NaN)
+            if "Sollarbeitszeit" in ueb_base.columns:
+                _soll_az = pd.to_numeric(
+                    ueb_base["Sollarbeitszeit"].astype(str)
+                        .str.strip()
+                        .str.replace(",", ".", regex=False),
+                    errors="coerce",
+                )
+                _mask_low_az  = _soll_az.notna() & (_soll_az <= 0.1)
+
+                # "Besetzt" robust erkennen: primär über Is_Vacant, fallback auf Personalnummer.
+                if "Is_Vacant" in ueb_base.columns:
+                    _mask_has_pnr = ~(ueb_base["Is_Vacant"].fillna(True).astype(bool))
+                elif "Personalnummer" in ueb_base.columns:
+                    _pnr_raw = _normalize_personalnummer_keys(ueb_base["Personalnummer"])
+                    _mask_has_pnr = _pnr_raw.ne("")
+                else:
+                    _mask_has_pnr = pd.Series(False, index=ueb_base.index)
+
+                n_low_az    = int(_mask_low_az.sum())
+                n_ueberhang = int((_mask_low_az & _mask_has_pnr).sum())
+
+                # Überhang-Datensatz für Detailanalysen A / B / C
+                ueb_df = ueb_base[_mask_low_az & _mask_has_pnr].copy()
+
+                # ── Option B: Mehrfachplanstellen-Analyse ─────────────────────────
+                # "Echte Stelle" = Planstelle derselben Person in inkludierten OEs mit Soll > 0.1
+                _az_all = pd.to_numeric(
+                    ueb_base["Sollarbeitszeit"].astype(str).str.strip().str.replace(",", ".", regex=False),
+                    errors="coerce",
+                )
+                _ueb_persnr = set(_normalize_personalnummer_keys(ueb_df["Personalnummer"]))
+                _ueb_persnr.discard("")
+                _all_for_ueb = ueb_base[
+                    _normalize_personalnummer_keys(ueb_base["Personalnummer"]).isin(_ueb_persnr)
+                ]
+                _all_for_ueb_pnr = _normalize_personalnummer_keys(_all_for_ueb["Personalnummer"])
+                _has_real_set = set(
+                    _all_for_ueb_pnr.loc[_az_all.reindex(_all_for_ueb.index).gt(0.1)]
+                )
+                _has_real_set.discard("")
+                _ueb_df_pnr = _normalize_personalnummer_keys(ueb_df["Personalnummer"])
+                n_nur_ueberhang = int((~_ueb_df_pnr.isin(_has_real_set)).sum())
+                n_mit_echter = n_ueberhang - n_nur_ueberhang
+
+                st.info(
+                    t(
+                        "compact.ist_soll_heads.overhang.quick_interpretation",
+                        total=n_ueberhang,
+                        without_regular=n_nur_ueberhang,
+                        alongside_regular=n_mit_echter,
+                    )
+                )
+
+                # ── KPI-Kacheln (mit Option B) ────────────────────────────────────
+                ueb_kpis = [
+                    {
+                        "title":    "Low-AZ-Planstellen gesamt",
+                        "value":    f"{n_low_az:,}".replace(",", "."),
+                        "subtitle": "Alle Planstellen mit Soll-Arbeitszeit 0 oder 0,1",
+                        "icon":     "⏱️",
+                        "status":   "warning" if n_low_az > 0 else "good",
+                    },
+                    {
+                        "title":    "Besetzte Zusatzstellen",
+                        "value":    f"{n_ueberhang:,}".replace(",", "."),
+                        "subtitle": "Low-AZ-Planstellen mit tatsächlich besetzter Person",
+                        "icon":     "🔴",
+                        "status":   "warning" if n_ueberhang > 0 else "good",
+                    },
+                    {
+                        "title":    "Ohne reguläre Stelle",
+                        "value":    f"{n_nur_ueberhang:,}".replace(",", "."),
+                        "subtitle": "Person erscheint nur über diese technische Zusatzstelle",
+                        "icon":     "⚠️",
+                        "status":   "warning" if n_nur_ueberhang > 0 else "good",
+                    },
+                    {
+                        "title":    "Zusätzlich zur regulären Stelle",
+                        "value":    f"{n_mit_echter:,}".replace(",", "."),
+                        "subtitle": "Technische Zusatzstelle neben einer regulären aktiven Stelle",
+                        "icon":     "🔗",
+                        "status":   "default",
+                    },
+                ]
+                render_kpi_cards_styled(ueb_kpis)
+
+                if n_ueberhang > 0:
+                    st.markdown("")
+                    col_oe, col_eg = st.columns([1, 1], gap="large")
+
+                    # ── Option A: OE-Verteilung ───────────────────────────────────
+                    with col_oe:
+                        st.caption(t("compact.ist_soll_heads.overhang.where_caption"))
+                        _oe_col = "Organisationseinheit" if "Organisationseinheit" in ueb_df.columns else "Kürzel OrgEinheit"
+                        oe_counts = (
+                            ueb_df.groupby([_oe_col, "Kürzel OrgEinheit"]).size()
                             .reset_index(name="n")
-                            .rename(columns={"TrfGr": "eg"})
+                            .sort_values("n", ascending=False)
+                            .head(10)
+                            .sort_values("n", ascending=True)   # Plotly zeigt unten→oben
                         )
-                        eg_counts = eg_counts.sort_values(
-                            "eg",
-                            key=lambda s: s.map(lambda v: (_EG_RANK_UEB.get(v, 998), v)),
+                        # Label: "Kürzel — Name"
+                        oe_counts["_label"] = (
+                            oe_counts["Kürzel OrgEinheit"].astype(str)
+                            + " — "
+                            + oe_counts[_oe_col].astype(str)
                         )
-                        fig_eg = go.Figure(go.Bar(
-                            x=eg_counts["eg"],
-                            y=eg_counts["n"],
+                        fig_oe = go.Figure(go.Bar(
+                            y=oe_counts["_label"],
+                            x=oe_counts["n"],
+                            orientation="h",
                             marker=dict(color="#0088DE", line=dict(color="white", width=0.5)),
-                            hovertemplate=t("compact.ist_soll_heads.overhang.grading_hover"),
-                            text=eg_counts["n"],
+                            hovertemplate=t("compact.ist_soll_heads.overhang.where_hover"),
+                            text=oe_counts["n"],
                             textposition="outside",
                         ))
-                        fig_eg.update_layout(
+                        fig_oe.update_layout(
                             plot_bgcolor="rgba(0,0,0,0)",
                             paper_bgcolor="rgba(0,0,0,0)",
                             font=dict(color="#64748b", size=11),
-                            margin=dict(l=10, r=10, t=10, b=30),
-                            height=300,
-                            xaxis=dict(showgrid=False, title=None),
-                            yaxis=dict(
-                                showgrid=True,
-                                gridcolor="rgba(226,232,240,0.8)",
-                                zeroline=False,
-                                title=None,
-                                dtick=5,
-                            ),
+                            margin=dict(l=10, r=40, t=10, b=10),
+                            height=max(250, len(oe_counts) * 34),
+                            xaxis=dict(showgrid=True, gridcolor="rgba(226,232,240,0.8)", zeroline=False),
+                            yaxis=dict(showgrid=False),
                         )
-                        st.plotly_chart(fig_eg, use_container_width=True)
-                    else:
-                        st.info(t("compact.ist_soll_heads.overhang.info.missing_trfgr"))
+                        st.plotly_chart(fig_oe, use_container_width=True)
 
-            # ── Detailtabelle Überhänge ───────────────────────────────────
-            st.markdown("---")
-            st.subheader(t("compact.ist_soll_heads.overhang.detail.heading"))
+                    # ── Option C: Ist-EG Verteilung ───────────────────────────────
+                    with col_eg:
+                        st.caption(t("compact.ist_soll_heads.overhang.grading_caption"))
+                        if "TrfGr" in ueb_df.columns:
+                            from config.settings import TARIFF_GROUPS as _TG_UEB
+                            _EG_RANK_UEB = {g: i for i, g in enumerate(_TG_UEB)}
+                            eg_counts = (
+                                ueb_df["TrfGr"].fillna("Unbekannt")
+                                .value_counts()
+                                .reset_index(name="n")
+                                .rename(columns={"TrfGr": "eg"})
+                            )
+                            eg_counts = eg_counts.sort_values(
+                                "eg",
+                                key=lambda s: s.map(lambda v: (_EG_RANK_UEB.get(v, 998), v)),
+                            )
+                            fig_eg = go.Figure(go.Bar(
+                                x=eg_counts["eg"],
+                                y=eg_counts["n"],
+                                marker=dict(color="#0088DE", line=dict(color="white", width=0.5)),
+                                hovertemplate=t("compact.ist_soll_heads.overhang.grading_hover"),
+                                text=eg_counts["n"],
+                                textposition="outside",
+                            ))
+                            fig_eg.update_layout(
+                                plot_bgcolor="rgba(0,0,0,0)",
+                                paper_bgcolor="rgba(0,0,0,0)",
+                                font=dict(color="#64748b", size=11),
+                                margin=dict(l=10, r=10, t=10, b=30),
+                                height=300,
+                                xaxis=dict(showgrid=False, title=None),
+                                yaxis=dict(
+                                    showgrid=True,
+                                    gridcolor="rgba(226,232,240,0.8)",
+                                    zeroline=False,
+                                    title=None,
+                                    dtick=5,
+                                ),
+                            )
+                            st.plotly_chart(fig_eg, use_container_width=True)
+                        else:
+                            st.info(t("compact.ist_soll_heads.overhang.info.missing_trfgr"))
 
-            col_exp_a, col_exp_b = st.columns(2, gap="medium")
-            with col_exp_a:
-                st.markdown(t("compact.ist_soll_heads.overhang.detail.without_regular"))
-            with col_exp_b:
-                st.markdown(t("compact.ist_soll_heads.overhang.detail.alongside_regular"))
-            st.markdown("")
+                # ── Detailtabelle Überhänge ───────────────────────────────────
+                st.markdown("---")
+                st.subheader(t("compact.ist_soll_heads.overhang.detail.heading"))
 
-            # Typ-Spalte: Nur Überhang vs. Überhang + echte Stelle
-            _ueb_detail = ueb_df.copy()
-            _ueb_detail_pnr = _normalize_personalnummer_keys(_ueb_detail["Personalnummer"])
-            _ueb_detail["_Typ"] = _ueb_detail_pnr.map(
-                lambda p: (
-                    t("compact.ist_soll_heads.overhang.filter.alongside_regular")
-                    if p in _has_real_set
-                    else t("compact.ist_soll_heads.overhang.filter.without_regular")
+                col_exp_a, col_exp_b = st.columns(2, gap="medium")
+                with col_exp_a:
+                    st.markdown(t("compact.ist_soll_heads.overhang.detail.without_regular"))
+                with col_exp_b:
+                    st.markdown(t("compact.ist_soll_heads.overhang.detail.alongside_regular"))
+                st.markdown("")
+
+                # Typ-Spalte: Nur Überhang vs. Überhang + echte Stelle
+                _ueb_detail = ueb_df.copy()
+                _ueb_detail_pnr = _normalize_personalnummer_keys(_ueb_detail["Personalnummer"])
+                _ueb_detail["_Typ"] = _ueb_detail_pnr.map(
+                    lambda p: (
+                        t("compact.ist_soll_heads.overhang.filter.alongside_regular")
+                        if p in _has_real_set
+                        else t("compact.ist_soll_heads.overhang.filter.without_regular")
+                    )
                 )
-            )
 
-            _filter_opts = [
-                t("compact.ist_soll_heads.overhang.filter.all"),
-                t("compact.ist_soll_heads.overhang.filter.without_regular"),
-                t("compact.ist_soll_heads.overhang.filter.alongside_regular"),
-            ]
-            _filter_sel = st.radio(
-                t("compact.ist_soll_heads.overhang.filter.label"),
-                options=_filter_opts,
-                horizontal=True,
-                key="ueb_detail_filter",
-            )
-            if _filter_sel != t("compact.ist_soll_heads.overhang.filter.all"):
-                _ueb_detail = _ueb_detail[_ueb_detail["_Typ"] == _filter_sel]
+                _filter_opts = [
+                    t("compact.ist_soll_heads.overhang.filter.all"),
+                    t("compact.ist_soll_heads.overhang.filter.without_regular"),
+                    t("compact.ist_soll_heads.overhang.filter.alongside_regular"),
+                ]
+                _filter_sel = st.radio(
+                    t("compact.ist_soll_heads.overhang.filter.label"),
+                    options=_filter_opts,
+                    horizontal=True,
+                    key="ueb_detail_filter",
+                )
+                if _filter_sel != t("compact.ist_soll_heads.overhang.filter.all"):
+                    _ueb_detail = _ueb_detail[_ueb_detail["_Typ"] == _filter_sel]
 
-            # Anzuzeigende Spalten (nur vorhandene)
-            _display_cols_pref = [
-                "Personalnummer",
-                "Kürzel OrgEinheit",
-                "Organisationseinheit",
-                "TrfGr",
-                "Bewertung Tarifgruppe",
-                "Text Gehaltsband",
-                "Sollarbeitszeit",
-                "_Typ",
-            ]
-            _display_cols = [c for c in _display_cols_pref if c in _ueb_detail.columns]
-            _rename_map = {
-                "TrfGr": t("compact.ist_soll_heads.overhang.table.actual_grade"),
-                "Bewertung Tarifgruppe": t("compact.ist_soll_heads.overhang.table.target_grade_base"),
-                "Text Gehaltsband": t("compact.ist_soll_heads.overhang.table.target_grade_max"),
-                "Sollarbeitszeit": t("compact.ist_soll_heads.overhang.table.target_capacity"),
-                "_Typ": t("compact.ist_soll_heads.overhang.table.case_type"),
-            }
-            _show_df = (
-                _ueb_detail[_display_cols]
-                .rename(columns=_rename_map)
-                .reset_index(drop=True)
-            )
-            st.caption(t("compact.ist_soll_heads.overhang.table.entries", count=len(_show_df)))
-            st.dataframe(_show_df, use_container_width=True, hide_index=True)
-        else:
-            st.info(t("compact.ist_soll_heads.overhang.info.missing_target_capacity"))
+                # Anzuzeigende Spalten (nur vorhandene)
+                _display_cols_pref = [
+                    "Personalnummer",
+                    "Kürzel OrgEinheit",
+                    "Organisationseinheit",
+                    "TrfGr",
+                    "Bewertung Tarifgruppe",
+                    "Text Gehaltsband",
+                    "Sollarbeitszeit",
+                    "_Typ",
+                ]
+                _display_cols = [c for c in _display_cols_pref if c in _ueb_detail.columns]
+                _rename_map = {
+                    "TrfGr": t("compact.ist_soll_heads.overhang.table.actual_grade"),
+                    "Bewertung Tarifgruppe": t("compact.ist_soll_heads.overhang.table.target_grade_base"),
+                    "Text Gehaltsband": t("compact.ist_soll_heads.overhang.table.target_grade_max"),
+                    "Sollarbeitszeit": t("compact.ist_soll_heads.overhang.table.target_capacity"),
+                    "_Typ": t("compact.ist_soll_heads.overhang.table.case_type"),
+                }
+                _show_df = (
+                    _ueb_detail[_display_cols]
+                    .rename(columns=_rename_map)
+                    .reset_index(drop=True)
+                )
+                st.caption(t("compact.ist_soll_heads.overhang.table.entries", count=len(_show_df)))
+                st.dataframe(_show_df, use_container_width=True, hide_index=True)
+            else:
+                st.info(t("compact.ist_soll_heads.overhang.info.missing_target_capacity"))
 
 
 # =============================================================================
