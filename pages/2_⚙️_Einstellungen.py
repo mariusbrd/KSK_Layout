@@ -30,6 +30,10 @@ from dataloader.cluster_manager import (
     persist_cluster_upload_bytes,
     validate_cluster_upload,
 )
+from dataloader.upload_templates import (
+    generate_tvoed_template_bytes,
+    generate_upload_template_bytes,
+)
 from dataloader.cluster_resolver import (
     SUBTYPE_INPUT_EXTERNAL,
     SUBTYPE_SYNTHETIC_FALLBACK,
@@ -511,6 +515,18 @@ def render_settings_page():
     if "global_uploads" not in st.session_state:
         st.session_state["global_uploads"] = {}
 
+    def _render_template_download(data: bytes, file_name: str, key: str) -> None:
+        st.download_button(
+            "Vorlage herunterladen",
+            data=data,
+            file_name=file_name,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=key,
+            help="Leere Vorlage mit korrekten Spaltennamen und Dropdown-Hilfen herunterladen.",
+            type="tertiary",
+            icon="📥",
+        )
+
     col_up1, col_up2 = st.columns(2)
     with col_up1:
         up_ma = st.file_uploader("Mitarbeiter.xlsx", type=["xlsx"], key="set_up_ma")
@@ -519,28 +535,53 @@ def render_settings_page():
             st.session_state["global_uploads"]["Mitarbeiter"] = io.BytesIO(up_ma.getvalue())
         elif "Mitarbeiter" in st.session_state["global_uploads"] and not up_ma:
             pass
+        _render_template_download(
+            generate_upload_template_bytes("Mitarbeiter"),
+            "Mitarbeiter_Template.xlsx",
+            "dl_template_mitarbeiter",
+        )
 
     with col_up2:
         up_pl = st.file_uploader("Planstellen.xlsx", type=["xlsx"], key="set_up_pl")
         if up_pl:
             st.session_state["global_uploads"]["Planstellen"] = io.BytesIO(up_pl.getvalue())
+        _render_template_download(
+            generate_upload_template_bytes("Planstellen"),
+            "Planstellen_Template.xlsx",
+            "dl_template_planstellen",
+        )
 
     col_up3, col_up4 = st.columns(2)
     with col_up3:
         up_atz = st.file_uploader("ATZ.xlsx", type=["xlsx"], key="set_up_atz")
         if up_atz:
             st.session_state["global_uploads"]["ATZ"] = io.BytesIO(up_atz.getvalue())
+        _render_template_download(
+            generate_upload_template_bytes("ATZ"),
+            "ATZ_Template.xlsx",
+            "dl_template_atz",
+        )
 
     with col_up4:
         up_edu = st.file_uploader("Ausbildung.xlsx", type=["xlsx"], key="set_up_edu")
         if up_edu:
             st.session_state["global_uploads"]["Ausbildung"] = io.BytesIO(up_edu.getvalue())
+        _render_template_download(
+            generate_upload_template_bytes("Ausbildung"),
+            "Ausbildung_Template.xlsx",
+            "dl_template_ausbildung",
+        )
 
     col_up5, col_up6 = st.columns(2)
     with col_up5:
         up_tvoed = st.file_uploader(t("settings.tvoed_optional"), type=["xlsx"], key="set_up_tvoed")
         if up_tvoed:
             st.session_state["global_uploads"]["TVÖD"] = io.BytesIO(up_tvoed.getvalue())
+        _render_template_download(
+            generate_tvoed_template_bytes(),
+            "TVOED_Template.xlsx",
+            "dl_template_tvoed",
+        )
 
     if st.session_state["global_uploads"]:
         st.caption(f"{t('settings.uploads_active', count=len(st.session_state['global_uploads']))}")
