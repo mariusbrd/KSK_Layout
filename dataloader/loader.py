@@ -22,7 +22,7 @@ import json
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.settings import (
     DATA_PATH, DEFAULT_COHORTS, BASE_SALARY, STEP_MULTIPLIER, EMPLOYER_COST_FACTOR, BASE_DIR,
-    EDUCATION_GROUPS, DEFAULT_AZUBI_SALARIES,
+    EDUCATION_GROUPS, DEFAULT_AZUBI_SALARIES, EXCLUSION_ORG_UNITS,
 )
 from utils.settings_loader import get_setting
 from utils.cache_utils import (
@@ -599,6 +599,7 @@ def _get_data_prep_context() -> Dict[str, Any]:
     return {
         "stichtag": str(get_current_stichtag()),
         "include_future_hires": bool(get_setting("include_future_hires", False)),
+        "occupied_placeholder_soll_correction": bool(get_setting("occupied_placeholder_soll_correction", False)),
         "exclusions": get_setting("exclusions", {}),
         "cohort_definitions": st.session_state.get("cohort_definitions", DEFAULT_COHORTS),
         "employer_cost_factor": float(st.session_state.get("employer_cost_factor", EMPLOYER_COST_FACTOR)),
@@ -735,6 +736,7 @@ def _load_and_prepare_data_cached(
                 employer_factor=context["employer_cost_factor"],
                 azubi_salaries=context["azubi_salaries"],
                 vorstand_salary=context["vorstand_jahresgehalt"],
+                occupied_placeholder_soll_correction=context["occupied_placeholder_soll_correction"],
             )
             snapshot_df = enrich_snapshot_data(
                 snapshot_df,
@@ -1317,6 +1319,32 @@ def _mark_bsgrd_lineage(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _mask_regular_occupied_placeholder_positions(df: pd.DataFrame) -> pd.Series:
+    """
+    True = besetzte Platzhalter-Planstelle OHNE bekannten Sonderstatus (Zielgruppe fuer die
+    optionale Soll=Ist-Korrektur, siehe occupied_placeholder_soll_correction).
+
+    Nutzt dieselben Signale, die apply_exclusions() und _zero_out_azubi_mak() bereits fuer die
+    Vorstand-/Ruhend-BV-/Azubi-Erkennung verwenden, statt eine neue Klassifikation zu erfinden.
+    """
+    known_excl = set(EXCLUSION_ORG_UNITS.keys())
+    oe = df.get("Kürzel OrgEinheit", pd.Series("", index=df.index)).astype(str).str.strip()
+    is_excl_oe = oe.isin(known_excl) | oe.str.startswith("99")
+
+    status = df.get("Status kundenindividuell", pd.Series("", index=df.index)).astype(str)
+    is_ruhend = status.eq("Ruhendes Beschäftigungsverhältnis")
+
+    gruppe = df.get("MitarbGruppenbez.", pd.Series("", index=df.index)).astype(str)
+    is_vorstand = gruppe.eq("Vorstand")
+
+    is_azubi = df.get("Ist_Azubi", pd.Series(False, index=df.index)).astype(bool)
+
+    phase = df.get("Phase", pd.Series("", index=df.index)).astype(str).str.strip()
+    is_atz_fr = phase.eq("FR")
+
+    return ~(is_excl_oe | is_ruhend | is_vorstand | is_azubi | is_atz_fr)
+
+
 def combine_to_snapshot(
     mitarbeiter,
     planstellen,
@@ -1328,6 +1356,7 @@ def combine_to_snapshot(
     employer_factor: Optional[float] = None,
     azubi_salaries: Optional[Dict[Any, float]] = None,
     vorstand_salary: Optional[float] = None,
+    occupied_placeholder_soll_correction: Optional[bool] = None,
 ) -> pd.DataFrame:
     """Kombiniert die 4 Original-Dateien zu einem Snapshot DataFrame."""
     if stichtag is None: stichtag = get_current_stichtag()
@@ -1399,11 +1428,27 @@ def combine_to_snapshot(
     df = _mark_bsgrd_lineage(df)
     df["FTE_person"] = df["BsGrd"].fillna(0) / 100.0
     df["Soll_FTE"] = df["Sollarbeitszeit"].fillna(0) / 39.0
+
+    # Optionale Korrektur: besetzte Platzhalter-Planstellen (Sollarbeitszeit ≈ 0,01) ausserhalb
+    # bekannter Sonderstatus-Gruppen erhalten Soll = Ist der besetzenden Person, statt auf 0
+    # genullt zu werden. Standardmaessig aus — siehe Einstellungen > Sonderfaelle.
+    if occupied_placeholder_soll_correction is None:
+        occupied_placeholder_soll_correction = get_setting("occupied_placeholder_soll_correction", False)
+    if occupied_placeholder_soll_correction:
+        correction_mask = (
+            ~df["Is_Vacant"]
+            & (df["Soll_FTE"] > 0) & (df["Soll_FTE"] < 0.015)
+            & _mask_regular_occupied_placeholder_positions(df)
+        )
+        df.loc[correction_mask, "Soll_FTE"] = df.loc[correction_mask, "FTE_person"]
+        df.loc[correction_mask, "Sollarbeitszeit"] = df.loc[correction_mask, "FTE_person"] * 39.0
+
     # Systemartefakt: Soll_FTE ≈ 0.01 ist ein Platzhalterwert für 0
     # (Quellsystem kann Soll-MAK = 0 nicht verbuchen → wird als 0,01 geliefert)
     # Toleranzbasierter Vergleich (< 0.015) statt exakter Gleichheit, da Excel-Floats
     # leicht von 0.01 abweichen können (z.B. 0.38999.../39 = 0.009999...).
     # Untergrenze: 0.015 entspricht ~0,585h Sollarbeitszeit — kein realer Wert.
+    # (Greift nur noch fuer vakante/Sonderstatus-Zeilen oder wenn obige Korrektur aus ist.)
     df.loc[(df["Soll_FTE"] > 0) & (df["Soll_FTE"] < 0.015), "Soll_FTE"] = 0.0
     df["FTE_assigned"] = df["FTE_person"] * df["Soll_FTE"]
 
@@ -1482,7 +1527,8 @@ def create_combined_snapshot(
     planstellen: pd.DataFrame,
     atz: pd.DataFrame,
     ausbildung: pd.DataFrame,
-    stichtag: Optional[pd.Timestamp] = None
+    stichtag: Optional[pd.Timestamp] = None,
+    occupied_placeholder_soll_correction: Optional[bool] = None,
 ) -> pd.DataFrame:
     """
     Kombiniert die 4 Dateien zu einem Snapshot (ETL-Logik).
@@ -1610,8 +1656,24 @@ def create_combined_snapshot(
     df = _mark_bsgrd_lineage(df)
     df["FTE_person"] = df["BsGrd"].fillna(0) / 100.0
     df["Soll_FTE"] = df["Sollarbeitszeit"].fillna(39.0) / 39.0
+
+    # Optionale Korrektur: besetzte Platzhalter-Planstellen (Sollarbeitszeit ≈ 0,01) ausserhalb
+    # bekannter Sonderstatus-Gruppen erhalten Soll = Ist der besetzenden Person — identisch zu
+    # Stelle 1 oben (combine_to_snapshot). Standardmaessig aus.
+    if occupied_placeholder_soll_correction is None:
+        occupied_placeholder_soll_correction = get_setting("occupied_placeholder_soll_correction", False)
+    if occupied_placeholder_soll_correction:
+        correction_mask = (
+            ~df["Is_Vacant"]
+            & (df["Soll_FTE"] > 0) & (df["Soll_FTE"] < 0.015)
+            & _mask_regular_occupied_placeholder_positions(df)
+        )
+        df.loc[correction_mask, "Soll_FTE"] = df.loc[correction_mask, "FTE_person"]
+        df.loc[correction_mask, "Sollarbeitszeit"] = df.loc[correction_mask, "FTE_person"] * 39.0
+
     # Systemartefakt: Soll_FTE ≈ 0.01 ist ein Platzhalterwert für 0
     # Toleranzbasierter Vergleich (< 0.015) — identisch zu Stelle 1 oben.
+    # (Greift nur noch fuer vakante/Sonderstatus-Zeilen oder wenn obige Korrektur aus ist.)
     df.loc[(df["Soll_FTE"] > 0) & (df["Soll_FTE"] < 0.015), "Soll_FTE"] = 0.0
     df["FTE_assigned"] = df["FTE_person"] * df["Soll_FTE"]
 

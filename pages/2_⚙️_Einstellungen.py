@@ -1051,6 +1051,19 @@ def render_settings_page():
         if "vorstand_jahresgehalt" in st.session_state:
             del st.session_state["vorstand_jahresgehalt"]
 
+    st.markdown(f"##### {t('settings.soll_correction.heading')}")
+    st.caption(t("settings.soll_correction.caption"))
+    current_soll_correction = get_setting("occupied_placeholder_soll_correction", False)
+    new_soll_correction = st.toggle(
+        t("settings.soll_correction.label"),
+        value=current_soll_correction,
+        key="input_occupied_placeholder_soll_correction",
+        help=t("settings.soll_correction.help"),
+    )
+    if new_soll_correction != current_soll_correction:
+        set_setting("occupied_placeholder_soll_correction", new_soll_correction)
+        st.rerun()
+
     st.divider()
 
     # --- Hinweis zum Neuladen ---
