@@ -413,6 +413,155 @@ def _render_jobfamily_split_block(
         )
 
 
+def _aggregate_cost_by_jobfamily(
+    mapped_df: pd.DataFrame,
+    top_n: int = TOP_JOBFAMILY_COUNT,
+) -> pd.DataFrame:
+    cost_col = next(
+        (c for c in ("Total_Cost_Year", "EUR_Reporting") if c in mapped_df.columns), None
+    )
+    if cost_col is None or "Jobfamily" not in mapped_df.columns:
+        return pd.DataFrame()
+
+    work = mapped_df.copy()
+    if "Is_Vacant" in work.columns:
+        work = work[~work["Is_Vacant"]]
+    if work.empty:
+        return pd.DataFrame()
+
+    return (
+        work.groupby("Jobfamily", observed=True)[cost_col]
+        .sum()
+        .reset_index(name="Kosten")
+        .sort_values("Kosten", ascending=False)
+        .head(top_n)
+    )
+
+
+def _build_jobfamily_cost_summary(
+    mapped_df: pd.DataFrame,
+    jobfamilies: list[str],
+    compact,
+) -> pd.DataFrame:
+    work = mapped_df[mapped_df["Jobfamily"].isin(jobfamilies)].copy()
+    if "Is_Vacant" in work.columns:
+        work = work[~work["Is_Vacant"]]
+
+    cost_col = next(
+        (c for c in ("Total_Cost_Year", "EUR_Reporting") if c in work.columns), None
+    )
+    mak_col = next(
+        (c for c in ("MAK_Reporting", "MAK_Calculated", "MAK") if c in work.columns), None
+    )
+    id_col = next((c for c in ("PersNr", "Personalnummer") if c in work.columns), None)
+
+    if work.empty or cost_col is None:
+        return pd.DataFrame()
+
+    rows = []
+    for jf in jobfamilies:
+        sub = work[work["Jobfamily"] == jf]
+        koepfe = int(sub[id_col].nunique()) if id_col else len(sub)
+        mak = float(sub[mak_col].sum()) if mak_col else 0.0
+        kosten = float(sub[cost_col].sum())
+        rows.append({
+            "Jobfamily": jf,
+            "Köpfe": koepfe,
+            "MAK": compact.format_number(mak, 1),
+            "Gesamtkosten": compact.format_currency(kosten),
+            "€ / Kopf": compact.format_currency(kosten / koepfe) if koepfe > 0 else "–",
+            "€ / MAK": compact.format_currency(kosten / mak) if mak > 0 else "–",
+        })
+    return pd.DataFrame(rows)
+
+
+def _render_cost_by_jobfamily_block(
+    mapped_df: pd.DataFrame,
+    compact,
+    top_n: int = TOP_JOBFAMILY_COUNT,
+) -> None:
+    cost_col = next(
+        (c for c in ("Total_Cost_Year", "EUR_Reporting") if c in mapped_df.columns), None
+    )
+    if cost_col is None:
+        st.info("Kostenspalte nicht verfügbar – TVÖD-Datei prüfen.")
+        return
+
+    agg_df = _aggregate_cost_by_jobfamily(mapped_df, top_n=top_n)
+    if agg_df.empty:
+        st.info("Keine auswertbaren Kostendaten im aktuellen Filterkontext.")
+        return
+
+    jobfamilies = agg_df["Jobfamily"].tolist()
+    total = agg_df["Kosten"].sum()
+    agg_df["Kosten_Anzeige"] = agg_df["Kosten"].apply(compact.format_currency)
+    agg_df["Anteil"] = agg_df["Kosten"].apply(
+        lambda v: compact.format_percent(v / total) if total > 0 else "0,0%"
+    )
+
+    chart_order = list(reversed(jobfamilies))
+    chart_height = max(360, 42 * len(jobfamilies))
+
+    fig = px.bar(
+        agg_df,
+        x="Kosten",
+        y="Jobfamily",
+        orientation="h",
+        custom_data=["Kosten_Anzeige", "Anteil"],
+        category_orders={"Jobfamily": chart_order},
+    )
+    fig.update_traces(
+        hovertemplate="<b>%{y}</b><br>%{customdata[0]} · %{customdata[1]}<extra></extra>"
+    )
+    fig.update_layout(
+        height=chart_height,
+        margin=dict(l=10, r=10, t=10, b=10),
+        xaxis_title="Jahreskosten (EUR)",
+        yaxis_title="",
+        showlegend=False,
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+    )
+
+    indexed = agg_df.set_index("Jobfamily")
+    display_table = pd.DataFrame({
+        "Jobfamily": jobfamilies,
+        "Gesamtkosten": [indexed.loc[jf, "Kosten_Anzeige"] for jf in jobfamilies],
+        "Anteil": [indexed.loc[jf, "Anteil"] for jf in jobfamilies],
+    })
+    excel_df = pd.DataFrame({
+        "Jobfamily": jobfamilies,
+        "Gesamtkosten": [float(indexed.loc[jf, "Kosten"]) for jf in jobfamilies],
+    })
+
+    col_chart, col_table = st.columns([3, 2])
+    with col_chart:
+        st.plotly_chart(fig, use_container_width=True)
+    with col_table:
+        dataframe_compat(display_table, width="stretch", hide_index=True)
+        excel_data = compact.export_to_excel(
+            excel_df,
+            key_prefix="jobfamily_cost",
+            dimension_name="Jobfamilies",
+            value_type="eur",
+            table_title="Kosten nach Jobgruppe",
+        )
+        download_button_compat(
+            label="Excel Download",
+            data=excel_data,
+            file_name="kosten_jobfamily.xlsx",
+            mime=compact._EXCEL_MIME,
+            key="download_jobfamily_cost",
+            width="stretch",
+        )
+
+    st.divider()
+    st.subheader("Kosteneffizienz pro Jobgruppe")
+    summary_df = _build_jobfamily_cost_summary(mapped_df, jobfamilies, compact)
+    if not summary_df.empty:
+        dataframe_compat(summary_df, width="stretch", hide_index=True)
+
+
 def _render_data_quality_block(
     filtered_df: pd.DataFrame,
     mapped_df: pd.DataFrame,
@@ -601,6 +750,15 @@ def main() -> None:
             compact,
             key_prefix=f"jobfamily_{split_col.lower().replace(' ', '_')}",
         )
+
+    # --- Kostenstruktur nach Jobgruppe (always EUR, independent of metric switch) ---
+    st.divider()
+    render_section_intro(
+        "Kostenstruktur nach Jobgruppe",
+        f"Jahreskosten der Top-{TOP_JOBFAMILY_COUNT}-Jobgruppen, sortiert nach Kosten. "
+        "Immer in EUR – unabhängig vom globalen Metrik-Switch.",
+    )
+    _render_cost_by_jobfamily_block(mapped_df, compact, top_n=TOP_JOBFAMILY_COUNT)
 
     with st.expander("Datenqualität", expanded=False):
         _render_data_quality_block(filtered_df, mapped_df, unmapped_df, metric_view, metric_config, compact)
