@@ -1764,13 +1764,23 @@ def build_compact_compensation_planlevel_df(prepared_df: pd.DataFrame) -> pd.Dat
     out["Ist_Stufe"] = df["St"].map(_clean_compensation_step) if "St" in df.columns else "Nicht zugeordnet"
 
     if "Bewertung Tarifgruppe" in df.columns:
-        soll_group = df["Bewertung Tarifgruppe"].map(_clean_compensation_group)
+        soll_group_h = df["Bewertung Tarifgruppe"].map(_clean_compensation_group)
     else:
-        soll_group = pd.Series("Nicht zugeordnet", index=df.index)
+        soll_group_h = pd.Series("Nicht zugeordnet", index=df.index)
     if "Text Gehaltsband" in df.columns:
-        fallback_group = df["Text Gehaltsband"].map(_clean_compensation_group)
-        soll_group = soll_group.where(soll_group.ne("Nicht zugeordnet"), fallback_group)
-    out["Soll_Entgeltgruppe"] = soll_group.fillna("Nicht zugeordnet")
+        soll_group_i_raw = df["Text Gehaltsband"].map(_clean_compensation_group)
+        # Spiegelt die Konvention aus dataloader/soll_ist_koepfe_engine.py: Spalte I
+        # faellt auf Spalte H zurueck, wenn kein eigenes Gehaltsband gepflegt ist.
+        soll_group_i = soll_group_i_raw.where(soll_group_i_raw.ne("Nicht zugeordnet"), soll_group_h)
+    else:
+        soll_group_i = soll_group_h
+    # Basiswert (H) und Maximalwert (I) einzeln erhalten fuer die explizite
+    # Entgeltgruppen-Spannen-Logik (siehe _build_compensation_band_fit_summary).
+    out["Soll_Entgeltgruppe_H"] = soll_group_h
+    out["Soll_Entgeltgruppe_I"] = soll_group_i
+    # Unveraendertes Verhalten fuer bestehende Verbraucher: Basiswert bevorzugt,
+    # Fallback auf Maximalwert (der wiederum bereits auf H zurueckfaellt).
+    out["Soll_Entgeltgruppe"] = soll_group_h.where(soll_group_h.ne("Nicht zugeordnet"), soll_group_i).fillna("Nicht zugeordnet")
 
     soll_step_col = _first_existing_column(
         df,
@@ -1873,6 +1883,7 @@ def build_compact_compensation_planlevel_df(prepared_df: pd.DataFrame) -> pd.Dat
         "Planebene", "Planebene_Source", "Organisationseinheit", "Kürzel OrgEinheit",
         "OE-Cluster", "JF-Cluster", "Jobfamily", "Planstellennr", "Planstelle",
         "Planstellenkürzel", "Ist_Entgeltgruppe", "Ist_Stufe", "Soll_Entgeltgruppe",
+        "Soll_Entgeltgruppe_H", "Soll_Entgeltgruppe_I",
         "Soll_Stufe", "IST_MAK", "SOLL_MAK", "DELTA_MAK", "IST_Kopf", "SOLL_Kopf",
         "SOLL_Planstellen", "DELTA_Kopf", "IST_EUR", "SOLL_EUR", "DELTA_EUR",
         # Reporting-Sicht View-Spalten (exklusionsbereinigt)
@@ -2681,6 +2692,265 @@ def render_compensation_planlevel_section(
                 dataframe_compat(_sfmt, width="stretch", hide_index=True)
 
 
+_COMPENSATION_FIT_SUMMARY_COLUMNS = ["Soll-EG-Spanne", "SOLL", "Passend", "Abweichend", "Vakanz", "Nicht gefunden", "Passquote"]
+
+
+def _build_compensation_band_fit_summary(
+    comp_df: pd.DataFrame,
+    *,
+    ist_col: str,
+    soll_col: str,
+) -> pd.DataFrame:
+    """
+    Baut die explizite Entgeltgruppen-Spannen-Fit-Uebersicht fuer eine beliebige
+    Vergütungsmetrik (MAK, EUR) auf Basis von comp_df.
+
+    Nutzt dieselbe Range-Logik wie die Koepfe-Perspektive im 'IST vs SOLL Koepfe'-
+    Tab (_soll_eg_band_label, _soll_eg_band_range_members, _soll_eg_band_sort_key),
+    aber summiert Metrikwerte statt Kopfzahlen. Wichtiger Unterschied zu Koepfe:
+    SOLL ist hier NICHT automatisch gleich der Summe aus Passend+Abweichend+
+    Vakanz+Nicht gefunden, da eine besetzte Planstelle einen anderen IST- als
+    SOLL-Wert haben kann (z. B. Teilzeit auf einer Vollzeit-Planstelle). Die
+    Kapazitaetsluecke zeigt sich im Diagramm als Differenz zwischen SOLL- und
+    IST-Balkenlaenge, nicht als eigenes Segment.
+    """
+    from config.settings import TARIFF_GROUPS
+    eg_order = {g: i for i, g in enumerate(TARIFF_GROUPS)}
+
+    if (
+        comp_df.empty
+        or "Soll_Entgeltgruppe_H" not in comp_df.columns
+        or "Soll_Entgeltgruppe_I" not in comp_df.columns
+        or ist_col not in comp_df.columns
+        or soll_col not in comp_df.columns
+    ):
+        return pd.DataFrame(columns=_COMPENSATION_FIT_SUMMARY_COLUMNS)
+
+    work = comp_df.copy()
+    invalid = {"Nicht zugeordnet"}
+    h = work["Soll_Entgeltgruppe_H"].where(~work["Soll_Entgeltgruppe_H"].isin(invalid), "")
+    i = work["Soll_Entgeltgruppe_I"].where(~work["Soll_Entgeltgruppe_I"].isin(invalid), "")
+    work["_Band"] = [_soll_eg_band_label(hh, ii) for hh, ii in zip(h, i)]
+    work = work[work["_Band"] != "(ohne Soll-EG)"]
+    if work.empty:
+        return pd.DataFrame(columns=_COMPENSATION_FIT_SUMMARY_COLUMNS)
+
+    is_vacant = work["Is_Vacant"].fillna(False).astype(bool) if "Is_Vacant" in work.columns else pd.Series(False, index=work.index)
+    ist_eg = work["Ist_Entgeltgruppe"] if "Ist_Entgeltgruppe" in work.columns else pd.Series("Nicht zugeordnet", index=work.index)
+    not_found_mask = (~is_vacant) & ist_eg.eq("Nicht zugeordnet")
+    occupied_valid_mask = (~is_vacant) & ist_eg.ne("Nicht zugeordnet")
+
+    rows = []
+    for band_label, group in work.groupby("_Band", sort=False):
+        members = _soll_eg_band_range_members(band_label, eg_order)
+        g_ist_eg = ist_eg.loc[group.index]
+        g_occupied_valid = occupied_valid_mask.loc[group.index]
+        g_is_vacant = is_vacant.loc[group.index]
+        g_not_found = not_found_mask.loc[group.index]
+
+        passend_mask = g_occupied_valid & g_ist_eg.isin(members)
+        abweichend_mask = g_occupied_valid & ~g_ist_eg.isin(members)
+
+        soll_total = float(group[soll_col].fillna(0).sum())
+        passend = float(group.loc[passend_mask, ist_col].fillna(0).sum())
+        abweichend = float(group.loc[abweichend_mask, ist_col].fillna(0).sum())
+        vakanz = float(group.loc[g_is_vacant, soll_col].fillna(0).sum())
+        nicht_gefunden = float(group.loc[g_not_found, ist_col].fillna(0).sum())
+
+        rows.append({
+            "Soll-EG-Spanne": band_label,
+            "SOLL": soll_total,
+            "Passend": passend,
+            "Abweichend": abweichend,
+            "Vakanz": vakanz,
+            "Nicht gefunden": nicht_gefunden,
+            "Passquote": (passend / soll_total) if soll_total > 0 else 0.0,
+        })
+
+    result = pd.DataFrame(rows, columns=_COMPENSATION_FIT_SUMMARY_COLUMNS)
+    result["_sort"] = result["Soll-EG-Spanne"].map(lambda label: _soll_eg_band_sort_key(label, eg_order))
+    result = result.sort_values("_sort").drop(columns="_sort").reset_index(drop=True)
+    return result
+
+
+def _build_compensation_fit_figure(fit_summary_df: pd.DataFrame, *, value_label: str, print_mode: bool = False):
+    """
+    Baut das SOLL-vs-IST-Balkendiagramm fuer eine Vergütungsmetrik (MAK/EUR) je
+    explizite Entgeltgruppen-Spanne.
+
+    Im Unterschied zur Koepfe-Variante besteht der IST-Balken nur aus zwei
+    Segmenten (Passend/Abweichend): eine unbesetzte Stelle traegt keinen eigenen
+    MAK/EUR-Wert zum IST-Balken bei, die Vakanz/Kapazitaetsluecke zeigt sich
+    stattdessen als Differenz zur laengeren SOLL-Referenz.
+    """
+    if fit_summary_df.empty:
+        return go.Figure()
+
+    row_order = list(fit_summary_df["Soll-EG-Spanne"].tolist())
+    ordered = fit_summary_df.set_index("Soll-EG-Spanne").loc[row_order]
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Bar(
+        y=row_order,
+        x=ordered["SOLL"],
+        name=f"SOLL ({value_label})",
+        orientation="h",
+        offsetgroup="soll",
+        marker=dict(color=_FIT_SOLL_COLOR),
+        hovertemplate=f"<b>%{{y}}</b><br>SOLL: %{{x:,.1f}} {value_label}<extra></extra>",
+    ))
+
+    segments = [
+        ("Passend", _FIT_PASSEND_COLOR, "🟢 Passend"),
+        ("Abweichend", _FIT_ABWEICHEND_COLOR, "🔴 Abweichend"),
+    ]
+    running_base = pd.Series(0.0, index=ordered.index)
+    for col, color, label in segments:
+        values = ordered[col]
+        fig.add_trace(go.Bar(
+            y=row_order,
+            x=values,
+            base=running_base.tolist(),
+            name=label,
+            orientation="h",
+            offsetgroup="ist",
+            marker=dict(color=color, line=dict(color="white", width=0.5)),
+            hovertemplate=f"<b>%{{y}}</b><br>{label}: %{{x:,.1f}} {value_label}<extra></extra>",
+        ))
+        running_base = running_base + values
+
+    n_rows = len(row_order)
+    height = max(350, n_rows * 60)
+    if print_mode:
+        height = min(height, 700)
+
+    fig.update_layout(
+        barmode="group",
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#64748b", size=11),
+        margin=dict(l=10, r=20, t=30, b=30),
+        height=height,
+        bargap=0.25,
+        bargroupgap=0.1,
+        xaxis=dict(
+            showgrid=True,
+            gridcolor="rgba(226,232,240,0.8)",
+            zeroline=False,
+            tickformat=",.1f",
+        ),
+        yaxis=dict(
+            showgrid=False,
+            categoryorder="array",
+            categoryarray=row_order,
+        ),
+    )
+    from utils.plot_helpers import apply_legend_bottom
+    fig = apply_legend_bottom(fig)
+
+    return fig
+
+
+def _format_compensation_fit_summary_for_display(fit_summary_df: pd.DataFrame, value_label: str) -> pd.DataFrame:
+    """Formatiert die Vergütungs-Fit-Uebersicht inkl. Gesamtzeile fuer die Tabellendarstellung."""
+    if fit_summary_df.empty:
+        return fit_summary_df
+
+    totals = fit_summary_df[["SOLL", "Passend", "Abweichend", "Vakanz", "Nicht gefunden"]].sum()
+    total_soll = float(totals["SOLL"])
+    total_passend = float(totals["Passend"])
+    total_row = {
+        "Soll-EG-Spanne": "Gesamt",
+        "SOLL": total_soll,
+        "Passend": total_passend,
+        "Abweichend": float(totals["Abweichend"]),
+        "Vakanz": float(totals["Vakanz"]),
+        "Nicht gefunden": float(totals["Nicht gefunden"]),
+        "Passquote": (total_passend / total_soll) if total_soll > 0 else 0.0,
+    }
+    with_total = pd.concat([fit_summary_df, pd.DataFrame([total_row])], ignore_index=True)
+
+    display = with_total.copy()
+    for col in ["SOLL", "Passend", "Abweichend", "Vakanz", "Nicht gefunden"]:
+        display[col] = with_total[col].map(lambda v: _format_compensation_value(v, value_label))
+    display["Passquote"] = with_total["Passquote"].map(lambda v: f"{v * 100:.1f}%".replace(".", ","))
+    return display
+
+
+def render_compensation_band_fit_section(
+    df: pd.DataFrame,
+    *,
+    value_type: str,
+    key_prefix: str,
+    print_mode: bool = False,
+) -> None:
+    """
+    Band-explizites Pendant zu render_compensation_planlevel_section(): zeigt
+    SOLL vs. IST je tatsaechlicher Entgeltgruppen-Spanne (nicht per Toggle bzw.
+    Basiswert-Praeferenz auf einen Einzelwert reduziert), analog zur Koepfe-
+    Perspektive im 'IST vs SOLL Koepfe'-Tab.
+    """
+    comp_df = build_compact_compensation_planlevel_df(df)
+    if comp_df.empty:
+        st.warning("Keine Vergütungsdaten verfügbar.")
+        return
+
+    st.subheader("📊 Passgenauigkeit je Entgeltgruppen-Spanne", divider=True)
+    if not st.session_state.get("tvoed_available", bool(st.session_state.get("tvoed_lookup", {}))):
+        st.caption("TVÖD-Tabelle nicht verfügbar – Euro-Werte basieren auf konfigurierten Fallback-Werten.")
+
+    metric = _compensation_metric_from_sidebar(value_type)
+    ist_col, soll_col, _, value_label = _compensation_metric_base_columns(metric)
+
+    st.caption(
+        f"SOLL-Balken: Summe SOLL-{value_label} je Entgeltgruppen-Spanne  |  "
+        "IST-Balken: tatsächliche Besetzung, aufgeteilt nach 🟢 Passend / 🔴 Abweichend  |  "
+        "Vakanz und Datenpflegefälle sind separat in der Tabelle ausgewiesen"
+    )
+
+    _render_ist_ohne_plan_soll_warning(comp_df, key_prefix)
+
+    fit_summary_df = _build_compensation_band_fit_summary(comp_df, ist_col=ist_col, soll_col=soll_col)
+
+    if fit_summary_df.empty:
+        st.info("Keine Planstellen mit verwertbarer Soll-Entgeltgruppe im aktuellen Filterkontext.")
+        return
+
+    chart_col, table_col = st.columns([1.55, 1])
+
+    with chart_col:
+        fig = _build_compensation_fit_figure(fit_summary_df, value_label=value_label, print_mode=print_mode)
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+            key=f"{key_prefix}_comp_band_fit_chart",
+            config={"displayModeBar": False},
+        )
+
+    with table_col:
+        display_df = _format_compensation_fit_summary_for_display(fit_summary_df, value_label)
+        dataframe_compat(display_df, width="stretch", hide_index=True)
+
+        try:
+            buf = io.BytesIO()
+            with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+                fit_summary_df.to_excel(writer, sheet_name="Fit-Uebersicht", index=False)
+            buf.seek(0)
+            download_button_compat(
+                label="Excel Download",
+                data=buf.getvalue(),
+                file_name=f"{key_prefix}_verguetung_fit.xlsx",
+                mime=_EXCEL_MIME,
+                key=f"download_{key_prefix}_verguetung_fit",
+                width="stretch",
+            )
+        except Exception:
+            pass
+
+    _render_compensation_unassigned_box(comp_df, metric, "Entgeltgruppe")
+
+
 @st.cache_data
 def create_comparison_chart(df: pd.DataFrame, dimension_col: str,
                              title: str = "",
@@ -3479,11 +3749,10 @@ def _render_single_comparison_clean(
         st.subheader(localized_dimension_name)
 
     if is_verguetung:
-        render_compensation_planlevel_section(
+        render_compensation_band_fit_section(
             df,
             value_type=value_type,
             key_prefix=key_prefix,
-            view_mode="IST vs. SOLL",
             print_mode=print_mode,
         )
         with st.expander("Vergütung nach Entgeltgruppe und Stufe anzeigen", expanded=print_mode):
@@ -5405,6 +5674,411 @@ def _build_soll_ist_pivot_raw_logic(use_max_eg: bool = True):
     )
 
 
+_SOLL_EG_BAND_INVALID = {"", "NAN", "NONE"}
+
+
+def _soll_eg_band_label(h: str, i: str) -> str:
+    """Bildet die explizite Entgeltgruppen-Spanne aus Basiswert (H) und Maximalwert (I).
+
+    Faellt symmetrisch auf den jeweils anderen Wert zurueck, wenn einer der beiden
+    fehlt (Datenqualitaets-Randfall). Nur wenn beide Werte vorhanden UND
+    unterschiedlich sind, entsteht eine echte Spanne wie "E10-E11".
+    """
+    h_valid = h not in _SOLL_EG_BAND_INVALID
+    i_valid = i not in _SOLL_EG_BAND_INVALID
+    if not h_valid and not i_valid:
+        return "(ohne Soll-EG)"
+    if not h_valid:
+        return i
+    if not i_valid:
+        return h
+    return h if h == i else f"{h}-{i}"
+
+
+def _soll_eg_band_sort_key(label: str, eg_order: dict) -> tuple:
+    """Fachliche Sortierung einer Band-Zeile: primaer nach Basiswert (H), sekundaer nach Maximalwert (I)."""
+    h_part, _, i_part = label.partition("-")
+    h_rank = eg_order.get(h_part, 999)
+    i_rank = eg_order.get(i_part, h_rank) if i_part else h_rank
+    return (h_rank, i_rank, label)
+
+
+def _build_soll_ist_band_pivot(
+    work_df: pd.DataFrame,
+    ist_eg_cols: list,
+    IST_UNBESETZT: str,
+    IST_NOT_FOUND: str,
+) -> pd.DataFrame:
+    """
+    Baut die Soll-Ist-Matrix mit expliziten Entgeltgruppen-Spannen (Bandbreiten).
+
+    Im Gegensatz zu _build_soll_ist_pivot_raw_logic() wird die Soll-EG hier NICHT
+    ueber den Min/Max-Toggle auf einen Einzelwert reduziert. Stattdessen bildet
+    jede Planstelle mit einem echten Gehaltsband (Spalte H != Spalte I) eine eigene
+    Zeile, z. B. "E10-E11". Arbeitet auf demselben, bereits gefilterten work_df wie
+    die Original-Matrix - nur die Zeilen-Gruppierung unterscheidet sich.
+    """
+    from config.settings import TARIFF_GROUPS
+
+    if work_df.empty or "_Soll_EG_H" not in work_df.columns or "_Soll_EG_I" not in work_df.columns:
+        return pd.DataFrame()
+
+    band = work_df.copy()
+    band["_Soll_EG_Band"] = [
+        _soll_eg_band_label(h, i)
+        for h, i in zip(band["_Soll_EG_H"], band["_Soll_EG_I"])
+    ]
+
+    pivot = band.groupby(["_Soll_EG_Band", "_Ist_EG"]).size().unstack(fill_value=0)
+
+    special_cols = [c for c in (IST_UNBESETZT, IST_NOT_FOUND) if c in pivot.columns]
+    ordered_cols = [c for c in ist_eg_cols if c in pivot.columns] + special_cols
+    pivot = pivot.reindex(columns=ordered_cols, fill_value=0)
+    pivot["Gesamt"] = pivot.sum(axis=1)
+
+    eg_order = {g: i for i, g in enumerate(TARIFF_GROUPS)}
+    band_order = sorted(pivot.index.tolist(), key=lambda label: _soll_eg_band_sort_key(label, eg_order))
+    pivot = pivot.loc[band_order]
+    pivot.index.name = "Soll-EG-Spanne"
+
+    return pivot
+
+
+_BAND_IN_RANGE_STYLE = "background-color: #e3f6ec"
+_BAND_OUT_OF_RANGE_STYLE = "background-color: #fbe9e6"
+
+
+def _soll_eg_band_range_members(band_label: str, eg_order: dict) -> set:
+    """Ermittelt alle Entgeltgruppen, die innerhalb einer Band-Zeile liegen (inkl. Grenzen)."""
+    h_part, _, i_part = str(band_label).partition("-")
+    if not i_part:
+        return {h_part}
+    h_rank = eg_order.get(h_part)
+    i_rank = eg_order.get(i_part)
+    if h_rank is None or i_rank is None:
+        return {h_part, i_part}
+    lo, hi = min(h_rank, i_rank), max(h_rank, i_rank)
+    return {g for g, rank in eg_order.items() if lo <= rank <= hi}
+
+
+def _style_soll_ist_band_matrix(pivot_display: pd.DataFrame, data_cols: list):
+    """
+    Faerbt besetzte Zellen dezent gruen (Ist-EG liegt innerhalb der Soll-Range der
+    Zeile) oder rot (Ist-EG liegt ausserhalb der Soll-Range). Leere Zellen sowie
+    Sonderspalten (Unbesetzt, Nicht gefunden, Gesamt) und die Gesamt-Zeile bleiben
+    ungefaerbt.
+    """
+    from config.settings import TARIFF_GROUPS
+    eg_order = {g: i for i, g in enumerate(TARIFF_GROUPS)}
+
+    def _style_row(row: pd.Series) -> list:
+        if row.name == "Gesamt":
+            return [""] * len(row)
+        members = _soll_eg_band_range_members(row.name, eg_order)
+        styles = []
+        for col in row.index:
+            if col not in data_cols:
+                styles.append("")
+                continue
+            try:
+                populated = float(row[col]) > 0
+            except (TypeError, ValueError):
+                populated = False
+            if not populated:
+                styles.append("")
+            elif col in members:
+                styles.append(_BAND_IN_RANGE_STYLE)
+            else:
+                styles.append(_BAND_OUT_OF_RANGE_STYLE)
+        return styles
+
+    return pivot_display.style.apply(_style_row, axis=1)
+
+
+_DISTRIBUTION_BLUE_PALETTE = [
+    "#B3E0FF", "#99D6FF", "#66C2FF", "#33AAFF",
+    "#0088DE", "#0070BE", "#005A9E", "#004A80",
+    "#003D6B", "#003058", "#10b981", "#06b6d4",
+    "#8b5cf6", "#f59e0b", "#ec4899", "#0d9488",
+]
+_DISTRIBUTION_NOSOLL_LABEL = "(Keine Soll-EG)"
+
+
+def _build_soll_ist_distribution_figure(
+    pivot: pd.DataFrame,
+    row_order: list,
+    ist_eg_cols: list,
+    IST_UNBESETZT: str,
+    IST_NOT_FOUND: str,
+    no_soll_eg_row: pd.Series,
+    print_mode: bool = False,
+):
+    """
+    Baut das gestapelte horizontale Balkendiagramm fuer die Soll-Ist-Verteilung.
+
+    Arbeitet generisch auf jeder Pivot-Struktur mit row_order als Zeilen-Achse
+    (z. B. toggle-reduzierte Soll-EG-Einzelwerte ODER explizite Entgeltgruppen-
+    Spannen wie "E10-E11") und den Ist-EG-Spalten als gestapelte Segmente.
+    """
+    chart_cols = ist_eg_cols + (
+        [IST_UNBESETZT] if IST_UNBESETZT in pivot.columns else []
+    ) + (
+        [IST_NOT_FOUND] if IST_NOT_FOUND in pivot.columns else []
+    )
+    chart_pivot = pivot[chart_cols] if chart_cols else pivot.drop(columns=["Gesamt"], errors="ignore")
+
+    color_map = {}
+    for i, eg in enumerate(ist_eg_cols):
+        color_map[eg] = _DISTRIBUTION_BLUE_PALETTE[i % len(_DISTRIBUTION_BLUE_PALETTE)]
+    color_map[IST_UNBESETZT] = "#cbd5e1"   # neutrales Grau
+    color_map[IST_NOT_FOUND] = "#fcd9bd"   # gedämpftes Orange — Datenpflegesignal, kein Alarm
+
+    has_nosoll_chart = len(no_soll_eg_row) > 0
+
+    fig = go.Figure()
+    # Plotly platziert das erste Element von categoryarray unten, das letzte oben.
+    # row_order ist aufsteigend (niedrigste EG zuerst) -> unveraendert uebernehmen,
+    # damit die hoechste EG oben erscheint. Sonderzeile wird vorangestellt -> ganz unten.
+    y_order = list(row_order)
+    if has_nosoll_chart:
+        y_order = [_DISTRIBUTION_NOSOLL_LABEL] + y_order  # ganz unten im Chart
+
+    for col in chart_cols:
+        values = []
+        for eg in y_order:
+            if eg == _DISTRIBUTION_NOSOLL_LABEL:
+                values.append(int(no_soll_eg_row.get(col, 0)))
+            else:
+                values.append(
+                    int(chart_pivot.loc[eg, col]) if eg in chart_pivot.index and col in chart_pivot.columns else 0
+                )
+        # Sonderzeile: gedämpfte Farbe (Opacity 0.35) für alle Segmente
+        _color = color_map.get(col, "#94a3b8")
+        _marker = dict(
+            color=[f"rgba(160,160,160,0.35)" if eg == _DISTRIBUTION_NOSOLL_LABEL else _color for eg in y_order],
+            line=dict(color="white", width=0.5),
+        )
+        fig.add_trace(go.Bar(
+            y=y_order,
+            x=values,
+            name=col,
+            orientation="h",
+            marker=_marker,
+            hovertemplate=t("compact.ist_soll_heads.distribution.hover", ist_group=col),
+        ))
+
+    n_rows = len(row_order) + (1 if has_nosoll_chart else 0)
+    height  = max(350, n_rows * 42)
+    if print_mode:
+        height = min(height, 700)
+
+    # Trennlinie im Chart zwischen regulären Zeilen und Sonderzeile
+    shapes = []
+    if has_nosoll_chart:
+        shapes.append(dict(
+            type="line",
+            x0=0, x1=1, xref="paper",
+            y0=0.5, y1=0.5, yref="y",   # zwischen Index 0 (Sonderzeile) und 1 (erste reguläre Zeile)
+            line=dict(color="#94a3b8", width=1.5, dash="dot"),
+        ))
+
+    fig.update_layout(
+        barmode="stack",
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#64748b", size=11),
+        margin=dict(l=10, r=20, t=30, b=30),
+        height=height,
+        shapes=shapes,
+        xaxis=dict(
+            showgrid=True,
+            gridcolor="rgba(226,232,240,0.8)",
+            zeroline=False,
+            tickformat=",d",
+        ),
+        yaxis=dict(
+            showgrid=False,
+            categoryorder="array",
+            categoryarray=y_order,
+        ),
+    )
+    from utils.plot_helpers import apply_legend_bottom
+    fig = apply_legend_bottom(fig)
+
+    return fig
+
+
+_FIT_PASSEND_COLOR = "#10b981"          # Emerald, konsistent mit COLORS["status_good"]
+_FIT_ABWEICHEND_COLOR = "#E94D3A"       # Persian Red, konsistent mit COLORS["status_critical"]
+_FIT_UNBESETZT_COLOR = "#cbd5e1"        # neutrales Grau
+_FIT_NICHT_GEFUNDEN_COLOR = "#fcd9bd"   # gedämpftes Orange — Datenpflegesignal, kein Alarm
+_FIT_SOLL_COLOR = "#94a3b8"             # neutrales Blaugrau für die SOLL-Referenz
+
+_FIT_SUMMARY_COLUMNS = ["Soll-EG-Spanne", "Passend", "Abweichend", "Unbesetzt", "Nicht gefunden", "Planstellen", "Passquote"]
+
+
+def _build_soll_ist_band_fit_summary(
+    band_pivot: pd.DataFrame,
+    ist_eg_cols: list,
+    IST_UNBESETZT: str,
+    IST_NOT_FOUND: str,
+) -> pd.DataFrame:
+    """
+    Fasst die Band-Matrix je Soll-EG-Spanne in Fit-Kategorien zusammen: Passend
+    (Ist-EG liegt im Band), Abweichend (Ist-EG liegt ausserhalb), Unbesetzt und
+    Nicht gefunden (Ist-EG technisch nicht ermittelbar).
+
+    Nutzt dieselbe Range-Logik wie die Zellfaerbung der Band-Tabelle
+    (_soll_eg_band_range_members), sodass Tabelle, Verteilungs-Chart und diese
+    Fit-Uebersicht immer konsistent zueinander sind.
+    """
+    from config.settings import TARIFF_GROUPS
+    eg_order = {g: i for i, g in enumerate(TARIFF_GROUPS)}
+
+    if band_pivot.empty:
+        return pd.DataFrame(columns=_FIT_SUMMARY_COLUMNS)
+
+    rows = []
+    for band_label in band_pivot.index:
+        members = _soll_eg_band_range_members(band_label, eg_order)
+        passend = 0
+        abweichend = 0
+        for col in ist_eg_cols:
+            if col not in band_pivot.columns:
+                continue
+            value = int(band_pivot.loc[band_label, col])
+            if col in members:
+                passend += value
+            else:
+                abweichend += value
+        unbesetzt = int(band_pivot.loc[band_label, IST_UNBESETZT]) if IST_UNBESETZT in band_pivot.columns else 0
+        nicht_gefunden = int(band_pivot.loc[band_label, IST_NOT_FOUND]) if IST_NOT_FOUND in band_pivot.columns else 0
+        gesamt = passend + abweichend + unbesetzt + nicht_gefunden
+
+        rows.append({
+            "Soll-EG-Spanne": band_label,
+            "Passend": passend,
+            "Abweichend": abweichend,
+            "Unbesetzt": unbesetzt,
+            "Nicht gefunden": nicht_gefunden,
+            "Planstellen": gesamt,
+            "Passquote": (passend / gesamt) if gesamt > 0 else 0.0,
+        })
+
+    return pd.DataFrame(rows, columns=_FIT_SUMMARY_COLUMNS)
+
+
+def _build_soll_ist_fit_figure(fit_summary_df: pd.DataFrame, print_mode: bool = False):
+    """
+    Baut ein gruppiertes Balkendiagramm je Soll-EG-Spanne: ein durchgehender
+    SOLL-Referenzbalken (Anzahl Planstellen) neben einem gestapelten IST-Balken
+    (Passend / Abweichend / Unbesetzt / Nicht gefunden).
+
+    Technik: beide Balken teilen sich denselben barmode="group", aber die
+    IST-Segmente liegen in derselben offsetgroup und werden manuell ueber den
+    base-Parameter gestapelt (Standard-Plotly-Muster fuer kombinierte
+    Gruppen-/Stapel-Balken).
+    """
+    if fit_summary_df.empty:
+        return go.Figure()
+
+    # Plotly platziert das erste Element von categoryarray unten, das letzte oben.
+    # fit_summary_df ist bereits aufsteigend sortiert (aus band_pivot.index) -> so
+    # uebernehmen, damit die hoechste EG-Spanne oben im Chart erscheint.
+    row_order = list(fit_summary_df["Soll-EG-Spanne"].tolist())
+    ordered = fit_summary_df.set_index("Soll-EG-Spanne").loc[row_order]
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Bar(
+        y=row_order,
+        x=ordered["Planstellen"],
+        name="SOLL (Planstellen)",
+        orientation="h",
+        offsetgroup="soll",
+        marker=dict(color=_FIT_SOLL_COLOR),
+        hovertemplate="<b>%{y}</b><br>SOLL: %{x:,.0f} Planstellen<extra></extra>",
+    ))
+
+    segments = [
+        ("Passend", _FIT_PASSEND_COLOR, "🟢 Passend"),
+        ("Abweichend", _FIT_ABWEICHEND_COLOR, "🔴 Abweichend"),
+        ("Unbesetzt", _FIT_UNBESETZT_COLOR, "⚪ Unbesetzt"),
+        ("Nicht gefunden", _FIT_NICHT_GEFUNDEN_COLOR, "🟠 Nicht gefunden"),
+    ]
+    running_base = pd.Series(0.0, index=ordered.index)
+    for col, color, label in segments:
+        values = ordered[col]
+        fig.add_trace(go.Bar(
+            y=row_order,
+            x=values,
+            base=running_base.tolist(),
+            name=label,
+            orientation="h",
+            offsetgroup="ist",
+            marker=dict(color=color, line=dict(color="white", width=0.5)),
+            hovertemplate=f"<b>%{{y}}</b><br>{label}: %{{x:,.0f}}<extra></extra>",
+        ))
+        running_base = running_base + values
+
+    n_rows = len(row_order)
+    height = max(350, n_rows * 60)
+    if print_mode:
+        height = min(height, 700)
+
+    fig.update_layout(
+        barmode="group",
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#64748b", size=11),
+        margin=dict(l=10, r=20, t=30, b=30),
+        height=height,
+        bargap=0.25,
+        bargroupgap=0.1,
+        xaxis=dict(
+            showgrid=True,
+            gridcolor="rgba(226,232,240,0.8)",
+            zeroline=False,
+            tickformat=",d",
+        ),
+        yaxis=dict(
+            showgrid=False,
+            categoryorder="array",
+            categoryarray=row_order,
+        ),
+    )
+    from utils.plot_helpers import apply_legend_bottom
+    fig = apply_legend_bottom(fig)
+
+    return fig
+
+
+def _format_fit_summary_for_display(fit_summary_df: pd.DataFrame) -> pd.DataFrame:
+    """Formatiert die Fit-Uebersicht inkl. Gesamtzeile fuer die Tabellendarstellung."""
+    if fit_summary_df.empty:
+        return fit_summary_df
+
+    totals = fit_summary_df[["Passend", "Abweichend", "Unbesetzt", "Nicht gefunden", "Planstellen"]].sum()
+    total_passend = int(totals["Passend"])
+    total_gesamt = int(totals["Planstellen"])
+    total_row = {
+        "Soll-EG-Spanne": "Gesamt",
+        "Passend": total_passend,
+        "Abweichend": int(totals["Abweichend"]),
+        "Unbesetzt": int(totals["Unbesetzt"]),
+        "Nicht gefunden": int(totals["Nicht gefunden"]),
+        "Planstellen": total_gesamt,
+        "Passquote": (total_passend / total_gesamt) if total_gesamt > 0 else 0.0,
+    }
+    with_total = pd.concat([fit_summary_df, pd.DataFrame([total_row])], ignore_index=True)
+
+    display = with_total.copy()
+    for col in ["Passend", "Abweichend", "Unbesetzt", "Nicht gefunden", "Planstellen"]:
+        display[col] = display[col].map(lambda v: f"{int(v):,}".replace(",", "."))
+    display["Passquote"] = with_total["Passquote"].map(lambda v: f"{v * 100:.1f}%".replace(".", ","))
+    return display
+
+
 def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
     """
     Rendert den 'IST vs SOLL Köpfe'-Tab.
@@ -5595,26 +6269,92 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
         except (ValueError, TypeError):
             return "–"
 
-    display_df = pivot_display.map(_fmt_int)
-
     # Spaltenbreite angepasst
     column_config = {col: st.column_config.TextColumn(col, width="small")
-                     for col in display_df.columns}
+                     for col in pivot_display.columns}
     column_config["Gesamt"] = st.column_config.TextColumn("Gesamt", width="small")
 
+    matrix_data_cols = [c for c in ist_eg_cols if c in pivot_display.columns]
+    matrix_styler = _style_soll_ist_band_matrix(pivot_display, matrix_data_cols).format(_fmt_int)
+
+    st.caption(t("compact.ist_soll_heads.matrix.legend"))
     st.dataframe(
-        display_df,
+        matrix_styler,
         use_container_width=True,
         column_config=column_config,
     )
 
-    render_compensation_planlevel_section(
-        df,
-        value_type="koepfe",
-        key_prefix="ist_vs_soll_koepfe",
-        view_mode="IST vs. SOLL",
-        print_mode=print_mode,
-    )
+    # ── Zweite Tabelle: explizite Entgeltgruppen-Spannen (Bandbreiten) ────────
+    st.subheader(t("compact.ist_soll_heads.matrix_band.heading"))
+    st.caption(t("compact.ist_soll_heads.matrix_band.caption"))
+
+    band_pivot = _build_soll_ist_band_pivot(work_df, ist_eg_cols, IST_UNBESETZT, IST_NOT_FOUND)
+
+    if band_pivot.empty:
+        st.info(t("compact.ist_soll_heads.matrix_band.empty"))
+    else:
+        band_total_row = band_pivot.sum(axis=0).rename("Gesamt")
+        band_pivot_display = pd.concat([band_pivot, band_total_row.to_frame().T])
+
+        band_data_cols = [c for c in ist_eg_cols if c in band_pivot_display.columns]
+        band_styler = _style_soll_ist_band_matrix(band_pivot_display, band_data_cols).format(_fmt_int)
+
+        band_column_config = {col: st.column_config.TextColumn(col, width="small")
+                               for col in band_pivot_display.columns}
+        band_column_config["Gesamt"] = st.column_config.TextColumn("Gesamt", width="small")
+
+        st.caption(t("compact.ist_soll_heads.matrix_band.legend"))
+        st.dataframe(
+            band_styler,
+            use_container_width=True,
+            column_config=band_column_config,
+            key="ist_vs_soll_koepfe_matrix_band",
+        )
+
+        try:
+            band_buf = io.BytesIO()
+            with pd.ExcelWriter(band_buf, engine="openpyxl") as writer:
+                band_pivot_display.to_excel(writer, sheet_name="Soll-Ist-Köpfe-Spannen")
+            band_buf.seek(0)
+            download_button_compat(
+                label=t("compact.ist_soll_heads.matrix_band.download"),
+                data=band_buf.getvalue(),
+                file_name="ist_soll_koepfe_spannen.xlsx",
+                mime=_EXCEL_MIME,
+                key="download_ist_soll_koepfe_band",
+            )
+        except Exception:
+            pass
+
+    # ── Fit-Übersicht: SOLL vs. IST je Entgeltgruppen-Spanne (explizit) ───────
+    st.subheader(t("compact.ist_soll_heads.fit.heading"))
+    st.caption(t("compact.ist_soll_heads.fit.caption"))
+
+    fit_summary_df = _build_soll_ist_band_fit_summary(band_pivot, ist_eg_cols, IST_UNBESETZT, IST_NOT_FOUND)
+
+    if fit_summary_df.empty:
+        st.info(t("compact.ist_soll_heads.fit.empty"))
+    else:
+        fit_fig = _build_soll_ist_fit_figure(fit_summary_df, print_mode=print_mode)
+        st.plotly_chart(fit_fig, use_container_width=True, key="ist_vs_soll_koepfe_fit_chart")
+
+        fit_display_df = _format_fit_summary_for_display(fit_summary_df)
+        st.dataframe(fit_display_df, use_container_width=True, hide_index=True, key="ist_vs_soll_koepfe_fit_table")
+
+        try:
+            fit_buf = io.BytesIO()
+            with pd.ExcelWriter(fit_buf, engine="openpyxl") as writer:
+                fit_summary_df.to_excel(writer, sheet_name="Fit-Uebersicht", index=False)
+            fit_buf.seek(0)
+            download_button_compat(
+                label=t("compact.ist_soll_heads.fit.download"),
+                data=fit_buf.getvalue(),
+                file_name="ist_soll_koepfe_fit.xlsx",
+                mime=_EXCEL_MIME,
+                key="download_ist_soll_koepfe_fit",
+            )
+        except Exception:
+            pass
 
     # Excel-Download
     try:
@@ -5637,105 +6377,25 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
     else:
         st.markdown("<div style='page-break-after: always;'></div>", unsafe_allow_html=True)
 
-    # ── Gestapeltes Balkendiagramm ────────────────────────────────────────────
+    # ── Gestapeltes Balkendiagramm (explizite Entgeltgruppen-Spannen) ────────
     st.subheader(t("compact.ist_soll_heads.distribution.heading"))
     st.caption(t("compact.ist_soll_heads.distribution.caption"))
 
-    chart_cols = ist_eg_cols + (
-        [IST_UNBESETZT] if IST_UNBESETZT in pivot.columns else []
-    ) + (
-        [IST_NOT_FOUND] if IST_NOT_FOUND in pivot.columns else []
-    )
-    chart_pivot = pivot[chart_cols] if chart_cols else pivot.drop(columns=["Gesamt"], errors="ignore")
-
-    # Farbpalette: je Ist-EG eine Farbe (blau-Spektrum), Sonder-Spalten separat
-    _BLUE_PALETTE = [
-        "#B3E0FF", "#99D6FF", "#66C2FF", "#33AAFF",
-        "#0088DE", "#0070BE", "#005A9E", "#004A80",
-        "#003D6B", "#003058", "#10b981", "#06b6d4",
-        "#8b5cf6", "#f59e0b", "#ec4899", "#0d9488",
-    ]
-    color_map = {}
-    for i, eg in enumerate(ist_eg_cols):
-        color_map[eg] = _BLUE_PALETTE[i % len(_BLUE_PALETTE)]
-    color_map[IST_UNBESETZT] = "#cbd5e1"   # neutrales Grau
-    color_map[IST_NOT_FOUND] = "#fcd9bd"   # gedämpftes Orange — Datenpflegesignal, kein Alarm
-
-    _NOSOLL_LABEL = "(Keine Soll-EG)"
-    _has_nosoll_chart = len(no_soll_eg_row) > 0
-
-    fig = go.Figure()
-    # Zeilen: SOLL-EG von oben (höchste EG oben → umkehren)
-    # Sonderzeile am unteren Ende (wird zuerst in y_order eingefügt → erscheint ganz unten)
-    y_order = list(reversed(soll_order))
-    if _has_nosoll_chart:
-        y_order = [_NOSOLL_LABEL] + y_order  # ganz unten im Chart
-
-    for col in chart_cols:
-        values = []
-        for eg in y_order:
-            if eg == _NOSOLL_LABEL:
-                values.append(int(no_soll_eg_row.get(col, 0)))
-            else:
-                values.append(
-                    int(chart_pivot.loc[eg, col]) if eg in chart_pivot.index and col in chart_pivot.columns else 0
-                )
-        # Sonderzeile: gedämpfte Farbe (Opacity 0.45) für alle Segmente
-        _color = color_map.get(col, "#94a3b8")
-        _marker = dict(
-            color=[f"rgba(160,160,160,0.35)" if eg == _NOSOLL_LABEL else _color for eg in y_order],
-            line=dict(color="white", width=0.5),
+    if band_pivot.empty:
+        st.info(t("compact.ist_soll_heads.matrix_band.empty"))
+    else:
+        fig = _build_soll_ist_distribution_figure(
+            band_pivot,
+            list(band_pivot.index),
+            ist_eg_cols,
+            IST_UNBESETZT,
+            IST_NOT_FOUND,
+            no_soll_eg_row,
+            print_mode=print_mode,
         )
-        fig.add_trace(go.Bar(
-            y=y_order,
-            x=values,
-            name=col,
-            orientation="h",
-            marker=_marker,
-            hovertemplate=t("compact.ist_soll_heads.distribution.hover", ist_group=col),
-        ))
-
-    n_rows = len(soll_order) + (1 if _has_nosoll_chart else 0)
-    height  = max(350, n_rows * 42)
-    if print_mode:
-        height = min(height, 700)
-
-    # Trennlinie im Chart zwischen regulären Zeilen und Sonderzeile
-    shapes = []
-    if _has_nosoll_chart:
-        shapes.append(dict(
-            type="line",
-            x0=0, x1=1, xref="paper",
-            y0=0.5, y1=0.5, yref="y",   # zwischen Index 0 (Sonderzeile) und 1 (erste reguläre EG)
-            line=dict(color="#94a3b8", width=1.5, dash="dot"),
-        ))
-
-    fig.update_layout(
-        barmode="stack",
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#64748b", size=11),
-        margin=dict(l=10, r=20, t=30, b=30),
-        height=height,
-        shapes=shapes,
-        xaxis=dict(
-            showgrid=True,
-            gridcolor="rgba(226,232,240,0.8)",
-            zeroline=False,
-            tickformat=",d",
-        ),
-        yaxis=dict(
-            showgrid=False,
-            categoryorder="array",
-            categoryarray=y_order,
-        ),
-    )
-    from utils.plot_helpers import apply_legend_bottom
-    fig = apply_legend_bottom(fig)
-
-    st.plotly_chart(fig, use_container_width=True, key="ist_vs_soll_koepfe_distribution_chart")
-    if not_found > 0:
-        st.caption(t("compact.ist_soll_heads.distribution.missing_ist_caption", count=not_found))
+        st.plotly_chart(fig, use_container_width=True, key="ist_vs_soll_koepfe_distribution_chart")
+        if not_found > 0:
+            st.caption(t("compact.ist_soll_heads.distribution.missing_ist_caption", count=not_found))
 
     # ── Detailbereich: eine Soll-EG tiefer analysieren ────────────────────────
     if not print_mode:
