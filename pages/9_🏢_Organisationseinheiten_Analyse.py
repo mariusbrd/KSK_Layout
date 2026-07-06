@@ -41,7 +41,13 @@ from dataloader.kpi_engine import (
 )
 from dataloader.loader import load_and_prepare_data
 from utils.compact_page_loader import load_compact_page_module
-from utils.plot_helpers import AGE_COHORT_ORDER, apply_legend_bottom, get_age_cohort_color_map
+from utils.plot_helpers import (
+    AGE_COHORT_ORDER,
+    apply_legend_bottom,
+    get_age_cohort_color_map,
+    get_tariff_group_color_map,
+)
+from config.settings import TARIFF_GROUPS
 
 
 ORG_COL = "Organisationseinheit"
@@ -51,7 +57,6 @@ _ORG_UNASSIGNED_SENTINELS = {"Nicht zugeordnet", "UNMAPPED", "Unmapped", "Unclus
 _TOP_N_OPTIONS = ["8", "10", "15", "20", "Alle"]
 _TOP_N_SESSION_KEY = "orgunit_analysis_top_n"
 _TOP_N_DEFAULT = "8"
-_COST_ROLE_SESSION_KEY = "orgunit_cost_split_col"
 
 DETAIL_BLOCKS = [
     ("Geschlecht", "Geschlecht"),
@@ -557,6 +562,14 @@ def _render_org_split_block(
         _known = [c for c in AGE_COHORT_ORDER if c in _cohort_vals]
         _unknown = sorted(c for c in _cohort_vals if c not in AGE_COHORT_ORDER)
         _cat_ord[split_col] = _known + _unknown
+    elif split_col == "TrfGr":
+        # Heller-zu-dunkler-Blau-Verlauf nach Entgeltgruppen-Hoehe (niedrige EG
+        # hell, hohe EG dunkel), analog zur Alterskohorten-Farbskala oben.
+        _trf_vals = chart_df[split_col].unique().tolist()
+        _cdm = get_tariff_group_color_map(_trf_vals)
+        _known = [g for g in TARIFF_GROUPS if g in _trf_vals]
+        _unknown = sorted(v for v in _trf_vals if v not in TARIFF_GROUPS)
+        _cat_ord[split_col] = _known + _unknown
 
     fig = px.bar(
         chart_df,
@@ -604,40 +617,23 @@ def _render_org_split_block(
 
 
 # ---------------------------------------------------------------------------
-# Cost-by-role block (always EUR, independent of global metric switch)
+# Role breakdown block (Köpfe/MAK, folgt dem globalen Metrik-Switch — keine
+# EUR-Werte. Steht global=EUR, weicht der Block auf MAK aus, siehe
+# _resolve_role_metric().)
 # ---------------------------------------------------------------------------
 
-def _aggregate_cost_by_role(
-    mapped_df: pd.DataFrame,
-    split_col: str,
-    display_orgs: list[str],
-) -> pd.DataFrame:
-    cost_col = next(
-        (c for c in ("Total_Cost_Year", "EUR_Reporting") if c in mapped_df.columns), None
-    )
-    if cost_col is None or split_col not in mapped_df.columns:
-        return pd.DataFrame()
+def _resolve_role_metric(metric_view: str, mapped_df: pd.DataFrame) -> tuple[str, dict[str, str] | None, bool]:
+    """Koepfe/MAK direkt uebernehmen, EUR auf MAK abbilden (kein Geld in dieser Sektion).
 
-    detail_df = mapped_df[mapped_df[ORG_COL].isin(display_orgs)].copy()
-    if "Is_Vacant" in detail_df.columns:
-        detail_df = detail_df[~detail_df["Is_Vacant"]]
-    if detail_df.empty:
-        return pd.DataFrame()
-
-    detail_df[split_col] = detail_df[split_col].fillna("(unbekannt)").astype(str)
-
-    agg_df = (
-        detail_df.groupby([ORG_COL, split_col], observed=True)[cost_col]
-        .sum()
-        .reset_index(name="Wert")
-    )
-    agg_df[ORG_COL] = pd.Categorical(
-        agg_df[ORG_COL], categories=display_orgs, ordered=True
-    )
-    return agg_df.sort_values([ORG_COL, split_col])
+    Gibt (effektive_metric_view, metric_config, ist_fallback) zurueck.
+    """
+    normalized = normalize_global_metric_view(metric_view) or "MAK"
+    is_fallback = normalized == "EUR"
+    effective = "MAK" if is_fallback else normalized
+    return effective, _get_metric_config(mapped_df, effective), is_fallback
 
 
-def _build_cost_summary_table(
+def _build_role_summary_table(
     mapped_df: pd.DataFrame,
     display_orgs: list[str],
     compact,
@@ -646,15 +642,12 @@ def _build_cost_summary_table(
     if "Is_Vacant" in work.columns:
         work = work[~work["Is_Vacant"]]
 
-    cost_col = next(
-        (c for c in ("Total_Cost_Year", "EUR_Reporting") if c in work.columns), None
-    )
     mak_col = next(
         (c for c in ("MAK_Reporting", "MAK_Calculated", "MAK") if c in work.columns), None
     )
     id_col = next((c for c in ("PersNr", "Personalnummer") if c in work.columns), None)
 
-    if work.empty or cost_col is None:
+    if work.empty:
         return pd.DataFrame()
 
     rows = []
@@ -662,114 +655,49 @@ def _build_cost_summary_table(
         sub = work[work[ORG_COL] == oe]
         koepfe = int(sub[id_col].nunique()) if id_col else len(sub)
         mak = float(sub[mak_col].sum()) if mak_col else 0.0
-        kosten = float(sub[cost_col].sum())
         rows.append({
             ORG_COL: oe,
             "Köpfe": koepfe,
             "MAK": compact.format_number(mak, 1),
-            "Gesamtkosten": compact.format_currency(kosten),
-            "€ / Kopf": compact.format_currency(kosten / koepfe) if koepfe > 0 else "–",
-            "€ / MAK": compact.format_currency(kosten / mak) if mak > 0 else "–",
+            "Ø FTE": compact.format_number(mak / koepfe, 2) if koepfe > 0 else "–",
         })
     return pd.DataFrame(rows)
 
 
-def _render_cost_by_role_block(
+def _render_role_breakdown_block(
     mapped_df: pd.DataFrame,
+    metric_view: str,
     compact,
     display_orgs: list[str],
 ) -> None:
-    cost_col = next(
-        (c for c in ("Total_Cost_Year", "EUR_Reporting") if c in mapped_df.columns), None
-    )
-    if cost_col is None:
-        st.info("Kostenspalte nicht verfügbar – TVÖD-Datei prüfen.")
+    has_tarifgruppe = "TrfGr" in mapped_df.columns
+
+    if not has_tarifgruppe:
+        st.info("Keine Tarifgruppen-Spalte verfügbar.")
         return
 
-    # Build split-column options from what's actually in the data
-    split_options: list[tuple[str, str]] = []
-    if "MitarbGruppenbez." in mapped_df.columns:
-        split_options.append(("Mitarbeitergruppe", "MitarbGruppenbez."))
-    if "TrfGr" in mapped_df.columns:
-        split_options.append(("Tarifgruppe", "TrfGr"))
-
-    if not split_options:
-        st.info("Keine Rollen-Spalte (Mitarbeitergruppe / Tarifgruppe) verfügbar.")
+    role_metric_view, role_metric_config, is_fallback = _resolve_role_metric(metric_view, mapped_df)
+    if role_metric_config is None:
+        st.info(f"Die Kennzahl `{role_metric_view}` ist in den aktuell geladenen Daten nicht verfügbar.")
         return
-
-    labels = [label for label, _ in split_options]
-    col_map = dict(split_options)
-
-    selected_label = st.radio(
-        "Aufschlüsselung nach",
-        labels,
-        horizontal=True,
-        key=_COST_ROLE_SESSION_KEY,
-    )
-    split_col = col_map[selected_label]
-
-    # Aggregation
-    agg_df = _aggregate_cost_by_role(mapped_df, split_col, display_orgs)
-    if agg_df.empty:
-        st.info("Keine auswertbaren Kostendaten im aktuellen Filterkontext.")
-        return
-
-    pivot_df = _build_split_pivot(agg_df, split_col)
-    display_pivot = _format_split_display(pivot_df, "EUR", compact)
-
-    agg_df["Wert_Anzeige"] = agg_df["Wert"].apply(compact.format_currency)
-    chart_order = list(reversed(display_orgs))
-    chart_height = max(420, min(1200, 28 * len(display_orgs) + 180))
-
-    fig = px.bar(
-        agg_df,
-        x="Wert",
-        y=ORG_COL,
-        color=split_col,
-        orientation="h",
-        barmode="stack",
-        custom_data=["Wert_Anzeige"],
-        category_orders={ORG_COL: chart_order},
-    )
-    fig.update_traces(
-        hovertemplate="<b>%{y}</b><br>%{fullData.name}: %{customdata[0]}<extra></extra>"
-    )
-    fig.update_layout(
-        height=chart_height,
-        margin=dict(l=10, r=10, t=10, b=10),
-        xaxis_title="Jahreskosten (EUR)",
-        yaxis_title="",
-        legend_title_text=selected_label,
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
-    )
-    apply_legend_bottom(fig)
-
-    col_chart, col_table = st.columns([3, 2])
-    with col_chart:
-        st.plotly_chart(fig, use_container_width=True)
-    with col_table:
-        dataframe_compat(display_pivot, width="stretch", hide_index=True)
-        excel_data = compact.export_to_excel(
-            pivot_df,
-            key_prefix="org_cost_role",
-            dimension_name=f"OE × {selected_label}",
-            value_type="eur",
-            table_title=f"Kostenstruktur nach {selected_label}",
+    if is_fallback:
+        st.caption(
+            "Diese Sektion zeigt keine Euro-Werte. Bei globaler Darstellungsart 'EUR' wird hier "
+            "stattdessen MAK angezeigt."
         )
-        download_button_compat(
-            label="Excel Download",
-            data=excel_data,
-            file_name=f"kosten_{split_col.lower().replace('.', '').replace(' ', '_')}.xlsx",
-            mime=compact._EXCEL_MIME,
-            key="download_cost_role",
-            width="stretch",
-        )
+    else:
+        st.caption(f"Aktuelle Darstellungsart: {role_metric_view}.")
 
-    # Summary table: Köpfe, MAK, Gesamtkosten, €/Kopf, €/MAK per OE
+    _render_org_split_block(
+        mapped_df, "Tarifgruppe", "TrfGr",
+        role_metric_view, role_metric_config, compact,
+        key_prefix="org_role_trf", display_orgs=display_orgs,
+    )
+
+    # Summary table: Köpfe, MAK, Ø FTE per OE — keine Euro-Werte
     st.divider()
-    st.subheader("Kosteneffizienz pro Organisationseinheit")
-    summary_df = _build_cost_summary_table(mapped_df, display_orgs, compact)
+    st.subheader("Kopfzahl und Kapazität pro Organisationseinheit")
+    summary_df = _build_role_summary_table(mapped_df, display_orgs, compact)
     if not summary_df.empty:
         dataframe_compat(summary_df, width="stretch", hide_index=True)
 
@@ -946,14 +874,13 @@ def main() -> None:
             display_orgs=display_orgs,
         )
 
-    # --- Kostenstruktur nach Rolle (always EUR, independent of metric switch) ---
+    # --- Personalstruktur nach Tarifgruppe (folgt dem globalen Metrik-Switch, keine EUR-Werte) ---
     st.divider()
     render_section_intro(
-        "Kostenstruktur nach Rolle",
-        "Jahreskosten pro Organisationseinheit, aufgeschlüsselt nach Mitarbeitergruppe oder Tarifgruppe. "
-        "Immer in EUR – unabhängig vom globalen Metrik-Switch.",
+        "Personalstruktur nach Tarifgruppe",
+        "Köpfe bzw. MAK pro Organisationseinheit. Folgt der globalen Darstellungsart (Köpfe/MAK).",
     )
-    _render_cost_by_role_block(mapped_df, compact, display_orgs)
+    _render_role_breakdown_block(mapped_df, metric_view, compact, display_orgs)
 
     # --- Datenqualität (always full filtered_df, never limited by top_n) ---
     with st.expander("Datenqualität", expanded=False):

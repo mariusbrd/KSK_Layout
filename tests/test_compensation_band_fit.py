@@ -81,6 +81,7 @@ def test_build_compensation_band_fit_summary_matches_hand_calculation():
     assert row_e9a["SOLL"] == pytest.approx(2.0)
     assert row_e9a["Passend"] == pytest.approx(1.5)
     assert row_e9a["Abweichend"] == pytest.approx(0.0)
+    assert row_e9a["Kapazitätslücke"] == pytest.approx(0.5)
     assert row_e9a["Passquote"] == pytest.approx(0.75)
 
     row_band = summary[summary["Soll-EG-Spanne"] == "E10-E11"].iloc[0]
@@ -89,7 +90,13 @@ def test_build_compensation_band_fit_summary_matches_hand_calculation():
     assert row_band["Abweichend"] == pytest.approx(0.8)
     assert row_band["Vakanz"] == pytest.approx(1.0)
     assert row_band["Nicht gefunden"] == pytest.approx(0.9)
+    assert row_band["Kapazitätslücke"] == pytest.approx(0.3)
     assert row_band["Passquote"] == pytest.approx(0.25)
+
+    # Kapazitätslücke schliesst die Rekonziliationslücke: SOLL geht jetzt fuer
+    # jedes Band exakt auf (anders als bei Koepfe war das vorher nicht der Fall).
+    reconciled = summary["Passend"] + summary["Abweichend"] + summary["Vakanz"] + summary["Nicht gefunden"] + summary["Kapazitätslücke"]
+    assert (summary["SOLL"] - reconciled).abs().max() == pytest.approx(0.0)
 
     # SOLL over the whole table must equal 2 planstellen (band E9A) + 4 (band E10-E11).
     assert summary["SOLL"].sum() == pytest.approx(6.0)
@@ -110,8 +117,8 @@ def test_build_compensation_fit_figure_pairs_soll_bar_with_two_ist_segments():
     module = _load_compact_page_module()
 
     fit_summary_df = pd.DataFrame([
-        {"Soll-EG-Spanne": "E9A", "SOLL": 2.0, "Passend": 1.5, "Abweichend": 0.0, "Vakanz": 0.0, "Nicht gefunden": 0.0, "Passquote": 0.75},
-        {"Soll-EG-Spanne": "E10-E11", "SOLL": 4.0, "Passend": 1.0, "Abweichend": 0.8, "Vakanz": 1.0, "Nicht gefunden": 0.9, "Passquote": 0.25},
+        {"Soll-EG-Spanne": "E9A", "SOLL": 2.0, "Passend": 1.5, "Abweichend": 0.0, "Vakanz": 0.0, "Nicht gefunden": 0.0, "Kapazitätslücke": 0.5, "Passquote": 0.75},
+        {"Soll-EG-Spanne": "E10-E11", "SOLL": 4.0, "Passend": 1.0, "Abweichend": 0.8, "Vakanz": 1.0, "Nicht gefunden": 0.9, "Kapazitätslücke": 0.3, "Passquote": 0.25},
     ])
 
     fig = module._build_compensation_fit_figure(fit_summary_df, value_label="MAK", print_mode=False)
@@ -126,26 +133,28 @@ def test_build_compensation_fit_figure_pairs_soll_bar_with_two_ist_segments():
     assert list(soll_trace.x) == [2.0, 4.0]
 
     ist_traces = [t for t in fig.data if t.offsetgroup == "ist"]
-    # Unlike the Koepfe fit chart, only Passend/Abweichend are stacked -
-    # a vacant position contributes no IST_MAK value of its own.
-    assert len(ist_traces) == 2
+    # Passend/Abweichend/Vakanz/Nicht gefunden/Kapazitätslücke are all stacked,
+    # so the IST stack's total length matches the SOLL reference bar exactly.
+    assert len(ist_traces) == 5
 
     passend_trace = next(t for t in ist_traces if "Passend" in t.name)
     abweichend_trace = next(t for t in ist_traces if "Abweichend" in t.name)
+    kapazitaetsluecke_trace = next(t for t in ist_traces if "Kapazitätslücke" in t.name)
     assert list(passend_trace.base) == [0.0, 0.0]
     assert list(abweichend_trace.base) == list(passend_trace.x)
 
-    # The SOLL bar can legitimately be longer than the IST stack (capacity gap),
-    # unlike headcount where SOLL always equals the IST stack total.
-    assert soll_trace.x[1] > passend_trace.x[1] + abweichend_trace.x[1]
+    # Kapazitätslücke reconciles SOLL and the IST stack exactly for both rows
+    # (unlike before, where the capacity gap was only an implicit bar-length diff).
+    stack_end = [float(b) + float(x) for b, x in zip(kapazitaetsluecke_trace.base, kapazitaetsluecke_trace.x)]
+    assert stack_end == pytest.approx(list(soll_trace.x))
 
 
 def test_format_compensation_fit_summary_for_display_appends_total_row():
     module = _load_compact_page_module()
 
     fit_summary_df = pd.DataFrame([
-        {"Soll-EG-Spanne": "E9A", "SOLL": 2.0, "Passend": 1.5, "Abweichend": 0.0, "Vakanz": 0.0, "Nicht gefunden": 0.0, "Passquote": 0.75},
-        {"Soll-EG-Spanne": "E10-E11", "SOLL": 4.0, "Passend": 1.0, "Abweichend": 0.8, "Vakanz": 1.0, "Nicht gefunden": 0.9, "Passquote": 0.25},
+        {"Soll-EG-Spanne": "E9A", "SOLL": 2.0, "Passend": 1.5, "Abweichend": 0.0, "Vakanz": 0.0, "Nicht gefunden": 0.0, "Kapazitätslücke": 0.5, "Passquote": 0.75},
+        {"Soll-EG-Spanne": "E10-E11", "SOLL": 4.0, "Passend": 1.0, "Abweichend": 0.8, "Vakanz": 1.0, "Nicht gefunden": 0.9, "Kapazitätslücke": 0.3, "Passquote": 0.25},
     ])
 
     display = module._format_compensation_fit_summary_for_display(fit_summary_df, "MAK")
@@ -153,6 +162,9 @@ def test_format_compensation_fit_summary_for_display_appends_total_row():
     assert display.iloc[-1]["Soll-EG-Spanne"] == "Gesamt"
     # Formatted strings use German decimal comma via _format_compensation_value.
     assert "," in display.iloc[0]["SOLL"]
+    # Kapazitätslücke is signed (+/-) since it can also indicate overcoverage.
+    assert display.iloc[0]["Kapazitätslücke"] == "+0,5"
+    assert display.iloc[-1]["Kapazitätslücke"] == "+0,8"
 
 
 def test_render_single_comparison_clean_uses_band_fit_section_for_verguetung(monkeypatch):

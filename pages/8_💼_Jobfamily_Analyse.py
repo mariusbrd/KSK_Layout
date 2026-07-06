@@ -42,7 +42,13 @@ from dataloader.kpi_engine import (
 )
 from dataloader.loader import load_and_prepare_data
 from utils.compact_page_loader import load_compact_page_module
-from utils.plot_helpers import AGE_COHORT_ORDER, apply_legend_bottom, get_age_cohort_color_map
+from utils.plot_helpers import (
+    AGE_COHORT_ORDER,
+    apply_legend_bottom,
+    get_age_cohort_color_map,
+    get_tariff_group_color_map,
+)
+from config.settings import TARIFF_GROUPS
 
 
 DETAIL_BLOCKS = [
@@ -367,6 +373,14 @@ def _render_jobfamily_split_block(
         _known = [c for c in AGE_COHORT_ORDER if c in _cohort_vals]
         _unknown = sorted(c for c in _cohort_vals if c not in AGE_COHORT_ORDER)
         _cat_ord = {split_col: _known + _unknown}
+    elif split_col == "TrfGr":
+        # Heller-zu-dunkler-Blau-Verlauf nach Entgeltgruppen-Hoehe (niedrige EG
+        # hell, hohe EG dunkel), analog zur Alterskohorten-Farbskala oben.
+        _trf_vals = chart_df[split_col].unique().tolist()
+        _cdm = get_tariff_group_color_map(_trf_vals)
+        _known = [g for g in TARIFF_GROUPS if g in _trf_vals]
+        _unknown = sorted(v for v in _trf_vals if v not in TARIFF_GROUPS)
+        _cat_ord = {split_col: _known + _unknown}
 
     fig = px.bar(
         chart_df,
@@ -413,32 +427,18 @@ def _render_jobfamily_split_block(
         )
 
 
-def _aggregate_cost_by_jobfamily(
-    mapped_df: pd.DataFrame,
-    top_n: int = TOP_JOBFAMILY_COUNT,
-) -> pd.DataFrame:
-    cost_col = next(
-        (c for c in ("Total_Cost_Year", "EUR_Reporting") if c in mapped_df.columns), None
-    )
-    if cost_col is None or "Jobfamily" not in mapped_df.columns:
-        return pd.DataFrame()
+def _resolve_role_metric(metric_view: str, mapped_df: pd.DataFrame) -> tuple[str, dict[str, str] | None, bool]:
+    """Koepfe/MAK direkt uebernehmen, EUR auf MAK abbilden (kein Geld in dieser Sektion).
 
-    work = mapped_df.copy()
-    if "Is_Vacant" in work.columns:
-        work = work[~work["Is_Vacant"]]
-    if work.empty:
-        return pd.DataFrame()
-
-    return (
-        work.groupby("Jobfamily", observed=True)[cost_col]
-        .sum()
-        .reset_index(name="Kosten")
-        .sort_values("Kosten", ascending=False)
-        .head(top_n)
-    )
+    Gibt (effektive_metric_view, metric_config, ist_fallback) zurueck.
+    """
+    normalized = normalize_global_metric_view(metric_view) or "MAK"
+    is_fallback = normalized == "EUR"
+    effective = "MAK" if is_fallback else normalized
+    return effective, _get_metric_config(mapped_df, effective), is_fallback
 
 
-def _build_jobfamily_cost_summary(
+def _build_role_summary_table(
     mapped_df: pd.DataFrame,
     jobfamilies: list[str],
     compact,
@@ -447,15 +447,12 @@ def _build_jobfamily_cost_summary(
     if "Is_Vacant" in work.columns:
         work = work[~work["Is_Vacant"]]
 
-    cost_col = next(
-        (c for c in ("Total_Cost_Year", "EUR_Reporting") if c in work.columns), None
-    )
     mak_col = next(
         (c for c in ("MAK_Reporting", "MAK_Calculated", "MAK") if c in work.columns), None
     )
     id_col = next((c for c in ("PersNr", "Personalnummer") if c in work.columns), None)
 
-    if work.empty or cost_col is None:
+    if work.empty:
         return pd.DataFrame()
 
     rows = []
@@ -463,101 +460,48 @@ def _build_jobfamily_cost_summary(
         sub = work[work["Jobfamily"] == jf]
         koepfe = int(sub[id_col].nunique()) if id_col else len(sub)
         mak = float(sub[mak_col].sum()) if mak_col else 0.0
-        kosten = float(sub[cost_col].sum())
         rows.append({
             "Jobfamily": jf,
             "Köpfe": koepfe,
             "MAK": compact.format_number(mak, 1),
-            "Gesamtkosten": compact.format_currency(kosten),
-            "€ / Kopf": compact.format_currency(kosten / koepfe) if koepfe > 0 else "–",
-            "€ / MAK": compact.format_currency(kosten / mak) if mak > 0 else "–",
+            "Ø FTE": compact.format_number(mak / koepfe, 2) if koepfe > 0 else "–",
         })
     return pd.DataFrame(rows)
 
 
-def _render_cost_by_jobfamily_block(
+def _render_role_breakdown_block(
     mapped_df: pd.DataFrame,
+    metric_view: str,
     compact,
     top_n: int = TOP_JOBFAMILY_COUNT,
 ) -> None:
-    cost_col = next(
-        (c for c in ("Total_Cost_Year", "EUR_Reporting") if c in mapped_df.columns), None
-    )
-    if cost_col is None:
-        st.info("Kostenspalte nicht verfügbar – TVÖD-Datei prüfen.")
+    if "TrfGr" not in mapped_df.columns:
+        st.info("Keine Tarifgruppen-Spalte verfügbar.")
         return
 
-    agg_df = _aggregate_cost_by_jobfamily(mapped_df, top_n=top_n)
-    if agg_df.empty:
-        st.info("Keine auswertbaren Kostendaten im aktuellen Filterkontext.")
+    role_metric_view, role_metric_config, is_fallback = _resolve_role_metric(metric_view, mapped_df)
+    if role_metric_config is None:
+        st.info(f"Die Kennzahl `{role_metric_view}` ist in den aktuell geladenen Daten nicht verfügbar.")
         return
-
-    jobfamilies = agg_df["Jobfamily"].tolist()
-    total = agg_df["Kosten"].sum()
-    agg_df["Kosten_Anzeige"] = agg_df["Kosten"].apply(compact.format_currency)
-    agg_df["Anteil"] = agg_df["Kosten"].apply(
-        lambda v: compact.format_percent(v / total) if total > 0 else "0,0%"
-    )
-
-    chart_order = list(reversed(jobfamilies))
-    chart_height = max(360, 42 * len(jobfamilies))
-
-    fig = px.bar(
-        agg_df,
-        x="Kosten",
-        y="Jobfamily",
-        orientation="h",
-        custom_data=["Kosten_Anzeige", "Anteil"],
-        category_orders={"Jobfamily": chart_order},
-    )
-    fig.update_traces(
-        hovertemplate="<b>%{y}</b><br>%{customdata[0]} · %{customdata[1]}<extra></extra>"
-    )
-    fig.update_layout(
-        height=chart_height,
-        margin=dict(l=10, r=10, t=10, b=10),
-        xaxis_title="Jahreskosten (EUR)",
-        yaxis_title="",
-        showlegend=False,
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
-    )
-
-    indexed = agg_df.set_index("Jobfamily")
-    display_table = pd.DataFrame({
-        "Jobfamily": jobfamilies,
-        "Gesamtkosten": [indexed.loc[jf, "Kosten_Anzeige"] for jf in jobfamilies],
-        "Anteil": [indexed.loc[jf, "Anteil"] for jf in jobfamilies],
-    })
-    excel_df = pd.DataFrame({
-        "Jobfamily": jobfamilies,
-        "Gesamtkosten": [float(indexed.loc[jf, "Kosten"]) for jf in jobfamilies],
-    })
-
-    col_chart, col_table = st.columns([3, 2])
-    with col_chart:
-        st.plotly_chart(fig, use_container_width=True)
-    with col_table:
-        dataframe_compat(display_table, width="stretch", hide_index=True)
-        excel_data = compact.export_to_excel(
-            excel_df,
-            key_prefix="jobfamily_cost",
-            dimension_name="Jobfamilies",
-            value_type="eur",
-            table_title="Kosten nach Jobgruppe",
+    if is_fallback:
+        st.caption(
+            "Diese Sektion zeigt keine Euro-Werte. Bei globaler Darstellungsart 'EUR' wird hier "
+            "stattdessen MAK angezeigt."
         )
-        download_button_compat(
-            label="Excel Download",
-            data=excel_data,
-            file_name="kosten_jobfamily.xlsx",
-            mime=compact._EXCEL_MIME,
-            key="download_jobfamily_cost",
-            width="stretch",
-        )
+    else:
+        st.caption(f"Aktuelle Darstellungsart: {role_metric_view}.")
 
+    _render_jobfamily_split_block(
+        mapped_df, "Tarifgruppe", "TrfGr",
+        role_metric_view, role_metric_config, compact,
+        key_prefix="jobfamily_role_trf",
+    )
+
+    # Summary table: Köpfe, MAK, Ø FTE per Jobgruppe — keine Euro-Werte
+    jobfamilies = _get_top_jobfamilies(mapped_df, role_metric_config, compact, top_n=top_n)
     st.divider()
-    st.subheader("Kosteneffizienz pro Jobgruppe")
-    summary_df = _build_jobfamily_cost_summary(mapped_df, jobfamilies, compact)
+    st.subheader("Kopfzahl und Kapazität pro Jobgruppe")
+    summary_df = _build_role_summary_table(mapped_df, jobfamilies, compact)
     if not summary_df.empty:
         dataframe_compat(summary_df, width="stretch", hide_index=True)
 
@@ -751,14 +695,13 @@ def main() -> None:
             key_prefix=f"jobfamily_{split_col.lower().replace(' ', '_')}",
         )
 
-    # --- Kostenstruktur nach Jobgruppe (always EUR, independent of metric switch) ---
+    # --- Personalstruktur nach Tarifgruppe (folgt dem globalen Metrik-Switch, keine EUR-Werte) ---
     st.divider()
     render_section_intro(
-        "Kostenstruktur nach Jobgruppe",
-        f"Jahreskosten der Top-{TOP_JOBFAMILY_COUNT}-Jobgruppen, sortiert nach Kosten. "
-        "Immer in EUR – unabhängig vom globalen Metrik-Switch.",
+        "Personalstruktur nach Tarifgruppe",
+        f"Köpfe bzw. MAK der Top-{TOP_JOBFAMILY_COUNT}-Jobgruppen. Folgt der globalen Darstellungsart (Köpfe/MAK).",
     )
-    _render_cost_by_jobfamily_block(mapped_df, compact, top_n=TOP_JOBFAMILY_COUNT)
+    _render_role_breakdown_block(mapped_df, metric_view, compact, top_n=TOP_JOBFAMILY_COUNT)
 
     with st.expander("Datenqualität", expanded=False):
         _render_data_quality_block(filtered_df, mapped_df, unmapped_df, metric_view, metric_config, compact)

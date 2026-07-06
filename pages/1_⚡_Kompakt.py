@@ -209,6 +209,11 @@ _COMPACT_LABEL_KEYS = {
     "Nicht definierte Sollstelle in Arbeit": "compact.ist_soll_heads.kpi.undefined_target_in_work",
     "Sollkapa 0,01, nicht 9XXX/99XX, mit Personalnummer": "compact.ist_soll_heads.kpi.undefined_target_in_work.subtitle",
     "Passend oder im Band": "compact.ist_soll_heads.kpi.matching_or_band",
+    "Planstellen (Soll-EG-Band vorhanden)": "compact.ist_soll_heads.kpi.band_positions",
+    "Basis der Band-Analyse unten — regulär, mit gültiger Soll-Entgeltgruppe": "compact.ist_soll_heads.kpi.band_positions.subtitle",
+    "Passend": "compact.ist_soll_heads.kpi.band_matching",
+    "Abweichend": "compact.ist_soll_heads.kpi.band_deviating",
+    "Passquote gesamt": "compact.ist_soll_heads.kpi.overall_pass_rate",
     "Low-AZ-Planstellen gesamt": "compact.ist_soll_heads.overhang.kpi.low_az_total",
     "Alle Planstellen mit Soll-Arbeitszeit 0 oder 0,1": "compact.ist_soll_heads.overhang.kpi.low_az_total.subtitle",
     "Besetzte Zusatzstellen": "compact.ist_soll_heads.overhang.kpi.occupied_additional",
@@ -219,8 +224,6 @@ _COMPACT_LABEL_KEYS = {
     "Technische Zusatzstelle neben einer regulären aktiven Stelle": "compact.ist_soll_heads.overhang.kpi.alongside_regular.subtitle",
     "Sonderfälle gesamt": "compact.ist_soll_heads.special_cases.kpi.total",
     "Besetzt, aber ohne hinterlegte Soll-EG": "compact.ist_soll_heads.special_cases.kpi.total.subtitle",
-    "Passend (exakt)": "compact.ist_soll_heads.detail.class.exact",
-    "Passend im Band": "compact.ist_soll_heads.detail.class.in_band",
     "Übergruppiert": "compact.ist_soll_heads.detail.class.overgraded",
     "Untergruppiert": "compact.ist_soll_heads.detail.class.undergraded",
     "Nicht gefunden": "compact.ist_soll_heads.detail.class.not_found",
@@ -345,7 +348,30 @@ def render_kpi_cards(kpis: list):
 def render_kpi_cards_styled(kpis: list):
     """
     Alternative KPI-Darstellung mit mehr visueller Struktur.
+
+    Alle Karten einer Zeile bekommen dieselbe Hoehe (an der laengsten Karte orientiert), auch
+    wenn Titel/Beschreibungstext unterschiedlich lang sind. ":has(.kpi-card-uniform)" scoped den
+    Stretch-Fix gezielt auf Spalten, die eine solche Karte enthalten, statt global auf jedes
+    st.columns()-Layout der Seite zu wirken.
     """
+    st.markdown(
+        """
+        <style>
+        [data-testid="column"]:has(.kpi-card-uniform) {
+            display: flex;
+        }
+        [data-testid="column"]:has(.kpi-card-uniform) > div {
+            display: flex;
+            width: 100%;
+        }
+        [data-testid="column"]:has(.kpi-card-uniform) [data-testid="stVerticalBlock"] {
+            height: 100%;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     cols = st.columns(len(kpis))
 
     for col, raw_kpi in zip(cols, kpis):
@@ -357,18 +383,23 @@ def render_kpi_cards_styled(kpis: list):
                 'good': '#10b981',
                 'warning': '#f59e0b',
                 'critical': '#E94D3A',
-                'default': '#0088DE'
+                'default': '#0088DE',
+                'neutral': '#94a3b8',
             }.get(status, '#0088DE')
 
             st.markdown(
                 f"""
-                <div style="
+                <div class="kpi-card-uniform" style="
                     background: linear-gradient(180deg, #f8fbff 0%, #ffffff 100%);
                     border-radius: 14px;
                     padding: 1rem 1.05rem;
                     border: 1px solid #dce8f5;
                     border-top: 4px solid {border_color};
                     box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
+                    height: 100%;
+                    box-sizing: border-box;
+                    display: flex;
+                    flex-direction: column;
                 ">
                     <div style="font-size: 0.76rem; color: #64748b; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;">
                         {kpi.get('icon', '📊')} {kpi['title']}
@@ -376,7 +407,7 @@ def render_kpi_cards_styled(kpis: list):
                     <div style="font-size: 1.72rem; font-weight: 700; color: #0f172a; margin: 0.45rem 0 0.35rem 0; line-height: 1.15;">
                         {kpi['value']}
                     </div>
-                    <div style="font-size: 0.84rem; color: #64748b; line-height: 1.35;">
+                    <div style="font-size: 0.84rem; color: #64748b; line-height: 1.35; margin-top: auto;">
                         {kpi.get('subtitle', '')}
                     </div>
                 </div>
@@ -1843,12 +1874,21 @@ def build_compact_compensation_planlevel_df(prepared_df: pd.DataFrame) -> pd.Dat
     else:
         out["Is_Duplicate_Planstelle"] = False
 
-    # 3. SOLL auf Duplikaten auf 0 setzen; Delta danach neu berechnen
+    # 3. SOLL **und** IST auf Duplikaten auf 0 setzen; Delta danach neu berechnen.
+    #    Vorher wurde nur SOLL genullt - eine besetzte, doppelt gemeldete Planstelle
+    #    zaehlte ihre reale IST_MAK/IST_EUR/IST_Kopf dadurch einmal pro Duplikat-Zeile,
+    #    waehrend ihr SOLL korrekt nur einmal zaehlte. Das blies IST_MAK in schmalen
+    #    Entgeltgruppen-Spannen kuenstlich auf (z. B. E9C, E9C-E10), ohne dass eine
+    #    entsprechende SOLL-Gegenbuchung existierte. Jetzt zaehlt konsistent nur die
+    #    erste Zeile je Planstellennr fuer IST **und** SOLL.
     _dup = out["Is_Duplicate_Planstelle"]
     if _dup.any():
         out.loc[_dup, "SOLL_MAK"]  = 0.0
         out.loc[_dup, "SOLL_EUR"]  = 0.0
         out.loc[_dup, "SOLL_Kopf"] = 0
+        out.loc[_dup, "IST_MAK"]   = 0.0
+        out.loc[_dup, "IST_EUR"]   = 0.0
+        out.loc[_dup, "IST_Kopf"]  = 0
         out["DELTA_MAK"]  = out["IST_MAK"]  - out["SOLL_MAK"]
         out["DELTA_EUR"]  = out["IST_EUR"]   - out["SOLL_EUR"]
         out["DELTA_Kopf"] = out["IST_Kopf"]  - out["SOLL_Kopf"]
@@ -2692,7 +2732,7 @@ def render_compensation_planlevel_section(
                 dataframe_compat(_sfmt, width="stretch", hide_index=True)
 
 
-_COMPENSATION_FIT_SUMMARY_COLUMNS = ["Soll-EG-Spanne", "SOLL", "Passend", "Abweichend", "Vakanz", "Nicht gefunden", "Passquote"]
+_COMPENSATION_FIT_SUMMARY_COLUMNS = ["Soll-EG-Spanne", "SOLL", "Passend", "Abweichend", "Vakanz", "Nicht gefunden", "Kapazitätslücke", "Passquote"]
 
 
 def _build_compensation_band_fit_summary(
@@ -2710,9 +2750,12 @@ def _build_compensation_band_fit_summary(
     aber summiert Metrikwerte statt Kopfzahlen. Wichtiger Unterschied zu Koepfe:
     SOLL ist hier NICHT automatisch gleich der Summe aus Passend+Abweichend+
     Vakanz+Nicht gefunden, da eine besetzte Planstelle einen anderen IST- als
-    SOLL-Wert haben kann (z. B. Teilzeit auf einer Vollzeit-Planstelle). Die
-    Kapazitaetsluecke zeigt sich im Diagramm als Differenz zwischen SOLL- und
-    IST-Balkenlaenge, nicht als eigenes Segment.
+    SOLL-Wert haben kann (z. B. Teilzeit auf einer Vollzeit-Planstelle, oder eine
+    Person mit mehreren Planstellen, deren reale Kapazitaet gewichtet auf beide
+    Zeilen verteilt wird). Die Spalte 'Kapazitaetsluecke' macht diese Differenz
+    explizit: SOLL = Passend+Abweichend+Vakanz+Nicht gefunden+Kapazitaetsluecke
+    geht dadurch exakt auf. Ist der Wert negativ, ueberdeckt das reale IST das
+    SOLL der Spanne (z. B. Vollzeit-Kraft auf einer Teilzeit-bewerteten Stelle).
     """
     from config.settings import TARIFF_GROUPS
     eg_order = {g: i for i, g in enumerate(TARIFF_GROUPS)}
@@ -2756,6 +2799,7 @@ def _build_compensation_band_fit_summary(
         abweichend = float(group.loc[abweichend_mask, ist_col].fillna(0).sum())
         vakanz = float(group.loc[g_is_vacant, soll_col].fillna(0).sum())
         nicht_gefunden = float(group.loc[g_not_found, ist_col].fillna(0).sum())
+        kapazitaetsluecke = soll_total - (passend + abweichend + vakanz + nicht_gefunden)
 
         rows.append({
             "Soll-EG-Spanne": band_label,
@@ -2764,6 +2808,7 @@ def _build_compensation_band_fit_summary(
             "Abweichend": abweichend,
             "Vakanz": vakanz,
             "Nicht gefunden": nicht_gefunden,
+            "Kapazitätslücke": kapazitaetsluecke,
             "Passquote": (passend / soll_total) if soll_total > 0 else 0.0,
         })
 
@@ -2778,10 +2823,13 @@ def _build_compensation_fit_figure(fit_summary_df: pd.DataFrame, *, value_label:
     Baut das SOLL-vs-IST-Balkendiagramm fuer eine Vergütungsmetrik (MAK/EUR) je
     explizite Entgeltgruppen-Spanne.
 
-    Im Unterschied zur Koepfe-Variante besteht der IST-Balken nur aus zwei
-    Segmenten (Passend/Abweichend): eine unbesetzte Stelle traegt keinen eigenen
-    MAK/EUR-Wert zum IST-Balken bei, die Vakanz/Kapazitaetsluecke zeigt sich
-    stattdessen als Differenz zur laengeren SOLL-Referenz.
+    Der IST-Balken stapelt alle fuenf Kategorien aus _build_compensation_band_fit_summary
+    (Passend/Abweichend/Vakanz/Nicht gefunden/Kapazitaetsluecke), sodass seine
+    Gesamtlaenge exakt der SOLL-Referenz entspricht — analog zur Koepfe-Variante
+    (_build_soll_ist_fit_figure). Kapazitaetsluecke wird auf >=0 begrenzt (Plotly
+    kann keine negativen Stapelsegmente zeichnen); im selteneren Fall einer
+    Ueberdeckung (IST > SOLL trotz aller Kategorien) endet der Stapel rechts von
+    der SOLL-Referenz und eine kleine Annotation beziffert die Ueberdeckung.
     """
     if fit_summary_df.empty:
         return go.Figure()
@@ -2801,12 +2849,15 @@ def _build_compensation_fit_figure(fit_summary_df: pd.DataFrame, *, value_label:
         hovertemplate=f"<b>%{{y}}</b><br>SOLL: %{{x:,.1f}} {value_label}<extra></extra>",
     ))
 
+    kapazitaetsluecke_clamped = ordered["Kapazitätslücke"].clip(lower=0.0)
     segments = [
-        ("Passend", _FIT_PASSEND_COLOR, "🟢 Passend"),
-        ("Abweichend", _FIT_ABWEICHEND_COLOR, "🔴 Abweichend"),
+        ("Passend", _FIT_PASSEND_COLOR, "🟢 Passend", {}),
+        ("Abweichend", _FIT_ABWEICHEND_COLOR, "🔴 Abweichend", {}),
+        ("Vakanz", _FIT_UNBESETZT_COLOR, "⚪ Vakanz", {}),
+        ("Nicht gefunden", _FIT_NICHT_GEFUNDEN_COLOR, "🟠 Nicht gefunden", {}),
     ]
     running_base = pd.Series(0.0, index=ordered.index)
-    for col, color, label in segments:
+    for col, color, label, marker_extra in segments:
         values = ordered[col]
         fig.add_trace(go.Bar(
             y=row_order,
@@ -2815,10 +2866,47 @@ def _build_compensation_fit_figure(fit_summary_df: pd.DataFrame, *, value_label:
             name=label,
             orientation="h",
             offsetgroup="ist",
-            marker=dict(color=color, line=dict(color="white", width=0.5)),
-            hovertemplate=f"<b>%{{y}}</b><br>{label}: %{{x:,.1f}} {value_label}<extra></extra>",
+            marker=dict(color=color, line=dict(color="white", width=0.5), **marker_extra),
+            # customdata statt %{x}: bei manuell ueber base gestapelten Balken zeigt
+            # Plotly's Hover fuer %{x} sonst die kumulierte Stapel-Endposition
+            # (base+x) statt des einzelnen Segmentwerts (siehe _build_soll_ist_fit_figure).
+            customdata=values,
+            hovertemplate=f"<b>%{{y}}</b><br>{label}: %{{customdata:,.1f}} {value_label}<extra></extra>",
         ))
         running_base = running_base + values
+
+    fig.add_trace(go.Bar(
+        y=row_order,
+        x=kapazitaetsluecke_clamped,
+        base=running_base.tolist(),
+        name="▨ Kapazitätslücke",
+        orientation="h",
+        offsetgroup="ist",
+        marker=dict(
+            color=_FIT_KAPAZITAETSLUECKE_COLOR,
+            line=dict(color="white", width=0.5),
+            pattern=dict(shape="/", fgcolor="#94a3b8", size=6, solidity=0.3),
+        ),
+        customdata=ordered["Kapazitätslücke"],
+        hovertemplate=(
+            f"<b>%{{y}}</b><br>Kapazitätslücke: %{{customdata:,.1f}} {value_label}"
+            "<br><i>Teilzeit-Effekt / MAK-Split bei Mehrfach-Planstellen</i><extra></extra>"
+        ),
+    ))
+    running_base = running_base + kapazitaetsluecke_clamped
+
+    for band_label, ueberdeckung in zip(row_order, ordered["Kapazitätslücke"]):
+        if ueberdeckung < -0.005:
+            stack_end = float(running_base.loc[band_label])
+            fig.add_annotation(
+                x=stack_end,
+                y=band_label,
+                text=f"Überdeckung {_format_compensation_value(abs(ueberdeckung), value_label)}",
+                showarrow=False,
+                xanchor="left",
+                xshift=6,
+                font=dict(size=10, color="#94a3b8"),
+            )
 
     n_rows = len(row_order)
     height = max(350, n_rows * 60)
@@ -2830,7 +2918,7 @@ def _build_compensation_fit_figure(fit_summary_df: pd.DataFrame, *, value_label:
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
         font=dict(color="#64748b", size=11),
-        margin=dict(l=10, r=20, t=30, b=30),
+        margin=dict(l=10, r=70, t=30, b=30),
         height=height,
         bargap=0.25,
         bargroupgap=0.1,
@@ -2857,7 +2945,7 @@ def _format_compensation_fit_summary_for_display(fit_summary_df: pd.DataFrame, v
     if fit_summary_df.empty:
         return fit_summary_df
 
-    totals = fit_summary_df[["SOLL", "Passend", "Abweichend", "Vakanz", "Nicht gefunden"]].sum()
+    totals = fit_summary_df[["SOLL", "Passend", "Abweichend", "Vakanz", "Nicht gefunden", "Kapazitätslücke"]].sum()
     total_soll = float(totals["SOLL"])
     total_passend = float(totals["Passend"])
     total_row = {
@@ -2867,6 +2955,7 @@ def _format_compensation_fit_summary_for_display(fit_summary_df: pd.DataFrame, v
         "Abweichend": float(totals["Abweichend"]),
         "Vakanz": float(totals["Vakanz"]),
         "Nicht gefunden": float(totals["Nicht gefunden"]),
+        "Kapazitätslücke": float(totals["Kapazitätslücke"]),
         "Passquote": (total_passend / total_soll) if total_soll > 0 else 0.0,
     }
     with_total = pd.concat([fit_summary_df, pd.DataFrame([total_row])], ignore_index=True)
@@ -2874,6 +2963,9 @@ def _format_compensation_fit_summary_for_display(fit_summary_df: pd.DataFrame, v
     display = with_total.copy()
     for col in ["SOLL", "Passend", "Abweichend", "Vakanz", "Nicht gefunden"]:
         display[col] = with_total[col].map(lambda v: _format_compensation_value(v, value_label))
+    display["Kapazitätslücke"] = with_total["Kapazitätslücke"].map(
+        lambda v: _format_compensation_value(v, value_label, signed=True)
+    )
     display["Passquote"] = with_total["Passquote"].map(lambda v: f"{v * 100:.1f}%".replace(".", ","))
     return display
 
@@ -2905,8 +2997,9 @@ def render_compensation_band_fit_section(
 
     st.caption(
         f"SOLL-Balken: Summe SOLL-{value_label} je Entgeltgruppen-Spanne  |  "
-        "IST-Balken: tatsächliche Besetzung, aufgeteilt nach 🟢 Passend / 🔴 Abweichend  |  "
-        "Vakanz und Datenpflegefälle sind separat in der Tabelle ausgewiesen"
+        "IST-Balken: 🟢 Passend / 🔴 Abweichend / ⚪ Vakanz / 🟠 Nicht gefunden / "
+        "▨ Kapazitätslücke (Teilzeit-Effekt, MAK-Split bei Mehrfach-Planstellen)  |  "
+        "beide Balken sind dadurch gleich lang"
     )
 
     _render_ist_ohne_plan_soll_warning(comp_df, key_prefix)
@@ -2947,6 +3040,16 @@ def render_compensation_band_fit_section(
             )
         except Exception:
             pass
+
+    with st.expander("Interpretationshilfe", expanded=False):
+        st.markdown(
+            f"**SOLL-{value_label}** kommt von der Planstelle, **IST-{value_label}** von der real beschäftigten "
+            "Person – deshalb passen sie selten exakt zusammen. Gründe: die Stelle ist vakant (⚪), die Person ist "
+            "anders eingruppiert als die Stelle bewertet ist (🔴 Abweichend), Daten fehlen (🟠 Nicht gefunden), "
+            "oder – am häufigsten – jemand arbeitet in Teilzeit auf einer höher bewerteten Stelle "
+            "(▨ Kapazitätslücke, **keine** Fehleingruppierung). Jeder Grund ist eine eigene Farbe im Balken; "
+            "zusammen ergeben sie immer exakt das SOLL."
+        )
 
     _render_compensation_unassigned_box(comp_df, metric, "Entgeltgruppe")
 
@@ -5539,119 +5642,6 @@ def analyze_ist_vs_soll_eur_data(df: pd.DataFrame) -> dict:
 # IST vs SOLL KÖPFE
 # =============================================================================
 
-def _build_soll_ist_pivot(df: pd.DataFrame, use_max_eg: bool = True):
-    """
-    Baut die Soll-Ist-Matrix fuer den Koepfe-Vergleich.
-
-    use_max_eg=True  → Soll-EG aus Spalte I "Text Gehaltsband" (Maximalwert), Fallback Spalte H
-    use_max_eg=False → Soll-EG ausschließlich aus Spalte H "Bewertung Tarifgruppe" (Basiswert)
-
-    Returns (pivot, soll_order, ist_eg_cols, IST_UNBESETZT, IST_NOT_FOUND)
-    """
-    from config.settings import TARIFF_GROUPS
-    from utils.settings_loader import get_setting
-
-    IST_UNBESETZT  = "Unbesetzt"
-    IST_NOT_FOUND  = "Nicht gefunden"
-
-    # Nur inkludierte OEs
-    ex = get_setting("exclusions", {})
-    ex_units = ex.get("org_units", [])
-    work = df.copy()
-    if ex_units and "Kürzel OrgEinheit" in work.columns:
-        s_ou = work["Kürzel OrgEinheit"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
-        explicit = [u for u in ex_units if u != "99XX"]
-        mask_excl = s_ou.isin(explicit)
-        if "99XX" in ex_units:
-            mask_excl = mask_excl | (s_ou.str.startswith("99") & ~s_ou.isin(set(explicit)))
-        work = work[~mask_excl]
-
-    # Personenbasierte Exklusion auf Planstellen anwenden (opt-in Toggle)
-    if ex.get("planstellen_follow_person", False):
-        person_pl_mask = pd.Series(False, index=work.index)
-        if ex.get("vorstand") and "MitarbGruppenbez." in work.columns:
-            person_pl_mask |= work["MitarbGruppenbez."].astype(str).str.strip() == "Vorstand"
-        if ex.get("ruhend_bv") and "Status kundenindividuell" in work.columns:
-            person_pl_mask |= (
-                work["Status kundenindividuell"].astype(str).str.strip()
-                == "Ruhendes Beschäftigungsverhältnis"
-            )
-        if person_pl_mask.any():
-            work = work[~person_pl_mask]
-
-    # Soll-EG aus Planstellen
-    # Vorrang: Spalte I "Text Gehaltsband" (oberes Ende des Gehaltsbandes, z. B. "bis E11")
-    # Fallback: Spalte H "Bewertung Tarifgruppe" (Basisbewertung)
-    if "Bewertung Tarifgruppe" not in work.columns:
-        return None, [], [], IST_UNBESETZT, IST_NOT_FOUND
-
-    def _normalize_eg_raw(s) -> str:
-        """Bereinigt einen EG-Rohwert: strip, upper, Leerzeichen weg, 'BIS'-Präfix entfernen."""
-        if pd.isna(s):
-            return ""
-        v = str(s).strip().upper().replace(" ", "")
-        if v.startswith("BIS"):
-            v = v[3:].strip()   # "BISE11" → "E11"
-        return v
-
-    work = work.copy()
-    _invalid = {"", "NAN", "NONE"}
-
-    col_h = work["Bewertung Tarifgruppe"].map(_normalize_eg_raw)
-    col_i = work["Text Gehaltsband"].map(_normalize_eg_raw) if "Text Gehaltsband" in work.columns else pd.Series("", index=work.index)
-
-    # Basis- und Maximalwert immer mitführen (für Band-Vergleich im Detailbereich)
-    work["_Soll_EG_H"] = col_h                                           # Basiswert (Spalte H)
-    work["_Soll_EG_I"] = col_i.where(~col_i.isin(_invalid), other=col_h)  # Maximalwert (I), Fallback H
-
-    if use_max_eg:
-        # Spalte I (Maximalwert) hat Vorrang; Fallback auf Spalte H
-        work["_Soll_EG"] = work["_Soll_EG_I"]
-    else:
-        # Ausschließlich Spalte H (Basiswert)
-        work["_Soll_EG"] = col_h
-
-    # Ist-Kategorie (vor dem Filter, damit auch Planstellen ohne Soll-EG erfasst werden)
-    def _ist_kat(row):
-        if row.get("Is_Vacant", True):
-            return IST_UNBESETZT
-        trfgr = row.get("TrfGr")
-        if pd.isna(trfgr) or str(trfgr).strip().lower() in ("", "nan"):
-            return IST_NOT_FOUND
-        return str(trfgr).strip().upper().replace(" ", "")
-
-    work["_Ist_EG"] = work.apply(_ist_kat, axis=1)
-
-    # Planstellen ohne Soll-EG, die dennoch besetzt sind → Sonderzeile (Option C)
-    _no_soll_mask = work["_Soll_EG"].isin(_invalid)
-    _no_soll_occupied = work[
-        _no_soll_mask & ~work["_Ist_EG"].isin([IST_UNBESETZT, IST_NOT_FOUND])
-    ]
-    no_soll_eg_row = _no_soll_occupied["_Ist_EG"].value_counts()  # Series {ist_eg: count}
-
-    # Anzahl Planstellen ohne verwertbare Soll-EG festhalten und ausschließen
-    n_no_soll_eg = int(_no_soll_mask.sum())
-    work = work[~_no_soll_mask]
-
-    # Pivot
-    pivot = work.groupby(["_Soll_EG", "_Ist_EG"]).size().unstack(fill_value=0)
-
-    eg_order = {g: i for i, g in enumerate(TARIFF_GROUPS)}
-    ist_eg_cols = sorted(
-        [c for c in pivot.columns if c not in (IST_UNBESETZT, IST_NOT_FOUND)],
-        key=lambda g: eg_order.get(g, 999),
-    )
-    special_cols = [c for c in (IST_UNBESETZT, IST_NOT_FOUND) if c in pivot.columns]
-    pivot = pivot[ist_eg_cols + special_cols]
-    pivot["Gesamt"] = pivot.sum(axis=1)
-
-    soll_order = sorted(pivot.index.tolist(), key=lambda g: eg_order.get(g, 999))
-    pivot = pivot.loc[soll_order]
-    pivot.index.name = "Soll-EG"
-
-    return pivot, soll_order, ist_eg_cols, IST_UNBESETZT, IST_NOT_FOUND, work, n_no_soll_eg, no_soll_eg_row
-
-
 def _build_soll_ist_pivot_raw_logic(use_max_eg: bool = True):
     """
     Roh-nahe Soll-Ist-Logik fuer den Koepfe-Vergleich.
@@ -5761,6 +5751,113 @@ def _soll_eg_band_range_members(band_label: str, eg_order: dict) -> set:
     return {g for g, rank in eg_order.items() if lo <= rank <= hi}
 
 
+def _bucket_top_n(series: pd.Series, top_n: int) -> pd.Series:
+    """
+    Normalisiert eine Spalte (strip, NaN/leer -> "(ohne Angabe)") und fasst alles ausserhalb
+    der `top_n` haeufigsten Auspraegungen zu "Sonstige" zusammen.
+
+    Gemeinsame Basis fuer die Balken- (_aggregate_detail_breakdown) und die Kreuztabellen-
+    Aggregation (_aggregate_detail_breakdown_stacked), damit dieselbe Kategorie (z. B. eine
+    Organisationseinheit) in beiden Charts identisch bucketiert - und damit identisch eingefaerbt -
+    wird. Gibt eine Series in der Laenge/im Index von `series` zurueck (Werte ersetzt, keine
+    Aggregation).
+    """
+    values = series.fillna("(ohne Angabe)").astype(str).str.strip()
+    values = values.where(values.ne(""), "(ohne Angabe)")
+    counts = values.value_counts()
+    if len(counts) <= top_n:
+        return values
+    keep = set(counts.iloc[:top_n].index)
+    return values.where(values.isin(keep), "Sonstige")
+
+
+def _aggregate_detail_breakdown(subset: pd.DataFrame, column: str, top_n: int = 10) -> pd.DataFrame:
+    """
+    Zaehlt Planstellen je Auspraegung von `column` (z. B. Organisationseinheit, Planstelle).
+
+    Liefert NIE Personalnummer/Namen, nur Gruppenzaehlungen - fuer den Detailbereich-Drilldown,
+    der Organisationseinheiten/Planstellentypen hinter einer Abweichungs-Kategorie zeigt, ohne auf
+    Personenebene herunterzugehen. Lange Tails werden ab `top_n` in "Sonstige" zusammengefasst.
+    """
+    if column not in subset.columns or subset.empty:
+        return pd.DataFrame(columns=[column, "Anzahl"])
+
+    counts = _bucket_top_n(subset[column], top_n).value_counts()
+
+    # "Sonstige" (falls vorhanden) immer ans Ende, unabhaengig von seiner eigenen Haeufigkeit -
+    # es ist eine Sammelkategorie, keine echte Auspraegung, und soll nicht mit den echten
+    # Top-N-Werten um die Sortierposition konkurrieren.
+    if "Sonstige" in counts.index:
+        sonstige_count = counts.pop("Sonstige")
+        counts = pd.concat([counts, pd.Series({"Sonstige": sonstige_count})])
+
+    return counts.rename("Anzahl").rename_axis(column).reset_index()
+
+
+def _aggregate_detail_breakdown_stacked(
+    subset: pd.DataFrame,
+    value_col: str,
+    group_col: str,
+    value_top_n: int = 10,
+    group_top_n: int = 10,
+) -> pd.DataFrame:
+    """
+    Kreuztabelle `value_col` x `group_col` (z. B. Planstelle x Organisationseinheit) fuer einen
+    gestapelten Balken je `value_col`-Auspraegung, gestapelt nach `group_col`.
+
+    Beide Achsen werden ueber _bucket_top_n bucketiert - `group_col` MUSS mit demselben `top_n`
+    bucketiert werden wie die zugehoerige Farblegende (siehe _aggregate_detail_breakdown-Aufruf
+    fuer dieselbe Spalte), damit Farbe/Legende zwischen dem Kategorie-Chart und diesem gestapelten
+    Chart konsistent bleiben. Zeilen nach Gesamtsumme absteigend sortiert.
+    """
+    if value_col not in subset.columns or group_col not in subset.columns or subset.empty:
+        return pd.DataFrame()
+
+    bucketed_value = _bucket_top_n(subset[value_col], value_top_n)
+    bucketed_group = _bucket_top_n(subset[group_col], group_top_n)
+    cross = pd.crosstab(bucketed_value, bucketed_group)
+
+    row_order = cross.sum(axis=1).sort_values(ascending=False).index
+    return cross.loc[row_order]
+
+
+def _aggregate_direction_split(
+    subset: pd.DataFrame,
+    value_col: str,
+    group_col: str,
+    klasse_col: str = "_Klasse",
+    value_top_n: int = 10,
+    group_top_n: int = 10,
+) -> dict:
+    """
+    Liefert je (value_bucket, group_bucket)-Zelle die Aufteilung nach `klasse_col`
+    (z. B. Übergruppiert/Untergruppiert), fuer Hover-Anreicherung im Detailbereich - z. B. "wie
+    viele der Abweichungen in dieser Organisationseinheit sind über- bzw. untergruppiert".
+
+    `value_col`/`group_col` werden ueber _bucket_top_n bucketiert wie in
+    _aggregate_detail_breakdown_stacked, damit dieselben Buckets adressiert werden.
+
+    Rueckgabe: {(value_bucket, group_bucket): {klasse_wert: anzahl, ...}}. Fehlt eine Zelle oder
+    ist `klasse_col` nicht vorhanden, liefert .get() im Aufrufer 0 zurueck.
+    """
+    if (
+        value_col not in subset.columns
+        or group_col not in subset.columns
+        or klasse_col not in subset.columns
+        or subset.empty
+    ):
+        return {}
+
+    bucketed_value = _bucket_top_n(subset[value_col], value_top_n)
+    bucketed_group = _bucket_top_n(subset[group_col], group_top_n)
+    grouped = subset.groupby([bucketed_value, bucketed_group, subset[klasse_col]]).size()
+
+    result: dict = {}
+    for (value_bucket, group_bucket, klasse), count in grouped.items():
+        result.setdefault((value_bucket, group_bucket), {})[klasse] = int(count)
+    return result
+
+
 def _style_soll_ist_band_matrix(pivot_display: pd.DataFrame, data_cols: list):
     """
     Faerbt besetzte Zellen dezent gruen (Ist-EG liegt innerhalb der Soll-Range der
@@ -5795,13 +5892,44 @@ def _style_soll_ist_band_matrix(pivot_display: pd.DataFrame, data_cols: list):
     return pivot_display.style.apply(_style_row, axis=1)
 
 
+# Reine Blau-Farbrampe (hell -> dunkel) fuer die Entgeltgruppen-Segmente. Bewusst OHNE
+# Gruen/Lila/Pink/Amber: Gruen transportiert an anderer Stelle der Seite (Fit-Chart)
+# "Passend" - eine Kollision wuerde faelschlich "diese Entgeltgruppe ist gut" suggerieren.
+# 20 Toene decken alle 19 TARIFF_GROUPS ab, ohne dass die Palette sich wiederholen muss.
 _DISTRIBUTION_BLUE_PALETTE = [
-    "#B3E0FF", "#99D6FF", "#66C2FF", "#33AAFF",
-    "#0088DE", "#0070BE", "#005A9E", "#004A80",
-    "#003D6B", "#003058", "#10b981", "#06b6d4",
-    "#8b5cf6", "#f59e0b", "#ec4899", "#0d9488",
+    "#E6F4FF", "#CCE9FF", "#B3DEFF", "#99D2FF", "#80C7FF",
+    "#66BBFF", "#4DB0FF", "#33A4FF", "#1A99FF", "#0088DE",
+    "#007ACC", "#006CB8", "#005EA3", "#00508F", "#00427A",
+    "#003566", "#002752", "#001A3D", "#000D29", "#000714",
 ]
 _DISTRIBUTION_NOSOLL_LABEL = "(Keine Soll-EG)"
+
+# Qualitative Farbpalette fuer die Organisationseinheiten-Aufschluesselung im Detailbereich
+# (Abschnitt "Wer steckt dahinter?"). Bewusst OHNE reines Gruen/Rot - diese bedeuten an anderer
+# Stelle der Seite "Passend"/"Abweichend", eine Kollision wuerde hier faelschlich eine Wertung
+# suggerieren. Bei bis zu 10 gleichzeitigen Farben plus Grau ist perfekte Unterscheidbarkeit
+# nicht fuer jedes Auge garantiert - das ist eine grundsaetzliche Grenze kategorialer
+# Farbcodierung; Hover-Tooltips zeigen den OE-Namen deshalb immer explizit als Rueckfallebene.
+_BREAKDOWN_OE_PALETTE = [
+    "#0088DE", "#f59e0b", "#8b5cf6", "#ec4899", "#0d9488",
+    "#6366f1", "#d97706", "#0ea5e9", "#a855f7", "#059669",
+]
+_BREAKDOWN_SONSTIGE_COLOR = "#94a3b8"  # dasselbe neutrale Grau wie der "neutral"-KPI-Status
+
+
+def _assign_breakdown_colors(categories: list) -> dict:
+    """Weist jeder Kategorie (z. B. Organisationseinheit) eine feste, eindeutige Farbe aus
+    _BREAKDOWN_OE_PALETTE zu. "Sonstige" bekommt immer die neutrale Graufarbe, unabhaengig von
+    seiner Position in `categories`."""
+    color_map = {}
+    palette_idx = 0
+    for cat in categories:
+        if cat == "Sonstige":
+            color_map[cat] = _BREAKDOWN_SONSTIGE_COLOR
+        else:
+            color_map[cat] = _BREAKDOWN_OE_PALETTE[palette_idx % len(_BREAKDOWN_OE_PALETTE)]
+            palette_idx += 1
+    return color_map
 
 
 def _build_soll_ist_distribution_figure(
@@ -5816,22 +5944,35 @@ def _build_soll_ist_distribution_figure(
     """
     Baut das gestapelte horizontale Balkendiagramm fuer die Soll-Ist-Verteilung.
 
-    Arbeitet generisch auf jeder Pivot-Struktur mit row_order als Zeilen-Achse
-    (z. B. toggle-reduzierte Soll-EG-Einzelwerte ODER explizite Entgeltgruppen-
-    Spannen wie "E10-E11") und den Ist-EG-Spalten als gestapelte Segmente.
+    Arbeitet auf der Band-Pivot-Struktur (row_order = explizite Entgeltgruppen-Spannen
+    wie "E10-E11", siehe _build_soll_ist_band_pivot) als Zeilen-Achse und den
+    Ist-EG-Spalten als gestapelte Segmente.
     """
     chart_cols = ist_eg_cols + (
         [IST_UNBESETZT] if IST_UNBESETZT in pivot.columns else []
     ) + (
         [IST_NOT_FOUND] if IST_NOT_FOUND in pivot.columns else []
     )
-    chart_pivot = pivot[chart_cols] if chart_cols else pivot.drop(columns=["Gesamt"], errors="ignore")
+
+    # Die "(Keine Soll-EG)"-Sonderzeile stammt aus einer ANDEREN Grundgesamtheit (no_soll_df)
+    # als die regulaeren Zeilen (matrix_df/ist_eg_cols) - vereinzelt kommen dort Ist-EG-Werte
+    # vor, die in der regulaeren Matrix nie auftauchen (z. B. Datenpflege-Artefakte wie "1"
+    # statt einer echten Tarifgruppe). Ohne diese Ergaenzung wuerden solche Faelle in der
+    # Sonderzeile stillschweigend unter den Tisch fallen, statt angezeigt zu werden.
+    extra_nosoll_cols = [c for c in no_soll_eg_row.index if c not in chart_cols]
+    chart_cols = chart_cols + extra_nosoll_cols
+
+    # reindex() statt pivot[chart_cols]: vertraegt Spalten, die im regulaeren pivot gar nicht
+    # existieren (die extra_nosoll_cols kommen nur in no_soll_eg_row vor), und liefert dafuer 0.
+    chart_pivot = pivot.reindex(columns=chart_cols, fill_value=0) if chart_cols else pivot.drop(columns=["Gesamt"], errors="ignore")
 
     color_map = {}
     for i, eg in enumerate(ist_eg_cols):
         color_map[eg] = _DISTRIBUTION_BLUE_PALETTE[i % len(_DISTRIBUTION_BLUE_PALETTE)]
     color_map[IST_UNBESETZT] = "#cbd5e1"   # neutrales Grau
     color_map[IST_NOT_FOUND] = "#fcd9bd"   # gedämpftes Orange — Datenpflegesignal, kein Alarm
+    for eg in extra_nosoll_cols:
+        color_map[eg] = "#fcd9bd"          # gleiches Datenpflegesignal wie "Nicht gefunden"
 
     has_nosoll_chart = len(no_soll_eg_row) > 0
 
@@ -5852,10 +5993,15 @@ def _build_soll_ist_distribution_figure(
                 values.append(
                     int(chart_pivot.loc[eg, col]) if eg in chart_pivot.index and col in chart_pivot.columns else 0
                 )
-        # Sonderzeile: gedämpfte Farbe (Opacity 0.35) für alle Segmente
+        # Sonderzeile gedaempft darstellen: ueber marker.opacity (Array), NICHT ueber
+        # marker.color (Array) - bei einem Farb-Array pro Balken kann Plotly der Legende keine
+        # eindeutige Trace-Farbe mehr zuordnen und zeigt ein graues Platzhalter-Symbol statt der
+        # echten Segmentfarbe. marker.color bleibt daher ein einzelner Wert, marker.opacity
+        # variiert stattdessen pro Balken.
         _color = color_map.get(col, "#94a3b8")
         _marker = dict(
-            color=[f"rgba(160,160,160,0.35)" if eg == _DISTRIBUTION_NOSOLL_LABEL else _color for eg in y_order],
+            color=_color,
+            opacity=[0.35 if eg == _DISTRIBUTION_NOSOLL_LABEL else 1.0 for eg in y_order],
             line=dict(color="white", width=0.5),
         )
         fig.add_trace(go.Bar(
@@ -5913,6 +6059,7 @@ _FIT_ABWEICHEND_COLOR = "#E94D3A"       # Persian Red, konsistent mit COLORS["st
 _FIT_UNBESETZT_COLOR = "#cbd5e1"        # neutrales Grau
 _FIT_NICHT_GEFUNDEN_COLOR = "#fcd9bd"   # gedämpftes Orange — Datenpflegesignal, kein Alarm
 _FIT_SOLL_COLOR = "#94a3b8"             # neutrales Blaugrau für die SOLL-Referenz
+_FIT_KAPAZITAETSLUECKE_COLOR = "#e2e8f0"  # helles Slate + Schraffur — erklaerende Restgroesse, keine eigene Kategorie
 
 _FIT_SUMMARY_COLUMNS = ["Soll-EG-Spanne", "Passend", "Abweichend", "Unbesetzt", "Nicht gefunden", "Planstellen", "Passquote"]
 
@@ -6017,7 +6164,13 @@ def _build_soll_ist_fit_figure(fit_summary_df: pd.DataFrame, print_mode: bool = 
             orientation="h",
             offsetgroup="ist",
             marker=dict(color=color, line=dict(color="white", width=0.5)),
-            hovertemplate=f"<b>%{{y}}</b><br>{label}: %{{x:,.0f}}<extra></extra>",
+            # customdata statt %{x}: bei manuell ueber base gestapelten Balken (noetig fuer die
+            # Kombination aus Gruppierung mit dem SOLL-Balken UND Stapelung der IST-Segmente)
+            # zeigt Plotly's Hover fuer %{x} die kumulierte Stapel-Endposition (base+x) statt
+            # des einzelnen Segmentwerts. customdata umgeht das und zeigt garantiert den
+            # tatsaechlichen Segmentwert.
+            customdata=values,
+            hovertemplate=f"<b>%{{y}}</b><br>{label}: %{{customdata:,.0f}}<extra></extra>",
         ))
         running_base = running_base + values
 
@@ -6053,22 +6206,47 @@ def _build_soll_ist_fit_figure(fit_summary_df: pd.DataFrame, print_mode: bool = 
     return fig
 
 
+def _fit_summary_totals(fit_summary_df: pd.DataFrame) -> dict:
+    """
+    Aggregiert die Fit-Uebersicht (eine Zeile je Soll-EG-Spanne) ueber alle Spannen hinweg.
+
+    Einzige Quelle fuer sowohl die "Gesamt"-Zeile der Fit-Tabelle
+    (_format_fit_summary_for_display) als auch die KPI-Karten im Tab-Kopf
+    (render_ist_soll_koepfe_tab) - Karten und Tabelle koennen dadurch nie auseinanderlaufen,
+    beide summieren exakt dieselben Spalten derselben fit_summary_df.
+    """
+    if fit_summary_df.empty:
+        return {
+            "planstellen": 0, "passend": 0, "abweichend": 0,
+            "unbesetzt": 0, "nicht_gefunden": 0, "passquote": 0.0,
+        }
+    totals = fit_summary_df[["Passend", "Abweichend", "Unbesetzt", "Nicht gefunden", "Planstellen"]].sum()
+    planstellen = int(totals["Planstellen"])
+    passend = int(totals["Passend"])
+    return {
+        "planstellen": planstellen,
+        "passend": passend,
+        "abweichend": int(totals["Abweichend"]),
+        "unbesetzt": int(totals["Unbesetzt"]),
+        "nicht_gefunden": int(totals["Nicht gefunden"]),
+        "passquote": (passend / planstellen) if planstellen > 0 else 0.0,
+    }
+
+
 def _format_fit_summary_for_display(fit_summary_df: pd.DataFrame) -> pd.DataFrame:
     """Formatiert die Fit-Uebersicht inkl. Gesamtzeile fuer die Tabellendarstellung."""
     if fit_summary_df.empty:
         return fit_summary_df
 
-    totals = fit_summary_df[["Passend", "Abweichend", "Unbesetzt", "Nicht gefunden", "Planstellen"]].sum()
-    total_passend = int(totals["Passend"])
-    total_gesamt = int(totals["Planstellen"])
+    totals = _fit_summary_totals(fit_summary_df)
     total_row = {
         "Soll-EG-Spanne": "Gesamt",
-        "Passend": total_passend,
-        "Abweichend": int(totals["Abweichend"]),
-        "Unbesetzt": int(totals["Unbesetzt"]),
-        "Nicht gefunden": int(totals["Nicht gefunden"]),
-        "Planstellen": total_gesamt,
-        "Passquote": (total_passend / total_gesamt) if total_gesamt > 0 else 0.0,
+        "Passend": totals["passend"],
+        "Abweichend": totals["abweichend"],
+        "Unbesetzt": totals["unbesetzt"],
+        "Nicht gefunden": totals["nicht_gefunden"],
+        "Planstellen": totals["planstellen"],
+        "Passquote": totals["passquote"],
     }
     with_total = pd.concat([fit_summary_df, pd.DataFrame([total_row])], ignore_index=True)
 
@@ -6089,114 +6267,66 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
     IST_UNBESETZT = "Unbesetzt"
     IST_NOT_FOUND = "Nicht gefunden"
 
-    # ── Toggle: Maximalwert (Spalte I) vs. Basiswert (Spalte H) ──────────────
-    if not print_mode:
-        use_max_eg = st.toggle(
-            t("compact.ist_soll_heads.toggle.max_grade.label"),
-            value=True,
-            key="soll_ist_koepfe_use_max_eg",
-            help=t("compact.ist_soll_heads.toggle.max_grade.help"),
-        )
-    else:
-        use_max_eg = True  # Im Druckbericht immer Maximalwert
-
-    pivot, soll_order, ist_eg_cols, IST_UNBESETZT, IST_NOT_FOUND, work_df, n_no_soll_eg, no_soll_eg_row, summary = _build_soll_ist_pivot_raw_logic(use_max_eg=use_max_eg)
+    # Soll-EG-Basis fuer Pivot/Summary: Spalte I (Maximalwert), Fallback Spalte H. Die Band-Tabelle
+    # und alle darauf aufbauenden Analysen (KPI-Karten, Fit-Chart, Detailbereich) nutzen ohnehin
+    # H und I direkt als Spanne - dieser Wert dient nur noch der internen Pivot-Konstruktion in
+    # der Engine, kein Nutzer-Toggle mehr noetig.
+    pivot, soll_order, ist_eg_cols, IST_UNBESETZT, IST_NOT_FOUND, work_df, n_no_soll_eg, no_soll_eg_row, summary = _build_soll_ist_pivot_raw_logic(use_max_eg=True)
 
     if pivot is None:
         st.warning(t("compact.ist_soll_heads.warning.missing_target_column"))
         return
 
-    # ── KPI-Karten ────────────────────────────────────────────────────────────
-    st.info(t("compact.ist_soll_heads.reading_hint"))
+    # Band-Aggregation einmal berechnen: einzige Quelle fuer KPI-Karten, Band-Tabelle,
+    # Fit-Chart und Fit-Tabelle weiter unten. Dadurch summieren sich die Karten oben exakt
+    # zur "Gesamt"-Zeile der Fit-Tabelle - keine parallele, potenziell abweichende Berechnung.
+    band_pivot = _build_soll_ist_band_pivot(work_df, ist_eg_cols, IST_UNBESETZT, IST_NOT_FOUND)
+    fit_summary_df = _build_soll_ist_band_fit_summary(band_pivot, ist_eg_cols, IST_UNBESETZT, IST_NOT_FOUND)
+    totals = _fit_summary_totals(fit_summary_df)
 
-    total_pl  = int(pivot["Gesamt"].sum())
-    unbesetzt = int(pivot[IST_UNBESETZT].sum()) if IST_UNBESETZT in pivot.columns else 0
-    not_found = int(pivot[IST_NOT_FOUND].sum()) if IST_NOT_FOUND in pivot.columns else 0
-    besetzt   = total_pl - unbesetzt - not_found
-
-    # Roh-nahe Fachlogik fuer diesen Tab:
-    # reguläre Sollstellen (ohne 0,01) als KPI-Basis,
-    # 0,01-Sonderfälle separat ausweisen.
-    total_pl = int(summary["regular_total"])
-    besetzt = int(summary["regular_occupied"])
-    unbesetzt = int(summary["regular_vacant"])
-    not_found = int(summary["matrix_not_found"])
+    total_pl = totals["planstellen"]
+    besetzt = totals["passend"] + totals["abweichend"]
+    unbesetzt = totals["unbesetzt"]
+    nicht_gefunden = totals["nicht_gefunden"]
+    passend_pct = totals["passquote"] * 100
     technical_in_work = int(summary["technical_non9xxx_occupied"])
-    matrix_besetzt = int(summary["matrix_occupied"])
 
-    # Band-aware Passungsquote über alle Planstellen
-    from config.settings import TARIFF_GROUPS as _TG_KPI
-    _eg_rank_kpi = {g: i for i, g in enumerate(_TG_KPI)}
-    _rank_ist  = work_df["_Ist_EG"].map(lambda e: _eg_rank_kpi.get(e, 999))
-    _rank_h_kpi = work_df["_Soll_EG_H"].map(lambda e: _eg_rank_kpi.get(e, 999)) if "_Soll_EG_H" in work_df.columns else work_df["_Soll_EG"].map(lambda e: _eg_rank_kpi.get(e, 999))
-    _rank_i_kpi = work_df["_Soll_EG_I"].map(lambda e: _eg_rank_kpi.get(e, 999)) if "_Soll_EG_I" in work_df.columns else work_df["_Soll_EG"].map(lambda e: _eg_rank_kpi.get(e, 999))
-    _rank_soll_kpi = work_df["_Soll_EG"].map(lambda e: _eg_rank_kpi.get(e, 999))
-    _occupied  = ~work_df["_Ist_EG"].isin([IST_UNBESETZT, IST_NOT_FOUND])
-    _exakt     = _occupied & (_rank_ist == _rank_soll_kpi)
-    _im_band   = _occupied & ~_exakt & (_rank_h_kpi <= _rank_ist) & (_rank_ist <= _rank_i_kpi)
-    n_passend_exakt   = int(_exakt.sum())
-    n_passend_band    = int(_im_band.sum())
-    n_passend_gesamt  = n_passend_exakt + n_passend_band
-    passend_pct       = n_passend_gesamt / matrix_besetzt * 100 if matrix_besetzt > 0 else 0.0
-
+    # ── KPI-Karten ────────────────────────────────────────────────────────────
     kpis = [
         {
-            "title": "Regulär auswertbare Planstellen",
+            "title": "Planstellen (Soll-EG-Band vorhanden)",
             "value": f"{total_pl:,}".replace(",", "."),
-            "subtitle": "inkludierte OEs mit verwertbarer Soll-Entgeltgruppe",
+            "subtitle": "Basis der Band-Analyse unten — regulär, mit gültiger Soll-Entgeltgruppe",
             "icon": "📋",
             "status": "default",
         },
         {
-            "title": "Besetzt",
-            "value": f"{besetzt:,}".replace(",", "."),
-            "subtitle": f"{besetzt / total_pl * 100:.1f}% der Planstellen".replace(".", ",") if total_pl else "—",
-            "icon": "👤",
+            "title": "Passend",
+            "value": f"{totals['passend']:,}".replace(",", "."),
+            "subtitle": f"{totals['passend'] / total_pl * 100:.1f}% aller Planstellen — Ist-EG innerhalb der Soll-Spanne".replace(".", ",") if total_pl else "—",
+            "icon": "✅",
             "status": "good",
+        },
+        {
+            "title": "Abweichend",
+            "value": f"{totals['abweichend']:,}".replace(",", "."),
+            "subtitle": f"{totals['abweichend'] / total_pl * 100:.1f}% aller Planstellen — Ist-EG außerhalb der Soll-Spanne".replace(".", ",") if total_pl else "—",
+            "icon": "🔴",
+            "status": "warning" if totals["abweichend"] > 0 else "good",
         },
         {
             "title": "Unbesetzt",
             "value": f"{unbesetzt:,}".replace(",", "."),
-            "subtitle": f"{unbesetzt / total_pl * 100:.1f}% der Planstellen".replace(".", ",") if total_pl else "—",
+            "subtitle": f"{unbesetzt / total_pl * 100:.1f}% aller Planstellen".replace(".", ",") if total_pl else "—",
             "icon": "🔲",
             "status": "warning" if unbesetzt > 0 else "good",
         },
         {
-            "title": "Passend oder im Band",
+            "title": "Passquote gesamt",
             "value": f"{passend_pct:.1f}%".replace(".", ","),
-            "subtitle": f"{n_passend_gesamt} Stellen — exakt ({n_passend_exakt}) + im Band ({n_passend_band})",
-            "icon": "✅",
+            "subtitle": f"{totals['passend']} von {total_pl} Planstellen — entspricht der Gesamt-Zeile der Fit-Tabelle unten",
+            "icon": "🎯",
             "status": "good" if passend_pct >= 75 else "warning",
-        },
-        {
-            "title": "Ohne Ist-EG",
-            "value": f"{not_found:,}".replace(",", "."),
-            "subtitle": "Besetzt, aber im Mitarbeiterdatensatz ohne Tarifgruppe",
-            "icon": "❓",
-            "status": "warning" if not_found > 0 else "good",
-        },
-    ]
-    kpis = [
-        {
-            "title": "Soll-Stellen (regulaer)",
-            "value": f"{total_pl:,}".replace(",", "."),
-            "subtitle": "Regulaere Planstellen ohne Sollkapa 0,01",
-            "icon": "📋",
-            "status": "default",
-        },
-        {
-            "title": "Regulaer besetzt",
-            "value": f"{besetzt:,}".replace(",", "."),
-            "subtitle": f"{besetzt / total_pl * 100:.1f}% der Planstellen".replace(".", ",") if total_pl else "—",
-            "icon": "👤",
-            "status": "good",
-        },
-        {
-            "title": "Regulaer unbesetzt",
-            "value": f"{unbesetzt:,}".replace(",", "."),
-            "subtitle": f"{unbesetzt / total_pl * 100:.1f}% der Planstellen".replace(".", ",") if total_pl else "—",
-            "icon": "🔲",
-            "status": "warning" if unbesetzt > 0 else "good",
         },
         {
             "title": "Nicht definierte Sollstelle in Arbeit",
@@ -6205,63 +6335,52 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
             "icon": "🧩",
             "status": "warning" if technical_in_work > 0 else "good",
         },
-        {
-            "title": "Passend oder im Band",
-            "value": f"{passend_pct:.1f}%".replace(".", ","),
-            "subtitle": f"{n_passend_gesamt} matrixfaehige Stellen — exakt ({n_passend_exakt}) + im Band ({n_passend_band})",
-            "icon": "✅",
-            "status": "good" if passend_pct >= 75 else "warning",
-        },
     ]
     st.markdown(t("compact.ist_soll_heads.summary.heading"))
     render_kpi_cards_styled(kpis)
-    st.caption(
-        t(
-            "compact.ist_soll_heads.summary.caption_primary",
-            total_positions=f"{total_pl:,}".replace(",", "."),
-            occupied=f"{besetzt:,}".replace(",", "."),
-            vacant=f"{unbesetzt:,}".replace(",", "."),
-            matching=f"{n_passend_gesamt:,}".replace(",", "."),
-        )
-    )
+    st.markdown("")
 
-    st.caption(
-        t(
-            "compact.ist_soll_heads.summary.caption_secondary",
-            total_positions=f"{total_pl:,}".replace(",", "."),
-            occupied=f"{besetzt:,}".replace(",", "."),
-            vacant=f"{unbesetzt:,}".replace(",", "."),
-            technical_in_work=f"{technical_in_work:,}".replace(",", "."),
-        )
-    )
-
+    # Blaue Info-Box steht bewusst ZWISCHEN den Karten und dem Details-Expander - sie ist ein
+    # wichtiger Hinweis (Datenqualitaet), waehrend die grauen Captions darunter reine
+    # Kontrolllogik-Details sind, die nicht jeder auf den ersten Blick braucht.
     if n_no_soll_eg > 0 and not print_mode:
         st.info(t("compact.ist_soll_heads.summary.no_soll_info", count=n_no_soll_eg))
 
     if not print_mode:
-        st.caption(
-            t(
-                "compact.ist_soll_heads.summary.technical_caption",
-                total=f"{summary['technical_total']:,}".replace(",", "."),
-                on_9xxx=f"{summary['technical_9xxx_total']:,}".replace(",", "."),
-                outside_9xxx=f"{summary['technical_non9xxx_total']:,}".replace(",", "."),
-                occupied=f"{summary['technical_non9xxx_occupied']:,}".replace(",", "."),
+        with st.expander(t("compact.ist_soll_heads.summary.details_expander")):
+            st.caption(
+                t(
+                    "compact.ist_soll_heads.summary.caption_primary",
+                    total_positions=f"{total_pl:,}".replace(",", "."),
+                    occupied=f"{besetzt:,}".replace(",", "."),
+                    vacant=f"{unbesetzt:,}".replace(",", "."),
+                    matching=f"{totals['passend']:,}".replace(",", "."),
+                )
             )
-        )
+            st.caption(
+                t(
+                    "compact.ist_soll_heads.summary.caption_secondary",
+                    total_positions=f"{total_pl:,}".replace(",", "."),
+                    occupied=f"{besetzt:,}".replace(",", "."),
+                    vacant=f"{unbesetzt:,}".replace(",", "."),
+                    technical_in_work=f"{technical_in_work:,}".replace(",", "."),
+                )
+            )
+            st.caption(
+                t(
+                    "compact.ist_soll_heads.summary.technical_caption",
+                    total=f"{summary['technical_total']:,}".replace(",", "."),
+                    on_9xxx=f"{summary['technical_9xxx_total']:,}".replace(",", "."),
+                    outside_9xxx=f"{summary['technical_non9xxx_total']:,}".replace(",", "."),
+                    occupied=f"{summary['technical_non9xxx_occupied']:,}".replace(",", "."),
+                )
+            )
         st.markdown("---")
 
     st.markdown(t("compact.ist_soll_heads.analysis.heading"))
     st.caption(t("compact.ist_soll_heads.analysis.caption"))
 
-    # ── Tabelle ───────────────────────────────────────────────────────────────
-    st.subheader(t("compact.ist_soll_heads.matrix.heading"))
-    st.caption(t("compact.ist_soll_heads.matrix.caption"))
-
-    # Summenzeile anhängen
-    total_row = pivot.sum(axis=0).rename("Gesamt")
-    pivot_display = pd.concat([pivot, total_row.to_frame().T])
-
-    # Integer-Formatierung
+    # Integer-Formatierung (auch von der Band-Tabelle unten genutzt)
     def _fmt_int(v):
         try:
             i = int(v)
@@ -6269,26 +6388,9 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
         except (ValueError, TypeError):
             return "–"
 
-    # Spaltenbreite angepasst
-    column_config = {col: st.column_config.TextColumn(col, width="small")
-                     for col in pivot_display.columns}
-    column_config["Gesamt"] = st.column_config.TextColumn("Gesamt", width="small")
-
-    matrix_data_cols = [c for c in ist_eg_cols if c in pivot_display.columns]
-    matrix_styler = _style_soll_ist_band_matrix(pivot_display, matrix_data_cols).format(_fmt_int)
-
-    st.caption(t("compact.ist_soll_heads.matrix.legend"))
-    st.dataframe(
-        matrix_styler,
-        use_container_width=True,
-        column_config=column_config,
-    )
-
-    # ── Zweite Tabelle: explizite Entgeltgruppen-Spannen (Bandbreiten) ────────
+    # ── Tabelle: explizite Entgeltgruppen-Spannen (Bandbreiten) ───────────────
     st.subheader(t("compact.ist_soll_heads.matrix_band.heading"))
     st.caption(t("compact.ist_soll_heads.matrix_band.caption"))
-
-    band_pivot = _build_soll_ist_band_pivot(work_df, ist_eg_cols, IST_UNBESETZT, IST_NOT_FOUND)
 
     if band_pivot.empty:
         st.info(t("compact.ist_soll_heads.matrix_band.empty"))
@@ -6330,8 +6432,6 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
     st.subheader(t("compact.ist_soll_heads.fit.heading"))
     st.caption(t("compact.ist_soll_heads.fit.caption"))
 
-    fit_summary_df = _build_soll_ist_band_fit_summary(band_pivot, ist_eg_cols, IST_UNBESETZT, IST_NOT_FOUND)
-
     if fit_summary_df.empty:
         st.info(t("compact.ist_soll_heads.fit.empty"))
     else:
@@ -6356,22 +6456,6 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
         except Exception:
             pass
 
-    # Excel-Download
-    try:
-        buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-            pivot_display.to_excel(writer, sheet_name="Soll-Ist-Köpfe")
-        buf.seek(0)
-        download_button_compat(
-            label=t("compact.ist_soll_heads.matrix.download"),
-            data=buf.getvalue(),
-            file_name="ist_soll_koepfe.xlsx",
-            mime=_EXCEL_MIME,
-            key="download_ist_soll_koepfe",
-        )
-    except Exception:
-        pass
-
     if not print_mode:
         st.markdown("---")
     else:
@@ -6394,8 +6478,8 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
             print_mode=print_mode,
         )
         st.plotly_chart(fig, use_container_width=True, key="ist_vs_soll_koepfe_distribution_chart")
-        if not_found > 0:
-            st.caption(t("compact.ist_soll_heads.distribution.missing_ist_caption", count=not_found))
+        if nicht_gefunden > 0:
+            st.caption(t("compact.ist_soll_heads.distribution.missing_ist_caption", count=nicht_gefunden))
 
     # ── Detailbereich: eine Soll-EG tiefer analysieren ────────────────────────
     if not print_mode:
@@ -6403,15 +6487,22 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
         st.subheader(t("compact.ist_soll_heads.detail.heading"))
         st.caption(t("compact.ist_soll_heads.detail.caption"))
 
-        selected_soll = st.selectbox(
+        # Band-Label je Zeile (dieselbe Zuordnung wie die Band-Tabelle/band_pivot oben) - Basis
+        # fuer die Selectbox, damit Drilldown und Tabelle/Chart immer dieselben Gruppen zeigen.
+        work_df["_Soll_EG_Band"] = [
+            _soll_eg_band_label(h, i)
+            for h, i in zip(work_df["_Soll_EG_H"], work_df["_Soll_EG_I"])
+        ]
+
+        selected_band = st.selectbox(
             t("compact.ist_soll_heads.detail.select_label"),
-            options=soll_order,
+            options=list(band_pivot.index),
             key="soll_ist_detail_eg",
             label_visibility="collapsed",
         )
 
-        # Zeilen für die gewählte Soll-EG
-        detail = work_df[work_df["_Soll_EG"] == selected_soll].copy()
+        # Zeilen für die gewählte Soll-EG-Spanne
+        detail = work_df[work_df["_Soll_EG_Band"] == selected_band].copy()
         n_total = len(detail)
 
         if n_total == 0:
@@ -6420,19 +6511,17 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
             # ── Klassifizierung jeder Planstelle ──────────────────────────────
             # Band-Logik: Soll-EG_H (Spalte H) = untere Grenze,
             #             Soll-EG_I (Spalte I, Fallback H) = obere Grenze.
-            # Ist-EG liegt im Band → "Passend im Band"
-            # Ist-EG == Soll-EG (Toggle-Wert) → "Passend (exakt)"
+            # Ist-EG liegt im Band (inkl. Grenzen) → "Passend"
             # Ist-EG < Soll-EG_H → Untergruppiert
             # Ist-EG > Soll-EG_I → Übergruppiert
             from config.settings import TARIFF_GROUPS as _TG
             _EG_RANK = {g: i for i, g in enumerate(_TG)}
 
-            # Für die gewählte Soll-EG: Band aus erster Zeile auslesen
-            _soll_h = detail["_Soll_EG_H"].iloc[0] if "_Soll_EG_H" in detail.columns else selected_soll
-            _soll_i = detail["_Soll_EG_I"].iloc[0] if "_Soll_EG_I" in detail.columns else selected_soll
+            # Für die gewählte Soll-EG-Spanne: Band aus erster Zeile auslesen
+            _soll_h = detail["_Soll_EG_H"].iloc[0] if "_Soll_EG_H" in detail.columns else selected_band
+            _soll_i = detail["_Soll_EG_I"].iloc[0] if "_Soll_EG_I" in detail.columns else selected_band
             _rank_h = _EG_RANK.get(_soll_h, 999)
             _rank_i = _EG_RANK.get(_soll_i, 999)
-            _soll_rank = _EG_RANK.get(selected_soll, 999)  # aktiver Toggle-Wert
             _has_band = _rank_h != _rank_i                  # Band hat Breite (H ≠ I)
 
             def _classify(ist_eg: str) -> str:
@@ -6441,50 +6530,39 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
                 if ist_eg == IST_NOT_FOUND:
                     return "Nicht gefunden"
                 ist_rank = _EG_RANK.get(ist_eg, 999)
-                if ist_rank == _soll_rank:
-                    return "Passend (exakt)"
-                if _has_band and _rank_h <= ist_rank <= _rank_i:
-                    return "Passend im Band"
+                if ist_rank < _rank_h:
+                    return "Untergruppiert"
                 if ist_rank > _rank_i:
                     return "Übergruppiert"
-                return "Untergruppiert"
+                return "Passend"
 
             detail["_Klasse"] = detail["_Ist_EG"].map(_classify)
 
             n_unbesetzt       = int((detail["_Klasse"] == "Unbesetzt").sum())
-            n_passend_exakt   = int((detail["_Klasse"] == "Passend (exakt)").sum())
-            n_passend_band    = int((detail["_Klasse"] == "Passend im Band").sum())
+            n_passend         = int((detail["_Klasse"] == "Passend").sum())
             n_ueber           = int((detail["_Klasse"] == "Übergruppiert").sum())
             n_unter           = int((detail["_Klasse"] == "Untergruppiert").sum())
             n_not_found       = int((detail["_Klasse"] == "Nicht gefunden").sum())
-            n_besetzt         = n_total - n_unbesetzt - n_not_found
-            n_passend_gesamt  = n_passend_exakt + n_passend_band  # exakt + im Band
 
-            passungs_pct      = n_passend_exakt   / n_besetzt * 100 if n_besetzt > 0 else 0.0
-            band_pct          = n_passend_gesamt  / n_besetzt * 100 if n_besetzt > 0 else 0.0
-            ueber_pct         = n_ueber           / n_besetzt * 100 if n_besetzt > 0 else 0.0
-            unbesetzt_pct     = n_unbesetzt        / n_total  * 100 if n_total   > 0 else 0.0
+            # Nenner einheitlich n_total (alle Planstellen der Spanne, inkl. Unbesetzt/Nicht
+            # gefunden) - dieselbe Konvention wie der Donut darunter (Plotly's automatische
+            # Prozentberechnung teilt durch die Summe aller Segmente) und wie die
+            # "Passquote gesamt"-Kachel/Fit-Chart weiter oben auf der Seite. Vorher teilten
+            # Passend/Uebergruppiert durch n_besetzt (ohne Unbesetzt/Nicht gefunden) waehrend
+            # Unbesetzt schon durch n_total teilte - das ergab abweichende Prozentzahlen
+            # zwischen KPI-Kachel und Donut fuer dieselbe Zeile.
+            passend_pct       = n_passend         / n_total * 100 if n_total > 0 else 0.0
+            ueber_pct         = n_ueber           / n_total * 100 if n_total > 0 else 0.0
+            unbesetzt_pct     = n_unbesetzt        / n_total * 100 if n_total > 0 else 0.0
 
             # ── KPI-Kacheln ────────────────────────────────────────────────────
-            # Kachel "Passend im Band" nur anzeigen, wenn das Band Breite hat
             detail_kpis = [
                 {
-                    "title":    "Passend (exakt)",
-                    "value":    f"{passungs_pct:.1f}%".replace(".", ","),
-                    "subtitle": f"{n_passend_exakt} Planstellen — Ist-EG = Soll-EG",
+                    "title":    f"Passend ({_soll_h}–{_soll_i})" if _has_band else "Passend",
+                    "value":    f"{passend_pct:.1f}%".replace(".", ","),
+                    "subtitle": f"{n_passend} Planstellen — Ist-EG innerhalb der Soll-Spanne",
                     "icon":     "✅",
-                    "status":   "good" if passungs_pct >= 70 else "warning",
-                },
-                {
-                    "title":    f"Passend im Band ({_soll_h}–{_soll_i})" if _has_band else "Passend im Band",
-                    "value":    f"{band_pct:.1f}%".replace(".", ","),
-                    "subtitle": (
-                        f"{n_passend_gesamt} Planstellen — exakt + im Band"
-                        if _has_band else
-                        f"{n_passend_gesamt} (kein Band in Spalte I)"
-                    ),
-                    "icon":     "🎯",
-                    "status":   "good" if band_pct >= 70 else "warning",
+                    "status":   "good" if passend_pct >= 70 else "warning",
                 },
                 {
                     "title":    "Übergruppierungsquote",
@@ -6498,7 +6576,9 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
                     "value":    f"{unbesetzt_pct:.1f}%".replace(".", ","),
                     "subtitle": f"{n_unbesetzt} von {n_total} Planstellen",
                     "icon":     "🔲",
-                    "status":   "warning" if unbesetzt_pct > 10 else "good",
+                    # Grau statt gruen/gelb: "Unbesetzt" ist eine neutrale Kategorie, keine
+                    # Wertung - dieselbe Farbe wie im Donut und Balkendiagramm darunter.
+                    "status":   "neutral",
                 },
             ]
             render_kpi_cards_styled(detail_kpis)
@@ -6509,38 +6589,23 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
 
             # ── Chart 1: Klassifizierungs-Donut ───────────────────────────────
             with col_donut:
-                _band_label = f"Passend im Band ({_soll_h}–{_soll_i})" if _has_band else "Passend im Band"
-                st.caption(
-                    f"**Verteilung** — Soll-EG {selected_soll}"
-                    + (f"  |  Band: {_soll_h} – {_soll_i}" if _has_band else "")
-                )
+                st.caption(f"**Verteilung** — Soll-EG-Spanne {selected_band}")
                 _KL_COLOR = {
-                    "Passend (exakt)":  "#10b981",   # grün
-                    _band_label:        "#34d399",   # hellgrün
-                    "Passend im Band":  "#34d399",
+                    "Passend":          "#10b981",   # grün
                     "Übergruppiert":    "#0088DE",   # blau
                     "Untergruppiert":   "#f59e0b",   # amber
                     "Unbesetzt":        "#cbd5e1",   # grau
                     "Nicht gefunden":   "#E94D3A",   # rot
                 }
                 klasse_counts = detail["_Klasse"].value_counts()
-                kl_order = ["Passend (exakt)", "Passend im Band",
-                            "Übergruppiert", "Untergruppiert",
+                kl_order = ["Passend", "Übergruppiert", "Untergruppiert",
                             "Unbesetzt", "Nicht gefunden"]
                 kl_labels = [k for k in kl_order if k in klasse_counts.index]
                 kl_values = [int(klasse_counts[k]) for k in kl_labels]
                 kl_colors = [_KL_COLOR.get(k, "#94a3b8") for k in kl_labels]
 
-                # Legende-Labels mit Band-Info anreichern
-                kl_display = []
-                for k in kl_labels:
-                    if k == "Passend im Band" and _has_band:
-                        kl_display.append(f"Im Band ({_soll_h}–{_soll_i})")
-                    else:
-                        kl_display.append(k)
-
                 fig_donut = go.Figure(go.Pie(
-                    labels=kl_display,
+                    labels=kl_labels,
                     values=kl_values,
                     marker=dict(colors=kl_colors, line=dict(color="white", width=2)),
                     hole=0.52,
@@ -6559,7 +6624,7 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
 
             # ── Chart 2: Ist-EG-Balken für gewählte Soll-EG ───────────────────
             with col_bar:
-                st.caption(t("compact.ist_soll_heads.detail.actual_grading_caption", selected_soll=selected_soll))
+                st.caption(t("compact.ist_soll_heads.detail.actual_grading_caption", selected_soll=selected_band))
                 ist_counts = (
                     detail.groupby("_Ist_EG").size()
                     .reset_index(name="n")
@@ -6615,6 +6680,207 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
                 )
                 st.plotly_chart(fig_bar, use_container_width=True)
 
+            # ── Aufschlüsselung: Organisationseinheiten & Planstellentypen ────
+            st.markdown("")
+            st.markdown(f"**{t('compact.ist_soll_heads.detail.breakdown.heading')}**")
+            st.caption(t("compact.ist_soll_heads.detail.breakdown.caption"))
+
+            _subset_options = {
+                t("compact.ist_soll_heads.detail.breakdown.subset.outside"): {"Übergruppiert", "Untergruppiert"},
+                t("compact.ist_soll_heads.detail.breakdown.subset.inside"): {"Passend"},
+                t("compact.ist_soll_heads.detail.breakdown.subset.vacant"): {"Unbesetzt"},
+            }
+            _subset_label = st.radio(
+                t("compact.ist_soll_heads.detail.breakdown.subset_label"),
+                options=list(_subset_options.keys()),
+                index=0,
+                horizontal=True,
+                key="soll_ist_detail_subset",
+                label_visibility="collapsed",
+            )
+            breakdown_subset = detail[detail["_Klasse"].isin(_subset_options[_subset_label])]
+
+            if breakdown_subset.empty:
+                st.info(t("compact.ist_soll_heads.detail.breakdown.empty"))
+            else:
+                oe_breakdown = _aggregate_detail_breakdown(breakdown_subset, "Organisationseinheit")
+                type_breakdown = _aggregate_detail_breakdown(breakdown_subset, "Planstelle")
+                type_by_oe = _aggregate_detail_breakdown_stacked(breakdown_subset, "Planstelle", "Organisationseinheit")
+
+                # Feste Farbzuordnung je OE - dieselbe Bucketierung (oe_breakdown) speist sowohl
+                # die Balkenfarben im OE-Chart als auch die Stapel-Segmentfarben im
+                # Planstellentyp-Chart, damit eine Organisationseinheit in beiden Charts immer
+                # dieselbe Farbe hat.
+                oe_color_map = _assign_breakdown_colors(oe_breakdown["Organisationseinheit"].tolist())
+
+                # Nur fuer "Außerhalb der Range" (Übergruppiert + Untergruppiert kombiniert)
+                # macht eine Richtungsaufschluesselung ueberhaupt Sinn - fuer "Innerhalb der
+                # Range"/"Unbesetzt" gibt es nur eine Klasse, ein Split waere trivial/leer.
+                is_outside_subset = _subset_label == t("compact.ist_soll_heads.detail.breakdown.subset.outside")
+                oe_klasse_cross = (
+                    _aggregate_detail_breakdown_stacked(breakdown_subset, "Organisationseinheit", "_Klasse")
+                    if is_outside_subset else pd.DataFrame()
+                )
+                type_oe_klasse_split = (
+                    _aggregate_direction_split(breakdown_subset, "Planstelle", "Organisationseinheit")
+                    if is_outside_subset else {}
+                )
+                hover_direction_suffix = (
+                    t("compact.ist_soll_heads.detail.breakdown.hover_direction_extra") if is_outside_subset else ""
+                )
+
+                def _oe_klasse_count(oe: str, klasse: str) -> int:
+                    if oe not in oe_klasse_cross.index or klasse not in oe_klasse_cross.columns:
+                        return 0
+                    return int(oe_klasse_cross.loc[oe, klasse])
+
+                col_oe, col_typ = st.columns([1, 1], gap="large")
+
+                with col_oe:
+                    st.caption(t("compact.ist_soll_heads.detail.breakdown.oe_caption"))
+                    oe_order = oe_breakdown["Organisationseinheit"][::-1]
+                    oe_customdata = (
+                        [[_oe_klasse_count(oe, "Übergruppiert"), _oe_klasse_count(oe, "Untergruppiert")] for oe in oe_order]
+                        if is_outside_subset else None
+                    )
+                    fig_oe = go.Figure(go.Bar(
+                        y=oe_order,
+                        x=oe_breakdown["Anzahl"][::-1],
+                        orientation="h",
+                        marker=dict(color=[oe_color_map[oe] for oe in oe_order]),
+                        showlegend=False,
+                        customdata=oe_customdata,
+                        hovertemplate="<b>%{y}</b><br>Planstellen: %{x:,.0f}" + hover_direction_suffix + "<extra></extra>",
+                    ))
+                    fig_oe.update_layout(
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        font=dict(color="#64748b", size=11),
+                        margin=dict(l=10, r=10, t=10, b=10),
+                        height=max(220, len(oe_breakdown) * 32),
+                        xaxis=dict(showgrid=True, gridcolor="rgba(226,232,240,0.8)", zeroline=False, dtick=1),
+                        yaxis=dict(showgrid=False),
+                    )
+                    st.plotly_chart(fig_oe, use_container_width=True)
+
+                with col_typ:
+                    st.caption(t("compact.ist_soll_heads.detail.breakdown.type_caption"))
+                    fig_typ = go.Figure()
+                    if not type_by_oe.empty:
+                        type_order = list(type_by_oe.index)[::-1]
+                        # Ein Trace je OE (echtes barmode="stack", kein manuelles base -
+                        # dasselbe bewaehrte Muster wie die Verteilungs-Grafik oben, kein Risiko
+                        # fuer den dort behobenen Hover-Kumulierungs-Bug). Keine Legende noetig -
+                        # das OE-Chart daneben benennt jede Farbe bereits ueber die Y-Achse, der
+                        # Hover-Text nennt die OE zusaetzlich explizit je Segment.
+                        for oe_name in oe_breakdown["Organisationseinheit"]:
+                            if oe_name not in type_by_oe.columns:
+                                continue
+                            trace_customdata = (
+                                [
+                                    [
+                                        type_oe_klasse_split.get((t_row, oe_name), {}).get("Übergruppiert", 0),
+                                        type_oe_klasse_split.get((t_row, oe_name), {}).get("Untergruppiert", 0),
+                                    ]
+                                    for t_row in type_order
+                                ]
+                                if is_outside_subset else None
+                            )
+                            fig_typ.add_trace(go.Bar(
+                                y=type_order,
+                                x=[int(type_by_oe.loc[t_row, oe_name]) for t_row in type_order],
+                                name=oe_name,
+                                orientation="h",
+                                marker=dict(color=oe_color_map[oe_name]),
+                                showlegend=False,
+                                customdata=trace_customdata,
+                                hovertemplate=f"<b>%{{y}}</b><br>{oe_name}: %{{x:,.0f}}" + hover_direction_suffix + "<extra></extra>",
+                            ))
+                    fig_typ.update_layout(
+                        barmode="stack",
+                        showlegend=False,
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        font=dict(color="#64748b", size=11),
+                        margin=dict(l=10, r=10, t=10, b=10),
+                        height=max(220, len(type_by_oe) * 32) if not type_by_oe.empty else 220,
+                        xaxis=dict(showgrid=True, gridcolor="rgba(226,232,240,0.8)", zeroline=False, dtick=1),
+                        yaxis=dict(showgrid=False),
+                    )
+                    st.plotly_chart(fig_typ, use_container_width=True)
+
+                st.caption(t("compact.ist_soll_heads.detail.breakdown.color_link_caption"))
+
+                # MitarbGruppenbez. nur als Zusatzinfo, falls die Auswahl mehr als eine
+                # Auspraegung enthaelt (vermeidet eine triviale "100% Angestellte"-Grafik).
+                if "MitarbGruppenbez." in breakdown_subset.columns:
+                    _gruppen = sorted(breakdown_subset["MitarbGruppenbez."].dropna().unique().tolist())
+                    if len(_gruppen) > 1:
+                        st.caption(
+                            t("compact.ist_soll_heads.detail.breakdown.groups_caption", groups=", ".join(_gruppen))
+                        )
+
+                # OE-Aufschlüsselung um die Übergruppiert/Untergruppiert-Spalten ergänzen (dieselben
+                # Werte wie im Hover), damit der Export nicht weniger zeigt als die App selbst.
+                oe_breakdown_export = oe_breakdown.copy()
+                if is_outside_subset:
+                    oe_breakdown_export["Übergruppiert"] = [
+                        _oe_klasse_count(oe, "Übergruppiert") for oe in oe_breakdown_export["Organisationseinheit"]
+                    ]
+                    oe_breakdown_export["Untergruppiert"] = [
+                        _oe_klasse_count(oe, "Untergruppiert") for oe in oe_breakdown_export["Organisationseinheit"]
+                    ]
+
+                # Übersicht ueber die GESAMTE Spanne (unabhaengig von der Teilmengen-Auswahl) -
+                # dieselben Zahlen wie KPI-Kacheln und Donut oben im Detailbereich.
+                uebersicht_export = pd.DataFrame([
+                    {"Kennzahl": "Soll-EG-Spanne", "Anzahl": selected_band, "Anteil (%)": None},
+                    {"Kennzahl": "Planstellen gesamt", "Anzahl": n_total, "Anteil (%)": 100.0},
+                    {"Kennzahl": "Passend", "Anzahl": n_passend, "Anteil (%)": round(passend_pct, 1)},
+                    {"Kennzahl": "Übergruppiert", "Anzahl": n_ueber, "Anteil (%)": round(ueber_pct, 1)},
+                    {"Kennzahl": "Untergruppiert", "Anzahl": n_unter, "Anteil (%)": round(n_unter / n_total * 100, 1) if n_total > 0 else 0.0},
+                    {"Kennzahl": "Unbesetzt", "Anzahl": n_unbesetzt, "Anteil (%)": round(unbesetzt_pct, 1)},
+                    {"Kennzahl": "Nicht gefunden", "Anzahl": n_not_found, "Anteil (%)": round(n_not_found / n_total * 100, 1) if n_total > 0 else 0.0},
+                ])
+
+                # Ist-Eingruppierung ueber die GESAMTE Spanne (dieselben Daten wie das
+                # Ist-EG-Balkendiagramm oben, unabhaengig von der Teilmengen-Auswahl).
+                ist_eg_export = ist_counts.rename(columns={"_Ist_EG": "Ist-Entgeltgruppe", "n": "Anzahl"})
+
+                try:
+                    breakdown_buf = io.BytesIO()
+                    with pd.ExcelWriter(breakdown_buf, engine="openpyxl") as writer:
+                        uebersicht_export.to_excel(writer, sheet_name="Übersicht", index=False)
+                        ist_eg_export.to_excel(writer, sheet_name="Ist-Eingruppierung", index=False)
+                        oe_breakdown_export.to_excel(writer, sheet_name="Organisationseinheiten", index=False)
+                        type_breakdown.to_excel(writer, sheet_name="Planstellentypen", index=False)
+                        type_by_oe.to_excel(writer, sheet_name="Planstellentypen je OE")
+                        if is_outside_subset and type_oe_klasse_split:
+                            # Flache Detailtabelle, deckungsgleich mit dem Hover-Inhalt des
+                            # Planstellentyp-Charts: eine Zeile je (Planstellentyp, OE)-Zelle.
+                            richtung_rows = [
+                                {
+                                    "Planstelle": v,
+                                    "Organisationseinheit": g,
+                                    "Übergruppiert": counts.get("Übergruppiert", 0),
+                                    "Untergruppiert": counts.get("Untergruppiert", 0),
+                                }
+                                for (v, g), counts in type_oe_klasse_split.items()
+                            ]
+                            pd.DataFrame(richtung_rows).to_excel(
+                                writer, sheet_name="Planstellentyp Richtung je OE", index=False
+                            )
+                    breakdown_buf.seek(0)
+                    download_button_compat(
+                        label=t("compact.ist_soll_heads.detail.breakdown.download"),
+                        data=breakdown_buf.getvalue(),
+                        file_name="ist_soll_koepfe_detail_aufschluesselung.xlsx",
+                        mime=_EXCEL_MIME,
+                        key="download_ist_soll_koepfe_detail_breakdown",
+                    )
+                except Exception:
+                    pass
+
     with st.expander(t("compact.ist_soll_heads.special_cases.heading").lstrip("# "), expanded=False):
         st.caption(t("compact.ist_soll_heads.special_cases.caption"))
 
@@ -6652,7 +6918,7 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
             st.subheader(t("compact.ist_soll_heads.overhang.heading"))
             st.caption(t("compact.ist_soll_heads.overhang.caption"))
 
-            # OE-Exklusion auf Rohdaten anwenden (gleiche Logik wie _build_soll_ist_pivot)
+            # OE-Exklusion auf Rohdaten anwenden (inkludierte OEs gemaess Einstellungen)
             from utils.settings_loader import get_setting as _get_setting
             _ex       = _get_setting("exclusions", {})
             _ex_units = _ex.get("org_units", [])

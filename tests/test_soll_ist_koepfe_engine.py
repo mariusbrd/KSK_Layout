@@ -49,8 +49,11 @@ def _reference_result_from_basis(basis: pd.DataFrame, exclusions: dict, use_max_
     regular_df = work.loc[~work["__is_001__"]].copy()
     technical_df = work.loc[work["__is_001__"]].copy()
     invalid = {"", "NAN", "NONE"}
-    no_soll_df = regular_df.loc[regular_df["_Soll_EG"].isin(invalid)].copy()
-    matrix_df = regular_df.loc[~regular_df["_Soll_EG"].isin(invalid)].copy()
+    # Band-bewusst: "ohne verwertbare Soll-EG" nur, wenn BEIDE Spalten (H und I) ungueltig sind -
+    # spiegelt die gleiche Korrektur wie in build_soll_ist_koepfe_result().
+    no_soll_mask = regular_df["_Soll_EG_H"].isin(invalid) & regular_df["_Soll_EG_I"].isin(invalid)
+    no_soll_df = regular_df.loc[no_soll_mask].copy()
+    matrix_df = regular_df.loc[~no_soll_mask].copy()
     no_soll_occupied = no_soll_df.loc[
         ~no_soll_df["_Ist_EG"].isin(["Unbesetzt", "Nicht gefunden"])
     ]

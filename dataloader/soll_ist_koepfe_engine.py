@@ -223,7 +223,14 @@ def build_soll_ist_koepfe_result(
     regular_df = work.loc[work["__is_regular__"]].copy()
     technical_df = work.loc[work["__is_001__"]].copy()
 
-    no_soll_mask = regular_df["_Soll_EG"].isin(_INVALID_VALUES)
+    # Band-bewusst: eine Zeile gilt nur dann als "ohne verwertbare Soll-EG", wenn BEIDE Spalten
+    # (H und I) ungueltig sind - nicht nur die eine, zufaellig toggle-gewaehlte Spalte. Vorher
+    # konnte eine Zeile mit gueltigem H aber ungueltigem I (oder umgekehrt) je nach Toggle-Stellung
+    # faelschlich aus der Analyse fallen.
+    no_soll_mask = (
+        regular_df["_Soll_EG_H"].isin(_INVALID_VALUES)
+        & regular_df["_Soll_EG_I"].isin(_INVALID_VALUES)
+    )
     no_soll_df = regular_df.loc[no_soll_mask].copy()
     matrix_df = regular_df.loc[~no_soll_mask].copy()
 
