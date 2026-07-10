@@ -1032,76 +1032,79 @@ def main():
 
         st.divider()
 
-        # ── Section 4: Cluster-Analyse (OE) ──
+        # ── Section 4: Analyse nach Organisationseinheiten (Köpfe & MAK) ──
+        # Nutzt bewusst die echten, granularen Organisationseinheiten (identisch zur
+        # Sidebar-Auswahl) statt der groben 10 OE-Cluster-Kategorien - letztere wurden
+        # hier zuvor angezeigt und mit "Standard-Platzhaltern" verwechselt, da sie fachlich
+        # eine andere (gröbere) Verdichtungsebene sind. Diese Sektion ist deshalb NICHT an
+        # cluster_is_active gekoppelt: echte Organisationseinheiten sind immer vorhanden,
+        # unabhängig davon, ob eine Cluster-Zuordnungsdatei aktiv ist.
+        TOP_N_OE_CLUSTER_SECTION = 15
         st.markdown(t("attrition.overview.cluster_oe.heading"))
-        if cluster_is_active:
-            if "OE-Cluster" in events.columns:
-                # Get full set of clusters for consistent Y-axis
-                all_clusters = sorted(df_ma["OE-Cluster"].unique().tolist())
+        if "Organisationseinheit" in events.columns:
+            # Filter for Headcount departures (Upper Chart)
+            cluster_events_h = events[events["headcount_change"] < 0].copy()
 
-                # Filter for Headcount departures (Upper Chart)
-                cluster_events_h = events[events["headcount_change"] < 0].copy()
+            # Filter for MAK losses (Lower Chart) - captures ATZ-FR etc.
+            cluster_events_m = events[events["mak_change"] < 0].copy()
 
-                # Filter for MAK losses (Lower Chart) - captures ATZ-FR etc.
-                cluster_events_m = events[events["mak_change"] < 0].copy()
+            # Layout: Vertical (untereinander)
 
-                # Layout: Vertical (untereinander)
+            # Chart 1: Kopfabgänge
+            st.markdown(t("attrition.overview.cluster_oe.people"))
+            c_stats_h = cluster_events_h.groupby("Organisationseinheit").size().reset_index(name="Abgänge")
+            c_stats_h = c_stats_h.sort_values("Abgänge", ascending=True).tail(TOP_N_OE_CLUSTER_SECTION)
 
-                # Chart 1: Kopfabgänge
-                st.markdown(t("attrition.overview.cluster_oe.people"))
-                c_stats_h = cluster_events_h.groupby("OE-Cluster").size().reindex(all_clusters, fill_value=0).reset_index(name="Abgänge")
-                c_stats_h = c_stats_h.sort_values("Abgänge", ascending=True)
-                
-                fig_h = px.bar(
-                    c_stats_h,
-                    x="Abgänge",
-                    y="OE-Cluster",
-                    orientation="h",
-                    title=t("attrition.overview.cluster_oe.people_chart_title"),
-                    text="Abgänge",
-                    color="Abgänge",
-                    color_continuous_scale="Reds"
-                )
-                fig_h.update_layout(yaxis_title=None, showlegend=False, height=600)
-                st.plotly_chart(fig_h, use_container_width=True)
-                # Debug Cluster Headcount
-                if not cluster_events_h.empty:
-                    _render_debug_metric("Cluster Sum (Headcount)", len(cluster_events_h), exits_total, "")
-
-                st.divider()
-
-                # Chart 2: MAK-Abgänge (Capacity Loss)
-                st.markdown(t("attrition.overview.cluster_oe.fte"))
-                
-                if "mak_change" in cluster_events_m.columns:
-                    cluster_events_m["mak_loss"] = cluster_events_m["mak_change"].abs()
-                    c_stats_m = cluster_events_m.groupby("OE-Cluster")["mak_loss"].sum().reindex(all_clusters, fill_value=0.0).reset_index(name="MAK-Verlust")
-                    c_stats_m = c_stats_m.sort_values("MAK-Verlust", ascending=True)
-                    
-
-                    fig_m = px.bar(
-                        c_stats_m,
-                        x="MAK-Verlust",
-                        y="OE-Cluster",
-                        orientation="h",
-                        title=t("attrition.overview.cluster_oe.fte_chart_title"),
-                        text_auto=".1f",
-                        color="MAK-Verlust",
-                        color_continuous_scale="Reds"
-                    )
-                    fig_m.update_layout(yaxis_title=None, showlegend=False, height=600)
-                    st.plotly_chart(fig_m, use_container_width=True)
-                    # Debug Cluster MAK
-                    if not cluster_events_m.empty:
-                        # mak_loss is positive
-                        _render_debug_metric("Cluster Sum (MAK)", cluster_events_m["mak_loss"].sum(), mak_loss_total, " MAK")
-                else:
-                    st.info(t("attrition.overview.cluster_oe.no_fte"))
-            else:
-                st.warning(t("attrition.overview.cluster_oe.missing_column"))
+            fig_h = px.bar(
+                c_stats_h,
+                x="Abgänge",
+                y="Organisationseinheit",
+                orientation="h",
+                title=t("attrition.overview.cluster_oe.people_chart_title"),
+                text="Abgänge",
+                color="Abgänge",
+                color_continuous_scale="Reds"
+            )
+            fig_h.update_layout(yaxis_title=None, showlegend=False, height=600)
+            st.plotly_chart(fig_h, use_container_width=True)
+            # Debug OE Headcount
+            if not cluster_events_h.empty:
+                _render_debug_metric("OE Sum (Headcount)", len(cluster_events_h), exits_total, "")
 
             st.divider()
 
+            # Chart 2: MAK-Abgänge (Capacity Loss)
+            st.markdown(t("attrition.overview.cluster_oe.fte"))
+
+            if "mak_change" in cluster_events_m.columns:
+                cluster_events_m["mak_loss"] = cluster_events_m["mak_change"].abs()
+                c_stats_m = cluster_events_m.groupby("Organisationseinheit")["mak_loss"].sum().reset_index(name="MAK-Verlust")
+                c_stats_m = c_stats_m.sort_values("MAK-Verlust", ascending=True).tail(TOP_N_OE_CLUSTER_SECTION)
+
+                fig_m = px.bar(
+                    c_stats_m,
+                    x="MAK-Verlust",
+                    y="Organisationseinheit",
+                    orientation="h",
+                    title=t("attrition.overview.cluster_oe.fte_chart_title"),
+                    text_auto=".1f",
+                    color="MAK-Verlust",
+                    color_continuous_scale="Reds"
+                )
+                fig_m.update_layout(yaxis_title=None, showlegend=False, height=600)
+                st.plotly_chart(fig_m, use_container_width=True)
+                # Debug OE MAK
+                if not cluster_events_m.empty:
+                    # mak_loss is positive
+                    _render_debug_metric("OE Sum (MAK)", cluster_events_m["mak_loss"].sum(), mak_loss_total, " MAK")
+            else:
+                st.info(t("attrition.overview.cluster_oe.no_fte"))
+        else:
+            st.warning(t("attrition.overview.cluster_oe.missing_column"))
+
+        st.divider()
+
+        if cluster_is_active:
             # ── Section 5: Cluster-Analyse (JF) ──
             st.markdown(t("attrition.overview.cluster_jf.heading"))
             if "JF-Cluster" in events.columns:

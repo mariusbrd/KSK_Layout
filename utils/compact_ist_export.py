@@ -14,6 +14,7 @@ from dataloader.kpi_engine import get_unique_employees
 from utils.compact_simulation_export import (
     DEFAULT_DEMOGRAPHIC_DIMENSIONS,
     EXCEL_MIME,
+    _hide_eur,
     build_jobfamily_demographics,
     build_jobfamily_summary,
 )
@@ -66,7 +67,7 @@ def build_company_summary(prepared_df: pd.DataFrame) -> pd.DataFrame:
 
     rows = [
         {"Kennzahl": "Köpfe", "Wert": heads, "Beschreibung": "Anzahl eindeutiger aktiver Mitarbeitender im IST."},
-        {"Kennzahl": "MAK", "Wert": mak, "Beschreibung": "Summe der Management-MAK/FTE im IST."},
+        {"Kennzahl": "MAK", "Wert": mak, "Beschreibung": "Summe der Management-MAK im IST."},
         {"Kennzahl": "EUR", "Wert": eur, "Beschreibung": "Jahreskosten im IST, sofern im Kompakt-Datensatz verfügbar."},
         {
             "Kennzahl": "Kosten pro Kopf",
@@ -154,7 +155,7 @@ def build_documentation_sheet(
         ("Dimensionen", ", ".join(available_dimensions)),
         ("01_Unternehmen", "KPI-Gesamtsicht für das Unternehmen."),
         ("02_Unternehmen_Demografie", "Demografische Verteilung auf Unternehmensebene."),
-        ("03_Jobfamily_Summary", "Köpfe, MAK und EUR je Jobfamily."),
+        ("03_Jobfamily_Summary", "Köpfe und MAK je Jobfamily."),
         ("04_Jobfamily_Demografie", "Demografische Verteilung je Jobfamily."),
     ]
     return pd.DataFrame(rows, columns=["Feld", "Wert"])
@@ -187,7 +188,7 @@ def build_compact_ist_demographics_export_bytes(
             ("04_Jobfamily_Demografie", jobfamily_demographics_df),
         ]
         for sheet_name, table in sheets:
-            table.to_excel(writer, sheet_name=sheet_name[:31], index=False)
+            _hide_eur(table).to_excel(writer, sheet_name=sheet_name[:31], index=False)
 
         for sheet_name in writer.sheets:
             worksheet = writer.sheets[sheet_name]

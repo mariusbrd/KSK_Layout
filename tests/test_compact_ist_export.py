@@ -96,6 +96,8 @@ def test_compact_ist_export_contains_concept_sheets() -> None:
     jobfamilies = pd.read_excel(workbook, sheet_name="03_Jobfamily_Summary")
 
     assert "Kompakt IST Demografie" in set(documentation["Wert"])
-    assert set(company["Kennzahl"]) >= {"Köpfe", "MAK", "EUR"}
+    assert set(company["Kennzahl"]) >= {"Köpfe", "MAK"}
+    assert "EUR" not in set(company["Kennzahl"])
+    assert not any("EUR" in col or "Kosten" in col for col in jobfamilies.columns)
     assert set(jobfamilies["Jobfamily"]) == {"Beratung", "IT"}
 

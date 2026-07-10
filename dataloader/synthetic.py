@@ -1010,7 +1010,7 @@ def generate_history_cube(
                 "Kürzel OrgEinheit": org_unit,
                 "Date": date,
                 "Headcount": max(0, int(base_headcount * trend_factor * noise)),
-                "FTE": base_fte * trend_factor * noise,
+                "MAK": base_fte * trend_factor * noise,
                 "Total_Cost": base_cost * trend_factor * noise,
                 "Vacancy_Count": max(0, int(base_vacancy * noise)),
             })

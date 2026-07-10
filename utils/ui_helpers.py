@@ -118,9 +118,9 @@ def explanation_box(title: str, content: str, box_type: str = "info"):
 # Metrik-Erläuterungen (zentrale Definitionen)
 METRIC_EXPLANATIONS = {
     # Kapazität
-    "mak": "Mitarbeiterkapazität (MAK) misst die Gesamtkapazität in Vollzeitäquivalenten (FTE). 1 MAK = 1 Vollzeitkraft.",
+    "mak": "Mitarbeiterkapazität (MAK) misst die Gesamtkapazität in Vollzeitäquivalenten. 1 MAK = 1 Vollzeitkraft.",
     "headcount": "Anzahl der beschäftigten Personen unabhängig vom Beschäftigungsumfang. Teilzeit- und Vollzeitkräfte werden gleich gezählt.",
-    "fte": "Full-Time Equivalent - Die Summe aller Beschäftigungsgrade umgerechnet auf Vollzeitstellen. Z.B. 2 × 50% = 1.0 FTE.",
+    "fte": "Mitarbeiterkapazität (MAK) - Die Summe aller Beschäftigungsgrade umgerechnet auf Vollzeitstellen. Z.B. 2 × 50% = 1.0 MAK.",
 
     # Besetzung
     "besetzungsgrad": "Anteil der besetzten Planstellen an allen Planstellen. Ein hoher Wert (>85%) zeigt gute Personalverfügbarkeit.",
@@ -138,9 +138,9 @@ METRIC_EXPLANATIONS = {
     "55plus_anteil": "Anteil der Beschäftigten ab 55 Jahren. Wichtig für Ruhestandsplanung und Wissenstransfer.",
 
     # Arbeitszeit
-    "vollzeitquote": "Anteil der Vollzeitbeschäftigten (≥95% FTE) an allen Beschäftigten.",
-    "teilzeitquote": "Anteil der Teilzeitbeschäftigten (<95% FTE) an allen Beschäftigten. Zeigt Flexibilisierungsgrad.",
-    "durchschnittlicher_beschaeftigungsgrad": "Durchschnittlicher FTE-Wert pro Kopf. Liegt typisch bei 0.75-0.95 je nach Teilzeitanteil.",
+    "vollzeitquote": "Anteil der Vollzeitbeschäftigten (≥95% Beschäftigungsgrad) an allen Beschäftigten.",
+    "teilzeitquote": "Anteil der Teilzeitbeschäftigten (<95% Beschäftigungsgrad) an allen Beschäftigten. Zeigt Flexibilisierungsgrad.",
+    "durchschnittlicher_beschaeftigungsgrad": "Durchschnittlicher MAK-Wert pro Kopf. Liegt typisch bei 0.75-0.95 je nach Teilzeitanteil.",
 
     # Geschlecht
     "geschlechterverteilung": "Verhältnis männlich/weiblich/divers in der Belegschaft. Wichtig für Diversity-Monitoring.",

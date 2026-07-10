@@ -238,11 +238,14 @@ def test_uc02_metric_mapping_and_attrition_metric_scope_are_consistent(compact):
     assert compact._compensation_metric_columns("MAK", "Delta")[0] == "DELTA_MAK_View"
     assert compact._compensation_metric_columns("EUR", "Delta")[0] == "DELTA_EUR_View"
 
+    # EUR-Ansicht wurde aus der Sidebar-Pille entfernt: ein stale "EUR"-Session-Wert
+    # (z. B. aus einer Session vor der Umstellung) wird schon bei der Initialisierung
+    # defensiv auf MAK zurueckgesetzt, statt erst als Seiten-Fallback-Hinweis sichtbar
+    # zu werden - es gibt daher keinen Mismatch-Hinweis mehr zu pruefen.
     st.session_state["global_metric_view"] = "EUR"
     effective, hint = get_effective_metric_view(["K\u00f6pfe", "MAK"], fallback="MAK")
     assert effective == "MAK"
-    assert hint is not None
-    assert "EUR" in hint
+    assert hint is None
 
 
 def test_uc03_soll_ist_deltas_exclusions_and_zero_soll_against_oracle(compact):

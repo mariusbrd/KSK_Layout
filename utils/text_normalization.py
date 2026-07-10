@@ -22,7 +22,7 @@ _CANONICAL_REPLACEMENTS = (
     (f"Zug{_QUESTION_MARK}nge", "Zugänge"),
     ("Erf?llungsgrad", "Erfüllungsgrad"),
     ("Mitarbeiterkapazit?t", "Mitarbeiterkapazität"),
-    ("FTE-?quivalent", "FTE-Äquivalent"),
+    ("FTE-?quivalent", "MAK-Äquivalent"),
     ("Sollkapazit?t", "Sollkapazität"),
     ("Besch?ftigung", "Beschäftigung"),
     ("Besch?ftigungs", "Beschäftigungs"),

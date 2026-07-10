@@ -28,14 +28,12 @@ from utils.i18n import (
 )
 from utils.text_normalization import normalize_dashboard_text
 
-GLOBAL_METRIC_OPTIONS = ["Köpfe", "MAK", "EUR"]
+GLOBAL_METRIC_OPTIONS = ["Köpfe", "MAK"]
 _GLOBAL_METRIC_ALIASES = {
     "Köpfe": "Köpfe",
     "Koepfe": "Köpfe",
     "Kopfe": "Köpfe",
     "MAK": "MAK",
-    "EUR": "EUR",
-    "Euro": "EUR",
 }
 
 
@@ -301,9 +299,9 @@ def render_data_status(show_title: bool = True):
 
 
 def _sync_legacy_view_mode():
-    """Keep the legacy MAK/EUR session key aligned for older consumers."""
+    """Keep the legacy MAK session key aligned for older consumers."""
     metric_view = normalize_global_metric_view(st.session_state.get("global_metric_view", "MAK"))
-    if metric_view in ("MAK", "EUR"):
+    if metric_view == "MAK":
         st.session_state["view_mode"] = metric_view
     else:
         st.session_state["view_mode"] = "MAK"
@@ -315,13 +313,17 @@ def initialize_global_metric_view():
         legacy_mode = st.session_state.get("view_mode", "MAK")
         if legacy_mode in GLOBAL_METRIC_OPTIONS:
             st.session_state["global_metric_view"] = legacy_mode
-        elif legacy_mode == "Euro":
-            st.session_state["global_metric_view"] = "EUR"
         else:
             st.session_state["global_metric_view"] = "MAK"
-    st.session_state["global_metric_view"] = normalize_global_metric_view(
+    normalized = normalize_global_metric_view(
         st.session_state.get("global_metric_view", "MAK")
-    ) or "MAK"
+    )
+    # Stale/legacy values (e.g. "EUR" from a session started before the EUR
+    # view was removed) fall back to MAK instead of an option the pill no
+    # longer offers.
+    if normalized not in GLOBAL_METRIC_OPTIONS:
+        normalized = "MAK"
+    st.session_state["global_metric_view"] = normalized
     _sync_legacy_view_mode()
 
 

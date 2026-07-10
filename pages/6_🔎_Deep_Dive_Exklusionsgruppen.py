@@ -917,7 +917,9 @@ def main():
             if detail.empty:
                 st.info(t("exclusion.info.no_rows"))
             else:
-                st.dataframe(detail, use_container_width=True, hide_index=True)
+                # Anzeige-Umbenennung: interner Spaltenname Soll_FTE -> MAK-Terminologie
+                display_detail = detail.rename(columns={"Soll_FTE": "Soll_MAK"})
+                st.dataframe(display_detail, use_container_width=True, hide_index=True)
                 st.caption(t("exclusion.caption.rows", count=len(detail)))
 
 

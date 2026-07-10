@@ -816,7 +816,7 @@ def main():
                 st.metric(t("hiring.summary.metric.total_entries_heads"), f"{gross_entries}", help=_tooltip)
             with m2:
                 # Show Net Growth as Delta
-                st.metric(t("hiring.summary.metric.delta_fte_end"), f"{last['mak_end'] - first['mak_start']:+.1f} FTE")
+                st.metric(t("hiring.summary.metric.delta_fte_end"), f"{last['mak_end'] - first['mak_start']:+.1f} MAK")
             with m3:
                 st.metric(t("hiring.summary.metric.delta_cost_year"), f"{total_added_cost:,.0f} €")
             
@@ -828,9 +828,9 @@ def main():
                     info_parts.append("Auszubildende erhöhen zunächst nur Köpfe; MAK wird erst bei der Übernahme wirksam (zeitverzögert).")
                 else:
                     info_parts.append("Auszubildende erhöhen zunächst nur den Personalbestand (Köpfe).")
-                    info_parts.append("MAK/FTE werden erst bei der Übernahme nach Ausbildungsende wirksam (zeitverzögert).")
+                    info_parts.append("MAK wird erst bei der Übernahme nach Ausbildungsende wirksam (zeitverzögert).")
             elif use_trainees or use_newhires:
-                info_parts.append("Trainee- und externe Einstellungen sind i.d.R. sofort MAK/FTE-wirksam und erhöhen Köpfe und MAK gleichzeitig.")
+                info_parts.append("Trainee- und externe Einstellungen sind i.d.R. sofort MAK-wirksam und erhöhen Köpfe und MAK gleichzeitig.")
             
             if info_parts:
                 st.info(t("hiring.summary.note", details=' '.join(info_parts)))

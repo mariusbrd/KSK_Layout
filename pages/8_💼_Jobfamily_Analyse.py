@@ -186,12 +186,12 @@ def _build_kpis(
             {
                 "title": "Zugeordnete MAK",
                 "value": compact.format_number(total_mak, 1),
-                "subtitle": f"Roh-FTE {compact.format_number(total_fte_roh, 1)} bei {total_koepfe} Köpfen",
+                "subtitle": f"Roh-MAK {compact.format_number(total_fte_roh, 1)} bei {total_koepfe} Köpfen",
                 "icon": "📈",
                 "status": "good",
             },
             {
-                "title": "Ø FTE",
+                "title": "Ø MAK",
                 "value": compact.format_number(avg_fte, 2),
                 "subtitle": "Durchschnittliche MAK pro Mitarbeitendem",
                 "icon": "📊",
@@ -464,7 +464,7 @@ def _build_role_summary_table(
             "Jobfamily": jf,
             "Köpfe": koepfe,
             "MAK": compact.format_number(mak, 1),
-            "Ø FTE": compact.format_number(mak / koepfe, 2) if koepfe > 0 else "–",
+            "Ø MAK": compact.format_number(mak / koepfe, 2) if koepfe > 0 else "–",
         })
     return pd.DataFrame(rows)
 
@@ -497,7 +497,7 @@ def _render_role_breakdown_block(
         key_prefix="jobfamily_role_trf",
     )
 
-    # Summary table: Köpfe, MAK, Ø FTE per Jobgruppe — keine Euro-Werte
+    # Summary table: Köpfe, MAK, Ø MAK per Jobgruppe — keine Euro-Werte
     jobfamilies = _get_top_jobfamilies(mapped_df, role_metric_config, compact, top_n=top_n)
     st.divider()
     st.subheader("Kopfzahl und Kapazität pro Jobgruppe")

@@ -934,7 +934,7 @@ _COL_DESCRIPTIONS = {
     "Delta":          "Differenz IST minus SOLL (negativ = Unterbesetzung)",
     "Erfüllungsgrad": "IST / SOLL in Prozent",
     "Anteil":         "Prozentualer Anteil am Gesamtwert der Auswertung",
-    "MAK":            "Mitarbeiterkapazität (FTE-Äquivalent, effektiv)",
+    "MAK":            "Mitarbeiterkapazität (effektiv)",
     "MAK_Calculated": "Berechneter MAK-Wert (vektorisiert)",
     "Köpfe":          "Headcount = Anzahl unique Mitarbeitende",
     "EUR":            "Jahreskosten in Euro (inkl. Arbeitgeberanteil)",
@@ -965,7 +965,7 @@ _COL_DESCRIPTIONS = {
 }
 
 _VALUE_TYPE_LABEL = {
-    "mak":    "Mitarbeiterkapazität (MAK / FTE)",
+    "mak":    "Mitarbeiterkapazität (MAK)",
     "koepfe": "Köpfe (Headcount)",
     "eur":    "Kosten (EUR/Jahr)",
 }
@@ -1609,7 +1609,7 @@ _IST_OHNE_SOLL_CAT_ORDER = [
     "ATZ / Freistellung",
     "Rente auf Zeit",
     "Pool- / Sammelplanstelle",
-    "Reguläre aktive Stelle ohne Soll_FTE",
+    "Reguläre aktive Stelle ohne Soll_MAK",
     "Sonstiger Fall ohne Plan-SOLL",
 ]
 
@@ -1704,7 +1704,7 @@ def _classify_ist_ohne_plan_soll(df: pd.DataFrame, out: pd.DataFrame) -> pd.Seri
     result[basis]         = "Sonstiger Fall ohne Plan-SOLL"
     result[mask_ruhend]   = "Ruhendes Beschäftigungsverhältnis"
     result[mask_pool]     = "Pool- / Sammelplanstelle"
-    result[mask_regulaer] = "Reguläre aktive Stelle ohne Soll_FTE"
+    result[mask_regulaer] = "Reguläre aktive Stelle ohne Soll_MAK"
     result[mask_rente]    = "Rente auf Zeit"
     result[mask_atz]      = "ATZ / Freistellung"
     result[mask_trainee]  = "Trainee / Ausbildung"
@@ -2328,7 +2328,7 @@ def _render_ist_ohne_plan_soll_warning(comp_df: pd.DataFrame, key_prefix: str) -
 
     st.warning(
         f"**IST ohne Plan-SOLL:** {total_zeilen} Planstellenzeilen ({total_personen} Personen) "
-        f"haben IST-Werte, aber Soll_FTE = 0. "
+        f"haben IST-Werte, aber Soll_MAK = 0. "
         f"Sie erscheinen im Delta vollständig als IST ohne SOLL und sollten fachlich geprüft werden."
     )
 
@@ -2338,13 +2338,13 @@ def _render_ist_ohne_plan_soll_warning(comp_df: pd.DataFrame, key_prefix: str) -
     c3.metric("IST_EUR",       f"{total_eur/1e6:.2f} Mio. €".replace(".", ","))
     c4.metric("Anteil IST_EUR", f"{anteil*100:.1f} %".replace(".", ","))
 
-    regulaer = subset[subset[cat_col] == "Reguläre aktive Stelle ohne Soll_FTE"]
+    regulaer = subset[subset[cat_col] == "Reguläre aktive Stelle ohne Soll_MAK"]
     if len(regulaer) > 0:
         reg_mak = float(regulaer["IST_MAK"].sum()) if "IST_MAK" in regulaer.columns else 0.0
         reg_eur = float(regulaer["IST_EUR"].sum()) if "IST_EUR" in regulaer.columns else 0.0
         st.error(
             f"**Datenqualitätsproblem:** {len(regulaer)} reguläre aktive Beschäftigungsverhältnisse "
-            f"haben keine Soll_FTE (IST_MAK {reg_mak:.2f}, IST_EUR {reg_eur/1e6:.2f} Mio. €). "
+            f"haben keine Soll_MAK (IST_MAK {reg_mak:.2f}, IST_EUR {reg_eur/1e6:.2f} Mio. €). "
             "Bitte Planstellen-Datei prüfen."
         )
 
@@ -2360,7 +2360,7 @@ def _render_ist_ohne_plan_soll_warning(comp_df: pd.DataFrame, key_prefix: str) -
         "Ist_ohne_Plan_Soll_Kategorie",
     ]
     detail_df = subset[[c for c in detail_cols_wanted if c in subset.columns]].copy()
-    detail_df = detail_df.rename(columns={"SOLL_MAK": "Soll_FTE", "SOLL_EUR": "Soll_Cost_Year",
+    detail_df = detail_df.rename(columns={"SOLL_MAK": "Soll_MAK", "SOLL_EUR": "Soll_Cost_Year",
                                           "Ist_Entgeltgruppe": "TrfGr", "Ist_Stufe": "Stufe"})
 
     buf = io.BytesIO()
@@ -2646,7 +2646,7 @@ def render_compensation_planlevel_section(
             _lines = [
                 "**Planstellen-Deduplizierung**",
                 f"- Doppelte Planstellennr (SOLL=0 gesetzt): {_n_dup}",
-                f"- Technische Mini-Planstellen (Soll_FTE ≤ 0,015): {_n_tech}",
+                f"- Technische Mini-Planstellen (Soll_MAK ≤ 0,015): {_n_tech}",
                 f"- Exkludierte Zeilen (Is_Excluded=True): {_n_excl}",
                 "",
                 "**MAK — Reporting-Sicht**",
@@ -2674,7 +2674,7 @@ def render_compensation_planlevel_section(
                 f"- Differenz:    {_soll_mak_full - _soll_mak_view:.4f}",
             ]
             if _soll_eur_view == 0.0:
-                _lines += ["", ":warning: SOLL_EUR_View = 0 — prüfe ob TVÖD-Tabelle geladen und TrfGr/Soll_FTE im Snapshot vorhanden sind."]
+                _lines += ["", ":warning: SOLL_EUR_View = 0 — prüfe ob TVÖD-Tabelle geladen und TrfGr/Soll_MAK im Snapshot vorhanden sind."]
             if _n_dup > 5:
                 _lines += ["", f":warning: Mehr als 5 doppelte Planstellennr ({_n_dup}). Bitte Snapshot-Qualität prüfen."]
             st.markdown("\n".join(_lines))
@@ -4136,7 +4136,7 @@ def render_ist_eur_tab(df: pd.DataFrame, print_mode: bool = False):
 def render_ist_vs_soll_mak_tab(df: pd.DataFrame, print_mode: bool = False):
     """Rendert den IST vs SOLL MAK Tab mit allen Themenfeldern untereinander."""
     if "Soll_FTE" not in df.columns:
-        st.warning("SOLL-FTE nicht verfügbar.")
+        st.warning("SOLL-MAK nicht verfügbar.")
         return
 
     emp_df = df[~df["Is_Vacant"]] if "Is_Vacant" in df.columns else df
@@ -5499,7 +5499,7 @@ def _render_ist_vs_soll_mak_tab_clean(df: pd.DataFrame, print_mode: bool = False
     """Saubere, lokalisierte Rendering-Variante für IST vs SOLL MAK."""
     language = get_language()
     if "Soll_FTE" not in df.columns:
-        st.warning("SOLL-FTE nicht verfügbar." if language == "de" else "Target FTE is not available.")
+        st.warning("SOLL-MAK nicht verfügbar." if language == "de" else "Target FTE is not available.")
         return
 
     _kpi_comp = build_compact_compensation_planlevel_df(df)
@@ -7306,8 +7306,8 @@ def main():
 
             # Scroll-Navigation einfügen (falls verfügbar)
             if SCROLL_NAV_AVAILABLE:
-                anchor_ids = ["deckblatt", "ist-koepfe", "ist-mak", "ist-eur", "ist-vs-soll-koepfe", "ist-vs-soll-mak", "ist-vs-soll-eur"]
-                anchor_labels = ["🔰 Executive Summary", "👥 IST-Köpfe", "📊 IST-MAK", "💶 IST-EUR", "📋 IST vs SOLL Köpfe", "📉 IST vs SOLL MAK", "💶 IST vs SOLL EUR"]
+                anchor_ids = ["deckblatt", "ist-koepfe", "ist-mak", "ist-vs-soll-koepfe", "ist-vs-soll-mak"]
+                anchor_labels = ["🔰 Executive Summary", "👥 IST-Köpfe", "📊 IST-MAK", "📋 IST vs SOLL Köpfe", "📉 IST vs SOLL MAK"]
 
                 # Helles, professionelles Styling für vertikale Sidebar am rechten Rand
                 # override_styles erfordert spezifische Keys
@@ -7374,20 +7374,12 @@ def main():
             render_ist_mak_tab(filtered_df, print_mode=True)
             page_break()
 
-            section_title("IST-EUR Analyse", "💶", anchor="ist-eur")
-            render_ist_eur_tab(filtered_df, print_mode=True)
-            page_break()
-
             section_title("IST vs SOLL Köpfe", "📋", anchor="ist-vs-soll-koepfe")
             render_ist_soll_koepfe_tab(prepared_df, print_mode=True)
             page_break()
 
             section_title("IST vs SOLL MAK Vergleich", "📉", anchor="ist-vs-soll-mak")
             render_ist_vs_soll_mak_tab(filtered_df, print_mode=True)
-            page_break()
-
-            section_title("IST vs SOLL EUR Vergleich", "💶", anchor="ist-vs-soll-eur")
-            render_ist_vs_soll_eur_tab(filtered_df, print_mode=True)
 
             st.markdown('</div>', unsafe_allow_html=True)
 
@@ -7402,10 +7394,8 @@ def main():
             with ist_tab:
                 if metric_view == "Köpfe":
                     render_ist_koepfe_tab(filtered_df)
-                elif metric_view == "MAK":
-                    render_ist_mak_tab(filtered_df)
                 else:
-                    render_ist_eur_tab(filtered_df)
+                    render_ist_mak_tab(filtered_df)
 
             with ist_soll_tab:
                 if metric_view == "Köpfe":
@@ -7413,10 +7403,8 @@ def main():
                     # Planstellen enthalten sind (Geschlecht-/Arbeitszeit-Filter
                     # wuerden leere Person-Zeilen herausfiltern).
                     render_ist_soll_koepfe_tab(prepared_df)
-                elif metric_view == "MAK":
-                    render_ist_vs_soll_mak_tab(filtered_df)
                 else:
-                    render_ist_vs_soll_eur_tab(filtered_df)
+                    render_ist_vs_soll_mak_tab(filtered_df)
 
             return
 

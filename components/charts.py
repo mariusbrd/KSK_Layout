@@ -658,7 +658,7 @@ def create_waterfall(
     layout = get_base_layout(title)
     layout["height"] = height
     layout["xaxis"] = {"gridcolor": COLORS["card_border"]}
-    layout["yaxis"] = {"gridcolor": COLORS["card_border"], "title": "FTE"}
+    layout["yaxis"] = {"gridcolor": COLORS["card_border"], "title": "MAK"}
     fig.update_layout(**layout)
 
     return fig
@@ -707,7 +707,7 @@ def create_diverging_bar(
     layout["height"] = height
     layout["xaxis"] = {
         "gridcolor": COLORS["card_border"],
-        "title": "Varianz (FTE)",
+        "title": "Varianz (MAK)",
         "zeroline": True,
         "zerolinecolor": COLORS["text_secondary"],
         "zerolinewidth": 2

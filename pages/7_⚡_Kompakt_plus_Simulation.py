@@ -765,55 +765,15 @@ def main():
         with ist_tab:
             if metric_view == "Köpfe":
                 compact.render_ist_koepfe_tab(filtered_df)
-            elif metric_view == "MAK":
-                compact.render_ist_mak_tab(filtered_df)
             else:
-                compact.render_ist_eur_tab(filtered_df)
+                compact.render_ist_mak_tab(filtered_df)
 
         with ist_soll_tab:
             if metric_view == "Köpfe":
                 compact.render_ist_soll_koepfe_tab(prepared_df)
-            elif metric_view == "MAK":
+            else:
                 compact.render_ist_vs_soll_mak_tab(filtered_df)
-            else:
-                compact.render_ist_vs_soll_eur_tab(filtered_df)
         return
-
-        if main_view == "IST-Analyse":
-            ist_options = ["Köpfe", "MAK", "EUR"]
-            if "compact_sim_ist_view" not in st.session_state:
-                st.session_state["compact_sim_ist_view"] = ist_options[0]
-
-            ist_view = _segmented_single(
-                "IST-Unteransicht",
-                options=ist_options,
-                value=st.session_state["compact_sim_ist_view"],
-                key="compact_sim_ist_view",
-            )
-            if ist_view == "Köpfe":
-                compact.render_ist_koepfe_tab(filtered_df)
-            elif ist_view == "MAK":
-                compact.render_ist_mak_tab(filtered_df)
-            else:
-                compact.render_ist_eur_tab(filtered_df)
-            return
-
-        soll_options = ["Köpfe", "MAK", "EUR"]
-        if "compact_sim_soll_view" not in st.session_state:
-            st.session_state["compact_sim_soll_view"] = soll_options[0]
-
-        soll_view = _segmented_single(
-            "SOLL-Unteransicht",
-            options=soll_options,
-            value=st.session_state["compact_sim_soll_view"],
-            key="compact_sim_soll_view",
-        )
-        if soll_view == "Köpfe":
-            compact.render_ist_soll_koepfe_tab(prepared_df)
-        elif soll_view == "MAK":
-            compact.render_ist_vs_soll_mak_tab(filtered_df)
-        else:
-            compact.render_ist_vs_soll_eur_tab(filtered_df)
 
     except FileNotFoundError as exc:
         st.error(t("sim.error.data", error=exc))

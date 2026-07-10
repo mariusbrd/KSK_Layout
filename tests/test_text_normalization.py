@@ -56,12 +56,16 @@ def test_normalize_dashboard_text_preserves_canonical_terms(canonical_text):
         ("KÃ¶pfe", "Köpfe"),
         ("Koepfe", "Köpfe"),
         ("MAK", "MAK"),
-        ("EUR", "EUR"),
-        ("Euro", "EUR"),
     ],
 )
 def test_normalize_global_metric_view_canonicalizes_sidebar_values(raw_metric, expected):
     assert normalize_global_metric_view(raw_metric) == expected
+
+
+def test_normalize_global_metric_view_no_longer_aliases_eur():
+    # EUR-Ansicht wurde entfernt: "Euro" ist kein Alias fuer "EUR" mehr,
+    # initialize_global_metric_view() faellt fuer stale EUR-Werte defensiv auf MAK zurueck.
+    assert normalize_global_metric_view("Euro") == "Euro"
 
 
 def test_dashboard_source_files_are_text_clean():

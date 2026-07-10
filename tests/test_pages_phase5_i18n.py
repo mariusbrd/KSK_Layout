@@ -465,7 +465,9 @@ def test_compact_management_summary_mak_is_clean_in_german(monkeypatch):
 
     combined = "\n".join(captured)
     assert "Management Summary: IST-MAK" in combined
-    assert "Ø FTE" in combined
+    # "FTE" wurde bewusst durchgaengig durch "MAK" ersetzt (deutsche Dashboard-Terminologie).
+    assert "Ø MAK" in combined
+    assert "FTE" not in combined
     assert "Teilzeit-Gründe" in combined
     assert not any(marker in combined for marker in ("Ã", "â", "ƒ", "Æ"))
 

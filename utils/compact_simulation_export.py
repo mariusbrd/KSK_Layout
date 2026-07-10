@@ -51,6 +51,27 @@ DEFAULT_DEMOGRAPHIC_DIMENSIONS = (
 )
 
 
+def _hide_eur(df: pd.DataFrame) -> pd.DataFrame:
+    """Entfernt EUR-/Kosten-bezogene Spalten und Zeilen aus einer Export-Tabelle.
+
+    Wird direkt vor dem Schreiben jedes Sheets angewendet (EUR-Ansicht ist im
+    Dashboard ausgeblendet), statt jede Builder-Funktion einzeln umzubauen -
+    die interne Berechnung (z. B. Validierungs-Querchecks) bleibt unverändert,
+    nur die finale Excel-Ausgabe verliert die EUR-Spalten/-Zeilen.
+    """
+    if df is None or df.empty:
+        return df if df is not None else pd.DataFrame()
+    out = df.copy()
+    drop_cols = [c for c in out.columns if "EUR" in str(c) or "Kosten" in str(c)]
+    if drop_cols:
+        out = out.drop(columns=drop_cols)
+    for label_col in ("Kennzahl", "Thema", "Kategorie", "Feld", "Block"):
+        if label_col in out.columns:
+            mask = out[label_col].astype(str).str.contains("EUR|Kosten", regex=True, na=False)
+            out = out[~mask]
+    return out.reset_index(drop=True)
+
+
 def _display_value(value: Any) -> str:
     if isinstance(value, (pd.Timestamp, datetime)):
         return value.strftime("%d.%m.%Y")
@@ -807,15 +828,15 @@ def build_compact_simulation_export_bytes(
             ("13_Validation", validation_export_df),
         ]
         for sheet_name, table in ordered_sheets:
-            (table if table is not None else pd.DataFrame()).to_excel(writer, sheet_name=sheet_name[:31], index=False)
+            _hide_eur(table if table is not None else pd.DataFrame()).to_excel(writer, sheet_name=sheet_name[:31], index=False)
 
-        parameter_df.to_excel(writer, sheet_name="Parameter", index=False)
-        summary_df.to_excel(writer, sheet_name="Jobfamily_Summary", index=False)
-        demographics_df.to_excel(writer, sheet_name="Jobfamily_Demografie", index=False)
+        _hide_eur(parameter_df).to_excel(writer, sheet_name="Parameter", index=False)
+        _hide_eur(summary_df).to_excel(writer, sheet_name="Jobfamily_Summary", index=False)
+        _hide_eur(demographics_df).to_excel(writer, sheet_name="Jobfamily_Demografie", index=False)
         if not status_quo_summary.empty:
-            status_quo_summary.to_excel(writer, sheet_name="StatusQuo_Jobfamily_Summary", index=False)
+            _hide_eur(status_quo_summary).to_excel(writer, sheet_name="StatusQuo_Jobfamily_Summary", index=False)
         if not forecast_vs_status.empty:
-            forecast_vs_status.to_excel(writer, sheet_name="Forecast_vs_StatusQuo_JF", index=False)
+            _hide_eur(forecast_vs_status).to_excel(writer, sheet_name="Forecast_vs_StatusQuo_JF", index=False)
         for sheet_name in (
             "MAK_Personen_Audit",
             "MAK_Allocation_Audit",
@@ -852,8 +873,8 @@ def build_compact_simulation_export_bytes(
         ):
             table = audit_tables.get(sheet_name)
             if table is not None and not table.empty:
-                table.to_excel(writer, sheet_name=sheet_name[:31], index=False)
-        validation_df.to_excel(writer, sheet_name="Validation_Checks", index=False)
+                _hide_eur(table).to_excel(writer, sheet_name=sheet_name[:31], index=False)
+        _hide_eur(validation_df).to_excel(writer, sheet_name="Validation_Checks", index=False)
 
         for sheet_name in writer.sheets:
             worksheet = writer.sheets[sheet_name]
