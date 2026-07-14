@@ -4147,8 +4147,13 @@ def render_ist_vs_soll_mak_tab(df: pd.DataFrame, print_mode: bool = False):
     # den Teilzeit-Abschlag und ist daher nur letzter Fallback, keine Standardspalte.
     ist_mak_col = next((c for c in ("MAK_Reporting", "MAK_Calculated", "mak", "MAK") if c in df.columns), "FTE_assigned")
 
+    # SOLL-MAK exklusionsbereinigt (SOLL_MAK_View) statt Roh-Soll_FTE: get_soll_mak(df)
+    # zaehlt auch Vorstand/Ruhend-BV/PA-Bereiche/Sonderplanstellen mit, die laut
+    # config/user_settings.json bewusst exkludiert sind (validiert in
+    # reports/Sollkapazitaet_Validierungsbericht_2026-07-14.md).
+    _comp_top = build_compact_compensation_planlevel_df(df)
     total_ist = get_ist_mak(emp_df)
-    total_soll = get_soll_mak(df)
+    total_soll = float(_comp_top["SOLL_MAK_View"].sum()) if "SOLL_MAK_View" in _comp_top.columns else get_soll_mak(df)
     delta = total_ist - total_soll
     erfuellungsgrad = total_ist / total_soll if total_soll > 0 else 0
 
@@ -5260,8 +5265,11 @@ def analyze_ist_vs_soll_mak_data(df: pd.DataFrame) -> dict:
     """Analysiert IST vs SOLL MAK Daten und erstellt Management Summary."""
     emp_df = df[~df["Is_Vacant"]] if "Is_Vacant" in df.columns else df
 
+    # SOLL-MAK exklusionsbereinigt (SOLL_MAK_View), konsistent mit der Top-Kachel
+    # in render_ist_vs_soll_mak_tab() -- siehe Kommentar dort.
+    _comp_summary = build_compact_compensation_planlevel_df(df)
     total_ist = get_ist_mak(emp_df)
-    total_soll = get_soll_mak(df)
+    total_soll = float(_comp_summary["SOLL_MAK_View"].sum()) if "SOLL_MAK_View" in _comp_summary.columns else get_soll_mak(df)
     delta = total_ist - total_soll
     erfuellungsgrad = total_ist / total_soll if total_soll > 0 else 0
 
@@ -5508,12 +5516,27 @@ def _render_ist_vs_soll_mak_tab_clean(df: pd.DataFrame, print_mode: bool = False
         st.warning("SOLL-MAK nicht verfügbar." if language == "de" else "Target FTE is not available.")
         return
 
-    ist_mak_col = next((c for c in ("MAK_Reporting", "MAK_Calculated", "mak", "MAK") if c in df.columns), "FTE_assigned")
-
     _kpi_comp = build_compact_compensation_planlevel_df(df)
     total_ist  = float(_kpi_comp["IST_MAK"].sum())       if "IST_MAK"       in _kpi_comp.columns else get_ist_mak(df[~df["Is_Vacant"]] if "Is_Vacant" in df.columns else df)
     total_soll = float(_kpi_comp["SOLL_MAK_View"].sum()) if "SOLL_MAK_View" in _kpi_comp.columns else get_soll_mak(df)
     delta = total_ist - total_soll
+
+    # Breakdown-Tabellen unten sollen zur Top-Kachel passen (dieselbe Summe je
+    # Dimension aufaddiert). _kpi_comp traegt bereits die exklusions- und
+    # dedup-bereinigten Werte (IST_MAK/SOLL_MAK_View) mit identischem Index wie
+    # df -- hier per Index auf df gespiegelt, damit render_single_comparison()
+    # sie wie jede andere Spalte gruppieren/summieren kann.
+    df = df.copy()
+    if "IST_MAK" in _kpi_comp.columns:
+        df["IST_MAK_View"] = _kpi_comp["IST_MAK"]
+        ist_mak_col = "IST_MAK_View"
+    else:
+        ist_mak_col = next((c for c in ("MAK_Reporting", "MAK_Calculated", "mak", "MAK") if c in df.columns), "FTE_assigned")
+    if "SOLL_MAK_View" in _kpi_comp.columns:
+        df["SOLL_MAK_View"] = _kpi_comp["SOLL_MAK_View"]
+        soll_mak_col = "SOLL_MAK_View"
+    else:
+        soll_mak_col = "Soll_FTE"
     erfuellungsgrad = total_ist / total_soll if total_soll > 0 else 0
     status = "good" if erfuellungsgrad >= 0.95 else ("warning" if erfuellungsgrad >= 0.85 else "critical")
 
@@ -5561,7 +5584,7 @@ def _render_ist_vs_soll_mak_tab_clean(df: pd.DataFrame, print_mode: bool = False
                     dimension_name,
                     dimension_col,
                     ist_col=ist_mak_col,
-                    soll_col="Soll_FTE",
+                    soll_col=soll_mak_col,
                     value_type="mak",
                     key_prefix="ist_vs_soll_mak",
                     print_mode=print_mode,
