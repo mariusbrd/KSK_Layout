@@ -100,11 +100,20 @@ def _reference_prepare_hybrid_employee_snapshot(snapshot_df: pd.DataFrame, df_at
         "Sollarbeitszeit": "sum",
         "Organisationseinheit": "first",
     }
+    # Mirrors pages/5_Prognose_Hybrid.py::_prepare_hybrid_employee_snapshot(): prefer the
+    # person-capped MAK_Reporting sum over the raw (potentially double-counted) MAK_Calculated
+    # sum for people with multiple active Planstellen.
+    if "MAK_Reporting" in df_ma.columns:
+        agg_dict["MAK_Reporting"] = "sum"
     for col in ["Geschlecht", "Planstelle", "Kürzel OrgEinheit", "ATZ_Status", "Jobfamily", "TrfGr", "St", "OE-Cluster", "JF-Cluster", "BsGrd"]:
         if col in df_ma.columns:
             agg_dict[col] = "first"
 
     df_employee_agg = df_ma.groupby("PersNr", as_index=False).agg(agg_dict)
+    if "MAK_Reporting" in df_employee_agg.columns:
+        df_employee_agg["MAK_Calculated"] = pd.to_numeric(
+            df_employee_agg["MAK_Reporting"], errors="coerce"
+        ).fillna(pd.to_numeric(df_employee_agg["MAK_Calculated"], errors="coerce").fillna(0.0))
     df_employee_agg["mak"] = df_employee_agg["MAK_Calculated"]
     df_employee_agg["Sollarbeitszeit"] = df_employee_agg["Sollarbeitszeit"].fillna(39.0)
     df_employee_agg["Sollarbeitszeit"] = 39.0

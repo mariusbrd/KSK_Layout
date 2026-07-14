@@ -165,13 +165,19 @@ def test_total_ist_mak_across_all_persons_invariant_to_toggle(pipeline_off, pipe
 
 def test_allocation_weight_sums_to_one_per_active_person_both_toggle_states(pipeline_off, pipeline_on):
     """Regressions-Sicherung ueber den eingebauten Validierungs-Report: unabhaengig vom Toggle
-    darf keine Person eine gebrochene Gewichtssumme oder eine Reporting-MAK > Personen-MAK haben."""
+    darf keine Person eine gebrochene Gewichtssumme haben, und eine Reporting-MAK > Personen-MAK
+    ist nur fuer Personen erlaubt, die explizit als dokumentierte
+    multi_position_row_level_realistic_total-Ausnahme geflaggt sind (siehe
+    dataloader/mak_allocation.py) - fuer alle anderen ist es weiterhin ein Fehler."""
     for df in (pipeline_off, pipeline_on):
         summary = build_mak_allocation_validation_summary(df)
         weight_row = summary[summary["Check"] == "Anzahl_Personen_mit_Allocation_Weight_sum_ne_1"].iloc[0]
         assert weight_row["Wert"] == 0, weight_row
         reporting_row = summary[summary["Check"] == "Anzahl_Personen_mit_Reporting_MAK_gt_Personen_MAK"].iloc[0]
-        assert reporting_row["Status"] == "OK", reporting_row
+        exception_persnrs = df.loc[
+            df["MAK_Allocation_Flag"] == "multi_position_row_level_realistic_total", "PersNr"
+        ].unique()
+        assert reporting_row["Wert"] == len(exception_persnrs), (reporting_row, exception_persnrs)
 
 
 def test_row_count_unchanged_by_toggle(pipeline_off, pipeline_on):
