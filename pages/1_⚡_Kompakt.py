@@ -4141,6 +4141,12 @@ def render_ist_vs_soll_mak_tab(df: pd.DataFrame, print_mode: bool = False):
 
     emp_df = df[~df["Is_Vacant"]] if "Is_Vacant" in df.columns else df
 
+    # Dieselbe Spaltenpriorität wie get_ist_mak()/render_ist_mak_tab(), damit die
+    # Breakdown-Tabellen unten zur Top-Kachel passen. "FTE_assigned" (FTE_person x
+    # Soll_FTE) verdoppelt bei Teilzeit-Personen auf Teilzeit-Planstellen faelschlich
+    # den Teilzeit-Abschlag und ist daher nur letzter Fallback, keine Standardspalte.
+    ist_mak_col = next((c for c in ("MAK_Reporting", "MAK_Calculated", "mak", "MAK") if c in df.columns), "FTE_assigned")
+
     total_ist = get_ist_mak(emp_df)
     total_soll = get_soll_mak(df)
     delta = total_ist - total_soll
@@ -4187,7 +4193,7 @@ def render_ist_vs_soll_mak_tab(df: pd.DataFrame, print_mode: bool = False):
             else:
                 render_single_comparison(
                     df, dimension_name, dimension_col,
-                    ist_col="FTE_assigned",
+                    ist_col=ist_mak_col,
                     soll_col="Soll_FTE",
                     value_type="mak",
                     key_prefix="ist_vs_soll_mak",
@@ -5502,6 +5508,8 @@ def _render_ist_vs_soll_mak_tab_clean(df: pd.DataFrame, print_mode: bool = False
         st.warning("SOLL-MAK nicht verfügbar." if language == "de" else "Target FTE is not available.")
         return
 
+    ist_mak_col = next((c for c in ("MAK_Reporting", "MAK_Calculated", "mak", "MAK") if c in df.columns), "FTE_assigned")
+
     _kpi_comp = build_compact_compensation_planlevel_df(df)
     total_ist  = float(_kpi_comp["IST_MAK"].sum())       if "IST_MAK"       in _kpi_comp.columns else get_ist_mak(df[~df["Is_Vacant"]] if "Is_Vacant" in df.columns else df)
     total_soll = float(_kpi_comp["SOLL_MAK_View"].sum()) if "SOLL_MAK_View" in _kpi_comp.columns else get_soll_mak(df)
@@ -5552,7 +5560,7 @@ def _render_ist_vs_soll_mak_tab_clean(df: pd.DataFrame, print_mode: bool = False
                     df,
                     dimension_name,
                     dimension_col,
-                    ist_col="FTE_assigned",
+                    ist_col=ist_mak_col,
                     soll_col="Soll_FTE",
                     value_type="mak",
                     key_prefix="ist_vs_soll_mak",
