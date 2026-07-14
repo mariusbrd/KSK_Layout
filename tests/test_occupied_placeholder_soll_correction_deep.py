@@ -355,10 +355,14 @@ def test_exclusion_group_001_mask_escaped_by_correction_synthetic():
 
 
 def test_exclusion_group_001_vacates_row_when_correction_off_but_not_when_on():
-    """End-to-End-Nachweis des dokumentierten Interaktionseffekts anhand echter Daten: Fuer eine
-    dynamisch gefundene, regulaere (nicht-Sonderstatus) besetzte Platzhalter-Zeile fuehrt
-    apply_exclusions() mit aktiver 'sollarbeitszeit_001_positions'-Gruppe OHNE Korrektur zu
-    Is_Vacant=True (Zeile wird vakant/exkludiert), MIT Korrektur bleibt sie besetzt."""
+    """End-to-End-Nachweis des dokumentierten Interaktionseffekts anhand echter Daten, aktualisiert
+    fuer die v2.3-IST-Ausnahme in apply_exclusions(): Fuer eine dynamisch gefundene, regulaere
+    (nicht-Sonderstatus) besetzte Platzhalter-Zeile mit realer Kapazitaet (BsGrd>0) fuehrt
+    apply_exclusions() mit aktiver 'sollarbeitszeit_001_positions'-Gruppe OHNE Korrektur weiterhin
+    zu Is_Excluded=True (SOLL bleibt exkludiert), aber NICHT mehr zu Is_Vacant=True -- die reale
+    IST-Kapazitaet bleibt seit v2.3 erhalten (siehe apply_exclusions()-Docstring, Abschnitt v2.3).
+    MIT Korrektur ist die Zeile gar nicht erst exkludiert (Sollarbeitszeit ungleich 0,01), daher
+    dort zusaetzlich Is_Excluded=False."""
     raw = loader.load_original_data()
 
     baseline = loader.combine_to_snapshot(
@@ -394,9 +398,13 @@ def test_exclusion_group_001_vacates_row_when_correction_off_but_not_when_on():
     plan_nr = regular_candidates.iloc[0]["Planstellennr"]
     row_off_by_plan = snap_off[snap_off["Planstellennr"] == plan_nr]
     assert not row_off_by_plan.empty
-    assert bool(row_off_by_plan.iloc[0]["Is_Vacant"]) is True
+    # v2.3: SOLL bleibt exkludiert, aber die reale IST-Kapazitaet (BsGrd>0, kein hartes
+    # Ausschlusskriterium wie Vorstand/Ruhend/PA-Bereich/Azubi) bleibt erhalten -> nicht mehr vakant.
+    assert bool(row_off_by_plan.iloc[0]["Is_Vacant"]) is False
     assert row_off_by_plan.iloc[0]["Is_Excluded"] == True
     assert row_off_by_plan.iloc[0]["Exclusion_Group"] == "Sollarbeitszeit ≤ 0,01"
+    assert bool(row_off_by_plan.iloc[0]["Is_IST_Preserved_Despite_Exclusion"]) is True
+    assert row_off_by_plan.iloc[0]["MAK_Calculated"] > 0
 
     snap_on = loader.combine_to_snapshot(
         raw["mitarbeiter"], raw["planstellen"], raw["atz"], raw["ausbildung"],

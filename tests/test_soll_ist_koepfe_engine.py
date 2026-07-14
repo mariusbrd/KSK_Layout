@@ -228,19 +228,25 @@ def test_soll_ist_koepfe_engine_matches_current_deep_dive_settings():
     result = build_soll_ist_koepfe_result()
     summary = result["summary"]
 
+    # Werte aktualisiert fuer apply_exclusions() v2.3 (dataloader/loader.py): besetzte
+    # Planstellen, die NUR ueber einen technischen Platzhaltergrund (Sollarbeitszeit ≈ 0,01 /
+    # Jobfamily-Validierungsliste) exkludiert wuerden, behalten ihre reale IST-Kapazitaet, wenn
+    # die besetzende Person BsGrd>0 hat (87 betroffene Planstellen unternehmensweit, siehe
+    # apply_exclusions()-Docstring). "Hart" exkludierte Gruppen (Vorstand/Ruhend/PA-Bereich/
+    # Azubi) sind unveraendert.
     expected = {
-        "rows_total_after_exclusions": 1328,
-        "regular_total": 984,
-        "regular_occupied": 896,
+        "rows_total_after_exclusions": 1334,
+        "regular_total": 988,
+        "regular_occupied": 900,
         "regular_vacant": 88,
-        "regular_no_soll_eg_total": 1,
-        "regular_no_soll_eg_occupied": 1,
-        "matrix_total": 983,
-        "matrix_occupied": 895,
+        "regular_no_soll_eg_total": 3,
+        "regular_no_soll_eg_occupied": 3,
+        "matrix_total": 985,
+        "matrix_occupied": 897,
         "matrix_unbesetzt": 88,
         "matrix_not_found": 0,
-        "technical_total": 344,
-        "technical_9xxx_total": 0,
+        "technical_total": 346,
+        "technical_9xxx_total": 2,
         "technical_9xxx_occupied": 0,
         "technical_non9xxx_total": 344,
         "technical_non9xxx_occupied": 87,

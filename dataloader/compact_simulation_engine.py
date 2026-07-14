@@ -455,8 +455,6 @@ def _prepare_employee_forecast_base(
         "bsgrd_lineage_flag",
         "Planstellen_Soll_MAK",
         "MAK_Technical_Uncorrected",
-        "Allocation_Weight",
-        "MAK_Reporting",
         "MAK_Adjustment_Delta",
         "MAK_Allocation_Flag",
         "MAK_Allocation_Comment",
@@ -465,11 +463,31 @@ def _prepare_employee_forecast_base(
         if col in df_ma.columns:
             agg_dict[col] = "first"
 
+    # MAK_Reporting und Allocation_Weight sind bereits ueber apply_person_mak_allocation()
+    # personenscharf gewichtet (Allocation_Weight summiert sich je Person auf 1,0) -- im
+    # Gegensatz zu MAK_Calculated, das der rohe Zeilenwert je Planstelle ist. Bei Personen mit
+    # mehreren aktiven Planstellen (BsGrd ist ein Personen-Attribut und steht unveraendert auf
+    # jeder ihrer Zeilen) wuerde "MAK_Calculated": "sum" ihre Kapazitaet mehrfach zaehlen (z. B.
+    # 2x100% BsGrd -> faelschlich 2,0 MAK statt real 1,0). Daher hier "sum" statt "first".
+    if "MAK_Reporting" in df_ma.columns:
+        agg_dict["MAK_Reporting"] = "sum"
+    if "Allocation_Weight" in df_ma.columns:
+        agg_dict["Allocation_Weight"] = "sum"
+
     emp_df = df_ma.groupby("PersNr", as_index=False).agg(agg_dict)
     emp_df["PersNr"] = _normalize_persnr_series(emp_df["PersNr"])
     if "Ausbildung" in emp_df.columns:
         emp_df["Ausbildung"] = normalize_education_series(emp_df["Ausbildung"])
-    emp_df["mak"] = pd.to_numeric(emp_df["MAK_Calculated"], errors="coerce").fillna(0.0)
+    # Startkapazitaet bevorzugt aus der personenscharf gewichteten MAK_Reporting-Summe (siehe
+    # oben); Fallback auf die rohe MAK_Calculated-Summe nur, falls MAK_Reporting fehlt (z. B.
+    # unvollstaendige Upload-/Synthetik-Datenpfade ohne apply_person_mak_allocation()).
+    if "MAK_Reporting" in emp_df.columns:
+        emp_df["mak"] = pd.to_numeric(emp_df["MAK_Reporting"], errors="coerce").fillna(
+            pd.to_numeric(emp_df["MAK_Calculated"], errors="coerce").fillna(0.0)
+        )
+    else:
+        emp_df["mak"] = pd.to_numeric(emp_df["MAK_Calculated"], errors="coerce").fillna(0.0)
+    emp_df["MAK_Calculated"] = emp_df["mak"]
     emp_df["Sollarbeitszeit"] = 39.0
     emp_df["BsGrd"] = emp_df["mak"] * 100.0
     emp_df["active"] = True

@@ -556,11 +556,37 @@ def main():
     anteil_ex_pct = ex_soll_mak / total_soll_mak * 100 if total_soll_mak > 0 else 0.0
 
     # Aktiv IST-MAK: Effektive Kapazität aktiver, besetzter Mitarbeitender (Brücke zur Kompakt-Seite)
-    # Identischer Berechnungspfad wie compute_fte_effektiv(): dedup via get_unique_employees(),
-    # dann MAK-Summe via resolve_mak_series() (Priorität: MAK_Calculated → mak → MAK).
-    active_df = snapshot_df[~union_ex_mask]
+    # Berechnungspfad wie compute_fte_effektiv(): dedup via get_unique_employees(), dann MAK-Summe
+    # mit Prioritaet MAK_Reporting -> MAK_Calculated -> mak -> MAK (identisch zu compute_fte_effektiv,
+    # NICHT identisch zur resolve_mak_series()-Standardprioritaet -- siehe unten).
+    #
+    # v2.3: union_ex_mask markiert reine Gruppen-Mitgliedschaft (fuer SOLL/Transparenz weiterhin
+    # korrekt), deckt aber nicht ab, dass apply_exclusions() fuer besetzte Planstellen mit
+    # ausschliesslich technischem Platzhaltergrund (Sollarbeitszeit ≈ 0,01 bzw.
+    # Jobfamily-Validierungsliste) und realer Kapazitaet (BsGrd>0) die IST-Werte NICHT mehr nullt
+    # (Is_Vacant bleibt False). Diese Zeilen muessen daher trotz Gruppen-Mitgliedschaft weiterhin
+    # als "aktiv" fuer die IST-Bruecke zaehlen, sonst weicht dieser Wert von der Kompakt-Seite ab.
+    #
+    # MAK_Reporting statt resolve_mak_series()-Default (MAK_Calculated zuerst) noetig, weil einige
+    # der neu einbezogenen Personen zusaetzlich eine zweite, regulaere Planstelle halten:
+    # MAK_Calculated ist der rohe Zeilenwert je Planstelle (get_unique_employees summiert ihn nur
+    # ueber alle Zeilen der Person, ohne Personen-Obergrenze) und wuerde deren Kapazitaet doppelt
+    # zaehlen; MAK_Reporting ist bereits ueber apply_person_mak_allocation() personenscharf auf die
+    # reale Kapazitaet begrenzt (Allocation_Weight je Person summiert sich auf 1,0).
+    ist_preserved_mask = snapshot_df.get(
+        "Is_IST_Preserved_Despite_Exclusion", pd.Series(False, index=snapshot_df.index)
+    ).fillna(False)
+    active_df = snapshot_df[~union_ex_mask | ist_preserved_mask]
     emp_active = get_unique_employees(active_df)  # dedupliziert auf Mitarbeiterebene
-    active_ist_mak = float(resolve_mak_series(emp_active).sum())
+    _active_ist_col = next(
+        (c for c in ("MAK_Reporting", "MAK_Calculated", "mak", "MAK") if c in emp_active.columns),
+        None,
+    )
+    active_ist_mak = (
+        float(emp_active[_active_ist_col].fillna(0).sum())
+        if _active_ist_col
+        else float(resolve_mak_series(emp_active).sum())
+    )
 
     # ── Header-Meta-Zeile ─────────────────────────────────────────────────────
     scope_label = (

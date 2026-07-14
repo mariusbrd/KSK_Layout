@@ -122,6 +122,55 @@ def test_known_15_case_pattern_keeps_technical_and_reports_person_capacity() -> 
     assert out["MAK_Adjustment_Delta"].sum() == 15.0
 
 
+def test_multi_position_realistic_total_trusts_row_level_bsgrd() -> None:
+    # Mirrors the real PersNr 004223 case: BsGrd 50 on both rows, one row with
+    # a real Sollarbeitszeit and one near-zero placeholder Sollarbeitszeit.
+    # Combined raw MAK (0.5+0.5=1.0) stays within a plausible full-time bound,
+    # so each row's own MAK should be trusted instead of capping to the
+    # duplicated 0.5 Personen_MAK.
+    df = pd.DataFrame(
+        {
+            "PersNr": ["0001", "0001"],
+            "BsGrd": [50.0, 50.0],
+            "Sollarbeitszeit": [15.0, 0.01],
+            "MAK_Calculated": [0.5, 0.5],
+            "Total_Cost_Year": [40000.0, 40000.0],
+            "Planstelle": ["A", "B"],
+            "Is_Vacant": [False, False],
+        }
+    )
+
+    out = apply_person_mak_allocation(df)
+
+    assert out["Personen_MAK"].iloc[0] == 0.5
+    assert out["MAK_Reporting"].tolist() == [0.5, 0.5]
+    assert out["MAK_Reporting"].sum() == 1.0
+    assert out["Allocation_Weight"].sum() == 1.0
+    assert set(out["MAK_Allocation_Flag"]) == {"multi_position_row_level_realistic_total"}
+    assert out["EUR_Reporting"].sum() == 40000.0
+
+
+def test_multi_position_unrealistic_total_still_caps_to_person_mak() -> None:
+    # Same shape as above but BsGrd=100 on both rows: combined raw MAK would be
+    # 2.0 (200%), clearly an administrative BsGrd duplication rather than two
+    # real engagements, so the existing person-level capping must still apply.
+    df = pd.DataFrame(
+        {
+            "PersNr": ["0001", "0001"],
+            "BsGrd": [100.0, 100.0],
+            "Sollarbeitszeit": [19.5, 0.01],
+            "MAK_Calculated": [1.0, 1.0],
+            "Planstelle": ["A", "B"],
+            "Is_Vacant": [False, False],
+        }
+    )
+
+    out = apply_person_mak_allocation(df)
+
+    assert round(float(out["MAK_Reporting"].sum()), 6) == 1.0
+    assert set(out["MAK_Allocation_Flag"]) == {"exception_required_mak_gt_1"}
+
+
 def test_fuehrung_vertrieb_synthetic_summary_moves_from_29_to_21() -> None:
     rows = []
     for idx in range(8):
