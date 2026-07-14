@@ -161,6 +161,7 @@ def apply_person_mak_allocation(
     row_count = group[person_id_col].transform("size")
     soll_sum = group["Planstellen_Soll_MAK"].transform("sum")
     person_mak = group["Personen_MAK"].transform("max")
+    technical_sum = group["MAK_Technical_Uncorrected"].transform("sum")
 
     out["Anzahl_Planstellen"] = 0
     out.loc[active, "Anzahl_Planstellen"] = row_count.astype(int)
@@ -177,6 +178,27 @@ def apply_person_mak_allocation(
     out["MAK_Reporting"] = 0.0
     out.loc[active, "MAK_Reporting"] = person_mak.loc[active] * out.loc[active, "Allocation_Weight"]
 
+    # Multiple active Planstellen rows normally mean one person's BsGrd was
+    # duplicated onto every row by the Mitarbeiter/Planstellen join (the person
+    # capping above prevents double-counting that duplication). But when the
+    # combined raw row-level MAK stays within a plausible full-time bound
+    # (<=100%), the rows more likely represent two genuinely distinct partial
+    # engagements that the single person-level BsGrd/Personen_MAK value
+    # understates. In that case trust each row's own technical MAK instead of
+    # capping to Personen_MAK.
+    realistic_row_level = active.copy()
+    realistic_row_level.loc[active] = (
+        row_count.gt(1)
+        & technical_sum.le(1.0 + 1e-6)
+        & technical_sum.gt(person_mak + 1e-6)
+    ).values
+    technical_sum_full = technical_sum.reindex(out.index)
+    out.loc[realistic_row_level, "Allocation_Weight"] = (
+        out.loc[realistic_row_level, "MAK_Technical_Uncorrected"]
+        / technical_sum_full.loc[realistic_row_level]
+    )
+    out.loc[realistic_row_level, "MAK_Reporting"] = out.loc[realistic_row_level, "MAK_Technical_Uncorrected"]
+
     if cost_col in out.columns:
         out["EUR_Reporting"] = _numeric(out[cost_col], out.index).fillna(0.0) * out["Allocation_Weight"]
         out["EUR_Allocation_Comment"] = "Total_Cost_Year treated as person-level cost and allocated by Allocation_Weight"
@@ -186,7 +208,6 @@ def apply_person_mak_allocation(
 
     out["MAK_Adjustment_Delta"] = out["MAK_Technical_Uncorrected"] - out["MAK_Reporting"]
 
-    technical_sum = group["MAK_Technical_Uncorrected"].transform("sum")
     out["MAK_Allocation_Flag"] = "validation_error"
     out.loc[active & row_count.eq(1).reindex(out.index, fill_value=False), "MAK_Allocation_Flag"] = "single_position"
     out.loc[by_soll & row_count.gt(1).reindex(out.index, fill_value=False), "MAK_Allocation_Flag"] = "multi_position_allocated_by_planstellen_soll"
@@ -200,6 +221,7 @@ def apply_person_mak_allocation(
     technical_gt_person = technical_sum.gt(person_mak + 1e-6).reindex(out.index, fill_value=False)
     exception_required = active & (technical_gt_person | person_gt_one) & ~approved_exception
     out.loc[exception_required, "MAK_Allocation_Flag"] = "exception_required_mak_gt_1"
+    out.loc[realistic_row_level, "MAK_Allocation_Flag"] = "multi_position_row_level_realistic_total"
 
     out["MAK_Allocation_Comment"] = "person MAK allocated for reporting"
     out.loc[out["MAK_Allocation_Flag"].eq("single_position"), "MAK_Allocation_Comment"] = "single active Planstellen row; reporting MAK equals person MAK"
@@ -207,6 +229,7 @@ def apply_person_mak_allocation(
     out.loc[out["MAK_Allocation_Flag"].eq("multi_position_allocated_equal_weight"), "MAK_Allocation_Comment"] = "person MAK distributed equally because no usable Planstellen_Soll_MAK exists"
     out.loc[out["MAK_Allocation_Flag"].eq("missing_person_mak_fallback_used"), "MAK_Allocation_Comment"] = "Personen_MAK fallback used because BsGrd/Personen_MAK was missing"
     out.loc[out["MAK_Allocation_Flag"].eq("exception_required_mak_gt_1"), "MAK_Allocation_Comment"] = "technical MAK exceeds person MAK; exception approval required for reporting above person capacity"
+    out.loc[out["MAK_Allocation_Flag"].eq("multi_position_row_level_realistic_total"), "MAK_Allocation_Comment"] = "multiple active Planstellen rows with plausible combined raw MAK (<=100%); each row's own technical MAK trusted instead of capping to Personen_MAK"
     out.loc[~active, "MAK_Allocation_Comment"] = "inactive or vacant row excluded from person MAK allocation"
 
     return out.drop(columns=["_active_allocation_row"], errors="ignore")
