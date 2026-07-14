@@ -262,18 +262,34 @@ def main():
             "Sollarbeitszeit": "sum",  # Sum work hours across positions
             "Organisationseinheit": "first", # Preserve OrgUnit for Analytics
         }
+        # MAK_Reporting ist bereits ueber apply_person_mak_allocation() personenscharf gewichtet
+        # (Allocation_Weight summiert sich je Person auf 1,0). MAK_Calculated ist dagegen der rohe
+        # Zeilenwert je Planstelle; da BsGrd ein Personen-Attribut ist (identischer Wert auf jeder
+        # Planstellen-Zeile einer Person), zaehlt "MAK_Calculated": "sum" bei Personen mit mehreren
+        # aktiven Planstellen deren Kapazitaet mehrfach (z. B. 2x BsGrd=100% -> faelschlich 2,0
+        # statt real 1,0 MAK). Gleicher Fix wie in compact_simulation_engine.py::
+        # _prepare_employee_forecast_base().
+        if "MAK_Reporting" in df_ma.columns:
+            agg_dict["MAK_Reporting"] = "sum"
 
         # Optional: include other columns if they exist
         for col in ["Geschlecht", "Planstelle", "Kürzel OrgEinheit", "ATZ_Status", "Jobfamily", "TrfGr", "St", "OE-Cluster", "JF-Cluster"]:
             if col in df_ma.columns:
                 agg_dict[col] = "first"
-        
+
         # Performance Optimization: Aggregate using groupby
         df_employee_agg = df_ma.groupby("PersNr", as_index=False).agg(agg_dict)
-        
-        # Standardize column name for subsequent logic
-        df_employee_agg["mak"] = df_employee_agg["MAK_Calculated"]
+
+        # Standardize column name for subsequent logic. Bevorzugt die personenscharf gewichtete
+        # MAK_Reporting-Summe; Fallback auf die rohe MAK_Calculated-Summe falls MAK_Reporting fehlt.
+        if "MAK_Reporting" in df_employee_agg.columns:
+            df_employee_agg["mak"] = pd.to_numeric(df_employee_agg["MAK_Reporting"], errors="coerce").fillna(
+                pd.to_numeric(df_employee_agg["MAK_Calculated"], errors="coerce").fillna(0.0)
+            )
+        else:
+            df_employee_agg["mak"] = df_employee_agg["MAK_Calculated"]
         # IMPORTANT: Keep MAK_Calculated for forecast engine (it checks for this specific column)
+        df_employee_agg["MAK_Calculated"] = df_employee_agg["mak"]
         # df_employee_agg = df_employee_agg.rename(columns={"MAK_Calculated": "mak"})
         
         # 1. Ensure Sollarbeitszeit is present (fallback 39.0)

@@ -218,14 +218,30 @@ def main():
             "TrfGr": "first",
             "St": "first",
         }
-        
+        # MAK_Reporting ist bereits ueber apply_person_mak_allocation() personenscharf gewichtet
+        # (Allocation_Weight summiert sich je Person auf 1,0). MAK_Calculated ist dagegen der rohe
+        # Zeilenwert je Planstelle; da BsGrd ein Personen-Attribut ist (identischer Wert auf jeder
+        # Planstellen-Zeile einer Person), zaehlt "MAK_Calculated": "sum" bei Personen mit mehreren
+        # aktiven Planstellen deren Kapazitaet mehrfach. Gleicher Fix wie in
+        # compact_simulation_engine.py::_prepare_employee_forecast_base() und
+        # pages/3_Prognose_Abgänge.py.
+        if "MAK_Reporting" in df_ma_global.columns:
+            agg_dict["MAK_Reporting"] = "sum"
+
         # Include Geschlecht/Planstelle if present
         for col in ["Geschlecht", "Planstelle", "active", "OE-Cluster", "JF-Cluster"]:
             if col in df_ma_global.columns:
                 agg_dict[col] = "first"
-        
+
         df_employee_agg_global = df_ma_global.groupby("PersNr", as_index=False).agg(agg_dict)
-        
+
+        # Bevorzugt die personenscharf gewichtete MAK_Reporting-Summe; Fallback auf die rohe
+        # MAK_Calculated-Summe falls MAK_Reporting fehlt.
+        if "MAK_Reporting" in df_employee_agg_global.columns:
+            df_employee_agg_global["MAK_Calculated"] = pd.to_numeric(
+                df_employee_agg_global["MAK_Reporting"], errors="coerce"
+            ).fillna(pd.to_numeric(df_employee_agg_global["MAK_Calculated"], errors="coerce").fillna(0.0))
+
         # Backcalculate BsGrd for engine compatibility
         df_employee_agg_global["Sollarbeitszeit"] = 39.0
         df_employee_agg_global["BsGrd"] = df_employee_agg_global["MAK_Calculated"] * 100.0
