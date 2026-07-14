@@ -817,6 +817,13 @@ def _apply_filters_uncached(df: pd.DataFrame, active_filters: dict | None = None
         if filter_values and column_name in filtered.columns:
             s_norm = filtered[column_name].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
             mask = s_norm.isin(_normalize_filter_values(filter_values))
+            if column_name == "Geschlecht":
+                # Unbesetzte Planstellen haben kein Geschlecht (NaN), da keine Person
+                # zugeordnet ist. Der Geschlechts-Filter ist im UI ausgeblendet und
+                # immer aktiv ("beide Geschlechter") - er soll daher nur IST-seitig
+                # (besetzte Zeilen) wirken und die SOLL-Kapazitaet unbesetzter
+                # Planstellen nicht aus den Kennzahlen herausfiltern.
+                mask = mask | filtered[column_name].isna()
             filtered = filtered.loc[mask]
 
     return filtered

@@ -5,7 +5,7 @@
     },
     "include_future_hires": true,
     "exclusions": {
-        "vorstand": false,
+        "vorstand": true,
         "ruhend_bv": true,
         "planstellen_follow_person": true,
         "org_units": [
