@@ -809,13 +809,22 @@ def main():
             # Cost Impact (Gross Additions)
             if not events_pos.empty:
                 cost_df = events_pos.copy()
-                # Use MAK as FTE estimate if available, else 1.0
-                if "mak" in cost_df.columns:
-                    cost_df["FTE_person"] = cost_df["mak"].fillna(1.0)
-                else:
-                    cost_df["FTE_person"] = 1.0
+                # Blocker B23: "mak" ist die MAK-Kapazitaetsplanungsgroesse, waehrend der
+                # Ausbildung fuer Azubis bewusst 0.0 (azubi_mak_during_training) - sie erhalten
+                # aber trotzdem ihre volle Ausbildungsverguetung. calculate_cost_vectorized()
+                # multipliziert Annual_Final mit FTE_person; mit FTE_person=mak wurde dadurch
+                # jede Azubi-Ausbildungsverguetung faelschlich auf 0 EUR gerechnet. Dieses
+                # Forecast-Modell bildet aktuell keine Teilzeit-Neueinstellungen ab (New_Hire/
+                # Trainee_Hire/Azubi-nach-Uebernahme haben ohnehin immer mak=1.0), daher ist die
+                # tatsaechliche Beschaeftigungsquote fuer Kostenzwecke durchgaengig 100%.
+                cost_df["FTE_person"] = 1.0
                 
-                cost_df = calculate_cost_vectorized(cost_df, tvoed_lookup=None)
+                # Blocker B19: vorher immer tvoed_lookup=None (nur Fallback-Gehaelter aus
+                # config/settings.py, nie die echte TVOED.xlsx). load_and_prepare_data()
+                # hinterlegt den echten Lookup bereits in st.session_state (siehe
+                # dataloader/loader.py load_and_prepare_data), analog zur Verwendung in
+                # dataloader/compact_simulation_engine.py.
+                cost_df = calculate_cost_vectorized(cost_df, tvoed_lookup=st.session_state.get("tvoed_lookup", {}))
                 # Cost is annualized
                 cost_df["Cost_Impact"] = cost_df["Total_Cost_Year"] * cost_df.get("count", 1)
                 total_added_cost = cost_df["Cost_Impact"].sum()

@@ -53,6 +53,16 @@ def get_unique_employees(snapshot_df: pd.DataFrame) -> pd.DataFrame:
     if "PersNr" not in besetzt.columns or besetzt.empty:
         return besetzt
 
+    # Besetzte Planstellen ohne PersNr-Match (Personalnummer in Planstellen.xlsx
+    # ohne Entsprechung in Mitarbeiter.xlsx) sind ein Datenlieferungsfehler, kein
+    # gültiger Mitarbeiter. drop_duplicates(subset="PersNr") würde sonst alle
+    # betroffenen Zeilen über den gemeinsamen NaN-Schlüssel zu EINER Phantom-Person
+    # zusammenfassen (Blocker B17). Analog zu Abgänge/Zugänge, die per
+    # dropna(subset=["PersNr"]) bereits so verfahren.
+    besetzt = besetzt[besetzt["PersNr"].notna()]
+    if besetzt.empty:
+        return besetzt
+
     # Felder die summiert werden müssen (Planstellen-basiert).
     # MAK-Spalten müssen ebenso summiert werden, sonst wird bei Mehrfachplanstellen
     # nur die erste Zeile gewertet → IST-MAK Unterzählung (Bug K1 aus MAK-Dossier).

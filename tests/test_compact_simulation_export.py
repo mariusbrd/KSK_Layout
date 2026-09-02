@@ -211,3 +211,63 @@ def test_export_workbook_contains_ordered_management_sheets() -> None:
     assert "MAK_Reporting" in pd.read_excel(workbook, sheet_name="08_MAK_Allocation").columns
     assert len(missing_df) == 1
     assert int(full_df["Köpfe_StatusQuo_Full"].sum()) == 3
+
+
+def test_export_workbook_contains_jobfamily_profile_and_attrition_person_list() -> None:
+    audit_tables = {
+        "Abgaenge_Events_Raw": pd.DataFrame(
+            [
+                {
+                    "persnr": "1",
+                    "event_date": pd.Timestamp("2027-03-31"),
+                    "reason_code": "QUIT",
+                    "reason_label": "Kündigung",
+                    "headcount_change": -1,
+                    "mak_change": -1.0,
+                    "Jobfamily": "Beratung",
+                    "Organisationseinheit": "Markt",
+                    "age": 37.2,
+                    "tenure": 7.1,
+                }
+            ]
+        ),
+        "MAK_Abgaenge_Check": pd.DataFrame(
+            [
+                {
+                    "PersNr": "1",
+                    "Jobfamily_before": "Beratung",
+                    "MAK_before": 1.0,
+                    "MAK_after_abgang": 0.0,
+                    "row_removed_or_deactivated": True,
+                }
+            ]
+        ),
+    }
+
+    payload = build_compact_simulation_export_bytes(
+        prepared_df=_sample_prepared_df(),
+        abgaenge_params={},
+        zugaenge_params={},
+        metadata={"base_date": pd.Timestamp("2026-01-01"), "target_date": pd.Timestamp("2028-01-01")},
+        status_quo_df=_sample_prepared_df(),
+        status_quo_date=pd.Timestamp("2026-01-01"),
+        audit_tables=audit_tables,
+    )
+
+    workbook = pd.ExcelFile(io.BytesIO(payload))
+
+    assert {
+        "14_JF_Profil_Vor_Nach",
+        "15_Abgaenge_Personenliste",
+        "16_Abgaenge_Grund",
+        "17_Abgaenge_Grund_Jahr",
+        "18_Abgaenge_Grund_JF",
+    }.issubset(set(workbook.sheet_names))
+
+    person_list = pd.read_excel(workbook, sheet_name="15_Abgaenge_Personenliste")
+    profile = pd.read_excel(workbook, sheet_name="14_JF_Profil_Vor_Nach")
+
+    assert str(person_list.loc[0, "PersNr"]) == "1"
+    assert person_list.loc[0, "Jobfamily_before"] == "Beratung"
+    assert person_list.loc[0, "Abgangsgrund"] == "Kündigung"
+    assert "GESAMT" in set(profile["Jobfamily"])

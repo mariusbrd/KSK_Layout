@@ -1070,6 +1070,7 @@ def _build_simulation_audit_tables(
         "MAK_Deep_Dive_15_Cases": build_mak_deep_dive_15_cases(lineage, mak_origin),
         "MAK_Fuehrung_Vertrieb_Check": build_mak_fuehrung_vertrieb_check(lineage, mak_decision),
         "MAK_Column_Consistency_Check": build_mak_column_consistency_check(future_snapshot_df),
+        "Abgaenge_Events_Raw": abg_events_df,
         "MAK_Abgaenge_Check": build_mak_abgaenge_check(lineage, abg_events_df),
         "MAK_Zugaenge_Check": build_mak_zugaenge_check(
             lineage,

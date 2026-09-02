@@ -41,3 +41,12 @@ def download_button_compat(label, **kwargs):
     if not _supports_kw(st.download_button, "use_container_width"):
         kwargs.pop("use_container_width", None)
     return st.download_button(label, **kwargs)
+
+
+def ensure_iframe_compat() -> None:
+    """Restore st.iframe for third-party components (e.g. streamlit-scroll-navigation)
+    that still call it directly. st.iframe was removed from newer Streamlit versions;
+    st.components.v1.html is the current equivalent for rendering raw HTML/JS content
+    (as opposed to st.components.v1.iframe, which loads a URL as src, not raw markup)."""
+    if not hasattr(st, "iframe"):
+        st.iframe = st.components.v1.html

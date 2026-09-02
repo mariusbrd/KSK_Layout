@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 import streamlit as st
 
@@ -13,6 +13,62 @@ from zugaenge.params import default_params as default_zugaenge_params
 SESSION_KEY = "simulation_params"
 SOURCE_PAGE = "Simulationsparameter"
 INTERNAL_METADATA_KEYS = {"_ui"}
+
+
+def _numeric_leaves(value: Any) -> Iterable[float]:
+    if isinstance(value, Mapping):
+        for item in value.values():
+            yield from _numeric_leaves(item)
+    elif isinstance(value, (int, float)):
+        yield float(value)
+
+
+def _scale_numeric_leaves(value: Any, factor: float) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            key: _scale_numeric_leaves(item, factor)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_scale_numeric_leaves(item, factor) for item in value]
+    if isinstance(value, (int, float)):
+        return float(value) * factor
+    return deepcopy(value)
+
+
+def _ensure_weight_scale(value: Any) -> Any:
+    """Accept legacy percent matrices and return engine-ready weights.
+
+    Matrix editors display 0-100 percent values, while forecast engines consume
+    0-1 weights. New saves already use weights, but older or partially migrated
+    session state can still contain percent values.
+    """
+    nums = list(_numeric_leaves(value))
+    if nums and any(abs(v) > 1.0 for v in nums):
+        return _scale_numeric_leaves(value, 0.01)
+    return deepcopy(value)
+
+
+def _normalize_engine_param_scales(params: dict[str, Any]) -> dict[str, Any]:
+    normalized = deepcopy(params)
+
+    abg = normalized.get("abgaenge")
+    if isinstance(abg, Mapping):
+        atz = abg.get("atz")
+        if isinstance(atz, Mapping) and isinstance(atz.get("atz_matrix"), Mapping):
+            atz["atz_matrix"] = _ensure_weight_scale(atz["atz_matrix"])
+
+        quit_params = abg.get("quit")
+        if isinstance(quit_params, Mapping) and isinstance(quit_params.get("quit_matrix"), Mapping):
+            quit_params["quit_matrix"] = _ensure_weight_scale(quit_params["quit_matrix"])
+
+    zug = normalized.get("zugaenge")
+    if isinstance(zug, Mapping):
+        azubi = zug.get("azubi")
+        if isinstance(azubi, Mapping) and isinstance(azubi.get("takeover_matrix"), Mapping):
+            azubi["takeover_matrix"] = _ensure_weight_scale(azubi["takeover_matrix"])
+
+    return normalized
 
 
 def _deep_merge(base: dict[str, Any], overlay: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -170,7 +226,7 @@ def get_compact_plus_params() -> tuple[dict[str, Any], dict[str, Any]]:
     Simulationsparameter page. CompactPlus should pass only the technical
     parameter structures to the existing simulation engine and export cache.
     """
-    params = get_simulation_params()
+    params = _normalize_engine_param_scales(get_simulation_params())
     return (
         _strip_internal_metadata(params["abgaenge"]),
         _strip_internal_metadata(params["zugaenge"]),

@@ -6,13 +6,13 @@ from typing import List, Dict, Any, Optional
 import streamlit as st
 
 from dataloader.cluster_resolver import (
-    DEFAULT_EXTERNAL_FILE_PATH,
     DEFAULT_PERSISTED_LOCAL_PATH,
     MODE_INPUT_FOLDER,
     MODE_SYNTHETIC,
     MODE_UI_UPLOAD,
     get_active_cluster_source,
     get_active_cluster_source_from_session,
+    resolve_default_external_cluster_file_path,
 )
 
 class DataSourceOrigin(Enum):
@@ -69,7 +69,7 @@ class SourceService:
                 external_file_path = (
                     os.path.join(cluster_dir, "OE_Cluster.xlsx")
                     if cluster_dir
-                    else DEFAULT_EXTERNAL_FILE_PATH
+                    else resolve_default_external_cluster_file_path()
                 )
                 active_cluster_source = get_active_cluster_source(
                     session_state=session,

@@ -25,7 +25,7 @@ from typing import Dict
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from abgaenge.schemas import normalize_persnr
-from components.ui_compat import dataframe_compat, download_button_compat
+from components.ui_compat import dataframe_compat, download_button_compat, ensure_iframe_compat
 from dataloader.loader import load_and_prepare_data
 from dataloader.jobfamily_service import JOBFAMILY_UNMAPPED, normalize_jobfamily_column, normalize_jobfamily_series
 from dataloader.soll_ist_koepfe_engine import build_soll_ist_koepfe_result
@@ -45,6 +45,7 @@ from utils.settings_loader import get_setting
 
 # Scroll Navigation
 try:
+    ensure_iframe_compat()  # st.iframe was removed from newer Streamlit versions; restore it
     from streamlit_scroll_navigation import scroll_navbar
     SCROLL_NAV_AVAILABLE = True
 except ImportError:
@@ -836,7 +837,16 @@ def _create_breakdown_table_clean(
             agg_df = emp_unique.groupby(dimension_col, observed=True)["PersNr"].nunique().reset_index()
             agg_df.columns = [dimension_col, "IST"]
         elif id_col in emp_df.columns:
-            agg_df = emp_df.groupby(dimension_col, observed=True)[id_col].nunique().reset_index()
+            # Vor der Gruppierung personen-deduplizieren (wie in den Branches oben und im
+            # MAK-Zweig unten) - sonst werden Personen mit mehreren Planstellen in
+            # unterschiedlichen dimension_col-Ausprägungen (z.B. Jobfamily) mehrfach gezählt.
+            from dataloader.kpi_engine import get_unique_employees
+
+            emp_unique_hc = get_unique_employees(emp_df)
+            if dimension_col in emp_unique_hc.columns:
+                agg_df = emp_unique_hc.groupby(dimension_col, observed=True)[id_col].nunique().reset_index()
+            else:
+                agg_df = emp_df.groupby(dimension_col, observed=True)[id_col].nunique().reset_index()
             agg_df.columns = [dimension_col, "IST"]
         else:
             agg_df = emp_df.groupby(dimension_col, observed=True).size().reset_index(name="IST")
@@ -1079,9 +1089,11 @@ def create_horizontal_bar_chart(df: pd.DataFrame, x_col: str, y_col: str,
     """Erstellt ein horizontales Balkendiagramm mit allen Datenpunkten."""
     chart_df = df.copy()
 
-    # Bei horizontalen Charts: immer umkehren für korrekte Darstellung
-    # (Plotly zeigt erstes Element unten, wir wollen es oben)
+    # go.Bar platziert das erste Y-Element unten. Die übergebene Tabelle ist für
+    # Top-Rankings bereits absteigend sortiert, deshalb drehen wir die Trace-Daten
+    # und fixieren dieselbe Achsenreihenfolge explizit.
     chart_df = chart_df.iloc[::-1]
+    y_order = chart_df[x_col].astype(str).tolist()
 
     # Gradient-Farben
     n_bars = len(chart_df)
@@ -1117,7 +1129,7 @@ def create_horizontal_bar_chart(df: pd.DataFrame, x_col: str, y_col: str,
         height=height,
         showlegend=False,
         xaxis=dict(showgrid=True, gridcolor="rgba(226, 232, 240, 0.8)", zeroline=False),
-        yaxis=dict(showgrid=False)
+        yaxis=dict(showgrid=False, categoryorder="array", categoryarray=y_order)
     )
 
     return fig
@@ -1156,6 +1168,7 @@ def create_donut_chart(df: pd.DataFrame, values_col: str, names_col: str,
         showarrow=False
     )
 
+    y_order = main["_label"].astype(str).tolist()
     fig.update_layout(
         title=dict(text=title, font=dict(size=15, color="#1e293b"), x=0),
         plot_bgcolor="rgba(0,0,0,0)",
@@ -1573,7 +1586,7 @@ def _numeric_compensation_series(
 
 
 def _person_identifier_column(df: pd.DataFrame) -> str | None:
-    """Bevorzugt die ID-Spalte, die tatsaechlich Werte enthaelt."""
+    """Bevorzugt die ID-Spalte, die tatsächlich Werte enthält."""
     for col in ("PersNr", "Personalnummer"):
         if col in df.columns and df[col].notna().any():
             return col
@@ -1801,7 +1814,7 @@ def build_compact_compensation_planlevel_df(prepared_df: pd.DataFrame) -> pd.Dat
     if "Text Gehaltsband" in df.columns:
         soll_group_i_raw = df["Text Gehaltsband"].map(_clean_compensation_group)
         # Spiegelt die Konvention aus dataloader/soll_ist_koepfe_engine.py: Spalte I
-        # faellt auf Spalte H zurueck, wenn kein eigenes Gehaltsband gepflegt ist.
+        # fällt auf Spalte H zurück, wenn kein eigenes Gehaltsband gepflegt ist.
         soll_group_i = soll_group_i_raw.where(soll_group_i_raw.ne("Nicht zugeordnet"), soll_group_h)
     else:
         soll_group_i = soll_group_h
@@ -1810,7 +1823,7 @@ def build_compact_compensation_planlevel_df(prepared_df: pd.DataFrame) -> pd.Dat
     out["Soll_Entgeltgruppe_H"] = soll_group_h
     out["Soll_Entgeltgruppe_I"] = soll_group_i
     # Unveraendertes Verhalten fuer bestehende Verbraucher: Basiswert bevorzugt,
-    # Fallback auf Maximalwert (der wiederum bereits auf H zurueckfaellt).
+    # Fallback auf Maximalwert (der wiederum bereits auf H zurückfällt).
     out["Soll_Entgeltgruppe"] = soll_group_h.where(soll_group_h.ne("Nicht zugeordnet"), soll_group_i).fillna("Nicht zugeordnet")
 
     soll_step_col = _first_existing_column(
@@ -2146,6 +2159,7 @@ def create_compensation_planlevel_chart(
         ))
 
     n_rows = len(main)
+    y_order = main["_label"].astype(str).tolist()
     view_title = "Top-Abweichungen" if view == "Delta" else view
     x_title = f"Delta {value_label}" if view == "Delta" else f"{view if view != 'IST vs. SOLL' else 'IST/SOLL'} {value_label}"
     tickformat = ",.0f" if value_label in ("EUR", "Köpfe") else ",.1f"
@@ -2157,7 +2171,7 @@ def create_compensation_planlevel_chart(
         margin=dict(l=10, r=40, t=50, b=35),
         height=max(320, min(760 if print_mode else 680, n_rows * 34 + 140)),
         xaxis=dict(title=x_title, showgrid=True, gridcolor="rgba(226, 232, 240, 0.8)", zeroline=True, zerolinecolor="#475569", tickformat=tickformat),
-        yaxis=dict(title="", showgrid=False),
+        yaxis=dict(title="", showgrid=False, categoryorder="array", categoryarray=y_order),
     )
     return apply_legend_bottom(fig)
 
@@ -2273,7 +2287,7 @@ def _render_compensation_unassigned_box(comp_df: pd.DataFrame, metric: str, aggr
 
 
 def _build_ist_ohne_plan_soll_summary(comp_df: pd.DataFrame) -> pd.DataFrame | None:
-    """Gibt Aggregation nach Ist_ohne_Plan_Soll_Kategorie zurueck, oder None."""
+    """Gibt Aggregation nach Ist_ohne_Plan_Soll_Kategorie zurück, oder None."""
     cat_col = "Ist_ohne_Plan_Soll_Kategorie"
     if cat_col not in comp_df.columns:
         return None
@@ -2979,7 +2993,7 @@ def render_compensation_band_fit_section(
 ) -> None:
     """
     Band-explizites Pendant zu render_compensation_planlevel_section(): zeigt
-    SOLL vs. IST je tatsaechlicher Entgeltgruppen-Spanne (nicht per Toggle bzw.
+    SOLL vs. IST je tatsächlicher Entgeltgruppen-Spanne (nicht per Toggle bzw.
     Basiswert-Praeferenz auf einen Einzelwert reduziert), analog zur Koepfe-
     Perspektive im 'IST vs SOLL Koepfe'-Tab.
     """
@@ -3061,6 +3075,7 @@ def create_comparison_chart(df: pd.DataFrame, dimension_col: str,
     """Erstellt ein Vergleichs-Balkendiagramm für IST vs SOLL mit allen Datenpunkten."""
     chart_df = df.copy().iloc[::-1]
     n_bars = len(chart_df)
+    y_order = chart_df[dimension_col].astype(str).tolist()
 
     fig = go.Figure()
 
@@ -3102,7 +3117,7 @@ def create_comparison_chart(df: pd.DataFrame, dimension_col: str,
         margin=dict(l=10, r=80, t=50, b=30),
         height=height,
         xaxis=dict(showgrid=True, gridcolor="rgba(226, 232, 240, 0.8)", zeroline=False),
-        yaxis=dict(showgrid=False)
+        yaxis=dict(showgrid=False, categoryorder="array", categoryarray=y_order)
     )
     
     fig = apply_legend_bottom(fig)
@@ -5701,7 +5716,7 @@ _SOLL_EG_BAND_INVALID = {"", "NAN", "NONE"}
 def _soll_eg_band_label(h: str, i: str) -> str:
     """Bildet die explizite Entgeltgruppen-Spanne aus Basiswert (H) und Maximalwert (I).
 
-    Faellt symmetrisch auf den jeweils anderen Wert zurueck, wenn einer der beiden
+    Fällt symmetrisch auf den jeweils anderen Wert zurück, wenn einer der beiden
     fehlt (Datenqualitaets-Randfall). Nur wenn beide Werte vorhanden UND
     unterschiedlich sind, entsteht eine echte Spanne wie "E10-E11".
     """
@@ -5785,12 +5800,12 @@ def _soll_eg_band_range_members(band_label: str, eg_order: dict) -> set:
 def _bucket_top_n(series: pd.Series, top_n: int) -> pd.Series:
     """
     Normalisiert eine Spalte (strip, NaN/leer -> "(ohne Angabe)") und fasst alles ausserhalb
-    der `top_n` haeufigsten Auspraegungen zu "Sonstige" zusammen.
+    der `top_n` häufigsten Ausprägungen zu "Sonstige" zusammen.
 
     Gemeinsame Basis fuer die Balken- (_aggregate_detail_breakdown) und die Kreuztabellen-
     Aggregation (_aggregate_detail_breakdown_stacked), damit dieselbe Kategorie (z. B. eine
     Organisationseinheit) in beiden Charts identisch bucketiert - und damit identisch eingefaerbt -
-    wird. Gibt eine Series in der Laenge/im Index von `series` zurueck (Werte ersetzt, keine
+    wird. Gibt eine Series in der Länge/im Index von `series` zurück (Werte ersetzt, keine
     Aggregation).
     """
     values = series.fillna("(ohne Angabe)").astype(str).str.strip()
@@ -5804,7 +5819,7 @@ def _bucket_top_n(series: pd.Series, top_n: int) -> pd.Series:
 
 def _aggregate_detail_breakdown(subset: pd.DataFrame, column: str, top_n: int = 10) -> pd.DataFrame:
     """
-    Zaehlt Planstellen je Auspraegung von `column` (z. B. Organisationseinheit, Planstelle).
+    Zählt Planstellen je Ausprägung von `column` (z. B. Organisationseinheit, Planstelle).
 
     Liefert NIE Personalnummer/Namen, nur Gruppenzaehlungen - fuer den Detailbereich-Drilldown,
     der Organisationseinheiten/Planstellentypen hinter einer Abweichungs-Kategorie zeigt, ohne auf
@@ -5816,7 +5831,7 @@ def _aggregate_detail_breakdown(subset: pd.DataFrame, column: str, top_n: int = 
     counts = _bucket_top_n(subset[column], top_n).value_counts()
 
     # "Sonstige" (falls vorhanden) immer ans Ende, unabhaengig von seiner eigenen Haeufigkeit -
-    # es ist eine Sammelkategorie, keine echte Auspraegung, und soll nicht mit den echten
+    # es ist eine Sammelkategorie, keine echte Ausprägung, und soll nicht mit den echten
     # Top-N-Werten um die Sortierposition konkurrieren.
     if "Sonstige" in counts.index:
         sonstige_count = counts.pop("Sonstige")
@@ -5834,7 +5849,7 @@ def _aggregate_detail_breakdown_stacked(
 ) -> pd.DataFrame:
     """
     Kreuztabelle `value_col` x `group_col` (z. B. Planstelle x Organisationseinheit) fuer einen
-    gestapelten Balken je `value_col`-Auspraegung, gestapelt nach `group_col`.
+    gestapelten Balken je `value_col`-Ausprägung, gestapelt nach `group_col`.
 
     Beide Achsen werden ueber _bucket_top_n bucketiert - `group_col` MUSS mit demselben `top_n`
     bucketiert werden wie die zugehoerige Farblegende (siehe _aggregate_detail_breakdown-Aufruf
@@ -5869,7 +5884,7 @@ def _aggregate_direction_split(
     _aggregate_detail_breakdown_stacked, damit dieselben Buckets adressiert werden.
 
     Rueckgabe: {(value_bucket, group_bucket): {klasse_wert: anzahl, ...}}. Fehlt eine Zelle oder
-    ist `klasse_col` nicht vorhanden, liefert .get() im Aufrufer 0 zurueck.
+    ist `klasse_col` nicht vorhanden, liefert .get() im Aufrufer 0 zurück.
     """
     if (
         value_col not in subset.columns
@@ -6199,7 +6214,7 @@ def _build_soll_ist_fit_figure(fit_summary_df: pd.DataFrame, print_mode: bool = 
             # Kombination aus Gruppierung mit dem SOLL-Balken UND Stapelung der IST-Segmente)
             # zeigt Plotly's Hover fuer %{x} die kumulierte Stapel-Endposition (base+x) statt
             # des einzelnen Segmentwerts. customdata umgeht das und zeigt garantiert den
-            # tatsaechlichen Segmentwert.
+            # tatsächlichen Segmentwert.
             customdata=values,
             hovertemplate=f"<b>%{{y}}</b><br>{label}: %{{customdata:,.0f}}<extra></extra>",
         ))
@@ -6292,7 +6307,7 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
     """
     Rendert den 'IST vs SOLL Köpfe'-Tab.
 
-    Zeigt je Soll-Entgeltgruppe (Planstellen-Bewertung), in welchen tatsaechlichen
+    Zeigt je Soll-Entgeltgruppe (Planstellen-Bewertung), in welchen tatsächlichen
     Tarifgruppen die besetzenden Mitarbeitenden eingruppiert sind.
     """
     IST_UNBESETZT = "Unbesetzt"
@@ -6790,13 +6805,14 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
                         margin=dict(l=10, r=10, t=10, b=10),
                         height=max(220, len(oe_breakdown) * 32),
                         xaxis=dict(showgrid=True, gridcolor="rgba(226,232,240,0.8)", zeroline=False, dtick=1),
-                        yaxis=dict(showgrid=False),
+                        yaxis=dict(showgrid=False, categoryorder="array", categoryarray=oe_order.tolist()),
                     )
                     st.plotly_chart(fig_oe, use_container_width=True)
 
                 with col_typ:
                     st.caption(t("compact.ist_soll_heads.detail.breakdown.type_caption"))
                     fig_typ = go.Figure()
+                    type_order = []
                     if not type_by_oe.empty:
                         type_order = list(type_by_oe.index)[::-1]
                         # Ein Trace je OE (echtes barmode="stack", kein manuelles base -
@@ -6836,14 +6852,14 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
                         margin=dict(l=10, r=10, t=10, b=10),
                         height=max(220, len(type_by_oe) * 32) if not type_by_oe.empty else 220,
                         xaxis=dict(showgrid=True, gridcolor="rgba(226,232,240,0.8)", zeroline=False, dtick=1),
-                        yaxis=dict(showgrid=False),
+                        yaxis=dict(showgrid=False, categoryorder="array", categoryarray=type_order),
                     )
                     st.plotly_chart(fig_typ, use_container_width=True)
 
                 st.caption(t("compact.ist_soll_heads.detail.breakdown.color_link_caption"))
 
                 # MitarbGruppenbez. nur als Zusatzinfo, falls die Auswahl mehr als eine
-                # Auspraegung enthaelt (vermeidet eine triviale "100% Angestellte"-Grafik).
+                # Ausprägung enthält (vermeidet eine triviale "100% Angestellte"-Grafik).
                 if "MitarbGruppenbez." in breakdown_subset.columns:
                     _gruppen = sorted(breakdown_subset["MitarbGruppenbez."].dropna().unique().tolist())
                     if len(_gruppen) > 1:
@@ -7103,7 +7119,11 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
                             margin=dict(l=10, r=40, t=10, b=10),
                             height=max(250, len(oe_counts) * 34),
                             xaxis=dict(showgrid=True, gridcolor="rgba(226,232,240,0.8)", zeroline=False),
-                            yaxis=dict(showgrid=False),
+                            yaxis=dict(
+                                showgrid=False,
+                                categoryorder="array",
+                                categoryarray=oe_counts["_label"].astype(str).tolist(),
+                            ),
                         )
                         st.plotly_chart(fig_oe, use_container_width=True)
 
@@ -7438,42 +7458,6 @@ def main():
                     render_ist_vs_soll_mak_tab(filtered_df)
 
             return
-
-            main_tab_ist, main_tab_soll = st.tabs([
-                "📈 IST-Analyse",
-                "🎯 IST vs SOLL",
-            ])
-
-            # ── Hauptbereich: IST-Analyse ─────────────────────────────────────
-            with main_tab_ist:
-                sub1, sub2, sub3 = st.tabs([
-                    "👥 Köpfe",
-                    "📊 MAK",
-                    "💰 EUR",
-                ])
-                with sub1:
-                    render_ist_koepfe_tab(filtered_df)
-                with sub2:
-                    render_ist_mak_tab(filtered_df)
-                with sub3:
-                    render_ist_eur_tab(filtered_df)
-
-            # ── Hauptbereich: IST vs SOLL ─────────────────────────────────────
-            with main_tab_soll:
-                sub4, sub5, sub6 = st.tabs([
-                    "🔢 Köpfe",
-                    "🎯 MAK",
-                    "💶 EUR",
-                ])
-                with sub4:
-                    # prepared_df (not filtered_df) wird verwendet, damit vakante
-                    # Planstellen enthalten sind (Geschlecht-/Arbeitszeit-Filter
-                    # wuerden leere Person-Zeilen herausfiltern).
-                    render_ist_soll_koepfe_tab(prepared_df)
-                with sub5:
-                    render_ist_vs_soll_mak_tab(filtered_df)
-                with sub6:
-                    render_ist_vs_soll_eur_tab(filtered_df)
 
     except FileNotFoundError as e:
         st.error(f"Datenfehler: {str(e)}")

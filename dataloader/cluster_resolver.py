@@ -32,9 +32,46 @@ SUBTYPE_INPUT_EXTERNAL = "input_folder.external_file"
 SUBTYPE_SYNTHETIC_FALLBACK = "synthetic.default_fallback"
 
 DEFAULT_PERSISTED_LOCAL_PATH = os.path.join(BASE_DIR, "config", "cluster_mapping.xlsx")
-DEFAULT_EXTERNAL_FILE_PATH = os.path.abspath(
-    os.path.join(BASE_DIR, "..", "Cluster-Daten", "OE_Cluster.xlsx")
-)
+CLUSTER_DATA_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "Cluster-Daten"))
+# Historischer Dateiname, nur noch als letzter Rueckfall relevant (siehe
+# resolve_default_external_cluster_file_path unten).
+_LEGACY_EXTERNAL_FILE_PATH = os.path.join(CLUSTER_DATA_DIR, "OE_Cluster.xlsx")
+
+
+def resolve_default_external_cluster_file_path() -> str:
+    """
+    Waehlt die zuletzt geaenderte gueltige OE_Cluster*.xlsx-Datei im Cluster-Daten-Ordner
+    aus, statt immer denselben hartcodierten Dateinamen (OE_Cluster.xlsx) zu verwenden.
+
+    Vorher zeigte der externe Fallback-Pfad permanent auf OE_Cluster.xlsx, selbst wenn im
+    selben Ordner laengst neuere Versionen (z.B. OE_Cluster_Update_V03.xlsx) abgelegt
+    waren - wer die persistierte Kopie in config/cluster_mapping.xlsx verlor, landete
+    dadurch stillschweigend bei einer veralteten Zuordnung.
+
+    Dateien mit 'backup' im Namen werden ausgeschlossen. Faellt auf den historischen
+    Namen zurueck, wenn das Verzeichnis fehlt oder keine passende Datei gefunden wird.
+    """
+    try:
+        candidates = [
+            os.path.join(CLUSTER_DATA_DIR, name)
+            for name in os.listdir(CLUSTER_DATA_DIR)
+            if name.lower().startswith("oe_cluster")
+            and name.lower().endswith(".xlsx")
+            and "backup" not in name.lower()
+        ]
+    except OSError:
+        return _LEGACY_EXTERNAL_FILE_PATH
+    if not candidates:
+        return _LEGACY_EXTERNAL_FILE_PATH
+    return max(candidates, key=os.path.getmtime)
+
+
+# Rueckwaertskompatibler Modulname fuer bestehende Importe (z.B. source_service.py).
+# Wird beim Modul-Import einmal aufgeloest. Aufrufer, die garantiert die zum
+# Aufrufzeitpunkt aktuellste Datei sehen wollen, rufen stattdessen
+# resolve_default_external_cluster_file_path() direkt auf (so macht es
+# discover_cluster_sources() selbst).
+DEFAULT_EXTERNAL_FILE_PATH = resolve_default_external_cluster_file_path()
 
 PRIORITY_BY_SUBTYPE = {
     SUBTYPE_UI_UPLOAD_SESSION: 1,
@@ -496,7 +533,7 @@ def discover_cluster_sources(
     external_file_path: Optional[str] = None,
 ) -> list[DiscoveredClusterSource]:
     persisted_path = persisted_local_path or DEFAULT_PERSISTED_LOCAL_PATH
-    external_path = external_file_path or DEFAULT_EXTERNAL_FILE_PATH
+    external_path = external_file_path or resolve_default_external_cluster_file_path()
 
     discovered: list[DiscoveredClusterSource] = []
 
@@ -760,6 +797,8 @@ __all__ = [
     "DiscoveredClusterSource",
     "DEFAULT_EXTERNAL_FILE_PATH",
     "DEFAULT_PERSISTED_LOCAL_PATH",
+    "CLUSTER_DATA_DIR",
+    "resolve_default_external_cluster_file_path",
     "STATUS_ACTIVE",
     "STATUS_AVAILABLE",
     "STATUS_FALLBACK",

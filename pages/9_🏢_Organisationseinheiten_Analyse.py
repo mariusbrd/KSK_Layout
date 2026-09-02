@@ -20,6 +20,8 @@ else:
 
 from components.sidebar import (
     apply_filters,
+    apply_robust_filter,
+    get_active_view_filters,
     get_filter_summary,
     get_global_metric_view,
     normalize_global_metric_view,
@@ -57,6 +59,16 @@ _ORG_UNASSIGNED_SENTINELS = {"Nicht zugeordnet", "UNMAPPED", "Unmapped", "Unclus
 _TOP_N_OPTIONS = ["8", "10", "15", "20", "Alle"]
 _TOP_N_SESSION_KEY = "orgunit_analysis_top_n"
 _TOP_N_DEFAULT = "8"
+_SORT_OPTIONS_BASE = ["Aktuelle Kennzahl", "Köpfe", "MAK"]
+_SORT_OPTIONS_COMPARISON = ["Delta", "Abgänge"]
+_SORT_SESSION_KEY = "orgunit_analysis_sort_by"
+_SORT_DEFAULT = "Aktuelle Kennzahl"
+_MIN_SIZE_OPTIONS = ["Alle", "mind. 3 Köpfe", "mind. 5 Köpfe", "mind. 10 Köpfe", "mind. 1,0 MAK"]
+_MIN_SIZE_SESSION_KEY = "orgunit_analysis_min_size"
+_MIN_SIZE_DEFAULT = "Alle"
+_SIM_FOCUS_OPTIONS = ["Alle", "Nur mit Veränderung", "Nur mit Abgängen"]
+_SIM_FOCUS_SESSION_KEY = "orgunit_analysis_sim_focus"
+_SIM_FOCUS_DEFAULT = "Alle"
 
 DETAIL_BLOCKS = [
     ("Geschlecht", "Geschlecht"),
@@ -81,7 +93,7 @@ def _normalize_org_column(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Central display list — headcount-based, metric-independent
+# Legacy display-list helper
 # ---------------------------------------------------------------------------
 
 def _get_visible_org_units_for_display(
@@ -168,6 +180,334 @@ def _get_metric_total(df: pd.DataFrame, metric_view: str, compact) -> float:
     if metric_view == "MAK":
         return float(compact.get_ist_mak(df))
     return float(compact.get_ist_eur(df))
+
+
+def _active_rows(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    if "Is_Vacant" in df.columns:
+        return df[df["Is_Vacant"] != True].copy()
+    return df.copy()
+
+
+def _aggregate_metric(
+    df: pd.DataFrame,
+    group_cols: list[str],
+    metric_view: str,
+    metric_config: dict[str, str],
+) -> pd.DataFrame:
+    if df.empty or any(col not in df.columns for col in group_cols):
+        return pd.DataFrame(columns=group_cols + ["Wert"])
+
+    work_df = _active_rows(df)
+    if work_df.empty:
+        return pd.DataFrame(columns=group_cols + ["Wert"])
+
+    if metric_view == "Köpfe":
+        id_col = next((c for c in ("PersNr", "Personalnummer") if c in work_df.columns), None)
+        if id_col:
+            return (
+                work_df.groupby(group_cols, observed=True, dropna=False)[id_col]
+                .nunique()
+                .reset_index(name="Wert")
+            )
+        return work_df.groupby(group_cols, observed=True, dropna=False).size().reset_index(name="Wert")
+
+    value_col = metric_config["value_col"]
+    if value_col not in work_df.columns:
+        return pd.DataFrame(columns=group_cols + ["Wert"])
+
+    work_df[value_col] = pd.to_numeric(work_df[value_col], errors="coerce").fillna(0.0)
+    return (
+        work_df.groupby(group_cols, observed=True, dropna=False)[value_col]
+        .sum()
+        .reset_index(name="Wert")
+    )
+
+
+def _build_departure_org_summary(events: pd.DataFrame) -> pd.DataFrame:
+    columns = [ORG_COL, "Abgänge", "Personen", "MAK-Verlust"]
+    if events is None or events.empty:
+        return pd.DataFrame(columns=columns)
+
+    work = events.copy()
+    if ORG_COL not in work.columns:
+        work[ORG_COL] = ORG_NOT_ASSIGNED
+    if "persnr" not in work.columns:
+        work["persnr"] = pd.NA
+
+    if "Abgänge" not in work.columns:
+        work["headcount_change"] = pd.to_numeric(work.get("headcount_change", 0), errors="coerce").fillna(0)
+        work["Abgänge"] = work["headcount_change"].abs()
+    if "MAK-Verlust" not in work.columns:
+        work["MAK-Verlust"] = pd.to_numeric(work.get("mak_change", 0), errors="coerce").fillna(0).abs()
+
+    grouped = (
+        work.groupby(ORG_COL, dropna=False)
+        .agg(
+            Abgänge=("Abgänge", "sum"),
+            Personen=("persnr", "nunique"),
+            MAK_Verlust=("MAK-Verlust", "sum"),
+        )
+        .reset_index()
+        .sort_values(["Abgänge", ORG_COL], ascending=[False, True])
+    )
+    grouped["Abgänge"] = grouped["Abgänge"].astype(int)
+    grouped["Personen"] = grouped["Personen"].astype(int)
+    grouped["MAK-Verlust"] = grouped["MAK_Verlust"].round(2)
+    return grouped.drop(columns=["MAK_Verlust"])
+
+
+def _build_departure_reason_summary(events: pd.DataFrame) -> pd.DataFrame:
+    if events is None or events.empty:
+        return pd.DataFrame()
+
+    reason_col = "reason_label" if "reason_label" in events.columns else "reason_code"
+    if reason_col not in events.columns:
+        return pd.DataFrame()
+
+    work = events.copy()
+    if ORG_COL not in work.columns:
+        work[ORG_COL] = ORG_NOT_ASSIGNED
+    if "persnr" not in work.columns:
+        work["persnr"] = pd.NA
+    if "Abgänge" not in work.columns:
+        work["headcount_change"] = pd.to_numeric(work.get("headcount_change", 0), errors="coerce").fillna(0)
+        work["Abgänge"] = work["headcount_change"].abs()
+    if "MAK-Verlust" not in work.columns:
+        work["MAK-Verlust"] = pd.to_numeric(work.get("mak_change", 0), errors="coerce").fillna(0).abs()
+
+    reason_df = (
+        work.groupby([ORG_COL, reason_col], dropna=False)
+        .agg(
+            Abgänge=("Abgänge", "sum"),
+            Personen=("persnr", "nunique"),
+            MAK_Verlust=("MAK-Verlust", "sum"),
+        )
+        .reset_index()
+        .sort_values(["Abgänge", ORG_COL], ascending=[False, True])
+    )
+    reason_df["Abgänge"] = reason_df["Abgänge"].astype(int)
+    reason_df["Personen"] = reason_df["Personen"].astype(int)
+    reason_df["MAK-Verlust"] = reason_df["MAK_Verlust"].round(2)
+    return reason_df.drop(columns=["MAK_Verlust"])
+
+
+def _get_widget_index(options: list[str], value: str | None, default: str) -> int:
+    selected = value if value in options else default
+    if selected not in options:
+        selected = options[0]
+    return options.index(selected)
+
+
+def _resolve_sort_metric(sort_by: str, metric_view: str) -> str:
+    if sort_by == "Aktuelle Kennzahl":
+        current_metric = normalize_global_metric_view(metric_view) or "MAK"
+        return "MAK" if current_metric == "EUR" else current_metric
+    if sort_by in {"Köpfe", "MAK"}:
+        return sort_by
+    # Legacy/session compatibility: EUR/Mitarbeiterzahl are no longer visible options.
+    if sort_by == "Mitarbeiterzahl":
+        return "Köpfe"
+    if sort_by == "EUR":
+        return "MAK"
+    return "Köpfe"
+
+
+def _merge_metric_for_ranking(
+    ranking_df: pd.DataFrame,
+    source_df: pd.DataFrame,
+    metric_view: str,
+    target_col: str,
+) -> pd.DataFrame:
+    metric_config = _get_metric_config(source_df, metric_view)
+    if metric_config is None:
+        ranking_df[target_col] = 0.0
+        return ranking_df
+
+    metric_df = _aggregate_metric(source_df, [ORG_COL], metric_view, metric_config).rename(columns={"Wert": target_col})
+    ranking_df = ranking_df.merge(metric_df, on=ORG_COL, how="left")
+    ranking_df[target_col] = pd.to_numeric(ranking_df[target_col], errors="coerce").fillna(0.0)
+    return ranking_df
+
+
+def _build_orgunit_ranking_frame(
+    mapped_df: pd.DataFrame,
+    comparison_mapped_df: pd.DataFrame | None,
+    departure_events: pd.DataFrame | None,
+    metric_view: str,
+    metric_config: dict[str, str],
+    *,
+    comparison_active: bool,
+    value_label: str,
+    comparison_label: str,
+) -> pd.DataFrame:
+    orgs: list[str] = []
+    for org in _get_visible_org_units_for_display(mapped_df, "Alle"):
+        if org not in orgs:
+            orgs.append(org)
+
+    if comparison_active and comparison_mapped_df is not None:
+        for org in _get_visible_org_units_for_display(comparison_mapped_df, "Alle"):
+            if org != ORG_NOT_ASSIGNED and org not in orgs:
+                orgs.append(org)
+
+    departure_summary = _build_departure_org_summary(departure_events if departure_events is not None else pd.DataFrame())
+    if comparison_active and not departure_summary.empty:
+        for org in departure_summary[ORG_COL].astype(str).tolist():
+            if org != ORG_NOT_ASSIGNED and org not in orgs:
+                orgs.append(org)
+
+    ranking_df = pd.DataFrame({ORG_COL: orgs})
+    if ranking_df.empty:
+        return ranking_df
+
+    for sort_metric in ("Köpfe", "MAK"):
+        ranking_df = _merge_metric_for_ranking(ranking_df, mapped_df, sort_metric, sort_metric)
+        if comparison_active and comparison_mapped_df is not None:
+            ranking_df = _merge_metric_for_ranking(
+                ranking_df,
+                comparison_mapped_df,
+                sort_metric,
+                f"{comparison_label} {sort_metric}",
+            )
+
+    ranking_df["Mindestgröße Köpfe"] = pd.to_numeric(ranking_df["Köpfe"], errors="coerce").fillna(0.0)
+    ranking_df["Mindestgröße MAK"] = pd.to_numeric(ranking_df["MAK"], errors="coerce").fillna(0.0)
+    if comparison_active and comparison_mapped_df is not None:
+        ranking_df["Mindestgröße Köpfe"] = ranking_df[["Mindestgröße Köpfe", f"{comparison_label} Köpfe"]].max(axis=1)
+        ranking_df["Mindestgröße MAK"] = ranking_df[["Mindestgröße MAK", f"{comparison_label} MAK"]].max(axis=1)
+
+        comparison_values = _build_org_metric_comparison(
+            mapped_df,
+            comparison_mapped_df,
+            metric_view,
+            metric_config,
+            orgs,
+            value_label=value_label,
+            comparison_label=comparison_label,
+        )
+        ranking_df = ranking_df.merge(comparison_values[[ORG_COL, "Delta"]], on=ORG_COL, how="left")
+    else:
+        ranking_df["Delta"] = 0.0
+
+    ranking_df["Delta"] = pd.to_numeric(ranking_df["Delta"], errors="coerce").fillna(0.0)
+    if not departure_summary.empty:
+        ranking_df = ranking_df.merge(
+            departure_summary[[ORG_COL, "Abgänge", "MAK-Verlust"]],
+            on=ORG_COL,
+            how="left",
+        )
+    else:
+        ranking_df["Abgänge"] = 0
+        ranking_df["MAK-Verlust"] = 0.0
+    ranking_df["Abgänge"] = pd.to_numeric(ranking_df["Abgänge"], errors="coerce").fillna(0).astype(int)
+    ranking_df["MAK-Verlust"] = pd.to_numeric(ranking_df["MAK-Verlust"], errors="coerce").fillna(0.0)
+    return ranking_df
+
+
+def _apply_orgunit_top_filters(
+    ranking_df: pd.DataFrame,
+    top_n: str,
+    sort_by: str,
+    metric_view: str,
+    min_size: str,
+    sim_focus: str,
+    *,
+    comparison_active: bool,
+) -> list[str]:
+    if ranking_df.empty:
+        return []
+
+    filtered = ranking_df[ranking_df[ORG_COL] != ORG_NOT_ASSIGNED].copy()
+    if min_size == "mind. 3 Köpfe":
+        filtered = filtered[filtered["Mindestgröße Köpfe"] >= 3]
+    elif min_size == "mind. 5 Köpfe":
+        filtered = filtered[filtered["Mindestgröße Köpfe"] >= 5]
+    elif min_size == "mind. 10 Köpfe":
+        filtered = filtered[filtered["Mindestgröße Köpfe"] >= 10]
+    elif min_size == "mind. 1,0 MAK":
+        filtered = filtered[filtered["Mindestgröße MAK"] >= 1.0]
+
+    if comparison_active and sim_focus == "Nur mit Veränderung":
+        filtered = filtered[filtered["Delta"].abs() > 0.000001]
+    elif comparison_active and sim_focus == "Nur mit Abgängen":
+        filtered = filtered[filtered["Abgänge"] > 0]
+
+    if sort_by == "Delta":
+        filtered["_sort_value"] = filtered["Delta"].abs()
+    elif sort_by == "Abgänge":
+        filtered["_sort_value"] = pd.to_numeric(filtered.get("Abgänge", 0), errors="coerce").fillna(0)
+    else:
+        sort_col = _resolve_sort_metric(sort_by, metric_view)
+        filtered["_sort_value"] = pd.to_numeric(filtered.get(sort_col, 0), errors="coerce").fillna(0)
+
+    filtered = filtered.sort_values(["_sort_value", ORG_COL], ascending=[False, True])
+    if top_n != "Alle":
+        filtered = filtered.head(int(top_n))
+
+    return filtered[ORG_COL].astype(str).tolist()
+
+
+def _filter_departure_events(events: pd.DataFrame) -> pd.DataFrame:
+    if events is None or events.empty:
+        return pd.DataFrame()
+
+    filters = get_active_view_filters()
+    out = events.copy()
+    out = apply_robust_filter(out, ORG_COL, filters.get("selected_org_units", []))
+    out = apply_robust_filter(out, "Jobfamily", filters.get("selected_jobfamilies", []))
+    out = apply_robust_filter(out, "OE-Cluster", filters.get("selected_oe_clusters", []))
+    out = apply_robust_filter(out, "JF-Cluster", filters.get("selected_jf_clusters", []))
+    return out
+
+
+def _build_org_metric_comparison(
+    mapped_df: pd.DataFrame,
+    comparison_mapped_df: pd.DataFrame,
+    metric_view: str,
+    metric_config: dict[str, str],
+    display_orgs: list[str],
+    *,
+    value_label: str,
+    comparison_label: str,
+    departure_events: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    current = _aggregate_metric(mapped_df, [ORG_COL], metric_view, metric_config).rename(columns={"Wert": value_label})
+    previous = _aggregate_metric(comparison_mapped_df, [ORG_COL], metric_view, metric_config).rename(columns={"Wert": comparison_label})
+    out = pd.DataFrame({ORG_COL: display_orgs})
+    out = out.merge(previous, on=ORG_COL, how="left").merge(current, on=ORG_COL, how="left")
+    out[[comparison_label, value_label]] = out[[comparison_label, value_label]].fillna(0.0)
+    out["Delta"] = out[value_label] - out[comparison_label]
+    out["Delta %"] = out.apply(
+        lambda row: row["Delta"] / row[comparison_label] if row[comparison_label] else 0.0,
+        axis=1,
+    )
+
+    departures = _build_departure_org_summary(departure_events if departure_events is not None else pd.DataFrame())
+    if not departures.empty:
+        out = out.merge(departures[[ORG_COL, "Abgänge", "MAK-Verlust"]], on=ORG_COL, how="left")
+        out[["Abgänge", "MAK-Verlust"]] = out[["Abgänge", "MAK-Verlust"]].fillna(0)
+        out["Abgänge"] = out["Abgänge"].astype(int)
+    return out
+
+
+def _format_comparison_table(
+    comparison_df: pd.DataFrame,
+    metric_view: str,
+    compact,
+    *,
+    value_columns: list[str],
+) -> pd.DataFrame:
+    display_df = comparison_df.copy()
+    for col in value_columns:
+        if col in display_df.columns:
+            display_df[col] = display_df[col].apply(lambda value: _format_metric_value(float(value), metric_view, compact))
+    if "Delta" in display_df.columns:
+        display_df["Delta"] = display_df["Delta"].apply(lambda value: _format_metric_value(float(value), metric_view, compact))
+    if "Delta %" in display_df.columns:
+        display_df["Delta %"] = display_df["Delta %"].apply(lambda value: compact.format_percent(float(value)))
+    return display_df
 
 
 def _count_visible_org_units(df: pd.DataFrame) -> int:
@@ -330,7 +670,7 @@ def _build_kpis(
 
 
 # ---------------------------------------------------------------------------
-# Rangliste (uses display_orgs — headcount order, metric values)
+# Rangliste (uses display_orgs order from the top filters; values follow global metric)
 # ---------------------------------------------------------------------------
 
 def _render_org_rangliste(
@@ -339,6 +679,7 @@ def _render_org_rangliste(
     metric_config: dict[str, str],
     compact,
     display_orgs: list[str],
+    value_label: str = "IST",
 ) -> None:
     work_df = mapped_df[mapped_df[ORG_COL].isin(display_orgs)].copy()
     if "Is_Vacant" in work_df.columns:
@@ -361,7 +702,7 @@ def _render_org_rangliste(
             return
         agg = work_df.groupby(ORG_COL, observed=True)[value_col].sum()
 
-    # reindex to display_orgs — preserves headcount order, fills gaps with 0
+    # reindex to display_orgs — preserves selected filter order, fills gaps with 0
     agg = agg.reindex(display_orgs, fill_value=0)
     total = agg.sum()
 
@@ -374,8 +715,9 @@ def _render_org_rangliste(
         lambda v: compact.format_percent(float(v) / total) if total > 0 else "0,0%"
     )
 
-    # reversed so largest OE (first in display_orgs) appears at top of horizontal bars
-    chart_order = list(reversed(display_orgs))
+    # Plotly Express maps y-axis category_orders to the visible top-to-bottom order
+    # for horizontal bars. display_orgs is already sorted descending.
+    chart_order = list(display_orgs)
     chart_height = max(420, min(1200, 28 * len(display_orgs) + 160))
 
     fig = px.bar(
@@ -401,7 +743,7 @@ def _render_org_rangliste(
 
     display_table = pd.DataFrame({
         ORG_COL: display_orgs,
-        "IST": [_format_metric_value(float(agg[o]), metric_view, compact) for o in display_orgs],
+        value_label: [_format_metric_value(float(agg[o]), metric_view, compact) for o in display_orgs],
         "Anteil": [
             compact.format_percent(float(agg[o]) / total) if total > 0 else "0,0%"
             for o in display_orgs
@@ -415,7 +757,7 @@ def _render_org_rangliste(
         dataframe_compat(display_table, width="stretch", hide_index=True)
         excel_df = pd.DataFrame({
             ORG_COL: display_orgs,
-            "IST": [float(agg[o]) for o in display_orgs],
+            value_label: [float(agg[o]) for o in display_orgs],
         })
         excel_data = compact.export_to_excel(
             excel_df,
@@ -430,6 +772,99 @@ def _render_org_rangliste(
             file_name="org_rangliste.xlsx",
             mime=compact._EXCEL_MIME,
             key="download_org_rangliste",
+            width="stretch",
+        )
+
+
+def _render_org_rangliste_comparison(
+    mapped_df: pd.DataFrame,
+    comparison_mapped_df: pd.DataFrame,
+    metric_view: str,
+    metric_config: dict[str, str],
+    compact,
+    display_orgs: list[str],
+    *,
+    value_label: str,
+    comparison_label: str,
+    departure_events: pd.DataFrame | None = None,
+) -> None:
+    comparison_df = _build_org_metric_comparison(
+        mapped_df,
+        comparison_mapped_df,
+        metric_view,
+        metric_config,
+        display_orgs,
+        value_label=value_label,
+        comparison_label=comparison_label,
+        departure_events=departure_events,
+    )
+    if comparison_df.empty:
+        st.info("Keine auswertbaren Vergleichsdaten im aktuellen Filterkontext.")
+        return
+
+    chart_df = comparison_df[[ORG_COL, comparison_label, value_label]].melt(
+        id_vars=ORG_COL,
+        var_name="Stand",
+        value_name="Wert",
+    )
+    chart_df["Wert_Anzeige"] = chart_df["Wert"].apply(
+        lambda value: _format_metric_value(float(value), metric_view, compact)
+    )
+    chart_order = list(display_orgs)
+    chart_height = max(420, min(1200, 34 * len(display_orgs) + 180))
+
+    fig = px.bar(
+        chart_df,
+        x="Wert",
+        y=ORG_COL,
+        color="Stand",
+        orientation="h",
+        barmode="group",
+        custom_data=["Wert_Anzeige"],
+        category_orders={ORG_COL: chart_order, "Stand": [comparison_label, value_label]},
+    )
+    fig.update_traces(
+        hovertemplate="<b>%{y}</b><br>%{fullData.name}: %{customdata[0]}<extra></extra>"
+    )
+    fig.update_layout(
+        height=chart_height,
+        margin=dict(l=10, r=10, t=10, b=10),
+        xaxis_title="",
+        yaxis_title="",
+        legend_title_text="Stand",
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+    )
+    apply_legend_bottom(fig)
+
+    display_cols = [ORG_COL, comparison_label, value_label, "Delta", "Delta %"]
+    if "Abgänge" in comparison_df.columns:
+        display_cols.extend(["Abgänge", "MAK-Verlust"])
+    display_table = _format_comparison_table(
+        comparison_df[display_cols],
+        metric_view,
+        compact,
+        value_columns=[comparison_label, value_label],
+    )
+
+    col_chart, col_table = st.columns([3, 2])
+    with col_chart:
+        st.plotly_chart(fig, use_container_width=True)
+    with col_table:
+        dataframe_compat(display_table, width="stretch", hide_index=True)
+        excel_data = compact.export_to_excel(
+            comparison_df[display_cols],
+            key_prefix="org_rangliste_comparison",
+            dimension_name="Organisationseinheiten",
+            value_type=metric_config["value_type"],
+            table_title="Rangliste Organisationseinheiten Vergleich",
+        )
+        download_button_compat(
+            label="Excel Download",
+            data=excel_data,
+            file_name="org_rangliste_vergleich.xlsx",
+            mime=compact._EXCEL_MIME,
+            key="download_org_rangliste_comparison",
             width="stretch",
         )
 
@@ -478,7 +913,7 @@ def _aggregate_org_split(
             .reset_index(name="Wert")
         )
 
-    # category order = display_orgs order (headcount-descending), consistent across all charts
+    # category order = display_orgs order, consistent across all charts
     agg_df[ORG_COL] = pd.Categorical(
         agg_df[ORG_COL],
         categories=display_orgs,
@@ -486,6 +921,39 @@ def _aggregate_org_split(
     )
     agg_df = agg_df.sort_values([ORG_COL, split_col])
     return agg_df
+
+
+def _build_split_comparison(
+    mapped_df: pd.DataFrame,
+    comparison_mapped_df: pd.DataFrame,
+    split_col: str,
+    metric_view: str,
+    metric_config: dict[str, str],
+    display_orgs: list[str],
+    *,
+    value_label: str,
+    comparison_label: str,
+) -> pd.DataFrame:
+    group_cols = [ORG_COL, split_col]
+    current = _aggregate_metric(mapped_df, group_cols, metric_view, metric_config).rename(columns={"Wert": value_label})
+    previous = _aggregate_metric(comparison_mapped_df, group_cols, metric_view, metric_config).rename(columns={"Wert": comparison_label})
+    out = previous.merge(current, on=group_cols, how="outer")
+    if out.empty:
+        return pd.DataFrame(columns=group_cols + [comparison_label, value_label, "Delta", "Delta %"])
+
+    out[ORG_COL] = out[ORG_COL].fillna(ORG_NOT_ASSIGNED).astype(str)
+    out[split_col] = out[split_col].fillna("(unbekannt)").astype(str)
+    out = out[out[ORG_COL].isin(display_orgs)].copy()
+    out[[comparison_label, value_label]] = out[[comparison_label, value_label]].fillna(0.0)
+    out["Delta"] = out[value_label] - out[comparison_label]
+    out["Delta %"] = out.apply(
+        lambda row: row["Delta"] / row[comparison_label] if row[comparison_label] else 0.0,
+        axis=1,
+    )
+    out[ORG_COL] = pd.Categorical(out[ORG_COL], categories=display_orgs, ordered=True)
+    out = out.sort_values([ORG_COL, split_col])
+    out[ORG_COL] = out[ORG_COL].astype(str)
+    return out
 
 
 def _build_split_pivot(agg_df: pd.DataFrame, split_col: str) -> pd.DataFrame:
@@ -535,6 +1003,11 @@ def _render_org_split_block(
     compact,
     key_prefix: str,
     display_orgs: list[str],
+    *,
+    comparison_mapped_df: pd.DataFrame | None = None,
+    comparison_active: bool = False,
+    value_label: str = "Simulation",
+    comparison_label: str = "IST",
 ) -> None:
     agg_df = _aggregate_org_split(mapped_df, split_col, metric_view, metric_config, display_orgs)
     if agg_df.empty:
@@ -542,17 +1015,61 @@ def _render_org_split_block(
         return
 
     pivot_df = _build_split_pivot(agg_df, split_col)
-    display_df = _format_split_display(pivot_df, metric_view, compact)
 
-    chart_df = agg_df.copy()
-    chart_df[ORG_COL] = chart_df[ORG_COL].astype(str)
+    if comparison_active and comparison_mapped_df is not None:
+        comparison_agg = _aggregate_org_split(
+            comparison_mapped_df,
+            split_col,
+            metric_view,
+            metric_config,
+            display_orgs,
+        )
+        current_chart = agg_df.copy()
+        current_chart["Stand"] = value_label
+        previous_chart = comparison_agg.copy()
+        previous_chart["Stand"] = comparison_label
+        chart_df = pd.concat([previous_chart, current_chart], ignore_index=True)
+        chart_df[ORG_COL] = chart_df[ORG_COL].astype(str)
+        chart_df["_Anzeige_OE"] = chart_df[ORG_COL] + " · " + chart_df["Stand"]
+
+        comparison_df = _build_split_comparison(
+            mapped_df,
+            comparison_mapped_df,
+            split_col,
+            metric_view,
+            metric_config,
+            display_orgs,
+            value_label=value_label,
+            comparison_label=comparison_label,
+        )
+        display_df = _format_comparison_table(
+            comparison_df,
+            metric_view,
+            compact,
+            value_columns=[comparison_label, value_label],
+        )
+    else:
+        chart_df = agg_df.copy()
+        chart_df[ORG_COL] = chart_df[ORG_COL].astype(str)
+        chart_df["_Anzeige_OE"] = chart_df[ORG_COL]
+        display_df = _format_split_display(pivot_df, metric_view, compact)
+
     chart_df["Wert_Anzeige"] = chart_df["Wert"].apply(
         lambda value: _format_metric_value(float(value), metric_view, compact)
     )
-    # chart order: display_orgs reversed so top OE appears at top of horizontal bars
-    chart_order = list(reversed(display_orgs))
+    # Plotly Express maps y-axis category_orders to the visible top-to-bottom order
+    # for horizontal bars. display_orgs is already sorted descending.
+    if comparison_active and comparison_mapped_df is not None:
+        chart_order = [
+            f"{org} · {stand}"
+            for org in display_orgs
+            for stand in [comparison_label, value_label]
+        ]
+    else:
+        chart_order = list(display_orgs)
 
-    chart_height = max(420, min(1200, 28 * len(display_orgs) + 160))
+    row_count = len(display_orgs) * (2 if comparison_active and comparison_mapped_df is not None else 1)
+    chart_height = max(420, min(1400, 28 * row_count + 160))
 
     _cdm = None
     _cat_ord: dict = {ORG_COL: chart_order}
@@ -574,13 +1091,13 @@ def _render_org_split_block(
     fig = px.bar(
         chart_df,
         x="Wert",
-        y=ORG_COL,
+        y="_Anzeige_OE",
         color=split_col,
         orientation="h",
         barmode="stack",
         custom_data=["Wert_Anzeige"],
         color_discrete_map=_cdm,
-        category_orders=_cat_ord,
+        category_orders={**_cat_ord, "_Anzeige_OE": chart_order},
     )
     fig.update_traces(hovertemplate="<b>%{y}</b><br>%{fullData.name}: %{customdata[0]}<extra></extra>")
     fig.update_layout(
@@ -625,7 +1142,7 @@ def _render_org_split_block(
 def _resolve_role_metric(metric_view: str, mapped_df: pd.DataFrame) -> tuple[str, dict[str, str] | None, bool]:
     """Koepfe/MAK direkt uebernehmen, EUR auf MAK abbilden (kein Geld in dieser Sektion).
 
-    Gibt (effektive_metric_view, metric_config, ist_fallback) zurueck.
+    Gibt (effektive_metric_view, metric_config, ist_fallback) zurück.
     """
     normalized = normalize_global_metric_view(metric_view) or "MAK"
     is_fallback = normalized == "EUR"
@@ -669,6 +1186,11 @@ def _render_role_breakdown_block(
     metric_view: str,
     compact,
     display_orgs: list[str],
+    *,
+    comparison_mapped_df: pd.DataFrame | None = None,
+    comparison_active: bool = False,
+    value_label: str = "Simulation",
+    comparison_label: str = "IST",
 ) -> None:
     has_tarifgruppe = "TrfGr" in mapped_df.columns
 
@@ -692,6 +1214,10 @@ def _render_role_breakdown_block(
         mapped_df, "Tarifgruppe", "TrfGr",
         role_metric_view, role_metric_config, compact,
         key_prefix="org_role_trf", display_orgs=display_orgs,
+        comparison_mapped_df=comparison_mapped_df,
+        comparison_active=comparison_active,
+        value_label=value_label,
+        comparison_label=comparison_label,
     )
 
     # Summary table: Köpfe, MAK, Ø MAK per OE — keine Euro-Werte
@@ -768,27 +1294,47 @@ def _render_data_quality_block(
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Page rendering
 # ---------------------------------------------------------------------------
 
-def main() -> None:
+def render_orgunit_analysis_page(
+    prepared_df: pd.DataFrame,
+    history_df: pd.DataFrame | None,
+    *,
+    title: str = "Organisationseinheiten-Analyse",
+    subtitle: str = "IST-Sicht auf die aktuell sichtbare Personalsituation nach Organisationseinheiten.",
+    value_label: str = "IST",
+    methodology_text: str | None = None,
+    comparison_df: pd.DataFrame | None = None,
+    comparison_label: str = "IST",
+    enable_comparison_toggle: bool = False,
+    departure_events_df: pd.DataFrame | None = None,
+) -> None:
     compact = load_compact_page_module()
 
     render_page_header(
-        "Organisationseinheiten-Analyse",
-        "IST-Sicht auf die aktuell sichtbare Personalsituation nach Organisationseinheiten.",
+        title,
+        subtitle,
     )
 
     set_metric_page_hint(
-        "Organisationseinheiten-Analyse nutzt den globalen Metrik-Switch direkt für KPIs, Rangliste und Detailblöcke."
+        f"{title} nutzt den globalen Metrik-Switch direkt für KPIs, Rangliste und Detailblöcke."
     )
 
-    snapshot_df, history_df, _, _ = load_and_prepare_data(show_status_messages=False)
-    prepared_df = compact.prepare_compact_data(snapshot_df)
     prepared_df = _normalize_org_column(prepared_df)
+    comparison_prepared_df = None
+    if comparison_df is not None and not comparison_df.empty:
+        comparison_prepared_df = _normalize_org_column(comparison_df)
+    history_for_filters = history_df if history_df is not None else pd.DataFrame()
 
-    render_global_filters(prepared_df, history_df)
+    render_global_filters(prepared_df, history_for_filters)
     filtered_df = apply_filters(prepared_df)
+    comparison_filtered_df = (
+        apply_filters(comparison_prepared_df)
+        if comparison_prepared_df is not None
+        else None
+    )
+    filtered_departure_events = _filter_departure_events(departure_events_df) if departure_events_df is not None else pd.DataFrame()
     filter_summary = get_filter_summary()
     render_active_filter_banner(filter_summary)
 
@@ -810,6 +1356,12 @@ def main() -> None:
     kpis = _build_kpis(mapped_df, filtered_df, unmapped_df, metric_view, compact)
     if kpis:
         compact.render_kpi_cards_styled(kpis)
+    comparison_active = False
+    comparison_mapped_df = None
+    if comparison_filtered_df is not None:
+        comparison_filtered_df = _normalize_org_column(comparison_filtered_df)
+        comparison_mapped_df = comparison_filtered_df[comparison_filtered_df[ORG_COL] != ORG_NOT_ASSIGNED].copy()
+    comparison_available = enable_comparison_toggle and comparison_mapped_df is not None
 
     if mapped_df.empty:
         render_context_box(
@@ -820,34 +1372,123 @@ def main() -> None:
         _render_data_quality_block(filtered_df, mapped_df, unmapped_df, metric_view, metric_config, compact)
         return
 
-    # --- Top-N selector ---
+    # --- Top filters ---
     st.divider()
-    col_ctrl, _ = st.columns([2, 3])
-    with col_ctrl:
+    if enable_comparison_toggle and comparison_mapped_df is None:
+        st.caption("IST-Vergleich nicht verfügbar, weil kein Vergleichs-Snapshot vorliegt.")
+
+    ctrl_cols = st.columns([3, 2, 2, 2, 2] if comparison_available else [3, 2, 2])
+    with ctrl_cols[0]:
         selected_top_n: str = st.radio(
             "Anzahl Organisationseinheiten",
             _TOP_N_OPTIONS,
-            index=_TOP_N_OPTIONS.index(
-                st.session_state.get(_TOP_N_SESSION_KEY, _TOP_N_DEFAULT)
-            ),
+            index=_get_widget_index(_TOP_N_OPTIONS, st.session_state.get(_TOP_N_SESSION_KEY), _TOP_N_DEFAULT),
             horizontal=True,
             key=_TOP_N_SESSION_KEY,
         )
-    st.caption("Die Auswahl steuert alle Grafiken und Tabellen dieser Seite. Sortierung nach Mitarbeiterzahl.")
+    if comparison_available:
+        with ctrl_cols[4]:
+            comparison_active = st.toggle(
+                f"{comparison_label}-Vergleich anzeigen",
+                value=False,
+                key="orgunit_analysis_show_comparison",
+            )
 
-    # --- Central display list (headcount-based, metric-independent) ---
-    display_orgs = _get_visible_org_units_for_display(mapped_df, selected_top_n)
+    sort_options = _SORT_OPTIONS_BASE.copy()
+    if comparison_active:
+        sort_options.extend(_SORT_OPTIONS_COMPARISON)
+
+    current_sort = st.session_state.get(_SORT_SESSION_KEY, _SORT_DEFAULT)
+    if current_sort not in sort_options:
+        st.session_state[_SORT_SESSION_KEY] = _SORT_DEFAULT
+    current_focus = st.session_state.get(_SIM_FOCUS_SESSION_KEY, _SIM_FOCUS_DEFAULT)
+    if current_focus not in _SIM_FOCUS_OPTIONS:
+        st.session_state[_SIM_FOCUS_SESSION_KEY] = _SIM_FOCUS_DEFAULT
+
+    sort_col_index = 1
+    min_size_col_index = 2
+    sim_focus_col_index = 3
+
+    with ctrl_cols[sort_col_index]:
+        selected_sort: str = st.selectbox(
+            "Sortierung",
+            sort_options,
+            index=_get_widget_index(sort_options, st.session_state.get(_SORT_SESSION_KEY), _SORT_DEFAULT),
+            key=_SORT_SESSION_KEY,
+        )
+    with ctrl_cols[min_size_col_index]:
+        selected_min_size: str = st.selectbox(
+            "Mindestgröße",
+            _MIN_SIZE_OPTIONS,
+            index=_get_widget_index(_MIN_SIZE_OPTIONS, st.session_state.get(_MIN_SIZE_SESSION_KEY), _MIN_SIZE_DEFAULT),
+            key=_MIN_SIZE_SESSION_KEY,
+        )
+    if comparison_active:
+        with ctrl_cols[sim_focus_col_index]:
+            selected_sim_focus: str = st.selectbox(
+                "Simulationsfokus",
+                _SIM_FOCUS_OPTIONS,
+                index=_get_widget_index(
+                    _SIM_FOCUS_OPTIONS,
+                    st.session_state.get(_SIM_FOCUS_SESSION_KEY),
+                    _SIM_FOCUS_DEFAULT,
+                ),
+                key=_SIM_FOCUS_SESSION_KEY,
+            )
+    else:
+        selected_sim_focus = _SIM_FOCUS_DEFAULT
+
+    caption_parts = ["Die Auswahl steuert alle Grafiken und Tabellen dieser Seite."]
+    if comparison_active:
+        caption_parts.append("Mindestgröße bezieht sich auf den größeren Wert aus IST und Simulation.")
+        caption_parts.append("Delta = absolute Veränderung der aktuell gewählten Kennzahl.")
+    st.caption(" ".join(caption_parts))
+
+    # --- Central display list (shared by all charts and tables on this page) ---
+    ranking_df = _build_orgunit_ranking_frame(
+        mapped_df,
+        comparison_mapped_df,
+        filtered_departure_events,
+        metric_view,
+        metric_config,
+        comparison_active=comparison_active,
+        value_label=value_label,
+        comparison_label=comparison_label,
+    )
+    display_orgs = _apply_orgunit_top_filters(
+        ranking_df,
+        selected_top_n,
+        selected_sort,
+        metric_view,
+        selected_min_size,
+        selected_sim_focus,
+        comparison_active=comparison_active,
+    )
 
     if not display_orgs:
         st.info("Im aktuellen Filterkontext sind keine Organisationseinheiten für die Analyse verfügbar.")
         return
 
-    # --- Rangliste (display_orgs order — headcount; values follow global metric) ---
+    # --- Rangliste (display_orgs order follows selected sort; values follow global metric) ---
+    sort_label = _resolve_sort_metric(selected_sort, metric_view)
     render_section_intro(
         "Rangliste der Organisationseinheiten",
-        "Sortiert nach Mitarbeiterzahl. Werte gemäß aktuell gewählter Kennzahl.",
+        f"Sortiert nach {sort_label}. Werte gemäß aktuell gewählter Kennzahl.",
     )
-    _render_org_rangliste(mapped_df, metric_view, metric_config, compact, display_orgs)
+    if comparison_active and comparison_mapped_df is not None:
+        _render_org_rangliste_comparison(
+            mapped_df,
+            comparison_mapped_df,
+            metric_view,
+            metric_config,
+            compact,
+            display_orgs,
+            value_label=value_label,
+            comparison_label=comparison_label,
+            departure_events=filtered_departure_events,
+        )
+    else:
+        _render_org_rangliste(mapped_df, metric_view, metric_config, compact, display_orgs, value_label=value_label)
 
     # --- Zusammensetzung (all three blocks use same display_orgs) ---
     if selected_top_n == "Alle":
@@ -872,6 +1513,10 @@ def main() -> None:
             compact,
             key_prefix=f"org_{split_col.lower().replace(' ', '_')}",
             display_orgs=display_orgs,
+            comparison_mapped_df=comparison_mapped_df,
+            comparison_active=comparison_active,
+            value_label=value_label,
+            comparison_label=comparison_label,
         )
 
     # --- Personalstruktur nach Tarifgruppe (folgt dem globalen Metrik-Switch, keine EUR-Werte) ---
@@ -880,23 +1525,56 @@ def main() -> None:
         "Personalstruktur nach Tarifgruppe",
         "Köpfe bzw. MAK pro Organisationseinheit. Folgt der globalen Darstellungsart (Köpfe/MAK).",
     )
-    _render_role_breakdown_block(mapped_df, metric_view, compact, display_orgs)
+    _render_role_breakdown_block(
+        mapped_df,
+        metric_view,
+        compact,
+        display_orgs,
+        comparison_mapped_df=comparison_mapped_df,
+        comparison_active=comparison_active,
+        value_label=value_label,
+        comparison_label=comparison_label,
+    )
+
+    if comparison_active and not filtered_departure_events.empty:
+        reason_df = _build_departure_reason_summary(filtered_departure_events)
+        if not reason_df.empty:
+            with st.expander("Simulierte Abgänge nach Grund", expanded=False):
+                dataframe_compat(reason_df, width="stretch", hide_index=True)
 
     # --- Datenqualität (always full filtered_df, never limited by top_n) ---
     with st.expander("Datenqualität", expanded=False):
         _render_data_quality_block(filtered_df, mapped_df, unmapped_df, metric_view, metric_config, compact)
 
     with st.expander("Hinweise zur Methodik", expanded=False):
-        st.markdown(
-            "Die Seite zeigt eine IST-Analyse der aktuell sichtbaren Personalsituation. "
-            "Die globale Kennzahl aus der Sidebar steuert KPI-Header, Rangliste und Detailblöcke.\n\n"
-            "Die Hauptanalyse zeigt zugeordnete Organisationseinheiten. Nicht zugeordnete Datensätze werden "
-            "im Datenqualitätsblock separat ausgewiesen.\n\n"
-            "Die angezeigten Organisationseinheiten werden nach Mitarbeiterzahl sortiert. "
-            "Der Regler \"Anzahl Organisationseinheiten\" steuert, wie viele Organisationseinheiten in "
-            "Grafiken und Tabellen angezeigt werden. Die Kennzahl aus der Sidebar steuert die dargestellten Werte.\n\n"
-            "Filter und Exklusionen aus der Sidebar definieren den Betrachtungsraum."
-        )
+        if methodology_text:
+            st.markdown(methodology_text)
+        else:
+            st.markdown(
+                "Die Seite zeigt eine IST-Analyse der aktuell sichtbaren Personalsituation. "
+                "Die globale Kennzahl aus der Sidebar steuert KPI-Header, Rangliste und Detailblöcke.\n\n"
+                "Die Hauptanalyse zeigt zugeordnete Organisationseinheiten. Nicht zugeordnete Datensätze werden "
+                "im Datenqualitätsblock separat ausgewiesen.\n\n"
+                "Die angezeigten Organisationseinheiten werden standardmäßig nach der aktuell gewählten Kennzahl "
+                "sortiert. Optional kann explizit nach Köpfen, MAK, Delta oder Abgängen sortiert werden. "
+                "Der Regler \"Anzahl Organisationseinheiten\" steuert, wie viele Organisationseinheiten in "
+                "Grafiken und Tabellen angezeigt werden. Die Kennzahl aus der Sidebar steuert die dargestellten Werte.\n\n"
+                "Filter und Exklusionen aus der Sidebar definieren den Betrachtungsraum."
+            )
+
+
+def main() -> None:
+    compact = load_compact_page_module()
+    snapshot_df, history_df, _, _ = load_and_prepare_data(show_status_messages=False)
+    prepared_df = compact.prepare_compact_data(snapshot_df)
+
+    render_orgunit_analysis_page(
+        prepared_df,
+        history_df,
+        title="Organisationseinheiten-Analyse",
+        subtitle="IST-Sicht auf die aktuell sichtbare Personalsituation nach Organisationseinheiten.",
+        value_label="IST",
+    )
 
 
 if __name__ == "__main__":

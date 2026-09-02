@@ -39,6 +39,10 @@ from dataloader.cluster_resolver import (
     store_active_cluster_source_in_session,
 )
 from dataloader.source_service import SourceService, DataSourceOrigin
+from dataloader.data_integrity import (
+    check_mitarbeiter_planstellen_integrity,
+    build_integrity_report_excel,
+)
 from config.settings import BASE_DIR
 from components.sidebar import render_metric_selector_only, set_metric_page_hint
 from utils.cache_utils import bump_cache_version
@@ -69,6 +73,70 @@ def _now_iso() -> str:
 
 def _format_upload_exception(prefix: str, exc: Exception) -> str:
     return f"{prefix}: {type(exc).__name__}: {exc}"
+
+
+@st.cache_data(show_spinner=False)
+def _run_data_integrity_check_cached(ma_bytes: bytes, pl_bytes: bytes):
+    ma_df = pd.read_excel(io.BytesIO(ma_bytes))
+    pl_df = pd.read_excel(io.BytesIO(pl_bytes))
+    return check_mitarbeiter_planstellen_integrity(ma_df, pl_df)
+
+
+def _render_data_integrity_section() -> None:
+    """
+    Prüft beim Upload eigener Mitarbeiter.xlsx/Planstellen.xlsx, ob beide Dateien
+    deckungsgleiche Personalnummern verwenden (siehe Blocker B17: Abweichungen
+    fallen im Dashboard sauber aus den personenbezogenen Kennzahlen heraus, statt
+    fehlerhaft mitgezählt zu werden - aber sie müssen für den Nutzer sichtbar sein).
+    """
+    uploads = st.session_state.get("global_uploads", {})
+    if "Mitarbeiter" not in uploads or "Planstellen" not in uploads:
+        return
+
+    try:
+        ma_bytes = uploads["Mitarbeiter"].getvalue()
+        pl_bytes = uploads["Planstellen"].getvalue()
+        report = _run_data_integrity_check_cached(ma_bytes, pl_bytes)
+    except Exception as exc:
+        st.error(_format_upload_exception("Datenintegritäts-Prüfung fehlgeschlagen", exc))
+        return
+
+    st.markdown("**Datenintegrität: Mitarbeiter.xlsx ↔ Planstellen.xlsx**")
+
+    if report.is_clean:
+        st.success(
+            "✅ Personalnummern stimmen überein: jede besetzte Planstelle hat einen passenden "
+            "Mitarbeiter-Datensatz und umgekehrt."
+        )
+        return
+
+    if report.error_count:
+        st.error(
+            f"⚠️ {report.error_count} Datenintegritäts-Fehler gefunden. Betroffene Personen "
+            "werden im Dashboard sauber aus den personenbezogenen Kennzahlen ausgeschlossen "
+            "(z. B. Kompakt „Gesamt Köpfe“), fehlen dort also – auch wenn es echte, besetzte "
+            "Stellen sind. Das deutet auf einen Fehler im Datenlieferungsprozess hin."
+        )
+    if report.warning_count:
+        st.warning(f"ℹ️ {report.warning_count} weitere Abweichungen gefunden (siehe Details unten).")
+
+    for check in report.checks:
+        if check.count == 0:
+            continue
+        icon = "🔴" if check.severity == "error" else "🟡"
+        with st.expander(f"{icon} {check.title} ({check.count})", expanded=False):
+            st.caption(check.description)
+            st.dataframe(check.detail, use_container_width=True, hide_index=True)
+
+    excel_bytes = build_integrity_report_excel(report)
+    st.download_button(
+        "📥 Evaluations-Excel herunterladen",
+        data=excel_bytes,
+        file_name=f"Datenintegritaet_Evaluation_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="dl_data_integrity_report",
+        help="Detaillierte Auflistung aller gefundenen Abweichungen je Prüfung, als Excel-Arbeitsmappe.",
+    )
 
 
 def _get_cluster_uploader_key() -> str:
@@ -575,6 +643,8 @@ def render_settings_page():
             fallback = delete_result["active_source"].display_label
             _set_cluster_feedback("info", f"Alle Uploads wurden entfernt. Aktive Clusterquelle: {fallback}.")
             st.rerun()
+
+    _render_data_integrity_section()
 
     st.divider()
 

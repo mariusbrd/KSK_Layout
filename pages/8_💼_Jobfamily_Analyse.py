@@ -58,6 +58,36 @@ DETAIL_BLOCKS = [
 ]
 
 TOP_JOBFAMILY_COUNT = 8
+_TOP_JOBFAMILY_OPTIONS = ["8", "10", "15", "20", "Alle"]
+_TOP_JOBFAMILY_SESSION_KEY = "jobfamily_analysis_top_n"
+_TOP_JOBFAMILY_DEFAULT = "8"
+_SORT_OPTIONS_BASE = ["Aktuelle Kennzahl", "Köpfe", "MAK"]
+_SORT_SESSION_KEY = "jobfamily_analysis_sort_by"
+_SORT_DEFAULT = "Aktuelle Kennzahl"
+_MIN_SIZE_OPTIONS = ["Alle", "mind. 3 Köpfe", "mind. 5 Köpfe", "mind. 10 Köpfe", "mind. 1,0 MAK"]
+_MIN_SIZE_SESSION_KEY = "jobfamily_analysis_min_size"
+_MIN_SIZE_DEFAULT = "Alle"
+
+
+def _get_widget_index(options: list[str], value: str | None, default: str) -> int:
+    selected = value if value in options else default
+    if selected not in options:
+        selected = options[0]
+    return options.index(selected)
+
+
+def _resolve_sort_metric(sort_by: str, metric_view: str) -> str:
+    if sort_by == "Aktuelle Kennzahl":
+        current_metric = normalize_global_metric_view(metric_view) or "MAK"
+        return "MAK" if current_metric == "EUR" else current_metric
+    if sort_by in {"Köpfe", "MAK"}:
+        return sort_by
+    # Legacy/session compatibility: EUR/Mitarbeiterzahl are no longer visible options.
+    if sort_by == "Mitarbeiterzahl":
+        return "Köpfe"
+    if sort_by == "EUR":
+        return "MAK"
+    return "Köpfe"
 
 
 def _get_metric_config(df: pd.DataFrame, metric_view: str) -> dict[str, str] | None:
@@ -256,11 +286,86 @@ def _get_top_jobfamilies(
     mapped_df: pd.DataFrame,
     metric_config: dict[str, str],
     compact,
-    top_n: int = TOP_JOBFAMILY_COUNT,
+    top_n: int | str = TOP_JOBFAMILY_COUNT,
 ) -> list[str]:
     ranking_df = compact.create_breakdown_table(mapped_df, "Jobfamily", metric_config["value_col"])
     ranking_df = ranking_df[ranking_df["Jobfamily"] != JOBFAMILY_UNMAPPED]
-    return ranking_df["Jobfamily"].head(top_n).astype(str).tolist()
+    if top_n == "Alle":
+        return ranking_df["Jobfamily"].astype(str).tolist()
+    return ranking_df["Jobfamily"].head(int(top_n)).astype(str).tolist()
+
+
+def _merge_jobfamily_metric_for_ranking(
+    ranking_df: pd.DataFrame,
+    mapped_df: pd.DataFrame,
+    metric_view: str,
+    compact,
+) -> pd.DataFrame:
+    metric_config = _get_metric_config(mapped_df, metric_view)
+    if metric_config is None:
+        ranking_df[metric_view] = 0.0
+        return ranking_df
+
+    metric_df = compact.create_breakdown_table(mapped_df, "Jobfamily", metric_config["value_col"])
+    if metric_df.empty or "Hinweis" in metric_df.columns:
+        ranking_df[metric_view] = 0.0
+        return ranking_df
+
+    metric_df = metric_df[metric_df["Jobfamily"] != JOBFAMILY_UNMAPPED][["Jobfamily", "IST"]].copy()
+    metric_df = metric_df.rename(columns={"IST": metric_view})
+    ranking_df = ranking_df.merge(metric_df, on="Jobfamily", how="left")
+    ranking_df[metric_view] = pd.to_numeric(ranking_df[metric_view], errors="coerce").fillna(0.0)
+    return ranking_df
+
+
+def _build_jobfamily_ranking_frame(
+    mapped_df: pd.DataFrame,
+    metric_view: str,
+    metric_config: dict[str, str],
+    compact,
+) -> pd.DataFrame:
+    base_df = compact.create_breakdown_table(mapped_df, "Jobfamily", metric_config["value_col"])
+    if base_df.empty or "Hinweis" in base_df.columns:
+        return pd.DataFrame(columns=["Jobfamily", "Köpfe", "MAK", "Mindestgröße Köpfe", "Mindestgröße MAK"])
+
+    jobfamilies = base_df[base_df["Jobfamily"] != JOBFAMILY_UNMAPPED]["Jobfamily"].astype(str).tolist()
+    ranking_df = pd.DataFrame({"Jobfamily": jobfamilies}).drop_duplicates()
+    for sort_metric in ("Köpfe", "MAK"):
+        ranking_df = _merge_jobfamily_metric_for_ranking(ranking_df, mapped_df, sort_metric, compact)
+
+    ranking_df["Mindestgröße Köpfe"] = pd.to_numeric(ranking_df["Köpfe"], errors="coerce").fillna(0.0)
+    ranking_df["Mindestgröße MAK"] = pd.to_numeric(ranking_df["MAK"], errors="coerce").fillna(0.0)
+    return ranking_df
+
+
+def _apply_jobfamily_top_filters(
+    ranking_df: pd.DataFrame,
+    top_n: str,
+    sort_by: str,
+    metric_view: str,
+    min_size: str,
+) -> list[str]:
+    if ranking_df.empty:
+        return []
+
+    filtered = ranking_df[ranking_df["Jobfamily"] != JOBFAMILY_UNMAPPED].copy()
+    if min_size == "mind. 3 Köpfe":
+        filtered = filtered[filtered["Mindestgröße Köpfe"] >= 3]
+    elif min_size == "mind. 5 Köpfe":
+        filtered = filtered[filtered["Mindestgröße Köpfe"] >= 5]
+    elif min_size == "mind. 10 Köpfe":
+        filtered = filtered[filtered["Mindestgröße Köpfe"] >= 10]
+    elif min_size == "mind. 1,0 MAK":
+        filtered = filtered[filtered["Mindestgröße MAK"] >= 1.0]
+
+    sort_col = _resolve_sort_metric(sort_by, metric_view)
+    filtered["_sort_value"] = pd.to_numeric(filtered.get(sort_col, 0), errors="coerce").fillna(0)
+    filtered = filtered.sort_values(["_sort_value", "Jobfamily"], ascending=[False, True])
+
+    if top_n != "Alle":
+        filtered = filtered.head(int(top_n))
+
+    return filtered["Jobfamily"].astype(str).tolist()
 
 
 def _aggregate_jobfamily_split(
@@ -269,12 +374,13 @@ def _aggregate_jobfamily_split(
     metric_view: str,
     metric_config: dict[str, str],
     compact,
-    top_n: int = TOP_JOBFAMILY_COUNT,
+    top_n: int | str = TOP_JOBFAMILY_COUNT,
+    display_jobfamilies: list[str] | None = None,
 ) -> pd.DataFrame:
     if mapped_df.empty or split_col not in mapped_df.columns or "Jobfamily" not in mapped_df.columns:
         return pd.DataFrame()
 
-    top_jobfamilies = _get_top_jobfamilies(mapped_df, metric_config, compact, top_n=top_n)
+    top_jobfamilies = display_jobfamilies or _get_top_jobfamilies(mapped_df, metric_config, compact, top_n=top_n)
     if not top_jobfamilies:
         return pd.DataFrame()
 
@@ -289,8 +395,12 @@ def _aggregate_jobfamily_split(
     if metric_view == "Köpfe":
         id_col = "PersNr" if "PersNr" in detail_df.columns else None
         if id_col:
+            # Personen-deduplizieren VOR der Gruppierung - sonst werden Personen mit mehreren
+            # Planstellen in unterschiedlichen Jobfamilies mehrfach gezählt (gleiche Ursache
+            # wie in _build_role_summary_table oben).
+            detail_unique = get_unique_employees(detail_df)
             agg_df = (
-                detail_df.groupby(["Jobfamily", split_col], observed=True)[id_col]
+                detail_unique.groupby(["Jobfamily", split_col], observed=True)[id_col]
                 .nunique()
                 .reset_index(name="Wert")
             )
@@ -306,17 +416,20 @@ def _aggregate_jobfamily_split(
             .reset_index(name="Wert")
         )
 
-    totals = agg_df.groupby("Jobfamily", observed=True)["Wert"].sum().sort_values(ascending=False)
     agg_df["Jobfamily"] = pd.Categorical(
         agg_df["Jobfamily"],
-        categories=list(totals.index),
+        categories=top_jobfamilies,
         ordered=True,
     )
     agg_df = agg_df.sort_values(["Jobfamily", split_col])
     return agg_df
 
 
-def _build_split_pivot(agg_df: pd.DataFrame, split_col: str) -> pd.DataFrame:
+def _build_split_pivot(
+    agg_df: pd.DataFrame,
+    split_col: str,
+    display_jobfamilies: list[str] | None = None,
+) -> pd.DataFrame:
     if agg_df.empty:
         return pd.DataFrame()
 
@@ -332,7 +445,12 @@ def _build_split_pivot(agg_df: pd.DataFrame, split_col: str) -> pd.DataFrame:
     )
     value_columns = [col for col in pivot_df.columns if col != "Jobfamily"]
     pivot_df["Gesamt"] = pivot_df[value_columns].sum(axis=1)
-    pivot_df = pivot_df.sort_values("Gesamt", ascending=False)
+    if display_jobfamilies:
+        pivot_df["Jobfamily"] = pd.Categorical(pivot_df["Jobfamily"], categories=display_jobfamilies, ordered=True)
+        pivot_df = pivot_df.sort_values("Jobfamily")
+        pivot_df["Jobfamily"] = pivot_df["Jobfamily"].astype(str)
+    else:
+        pivot_df = pivot_df.sort_values("Gesamt", ascending=False)
     return pivot_df
 
 
@@ -353,26 +471,37 @@ def _render_jobfamily_split_block(
     metric_config: dict[str, str],
     compact,
     key_prefix: str,
+    top_n: int | str = TOP_JOBFAMILY_COUNT,
+    display_jobfamilies: list[str] | None = None,
 ) -> None:
-    agg_df = _aggregate_jobfamily_split(mapped_df, split_col, metric_view, metric_config, compact)
+    agg_df = _aggregate_jobfamily_split(
+        mapped_df,
+        split_col,
+        metric_view,
+        metric_config,
+        compact,
+        top_n=top_n,
+        display_jobfamilies=display_jobfamilies,
+    )
     if agg_df.empty:
         st.info(f"Keine auswertbaren Daten im aktuellen Filterkontext.")
         return
 
-    pivot_df = _build_split_pivot(agg_df, split_col)
+    jobfamily_order = display_jobfamilies or _get_top_jobfamilies(mapped_df, metric_config, compact, top_n=top_n)
+    pivot_df = _build_split_pivot(agg_df, split_col, display_jobfamilies=jobfamily_order)
     display_df = _format_split_display(pivot_df, metric_view, compact)
     chart_df = agg_df.copy()
     chart_df["Jobfamily"] = chart_df["Jobfamily"].astype(str)
     chart_df["Wert_Anzeige"] = chart_df["Wert"].apply(lambda value: _format_metric_value(float(value), metric_view, compact))
 
     _cdm = None
-    _cat_ord: dict = {}
+    _cat_ord: dict = {"Jobfamily": jobfamily_order}
     if split_col == "Alterskohorte":
         _cohort_vals = chart_df[split_col].unique().tolist()
         _cdm = get_age_cohort_color_map(_cohort_vals)
         _known = [c for c in AGE_COHORT_ORDER if c in _cohort_vals]
         _unknown = sorted(c for c in _cohort_vals if c not in AGE_COHORT_ORDER)
-        _cat_ord = {split_col: _known + _unknown}
+        _cat_ord[split_col] = _known + _unknown
     elif split_col == "TrfGr":
         # Heller-zu-dunkler-Blau-Verlauf nach Entgeltgruppen-Hoehe (niedrige EG
         # hell, hohe EG dunkel), analog zur Alterskohorten-Farbskala oben.
@@ -380,7 +509,7 @@ def _render_jobfamily_split_block(
         _cdm = get_tariff_group_color_map(_trf_vals)
         _known = [g for g in TARIFF_GROUPS if g in _trf_vals]
         _unknown = sorted(v for v in _trf_vals if v not in TARIFF_GROUPS)
-        _cat_ord = {split_col: _known + _unknown}
+        _cat_ord[split_col] = _known + _unknown
 
     fig = px.bar(
         chart_df,
@@ -391,7 +520,7 @@ def _render_jobfamily_split_block(
         barmode="stack",
         custom_data=["Wert_Anzeige"],
         color_discrete_map=_cdm,
-        category_orders=_cat_ord if _cat_ord else None,
+        category_orders=_cat_ord,
     )
     fig.update_traces(hovertemplate="<b>%{y}</b><br>%{fullData.name}: %{customdata[0]}<extra></extra>")
     fig.update_layout(
@@ -430,7 +559,7 @@ def _render_jobfamily_split_block(
 def _resolve_role_metric(metric_view: str, mapped_df: pd.DataFrame) -> tuple[str, dict[str, str] | None, bool]:
     """Koepfe/MAK direkt uebernehmen, EUR auf MAK abbilden (kein Geld in dieser Sektion).
 
-    Gibt (effektive_metric_view, metric_config, ist_fallback) zurueck.
+    Gibt (effektive_metric_view, metric_config, ist_fallback) zurück.
     """
     normalized = normalize_global_metric_view(metric_view) or "MAK"
     is_fallback = normalized == "EUR"
@@ -455,9 +584,14 @@ def _build_role_summary_table(
     if work.empty:
         return pd.DataFrame()
 
+    # Personen-deduplizieren VOR der Gruppierung - sonst werden Personen mit mehreren
+    # Planstellen in unterschiedlichen Jobfamilies mehrfach gezählt (analog zum Fix in
+    # pages/1_⚡_Kompakt.py::_create_breakdown_table_clean, Headcount-Zweig).
+    work_unique = get_unique_employees(work) if id_col else work
+
     rows = []
     for jf in jobfamilies:
-        sub = work[work["Jobfamily"] == jf]
+        sub = work_unique[work_unique["Jobfamily"] == jf]
         koepfe = int(sub[id_col].nunique()) if id_col else len(sub)
         mak = float(sub[mak_col].sum()) if mak_col else 0.0
         rows.append({
@@ -473,7 +607,8 @@ def _render_role_breakdown_block(
     mapped_df: pd.DataFrame,
     metric_view: str,
     compact,
-    top_n: int = TOP_JOBFAMILY_COUNT,
+    top_n: int | str = TOP_JOBFAMILY_COUNT,
+    display_jobfamilies: list[str] | None = None,
 ) -> None:
     if "TrfGr" not in mapped_df.columns:
         st.info("Keine Tarifgruppen-Spalte verfügbar.")
@@ -495,10 +630,12 @@ def _render_role_breakdown_block(
         mapped_df, "Tarifgruppe", "TrfGr",
         role_metric_view, role_metric_config, compact,
         key_prefix="jobfamily_role_trf",
+        top_n=top_n,
+        display_jobfamilies=display_jobfamilies,
     )
 
     # Summary table: Köpfe, MAK, Ø MAK per Jobgruppe — keine Euro-Werte
-    jobfamilies = _get_top_jobfamilies(mapped_df, role_metric_config, compact, top_n=top_n)
+    jobfamilies = display_jobfamilies or _get_top_jobfamilies(mapped_df, role_metric_config, compact, top_n=top_n)
     st.divider()
     st.subheader("Kopfzahl und Kapazität pro Jobgruppe")
     summary_df = _build_role_summary_table(mapped_df, jobfamilies, compact)
@@ -599,23 +736,116 @@ def _render_data_quality_block(
     )
 
 
-def main() -> None:
+def _render_jobfamily_rangliste(
+    mapped_df: pd.DataFrame,
+    metric_view: str,
+    metric_config: dict[str, str],
+    compact,
+    *,
+    value_label: str,
+    key_prefix: str,
+    top_n: int | str,
+    display_jobfamilies: list[str] | None = None,
+) -> None:
+    ranking_df = compact.create_breakdown_table(mapped_df, "Jobfamily", metric_config["value_col"])
+    ranking_df = ranking_df[ranking_df["Jobfamily"] != JOBFAMILY_UNMAPPED].copy()
+    if ranking_df.empty or "Hinweis" in ranking_df.columns:
+        st.warning("Keine Daten für 'Jobgruppen' verfügbar.")
+        return
+    if display_jobfamilies:
+        ranking_df["Jobfamily"] = ranking_df["Jobfamily"].astype(str)
+        ranking_df = ranking_df[ranking_df["Jobfamily"].isin(display_jobfamilies)].copy()
+        ranking_df["Jobfamily"] = pd.Categorical(ranking_df["Jobfamily"], categories=display_jobfamilies, ordered=True)
+        ranking_df = ranking_df.sort_values("Jobfamily")
+        ranking_df["Jobfamily"] = ranking_df["Jobfamily"].astype(str)
+    elif top_n != "Alle":
+        ranking_df = ranking_df.head(int(top_n)).copy()
+
+    if value_label != "IST" and "IST" in ranking_df.columns:
+        ranking_df = ranking_df.rename(columns={"IST": value_label})
+    value_col = value_label if value_label in ranking_df.columns else "IST"
+
+    chart_df = ranking_df.copy()
+    jobfamily_order = chart_df["Jobfamily"].astype(str).tolist()
+    chart_df["Jobfamily"] = chart_df["Jobfamily"].astype(str)
+    chart_df["Wert_Anzeige"] = chart_df[value_col].apply(
+        lambda value: _format_metric_value(float(value), metric_view, compact)
+    )
+    fig = px.bar(
+        chart_df,
+        x=value_col,
+        y="Jobfamily",
+        orientation="h",
+        custom_data=["Wert_Anzeige"],
+        category_orders={"Jobfamily": jobfamily_order},
+    )
+    fig.update_traces(
+        hovertemplate=f"<b>%{{y}}</b><br>{value_label}: %{{customdata[0]}}<extra></extra>"
+    )
+    fig.update_layout(
+        height=max(360, 42 * chart_df["Jobfamily"].nunique()),
+        margin=dict(l=10, r=10, t=10, b=10),
+        xaxis_title="",
+        yaxis_title="",
+        showlegend=False,
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+    )
+
+    display_source = ranking_df.copy()
+    if value_col != "IST":
+        display_source = display_source.rename(columns={value_col: "IST"})
+    display_df = compact.format_dataframe_for_display(display_source, metric_config["value_type"])
+    if value_col != "IST":
+        display_df = display_df.rename(columns={"IST": value_label})
+
+    col_chart, col_table = st.columns([3, 2])
+    with col_chart:
+        st.plotly_chart(fig, use_container_width=True)
+    with col_table:
+        dataframe_compat(display_df, width="stretch", hide_index=True)
+        excel_data = compact.export_to_excel(
+            ranking_df,
+            dimension_name="Jobgruppen",
+            value_type=metric_config["value_type"],
+            key_prefix=key_prefix,
+            table_title="Rangliste Jobgruppen",
+        )
+        download_button_compat(
+            label="Excel Download",
+            data=excel_data,
+            file_name=f"{key_prefix}_jobgruppen.xlsx",
+            mime=compact._EXCEL_MIME,
+            key=f"download_{key_prefix}_jobfamilies",
+            width="stretch",
+        )
+
+
+def render_jobfamily_analysis_page(
+    prepared_df: pd.DataFrame,
+    history_df: pd.DataFrame | None,
+    *,
+    title: str = "Jobgruppen-Analyse",
+    subtitle: str = "IST-Sicht auf die aktuell sichtbare Personalsituation.",
+    value_label: str = "IST",
+    methodology_text: str | None = None,
+    key_prefix: str = "jobfamily_ist",
+) -> None:
     compact = load_compact_page_module()
 
     render_page_header(
-        "Jobgruppen-Analyse",
-        "IST-Sicht auf die aktuell sichtbare Personalsituation.",
+        title,
+        subtitle,
     )
 
     set_metric_page_hint(
-        "Jobgruppen-Analyse nutzt den globalen Metrik-Switch direkt für KPIs, Rangliste und Detailblöcke."
+        f"{title} nutzt den globalen Metrik-Switch direkt für KPIs, Rangliste und Detailblöcke."
     )
 
-    snapshot_df, history_df, _, _ = load_and_prepare_data(show_status_messages=False)
-    prepared_df = compact.prepare_compact_data(snapshot_df)
     prepared_df = normalize_jobfamily_column(prepared_df)
+    history_for_filters = history_df if history_df is not None else pd.DataFrame()
 
-    render_global_filters(prepared_df, history_df)
+    render_global_filters(prepared_df, history_for_filters)
     filtered_df = apply_filters(prepared_df)
     filter_summary = get_filter_summary()
     render_active_filter_banner(filter_summary)
@@ -663,23 +893,74 @@ def main() -> None:
         _render_data_quality_block(filtered_df, mapped_df, unmapped_df, metric_view, metric_config, compact)
         return
 
-    render_section_intro(
-        "Rangliste der Jobgruppen",
-        "Sortiert nach der aktuell gewählten Kennzahl.",
-    )
-    compact.render_single_breakdown(
-        mapped_df,
-        "Jobgruppen",
-        "Jobfamily",
-        value_col=metric_config["value_col"],
-        value_type=metric_config["value_type"],
-        key_prefix="jobfamily_ist",
-        print_mode=False,
+    st.divider()
+    current_sort = st.session_state.get(_SORT_SESSION_KEY, _SORT_DEFAULT)
+    if current_sort not in _SORT_OPTIONS_BASE:
+        st.session_state[_SORT_SESSION_KEY] = _SORT_DEFAULT
+
+    ctrl_cols = st.columns([3, 2, 2])
+    with ctrl_cols[0]:
+        selected_top_n: str = st.radio(
+            "Anzahl Jobgruppen",
+            _TOP_JOBFAMILY_OPTIONS,
+            index=_get_widget_index(
+                _TOP_JOBFAMILY_OPTIONS,
+                st.session_state.get(_TOP_JOBFAMILY_SESSION_KEY),
+                _TOP_JOBFAMILY_DEFAULT,
+            ),
+            horizontal=True,
+            key=_TOP_JOBFAMILY_SESSION_KEY,
+        )
+    with ctrl_cols[1]:
+        selected_sort: str = st.selectbox(
+            "Sortierung",
+            _SORT_OPTIONS_BASE,
+            index=_get_widget_index(_SORT_OPTIONS_BASE, st.session_state.get(_SORT_SESSION_KEY), _SORT_DEFAULT),
+            key=_SORT_SESSION_KEY,
+        )
+    with ctrl_cols[2]:
+        selected_min_size: str = st.selectbox(
+            "Mindestgröße",
+            _MIN_SIZE_OPTIONS,
+            index=_get_widget_index(_MIN_SIZE_OPTIONS, st.session_state.get(_MIN_SIZE_SESSION_KEY), _MIN_SIZE_DEFAULT),
+            key=_MIN_SIZE_SESSION_KEY,
+        )
+
+    st.caption("Die Auswahl steuert Rangliste, Zusammensetzung und Tarifstruktur dieser Seite.")
+
+    ranking_df = _build_jobfamily_ranking_frame(mapped_df, metric_view, metric_config, compact)
+    display_jobfamilies = _apply_jobfamily_top_filters(
+        ranking_df,
+        selected_top_n,
+        selected_sort,
+        metric_view,
+        selected_min_size,
     )
 
+    if not display_jobfamilies:
+        st.info("Im aktuellen Filterkontext sind keine Jobgruppen für die Analyse verfügbar.")
+        return
+
+    sort_label = _resolve_sort_metric(selected_sort, metric_view)
+    render_section_intro(
+        "Rangliste der Jobgruppen",
+        f"Sortiert nach {sort_label}. Werte gemäß aktuell gewählter Kennzahl.",
+    )
+    _render_jobfamily_rangliste(
+        mapped_df,
+        metric_view,
+        metric_config,
+        compact,
+        value_label=value_label,
+        key_prefix=key_prefix,
+        top_n=selected_top_n,
+        display_jobfamilies=display_jobfamilies,
+    )
+
+    top_label = "Alle" if selected_top_n == "Alle" else f"Top-{selected_top_n}"
     render_section_intro(
         "Zusammensetzung der Top-Jobgruppen",
-        f"Top-{TOP_JOBFAMILY_COUNT}-Jobgruppen im aktuellen Filterkontext.",
+        f"{top_label}-Jobgruppen im aktuellen Filterkontext.",
     )
     for i, (title, split_col) in enumerate(DETAIL_BLOCKS):
         if i > 0:
@@ -693,27 +974,56 @@ def main() -> None:
             metric_config,
             compact,
             key_prefix=f"jobfamily_{split_col.lower().replace(' ', '_')}",
+            top_n=selected_top_n,
+            display_jobfamilies=display_jobfamilies,
         )
 
     # --- Personalstruktur nach Tarifgruppe (folgt dem globalen Metrik-Switch, keine EUR-Werte) ---
     st.divider()
     render_section_intro(
         "Personalstruktur nach Tarifgruppe",
-        f"Köpfe bzw. MAK der Top-{TOP_JOBFAMILY_COUNT}-Jobgruppen. Folgt der globalen Darstellungsart (Köpfe/MAK).",
+        f"Köpfe bzw. MAK der {top_label}-Jobgruppen. Folgt der globalen Darstellungsart (Köpfe/MAK).",
     )
-    _render_role_breakdown_block(mapped_df, metric_view, compact, top_n=TOP_JOBFAMILY_COUNT)
+    _render_role_breakdown_block(
+        mapped_df,
+        metric_view,
+        compact,
+        top_n=selected_top_n,
+        display_jobfamilies=display_jobfamilies,
+    )
 
     with st.expander("Datenqualität", expanded=False):
         _render_data_quality_block(filtered_df, mapped_df, unmapped_df, metric_view, metric_config, compact)
 
     with st.expander("Hinweise zur Methodik", expanded=False):
-        st.markdown(
-            "Die Seite zeigt eine IST-Analyse der aktuell sichtbaren Personalsituation. "
-            "Die globale Kennzahl aus der Sidebar steuert KPI-Header, Rangliste und Detailblöcke.\n\n"
-            "Die Hauptanalyse zeigt zugeordnete Jobgruppen. Nicht zugeordnete Datensätze werden "
-            "im Datenqualitätsblock separat ausgewiesen.\n\n"
-            "Filter und Exklusionen aus der Sidebar definieren den Betrachtungsraum."
-        )
+        if methodology_text:
+            st.markdown(methodology_text)
+        else:
+            st.markdown(
+                "Die Seite zeigt eine IST-Analyse der aktuell sichtbaren Personalsituation. "
+                "Die globale Kennzahl aus der Sidebar steuert KPI-Header, Rangliste und Detailblöcke.\n\n"
+                "Die Hauptanalyse zeigt zugeordnete Jobgruppen. Nicht zugeordnete Datensätze werden "
+                "im Datenqualitätsblock separat ausgewiesen.\n\n"
+                "Die angezeigten Jobgruppen werden standardmäßig nach der aktuell gewählten Kennzahl sortiert. "
+                "Optional kann explizit nach Köpfen oder MAK sortiert werden. Der Regler "
+                "\"Anzahl Jobgruppen\" steuert, wie viele Jobgruppen in Grafiken und Tabellen angezeigt werden.\n\n"
+                "Filter und Exklusionen aus der Sidebar definieren den Betrachtungsraum."
+            )
+
+
+def main() -> None:
+    compact = load_compact_page_module()
+    snapshot_df, history_df, _, _ = load_and_prepare_data(show_status_messages=False)
+    prepared_df = compact.prepare_compact_data(snapshot_df)
+
+    render_jobfamily_analysis_page(
+        prepared_df,
+        history_df,
+        title="Jobgruppen-Analyse",
+        subtitle="IST-Sicht auf die aktuell sichtbare Personalsituation.",
+        value_label="IST",
+        key_prefix="jobfamily_ist",
+    )
 
 
 if __name__ == "__main__":

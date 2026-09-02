@@ -525,6 +525,203 @@ def _jobfamily_reporting_comparison(status_quo_snapshot: pd.DataFrame, forecast_
     return out[cols].sort_values("Delta_Köpfe", ascending=False).reset_index(drop=True)
 
 
+def _weighted_average(values: pd.Series, weights: pd.Series) -> float:
+    numeric_values = pd.to_numeric(values, errors="coerce")
+    numeric_weights = pd.to_numeric(weights, errors="coerce").fillna(0.0)
+    valid = numeric_values.notna() & numeric_weights.gt(0)
+    if not valid.any():
+        return 0.0
+    weight_sum = float(numeric_weights.loc[valid].sum())
+    return float((numeric_values.loc[valid] * numeric_weights.loc[valid]).sum() / weight_sum) if weight_sum else 0.0
+
+
+def _jobfamily_profile(df: pd.DataFrame, suffix: str) -> pd.DataFrame:
+    active = _active_rows(df)
+    columns = [
+        "Jobfamily",
+        f"Köpfe_{suffix}",
+        f"MAK_{suffix}",
+        f"Frauenanteil_{suffix}",
+        f"Durchschnittsalter_{suffix}",
+        f"Anteil_55plus_{suffix}",
+        f"Anteil_u30_{suffix}",
+        f"Teilzeitquote_{suffix}",
+    ]
+    if active.empty:
+        return pd.DataFrame(columns=columns)
+
+    work = active.copy()
+    work["Jobfamily"] = work.get("Jobfamily", pd.Series("(ohne Job-Family)", index=work.index)).fillna("(ohne Job-Family)").astype(str)
+    if "PersNr" not in work.columns:
+        work["PersNr"] = work.index.astype(str)
+    row_counts = work.groupby("PersNr")["PersNr"].transform("size").replace(0, 1)
+    work["_Headcount_Reporting"] = 1.0 / row_counts
+    if "MAK_Reporting" not in work.columns:
+        mak_col = _mak_column(work)
+        work["MAK_Reporting"] = work[mak_col] if mak_col else 0.0
+
+    age_col = "Alter_Jahre" if "Alter_Jahre" in work.columns else ("Alter" if "Alter" in work.columns else None)
+    work["_Alter"] = pd.to_numeric(work[age_col], errors="coerce") if age_col else pd.NA
+    gender = work.get("Geschlecht", work.get("Text Gsch", pd.Series("", index=work.index))).astype(str).str.strip().str.lower()
+    work["_Ist_Frau"] = gender.str.startswith("w") | gender.str.contains("frau|female", regex=True, na=False)
+    employment_col = next(
+        (col for col in ("Beschäftigungsgrad_Kat", "BeschÃ¤ftigungsgrad_Kat") if col in work.columns),
+        None,
+    )
+    if employment_col is not None:
+        work["_Ist_Teilzeit"] = work[employment_col].astype(str).str.lower().str.contains("teilzeit", na=False)
+    elif "FTE_person" in work.columns:
+        work["_Ist_Teilzeit"] = pd.to_numeric(work["FTE_person"], errors="coerce").fillna(1.0).lt(0.999)
+    elif "BsGrd" in work.columns:
+        work["_Ist_Teilzeit"] = pd.to_numeric(work["BsGrd"], errors="coerce").fillna(100.0).lt(99.9)
+    else:
+        work["_Ist_Teilzeit"] = False
+    work["_Ist_55plus"] = pd.to_numeric(work["_Alter"], errors="coerce").ge(55)
+    work["_Ist_u30"] = pd.to_numeric(work["_Alter"], errors="coerce").lt(30)
+
+    rows: list[dict[str, Any]] = []
+    groups: list[tuple[str, pd.DataFrame]] = [("GESAMT", work)]
+    groups.extend((str(jobfamily), group) for jobfamily, group in work.groupby("Jobfamily", dropna=False, observed=True))
+    for jobfamily, group in groups:
+        weights = group["_Headcount_Reporting"]
+        rows.append({
+            "Jobfamily": jobfamily,
+            f"Köpfe_{suffix}": float(group["_Headcount_Reporting"].sum()),
+            f"MAK_{suffix}": _numeric_sum(group["MAK_Reporting"]),
+            f"Frauenanteil_{suffix}": _weighted_average(group["_Ist_Frau"].astype(float), weights),
+            f"Durchschnittsalter_{suffix}": _weighted_average(group["_Alter"], weights),
+            f"Anteil_55plus_{suffix}": _weighted_average(group["_Ist_55plus"].astype(float), weights),
+            f"Anteil_u30_{suffix}": _weighted_average(group["_Ist_u30"].astype(float), weights),
+            f"Teilzeitquote_{suffix}": _weighted_average(group["_Ist_Teilzeit"].astype(float), weights),
+        })
+
+    out = pd.DataFrame(rows)
+    out["_sort"] = out["Jobfamily"].ne("GESAMT")
+    return out.sort_values(["_sort", f"Köpfe_{suffix}"], ascending=[True, False]).drop(columns="_sort").reset_index(drop=True)[columns]
+
+
+def _jobfamily_profile_comparison(status_quo_snapshot: pd.DataFrame, forecast_df: pd.DataFrame) -> pd.DataFrame:
+    status = _jobfamily_profile(status_quo_snapshot, "StatusQuo")
+    forecast = _jobfamily_profile(forecast_df, "Forecast")
+    if status.empty and forecast.empty:
+        return pd.DataFrame()
+    out = status.merge(forecast, on="Jobfamily", how="outer").fillna(0.0)
+    out["Delta_Köpfe"] = out["Köpfe_Forecast"] - out["Köpfe_StatusQuo"]
+    out["Delta_MAK"] = out["MAK_Forecast"] - out["MAK_StatusQuo"]
+    out["Delta_Frauenanteil_pp"] = (out["Frauenanteil_Forecast"] - out["Frauenanteil_StatusQuo"]) * 100.0
+    out["Delta_Durchschnittsalter"] = out["Durchschnittsalter_Forecast"] - out["Durchschnittsalter_StatusQuo"]
+    out["Delta_Anteil_55plus_pp"] = (out["Anteil_55plus_Forecast"] - out["Anteil_55plus_StatusQuo"]) * 100.0
+    out["Delta_Anteil_u30_pp"] = (out["Anteil_u30_Forecast"] - out["Anteil_u30_StatusQuo"]) * 100.0
+    out["Delta_Teilzeitquote_pp"] = (out["Teilzeitquote_Forecast"] - out["Teilzeitquote_StatusQuo"]) * 100.0
+    out["_sort"] = out["Jobfamily"].ne("GESAMT")
+    return out.sort_values(["_sort", "Delta_Köpfe"], ascending=[True, True]).drop(columns="_sort").reset_index(drop=True)
+
+
+_ABGANG_REASON_LABELS = {
+    "QUIT": "Kündigung",
+    "RETIREMENT": "Rente (direkt)",
+    "ATZ_AR_TO_FR": "ATZ: AR -> FR",
+    "ATZ_END": "Rente (nach ATZ)",
+    "RUHEND_START": "Ruhend Start",
+    "RUHEND_RETURN": "Ruhend Rückkehr",
+}
+
+
+def _abgang_reason_label(value: Any) -> str:
+    code = str(value or "").strip()
+    return _ABGANG_REASON_LABELS.get(code, code or "(unbekannt)")
+
+
+def _abgaenge_personenliste(audit_tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    raw = audit_tables.get("Abgaenge_Events_Raw", pd.DataFrame())
+    check = audit_tables.get("MAK_Abgaenge_Check", pd.DataFrame())
+
+    if raw is not None and not raw.empty:
+        events = raw.copy()
+        if "persnr" in events.columns:
+            events["PersNr"] = events["persnr"].astype(str)
+        elif "PersNr" not in events.columns:
+            events["PersNr"] = ""
+        if "reason_code" not in events.columns:
+            events["reason_code"] = events.get("type", "")
+        events["Abgangsgrund"] = events.get("reason_label", events["reason_code"].map(_abgang_reason_label))
+        missing_label = events["Abgangsgrund"].isna() | events["Abgangsgrund"].astype(str).str.strip().eq("")
+        events.loc[missing_label, "Abgangsgrund"] = events.loc[missing_label, "reason_code"].map(_abgang_reason_label)
+        events["Ausschlussdatum"] = pd.to_datetime(events.get("event_date"), errors="coerce")
+        events["Austrittsjahr"] = events["Ausschlussdatum"].dt.year
+        events["Kopf_Effekt"] = pd.to_numeric(events.get("headcount_change", 0), errors="coerce").fillna(0).astype(int)
+        events["MAK_Effekt"] = pd.to_numeric(events.get("mak_change", 0.0), errors="coerce").fillna(0.0)
+        events["Jobfamily_before"] = events.get("Jobfamily", "")
+        events["Organisationseinheit_before"] = events.get("Organisationseinheit", "")
+        if check is not None and not check.empty and {"PersNr", "Jobfamily_before"}.issubset(check.columns):
+            jf_lookup = check.drop_duplicates("PersNr").set_index("PersNr")["Jobfamily_before"]
+            events["Jobfamily_before"] = events["PersNr"].map(jf_lookup).fillna(events["Jobfamily_before"])
+        events["Ausgeschlossen_aus_Forecastbestand"] = events["Kopf_Effekt"].lt(0) | events["MAK_Effekt"].lt(0)
+        cols = [
+            "PersNr", "Jobfamily_before", "Organisationseinheit_before", "Ausschlussdatum",
+            "Austrittsjahr", "reason_code", "Abgangsgrund", "Kopf_Effekt", "MAK_Effekt",
+            "age", "tenure", "Ausgeschlossen_aus_Forecastbestand",
+        ]
+        for col in cols:
+            if col not in events.columns:
+                events[col] = pd.NA
+        return events[cols].sort_values(["Ausschlussdatum", "PersNr", "reason_code"]).reset_index(drop=True)
+
+    if check is None or check.empty:
+        return pd.DataFrame()
+
+    events = check.copy()
+    events["Ausschlussdatum"] = pd.to_datetime(events.get("Abgang_Date"), errors="coerce")
+    events["Austrittsjahr"] = events["Ausschlussdatum"].dt.year
+    events["reason_code"] = events.get("Abgang_Event_Type", "")
+    events["Abgangsgrund"] = events["reason_code"].map(_abgang_reason_label)
+    events["Kopf_Effekt"] = events["reason_code"].isin(["QUIT", "RETIREMENT", "ATZ_END"]).map({True: -1, False: 0})
+    events["MAK_Effekt"] = pd.to_numeric(events.get("actual_MAK_after_abgang", 0.0), errors="coerce").fillna(0.0) - pd.to_numeric(events.get("MAK_before", 0.0), errors="coerce").fillna(0.0)
+    events["Ausgeschlossen_aus_Forecastbestand"] = events.get("row_removed_or_deactivated", False)
+    cols = [
+        "PersNr", "Jobfamily_before", "Ausschlussdatum", "Austrittsjahr", "reason_code",
+        "Abgangsgrund", "Kopf_Effekt", "MAK_Effekt", "MAK_before", "MAK_after_abgang",
+        "Ausgeschlossen_aus_Forecastbestand",
+    ]
+    return events[[col for col in cols if col in events.columns]].sort_values(["Ausschlussdatum", "PersNr", "reason_code"]).reset_index(drop=True)
+
+
+def _abgaenge_by_reason(personenliste: pd.DataFrame) -> pd.DataFrame:
+    if personenliste is None or personenliste.empty:
+        return pd.DataFrame()
+    return personenliste.groupby("Abgangsgrund", dropna=False).agg(
+        Ereignisse=("PersNr", "size"),
+        Personen=("PersNr", "nunique"),
+        Kopf_Effekt=("Kopf_Effekt", "sum"),
+        MAK_Effekt=("MAK_Effekt", "sum"),
+    ).reset_index().sort_values(["Ereignisse", "Personen"], ascending=False)
+
+
+def _abgaenge_reason_year(personenliste: pd.DataFrame) -> pd.DataFrame:
+    if personenliste is None or personenliste.empty:
+        return pd.DataFrame()
+    pivot = personenliste.pivot_table(index="Austrittsjahr", columns="Abgangsgrund", values="PersNr", aggfunc="nunique", fill_value=0).reset_index()
+    reason_cols = [col for col in pivot.columns if col != "Austrittsjahr"]
+    pivot["GESAMT"] = pivot[reason_cols].sum(axis=1) if reason_cols else 0
+    return pivot.sort_values("Austrittsjahr").reset_index(drop=True)
+
+
+def _abgaenge_reason_jobfamily(personenliste: pd.DataFrame) -> pd.DataFrame:
+    if personenliste is None or personenliste.empty:
+        return pd.DataFrame()
+    work = personenliste.copy()
+    work["Jobfamily_before"] = work.get("Jobfamily_before", pd.Series("(ohne Job-Family)", index=work.index)).fillna("(ohne Job-Family)").astype(str)
+    heads = work.pivot_table(index="Jobfamily_before", columns="Abgangsgrund", values="PersNr", aggfunc="nunique", fill_value=0).reset_index()
+    mak = work.pivot_table(index="Jobfamily_before", columns="Abgangsgrund", values="MAK_Effekt", aggfunc="sum", fill_value=0).reset_index()
+    head_reason_cols = [col for col in heads.columns if col != "Jobfamily_before"]
+    mak_reason_cols = [col for col in mak.columns if col != "Jobfamily_before"]
+    heads["GESAMT_Köpfe"] = heads[head_reason_cols].sum(axis=1) if head_reason_cols else 0
+    mak["GESAMT_MAK"] = mak[mak_reason_cols].sum(axis=1) if mak_reason_cols else 0
+    heads = heads.rename(columns={col: f"{col}_Köpfe" for col in head_reason_cols})
+    mak = mak.rename(columns={col: f"{col}_MAK" for col in mak_reason_cols})
+    return heads.merge(mak, on="Jobfamily_before", how="outer").sort_values("GESAMT_Köpfe", ascending=False).reset_index(drop=True)
+
+
 def _demography_compare(status_df: pd.DataFrame, forecast_df: pd.DataFrame, *, view_name: str, group_col: str = "Jobfamily", missing_audit: pd.DataFrame | None = None) -> pd.DataFrame:
     dims = ["Geschlecht", "Alterskohorte", "Beschäftigungsgrad_Kat", "Betriebszugehörigkeit_Bin", "Ausbildung"]
     status = _active_rows(status_df)
@@ -808,6 +1005,11 @@ def build_compact_simulation_export_bytes(
         ("65plus_Decision_List", audit_tables.get("65plus_Decision_List", pd.DataFrame())),
     )
     validation_export_df = _validation_sheet(validation_df, status_quo_snapshot, prepared_df, scope_check, missing_audit)
+    jobfamily_profile_df = _jobfamily_profile_comparison(status_quo_snapshot, prepared_df)
+    abgaenge_personenliste_df = _abgaenge_personenliste(audit_tables)
+    abgaenge_reason_df = _abgaenge_by_reason(abgaenge_personenliste_df)
+    abgaenge_reason_year_df = _abgaenge_reason_year(abgaenge_personenliste_df)
+    abgaenge_reason_jobfamily_df = _abgaenge_reason_jobfamily(abgaenge_personenliste_df)
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -826,6 +1028,11 @@ def build_compact_simulation_export_bytes(
             ("11_Azubi_Audit", azubi_audit_export_df),
             ("12_65plus_Audit", age65_audit_export_df),
             ("13_Validation", validation_export_df),
+            ("14_JF_Profil_Vor_Nach", jobfamily_profile_df),
+            ("15_Abgaenge_Personenliste", abgaenge_personenliste_df),
+            ("16_Abgaenge_Grund", abgaenge_reason_df),
+            ("17_Abgaenge_Grund_Jahr", abgaenge_reason_year_df),
+            ("18_Abgaenge_Grund_JF", abgaenge_reason_jobfamily_df),
         ]
         for sheet_name, table in ordered_sheets:
             _hide_eur(table if table is not None else pd.DataFrame()).to_excel(writer, sheet_name=sheet_name[:31], index=False)
@@ -853,6 +1060,7 @@ def build_compact_simulation_export_bytes(
             "MAK_Deep_Dive_15_Cases",
             "MAK_Fuehrung_Vertrieb_Check",
             "MAK_Column_Consistency_Check",
+            "Abgaenge_Events_Raw",
             "MAK_Abgaenge_Check",
             "MAK_Zugaenge_Check",
             "MAK_Source_Row_Audit_15",
