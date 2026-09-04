@@ -24,6 +24,7 @@ from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from abgaenge.schemas import normalize_persnr
+from utils.lineage import append_lineage_sheet_to_workbook
 
 _FORMULA_LEADING_CHARS = ("=", "+", "-", "@")
 
@@ -254,6 +255,19 @@ def build_integrity_report_excel(report: DataIntegrityReport) -> bytes:
 
         for col_idx, col_name in enumerate(columns, start=1):
             ws.column_dimensions[get_column_letter(col_idx)].width = max(14, min(40, len(str(col_name)) + 6))
+
+    append_lineage_sheet_to_workbook(
+        wb,
+        ["2-01"],
+        export_context={
+            "Exporttyp": "Datenintegritaets-Evaluation",
+            "Mitarbeiter-Zeilen": report.mitarbeiter_row_count,
+            "Planstellen-Zeilen": report.planstellen_row_count,
+            "Findings": report.total_findings,
+            "Fehler": report.error_count,
+            "Warnungen": report.warning_count,
+        },
+    )
 
     buffer = _write_workbook_to_bytes(wb)
     return buffer

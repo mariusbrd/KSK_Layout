@@ -26,7 +26,11 @@ from components.sidebar import (
     render_global_filters,
     set_metric_page_hint,
 )
-from components.ui_compat import dataframe_compat, download_button_compat
+from components.ui_compat import (
+    dataframe_compat,
+    dataframe_export_fingerprint,
+    lazy_excel_download_button_compat,
+)
 from components.ui_shell import (
     render_active_filter_banner,
     render_context_box,
@@ -67,6 +71,13 @@ _SORT_DEFAULT = "Aktuelle Kennzahl"
 _MIN_SIZE_OPTIONS = ["Alle", "mind. 3 Köpfe", "mind. 5 Köpfe", "mind. 10 Köpfe", "mind. 1,0 MAK"]
 _MIN_SIZE_SESSION_KEY = "jobfamily_analysis_min_size"
 _MIN_SIZE_DEFAULT = "Alle"
+
+
+def _jobfamily_lineage_ids(is_simulation: bool, ist_id: str, sim_id: str) -> list[str]:
+    ids = [sim_id] if is_simulation else [ist_id]
+    if is_simulation:
+        ids.append("11-05")
+    return ids
 
 
 def _get_widget_index(options: list[str], value: str | None, default: str) -> int:
@@ -473,6 +484,7 @@ def _render_jobfamily_split_block(
     key_prefix: str,
     top_n: int | str = TOP_JOBFAMILY_COUNT,
     display_jobfamilies: list[str] | None = None,
+    is_simulation: bool = False,
 ) -> None:
     agg_df = _aggregate_jobfamily_split(
         mapped_df,
@@ -539,19 +551,30 @@ def _render_jobfamily_split_block(
         st.plotly_chart(fig, use_container_width=True)
     with col_table:
         dataframe_compat(display_df, width="stretch", hide_index=True)
-        excel_data = compact.export_to_excel(
-            pivot_df,
-            key_prefix=key_prefix,
-            dimension_name=f"Jobgruppe x {title}",
-            value_type=metric_config["value_type"],
-            table_title=f"Jobgruppe nach {title}",
+        lineage_ids = _jobfamily_lineage_ids(
+            is_simulation,
+            "8-16" if split_col == "TrfGr" else "8-15",
+            "11-03",
         )
-        download_button_compat(
+        lazy_excel_download_button_compat(
             label="Excel Download",
-            data=excel_data,
+            data_builder=lambda: compact.export_to_excel(
+                pivot_df,
+                key_prefix=key_prefix,
+                dimension_name=f"Jobgruppe x {title}",
+                value_type=metric_config["value_type"],
+                table_title=f"Jobgruppe nach {title}",
+                lineage_ids=lineage_ids,
+            ),
             file_name=f"{key_prefix}_{split_col.lower().replace(' ', '_')}.xlsx",
             mime=compact._EXCEL_MIME,
             key=f"download_{key_prefix}_{split_col}",
+            fingerprint=dataframe_export_fingerprint(
+                pivot_df,
+                key_prefix,
+                metric_config["value_type"],
+                tuple(lineage_ids),
+            ),
             width="stretch",
         )
 
@@ -609,6 +632,7 @@ def _render_role_breakdown_block(
     compact,
     top_n: int | str = TOP_JOBFAMILY_COUNT,
     display_jobfamilies: list[str] | None = None,
+    is_simulation: bool = False,
 ) -> None:
     if "TrfGr" not in mapped_df.columns:
         st.info("Keine Tarifgruppen-Spalte verfügbar.")
@@ -632,6 +656,7 @@ def _render_role_breakdown_block(
         key_prefix="jobfamily_role_trf",
         top_n=top_n,
         display_jobfamilies=display_jobfamilies,
+        is_simulation=is_simulation,
     )
 
     # Summary table: Köpfe, MAK, Ø MAK per Jobgruppe — keine Euro-Werte
@@ -650,6 +675,7 @@ def _render_data_quality_block(
     metric_view: str,
     metric_config: dict[str, str],
     compact,
+    is_simulation: bool = False,
 ) -> None:
     total_rows = len(filtered_df)
     unmapped_rows = len(unmapped_df)
@@ -719,19 +745,26 @@ def _render_data_quality_block(
     display_df = compact.format_dataframe_for_display(unmapped_planstellen, metric_config["value_type"])
     dataframe_compat(display_df, width="stretch", hide_index=True)
 
-    excel_data = compact.export_to_excel(
-        unmapped_planstellen,
-        key_prefix="jobfamily_quality",
-        dimension_name="UNMAPPED Planstellen",
-        value_type=metric_config["value_type"],
-        table_title="UNMAPPED - Top Planstellen",
-    )
-    download_button_compat(
+    lineage_ids = _jobfamily_lineage_ids(is_simulation, "8-17", "11-05")
+    lazy_excel_download_button_compat(
         label="Excel Download",
-        data=excel_data,
+        data_builder=lambda: compact.export_to_excel(
+            unmapped_planstellen,
+            key_prefix="jobfamily_quality",
+            dimension_name="UNMAPPED Planstellen",
+            value_type=metric_config["value_type"],
+            table_title="UNMAPPED - Top Planstellen",
+            lineage_ids=lineage_ids,
+        ),
         file_name="jobfamily_unmapped_planstellen.xlsx",
         mime=compact._EXCEL_MIME,
         key="download_jobfamily_quality_planstellen",
+        fingerprint=dataframe_export_fingerprint(
+            unmapped_planstellen,
+            "jobfamily_quality",
+            metric_config["value_type"],
+            tuple(lineage_ids),
+        ),
         width="stretch",
     )
 
@@ -746,6 +779,7 @@ def _render_jobfamily_rangliste(
     key_prefix: str,
     top_n: int | str,
     display_jobfamilies: list[str] | None = None,
+    is_simulation: bool = False,
 ) -> None:
     ranking_df = compact.create_breakdown_table(mapped_df, "Jobfamily", metric_config["value_col"])
     ranking_df = ranking_df[ranking_df["Jobfamily"] != JOBFAMILY_UNMAPPED].copy()
@@ -804,19 +838,26 @@ def _render_jobfamily_rangliste(
         st.plotly_chart(fig, use_container_width=True)
     with col_table:
         dataframe_compat(display_df, width="stretch", hide_index=True)
-        excel_data = compact.export_to_excel(
-            ranking_df,
-            dimension_name="Jobgruppen",
-            value_type=metric_config["value_type"],
-            key_prefix=key_prefix,
-            table_title="Rangliste Jobgruppen",
-        )
-        download_button_compat(
+        lineage_ids = _jobfamily_lineage_ids(is_simulation, "8-14", "11-02")
+        lazy_excel_download_button_compat(
             label="Excel Download",
-            data=excel_data,
+            data_builder=lambda: compact.export_to_excel(
+                ranking_df,
+                dimension_name="Jobgruppen",
+                value_type=metric_config["value_type"],
+                key_prefix=key_prefix,
+                table_title="Rangliste Jobgruppen",
+                lineage_ids=lineage_ids,
+            ),
             file_name=f"{key_prefix}_jobgruppen.xlsx",
             mime=compact._EXCEL_MIME,
             key=f"download_{key_prefix}_jobfamilies",
+            fingerprint=dataframe_export_fingerprint(
+                ranking_df,
+                key_prefix,
+                metric_config["value_type"],
+                tuple(lineage_ids),
+            ),
             width="stretch",
         )
 
@@ -832,6 +873,7 @@ def render_jobfamily_analysis_page(
     key_prefix: str = "jobfamily_ist",
 ) -> None:
     compact = load_compact_page_module()
+    is_simulation = value_label == "Simulation" or key_prefix == "jobfamily_simulation"
 
     render_page_header(
         title,
@@ -890,7 +932,15 @@ def render_jobfamily_analysis_page(
             "Im aktuellen Filterkontext sind nur UNMAPPED-Zeilen oder gar keine Daten sichtbar. Die fachliche Hauptanalyse bleibt deshalb leer; der Datenqualitätsblock unten zeigt den verbleibenden Rest transparent an.",
             tone="warning",
         )
-        _render_data_quality_block(filtered_df, mapped_df, unmapped_df, metric_view, metric_config, compact)
+        _render_data_quality_block(
+            filtered_df,
+            mapped_df,
+            unmapped_df,
+            metric_view,
+            metric_config,
+            compact,
+            is_simulation=is_simulation,
+        )
         return
 
     st.divider()
@@ -955,6 +1005,7 @@ def render_jobfamily_analysis_page(
         key_prefix=key_prefix,
         top_n=selected_top_n,
         display_jobfamilies=display_jobfamilies,
+        is_simulation=is_simulation,
     )
 
     top_label = "Alle" if selected_top_n == "Alle" else f"Top-{selected_top_n}"
@@ -976,6 +1027,7 @@ def render_jobfamily_analysis_page(
             key_prefix=f"jobfamily_{split_col.lower().replace(' ', '_')}",
             top_n=selected_top_n,
             display_jobfamilies=display_jobfamilies,
+            is_simulation=is_simulation,
         )
 
     # --- Personalstruktur nach Tarifgruppe (folgt dem globalen Metrik-Switch, keine EUR-Werte) ---
@@ -990,10 +1042,19 @@ def render_jobfamily_analysis_page(
         compact,
         top_n=selected_top_n,
         display_jobfamilies=display_jobfamilies,
+        is_simulation=is_simulation,
     )
 
     with st.expander("Datenqualität", expanded=False):
-        _render_data_quality_block(filtered_df, mapped_df, unmapped_df, metric_view, metric_config, compact)
+        _render_data_quality_block(
+            filtered_df,
+            mapped_df,
+            unmapped_df,
+            metric_view,
+            metric_config,
+            compact,
+            is_simulation=is_simulation,
+        )
 
     with st.expander("Hinweise zur Methodik", expanded=False):
         if methodology_text:

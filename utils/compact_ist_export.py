@@ -18,6 +18,13 @@ from utils.compact_simulation_export import (
     build_jobfamily_demographics,
     build_jobfamily_summary,
 )
+from utils.lineage import write_lineage_sheet
+
+
+DEFAULT_COMPACT_IST_LINEAGE_IDS = (
+    "8-14",
+    "8-15",
+)
 
 
 def _display_value(value: Any) -> str:
@@ -166,6 +173,7 @@ def build_compact_ist_demographics_export_bytes(
     prepared_df: pd.DataFrame,
     stichtag: Any,
     dimensions: Iterable[str] = DEFAULT_DEMOGRAPHIC_DIMENSIONS,
+    lineage_ids: Iterable[str] | None = DEFAULT_COMPACT_IST_LINEAGE_IDS,
 ) -> bytes:
     """Returns an XLSX workbook with IST demographics for company and jobfamilies."""
     documentation_df = build_documentation_sheet(
@@ -189,6 +197,17 @@ def build_compact_ist_demographics_export_bytes(
         ]
         for sheet_name, table in sheets:
             _hide_eur(table).to_excel(writer, sheet_name=sheet_name[:31], index=False)
+
+        write_lineage_sheet(
+            writer,
+            tuple(lineage_ids or ()),
+            export_context={
+                "Exporttyp": "Kompakt IST Demografie",
+                "Stichtag": _display_value(stichtag),
+                "Zeilen": len(prepared_df),
+                "Dimensionen": ", ".join(dim for dim in dimensions if dim in prepared_df.columns),
+            },
+        )
 
         for sheet_name in writer.sheets:
             worksheet = writer.sheets[sheet_name]

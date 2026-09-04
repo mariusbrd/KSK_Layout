@@ -18,6 +18,7 @@ import xlsxwriter
 from xlsxwriter.utility import xl_col_to_name
 
 from config.settings import EDUCATION_GROUPS, TARIFF_GROUPS
+from utils.lineage import add_lineage_worksheet
 
 DATE_FORMAT = "dd.mm.yyyy"
 
@@ -191,6 +192,17 @@ def generate_upload_template_bytes(spec_key: str) -> bytes:
             )
 
     sheet.freeze_panes(1, 0)
+    add_lineage_worksheet(
+        workbook,
+        ["2-02"],
+        export_context={
+            "Exporttyp": "Originaldaten Upload-Template",
+            "Template": spec_key,
+            "Sheet": spec["sheet_name"],
+            "Spalten": ", ".join(col["name"] for col in columns),
+            "Zeilenrahmen": row_count,
+        },
+    )
     workbook.close()
     return output.getvalue()
 
@@ -228,6 +240,15 @@ def generate_tvoed_template_bytes() -> bytes:
     sheet.set_column(1, 6, 12)
     sheet.freeze_panes(2, 1)
 
+    add_lineage_worksheet(
+        workbook,
+        ["2-03"],
+        export_context={
+            "Exporttyp": "TVOED Upload-Template",
+            "Tarifgruppen": len(TARIFF_GROUPS),
+            "Stufen": 6,
+        },
+    )
     workbook.close()
     return output.getvalue()
 

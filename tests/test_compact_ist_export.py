@@ -90,14 +90,23 @@ def test_compact_ist_export_contains_concept_sheets() -> None:
         "02_Unternehmen_Demografie",
         "03_Jobfamily_Summary",
         "04_Jobfamily_Demografie",
+        "Lineage_Report",
+        "Input_Lineage",
+        "Transformations_Lineage",
     ]
     documentation = pd.read_excel(workbook, sheet_name="00_Dokumentation")
     company = pd.read_excel(workbook, sheet_name="01_Unternehmen")
     jobfamilies = pd.read_excel(workbook, sheet_name="03_Jobfamily_Summary")
+    lineage = pd.read_excel(workbook, sheet_name="Lineage_Report")
+    input_lineage = pd.read_excel(workbook, sheet_name="Input_Lineage")
+    transformation_lineage = pd.read_excel(workbook, sheet_name="Transformations_Lineage")
 
     assert "Kompakt IST Demografie" in set(documentation["Wert"])
     assert set(company["Kennzahl"]) >= {"Köpfe", "MAK"}
     assert "EUR" not in set(company["Kennzahl"])
     assert not any("EUR" in col or "Kosten" in col for col in jobfamilies.columns)
     assert set(jobfamilies["Jobfamily"]) == {"Beratung", "IT"}
+    assert lineage["Lineage-ID"].tolist() == ["8-14", "8-15"]
+    assert {"Input-Rolle", "Datei", "Spalten"}.issubset(set(input_lineage.columns))
+    assert "Kennzahl je Kategorie zusammenfassen" in set(transformation_lineage["Schritt"])
 

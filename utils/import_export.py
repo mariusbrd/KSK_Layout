@@ -12,6 +12,8 @@ from typing import Dict, List, Optional, Tuple, BinaryIO, Union
 from datetime import datetime
 from io import BytesIO
 
+from utils.lineage import append_lineage_sheet_to_workbook
+
 # Optionaler Import fuer Excel-Funktionalitaet
 try:
     import openpyxl
@@ -561,6 +563,20 @@ def export_to_excel(definitions: Dict, file_path: Optional[str] = None) -> Optio
     ws_meta.column_dimensions["A"].width = 20
     ws_meta.column_dimensions["B"].width = 40
 
+    append_lineage_sheet_to_workbook(
+        wb,
+        ["2-05"],
+        export_context={
+            "Exporttyp": "Jobfamily Definitionen",
+            "Jobfamilies": len(definitions.get("jobfamilies", {})),
+            "Patterns": sum(len(f.get("patterns", [])) for f in definitions.get("jobfamilies", {}).values()),
+            "Manuelle Zuordnungen": sum(
+                len(f.get("manual_assignments", [])) for f in definitions.get("jobfamilies", {}).values()
+            ),
+            "Overrides": len(definitions.get("manual_overrides", {})),
+        },
+    )
+
     # Speichern
     if file_path:
         wb.save(file_path)
@@ -777,6 +793,20 @@ def export_mapping_report(
 
     ws_stats.column_dimensions["A"].width = 25
     ws_stats.column_dimensions["B"].width = 15
+
+    append_lineage_sheet_to_workbook(
+        wb,
+        ["2-06"],
+        export_context={
+            "Exporttyp": "Jobfamily Mapping Report",
+            "Zeilen": total_jobs,
+            "Zugeordnet": mapped_jobs,
+            "Nicht zugeordnet": total_jobs - mapped_jobs,
+            "Planstellen-Spalte": planstelle_column,
+            "Jobfamily-Spalte": jobfamily_column,
+            "Match-Typ-Spalte": match_type_column,
+        },
+    )
 
     # Speichern
     if file_path:

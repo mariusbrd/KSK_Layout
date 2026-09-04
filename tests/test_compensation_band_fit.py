@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import importlib.util
 from pathlib import Path
 import sys
@@ -165,6 +167,93 @@ def test_format_compensation_fit_summary_for_display_appends_total_row():
     # Kapazitätslücke is signed (+/-) since it can also indicate overcoverage.
     assert display.iloc[0]["Kapazitätslücke"] == "+0,5"
     assert display.iloc[-1]["Kapazitätslücke"] == "+0,8"
+
+
+def test_render_compensation_band_fit_export_contains_lineage_report(monkeypatch):
+    module = _load_compact_page_module()
+    downloads = []
+
+    monkeypatch.setattr(module, "build_compact_compensation_planlevel_df", lambda df: _sample_comp_df())
+    monkeypatch.setattr(module, "get_global_metric_view", lambda: "MAK")
+    monkeypatch.setattr(module.st, "subheader", lambda *a, **k: None)
+    monkeypatch.setattr(module.st, "caption", lambda *a, **k: None)
+    monkeypatch.setattr(module.st, "warning", lambda *a, **k: None)
+    monkeypatch.setattr(module.st, "info", lambda *a, **k: None)
+    monkeypatch.setattr(module.st, "markdown", lambda *a, **k: None)
+    monkeypatch.setattr(module.st, "plotly_chart", lambda *a, **k: None)
+    monkeypatch.setattr(module.st, "columns", lambda *a, **k: [contextlib.nullcontext(), contextlib.nullcontext()])
+    monkeypatch.setattr(module.st, "expander", lambda *a, **k: contextlib.nullcontext())
+    monkeypatch.setattr(module, "dataframe_compat", lambda *a, **k: None)
+    monkeypatch.setattr(module, "_render_compensation_unassigned_box", lambda *a, **k: None)
+
+    def _capture_lazy_download(**kwargs):
+        captured = dict(kwargs)
+        captured["data"] = kwargs["data_builder"]()
+        downloads.append(captured)
+
+    monkeypatch.setattr(module, "lazy_excel_download_button_compat", _capture_lazy_download)
+
+    module.render_compensation_band_fit_section(
+        pd.DataFrame(),
+        value_type="mak",
+        key_prefix="ist_vs_soll_mak",
+        print_mode=False,
+    )
+
+    download = next(d for d in downloads if d["file_name"] == "ist_vs_soll_mak_verguetung_fit.xlsx")
+    workbook = pd.ExcelFile(io.BytesIO(download["data"]))
+    lineage = workbook.parse("Lineage_Report")
+
+    assert lineage["Lineage-ID"].tolist() == ["1-02"]
+    assert "Kennzahl=MAK" in lineage.loc[0, "Export-Kontext"]
+
+
+def test_render_ist_ohne_plan_soll_export_contains_lineage_report(monkeypatch):
+    module = _load_compact_page_module()
+    downloads = []
+
+    class MetricColumn:
+        def metric(self, *args, **kwargs):
+            return None
+
+    comp_df = pd.DataFrame(
+        [
+            {
+                "PersNr": "000001",
+                "Personalnummer": "000001",
+                "Personalnachname": "Muster",
+                "Personalvorname": "Anna",
+                "Planstellennr": "P-1",
+                "Planstelle": "Berater/in",
+                "Organisationseinheit": "Markt",
+                "Ist_ohne_Plan_Soll_Kategorie": "Regulaere aktive Stelle ohne Soll_MAK",
+                "IST_MAK": 1.0,
+                "IST_EUR": 100000.0,
+                "SOLL_MAK": 0.0,
+                "SOLL_EUR": 0.0,
+            }
+        ]
+    )
+
+    monkeypatch.setattr(module.st, "warning", lambda *a, **k: None)
+    monkeypatch.setattr(module.st, "error", lambda *a, **k: None)
+    monkeypatch.setattr(module.st, "columns", lambda *a, **k: [MetricColumn(), MetricColumn(), MetricColumn(), MetricColumn()])
+
+    def _capture_lazy_download(**kwargs):
+        captured = dict(kwargs)
+        captured["data"] = kwargs["data_builder"]()
+        downloads.append(captured)
+
+    monkeypatch.setattr(module, "lazy_excel_download_button_compat", _capture_lazy_download)
+
+    module._render_ist_ohne_plan_soll_warning(comp_df, key_prefix="ist_vs_soll_mak")
+
+    download = next(d for d in downloads if d["file_name"] == "ist_vs_soll_mak_ist_ohne_plan_soll.xlsx")
+    workbook = pd.ExcelFile(io.BytesIO(download["data"]))
+    lineage = workbook.parse("Lineage_Report")
+
+    assert lineage["Lineage-ID"].tolist() == ["1-01"]
+    assert "Findings=1" in lineage.loc[0, "Export-Kontext"]
 
 
 def test_render_single_comparison_clean_uses_band_fit_section_for_verguetung(monkeypatch):

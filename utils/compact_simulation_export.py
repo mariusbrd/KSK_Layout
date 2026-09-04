@@ -36,9 +36,26 @@ from utils.status_quo_baseline import (
     build_status_quo_snapshot,
     build_status_quo_validation_checks,
 )
+from utils.lineage import write_lineage_sheet
 
 
 EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+DEFAULT_COMPACT_SIMULATION_LINEAGE_IDS = (
+    "7-01",
+    "10-01",
+    "10-02",
+    "10-03",
+    "10-04",
+    "10-05",
+    "10-06",
+    "10-07",
+    "11-01",
+    "11-02",
+    "11-03",
+    "11-04",
+    "11-05",
+)
 
 DEFAULT_DEMOGRAPHIC_DIMENSIONS = (
     "Geschlecht",
@@ -872,6 +889,7 @@ def build_compact_simulation_export_bytes(
     status_quo_date: pd.Timestamp | None = None,
     status_quo_mitarbeiter_df: pd.DataFrame | None = None,
     status_quo_planstellen_df: pd.DataFrame | None = None,
+    lineage_ids: Iterable[str] | None = DEFAULT_COMPACT_SIMULATION_LINEAGE_IDS,
 ) -> bytes:
     """Returns an XLSX workbook with parameters and Jobfamily result tables."""
     parameter_df = build_parameter_sheet(
@@ -1083,6 +1101,16 @@ def build_compact_simulation_export_bytes(
             if table is not None and not table.empty:
                 _hide_eur(table).to_excel(writer, sheet_name=sheet_name[:31], index=False)
         _hide_eur(validation_df).to_excel(writer, sheet_name="Validation_Checks", index=False)
+        write_lineage_sheet(
+            writer,
+            tuple(lineage_ids or ()),
+            export_context={
+                "Exporttyp": "Kompakt plus Simulation",
+                "Future-Zeilen": len(prepared_df),
+                "Status-Quo-Zeilen": len(status_quo_snapshot),
+                "Audit-Tabellen": ", ".join(sorted(audit_tables)),
+            },
+        )
 
         for sheet_name in writer.sheets:
             worksheet = writer.sheets[sheet_name]

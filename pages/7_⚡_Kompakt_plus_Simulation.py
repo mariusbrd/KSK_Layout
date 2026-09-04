@@ -28,7 +28,7 @@ from components.sidebar import (
     render_global_filters,
     set_metric_page_hint,
 )
-from components.ui_compat import button_compat, download_button_compat
+from components.ui_compat import lazy_excel_download_button_compat
 from components.ui_shell import render_active_filter_banner, render_context_box, render_section_intro
 from dataloader.compact_simulation_engine import simulate_compact_snapshot
 from dataloader.cluster_manager import load_cluster_mappings_from_source
@@ -683,56 +683,34 @@ def main():
             **st.session_state.get("compact_sim_metadata", {}),
             **export_context,
         }
-        export_signature = computed_signature
-        export_bytes = (
-            st.session_state.get("compact_sim_export_bytes")
-            if export_signature is not None
-            and st.session_state.get("compact_sim_export_signature") == export_signature
-            else None
-        )
         if mode == "actual":
-            export_prepare_label = "Excel-Export des Ist-Stands vorbereiten"
+            export_download_label = "Ist-Stand als Excel exportieren"
+            export_file_name = f"KompaktPlus_IstStand_{display_target:%Y%m%d}.xlsx"
         elif simulation_stale:
-            export_prepare_label = "Excel-Export der zuletzt berechneten Simulation vorbereiten"
+            export_download_label = "Zuletzt berechnete Simulation als Excel exportieren"
+            export_file_name = f"KompaktPlus_Simulation_{display_target:%Y%m%d}.xlsx"
         else:
-            export_prepare_label = "Excel-Export der Simulation vorbereiten"
-        if export_bytes is None and button_compat(
-            export_prepare_label,
-            key="compact_plus_simulation_prepare_export",
-            use_container_width=True,
-        ):
-            with st.spinner("Excel-Export wird vorbereitet..."):
-                export_bytes = build_compact_simulation_export_bytes(
-                    prepared_df=prepared_df,
-                    abgaenge_params=st.session_state.get("compact_sim_abgaenge_params", abgaenge_params),
-                    zugaenge_params=st.session_state.get("compact_sim_zugaenge_params", zugaenge_params),
-                    metadata=export_metadata,
-                    active_cluster_source=st.session_state.get("compact_sim_active_cluster_source", active_cluster_source),
-                    audit_tables=st.session_state.get("compact_sim_audit_tables", {}),
-                    status_quo_df=status_quo_prepared_df,
-                    status_quo_date=base_date,
-                )
-            st.session_state["compact_sim_export_signature"] = export_signature
-            st.session_state["compact_sim_export_bytes"] = export_bytes
+            export_download_label = "Simulationsergebnisse als Excel exportieren"
+            export_file_name = f"KompaktPlus_Simulation_{display_target:%Y%m%d}.xlsx"
 
-        if export_bytes is not None:
-            if mode == "actual":
-                export_download_label = "Ist-Stand als Excel exportieren"
-                export_file_name = f"KompaktPlus_IstStand_{display_target:%Y%m%d}.xlsx"
-            elif simulation_stale:
-                export_download_label = "Zuletzt berechnete Simulation als Excel exportieren"
-                export_file_name = f"KompaktPlus_Simulation_{display_target:%Y%m%d}.xlsx"
-            else:
-                export_download_label = "Simulationsergebnisse als Excel exportieren"
-                export_file_name = f"KompaktPlus_Simulation_{display_target:%Y%m%d}.xlsx"
-            download_button_compat(
-                export_download_label,
-                data=export_bytes,
-                file_name=export_file_name,
-                mime=EXCEL_MIME,
-                key="compact_plus_simulation_export",
-                use_container_width=True,
-            )
+        lazy_excel_download_button_compat(
+            label=export_download_label,
+            data_builder=lambda: build_compact_simulation_export_bytes(
+                prepared_df=prepared_df,
+                abgaenge_params=st.session_state.get("compact_sim_abgaenge_params", abgaenge_params),
+                zugaenge_params=st.session_state.get("compact_sim_zugaenge_params", zugaenge_params),
+                metadata=export_metadata,
+                active_cluster_source=st.session_state.get("compact_sim_active_cluster_source", active_cluster_source),
+                audit_tables=st.session_state.get("compact_sim_audit_tables", {}),
+                status_quo_df=status_quo_prepared_df,
+                status_quo_date=base_date,
+            ),
+            file_name=export_file_name,
+            mime=EXCEL_MIME,
+            key="compact_plus_simulation_export",
+            fingerprint=computed_signature,
+            use_container_width=True,
+        )
         set_metric_page_hint(None)
         render_global_filters(prepared_df, history_df)
 

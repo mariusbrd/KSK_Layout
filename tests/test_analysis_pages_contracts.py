@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 from pathlib import Path
 import sys
 
@@ -10,6 +11,8 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
+
+from utils.compact_page_loader import clear_compact_page_module_cache, load_compact_page_module
 
 
 def _load_page_module(filename_suffix: str, module_name: str):
@@ -104,7 +107,13 @@ def _capture_render_helpers(monkeypatch, module):
 
     monkeypatch.setattr(module, "st", capture_st)
     monkeypatch.setattr(module, "dataframe_compat", lambda data, **kwargs: dataframes.append({"data": data.copy(), "kwargs": kwargs}))
-    monkeypatch.setattr(module, "download_button_compat", lambda **kwargs: downloads.append(kwargs))
+    monkeypatch.setattr(module, "download_button_compat", lambda **kwargs: downloads.append(kwargs), raising=False)
+    monkeypatch.setattr(
+        module,
+        "lazy_excel_download_button_compat",
+        lambda **kwargs: downloads.append({**kwargs, "data": kwargs["data_builder"]()}),
+        raising=False,
+    )
     return capture_st, dataframes, downloads
 
 
@@ -203,6 +212,7 @@ def test_orgunit_split_block_uses_same_pivot_for_table_and_export(monkeypatch):
     assert exported.set_index("Organisationseinheit").loc["OE B", "Gesamt"] == 0.75
     assert dataframes[0]["data"]["Gesamt"].tolist() == ["1.5", "0.8"]
     assert compact.exports[0]["kwargs"]["dimension_name"] == "Organisationseinheit x Geschlecht"
+    assert compact.exports[0]["kwargs"]["lineage_ids"] == ["9-15"]
     assert downloads[0]["file_name"] == "contract_org_gender_geschlecht.xlsx"
 
 
@@ -259,6 +269,7 @@ def test_jobfamily_split_block_uses_same_pivot_for_table_and_export(monkeypatch)
     assert exported.set_index("Jobfamily").loc["JF B", "Gesamt"] == 0.75
     assert dataframes[0]["data"]["Gesamt"].tolist() == ["1.5", "0.8"]
     assert compact.exports[0]["kwargs"]["dimension_name"] == "Jobgruppe x Geschlecht"
+    assert compact.exports[0]["kwargs"]["lineage_ids"] == ["8-15"]
     assert downloads[0]["file_name"] == "contract_jobfamily_gender_geschlecht.xlsx"
 
 
@@ -316,6 +327,7 @@ def test_orgunit_ranking_download_matches_visible_display_order_and_values(monke
     assert exported["Simulation"].tolist() == [0.75, 1.5]
     assert compact.exports[0]["kwargs"]["dimension_name"] == "Organisationseinheiten"
     assert compact.exports[0]["kwargs"]["table_title"] == "Rangliste Organisationseinheiten"
+    assert compact.exports[0]["kwargs"]["lineage_ids"] == ["10-02", "10-07"]
     assert downloads[0]["file_name"] == "org_rangliste.xlsx"
 
 
@@ -380,6 +392,7 @@ def test_orgunit_comparison_download_matches_visible_columns_and_raw_values(monk
     assert exported_by_org.loc["OE A", "Abg\u00e4nge"] == 1
     assert exported_by_org.loc["OE A", "MAK-Verlust"] == 0.5
     assert compact.exports[0]["kwargs"]["table_title"] == "Rangliste Organisationseinheiten Vergleich"
+    assert compact.exports[0]["kwargs"]["lineage_ids"] == ["10-03", "10-04", "10-07"]
     assert downloads[0]["file_name"] == "org_rangliste_vergleich.xlsx"
 
 
@@ -399,6 +412,7 @@ def test_jobfamily_ranking_download_matches_visible_display_order_and_values(mon
         key_prefix="contract_jobfamily",
         top_n="Alle",
         display_jobfamilies=["JF B", "JF A"],
+        is_simulation=True,
     )
 
     assert len(capture_st.figures) == 1
@@ -414,4 +428,68 @@ def test_jobfamily_ranking_download_matches_visible_display_order_and_values(mon
     assert exported["Simulation"].tolist() == [0.75, 1.5]
     assert compact.exports[0]["kwargs"]["dimension_name"] == "Jobgruppen"
     assert compact.exports[0]["kwargs"]["table_title"] == "Rangliste Jobgruppen"
+    assert compact.exports[0]["kwargs"]["lineage_ids"] == ["11-02", "11-05"]
     assert downloads[0]["file_name"] == "contract_jobfamily_jobgruppen.xlsx"
+
+
+def test_orgunit_ranking_with_real_compact_export_contains_lineage_report(monkeypatch):
+    org_page = _load_page_module("Organisationseinheiten_Analyse", "orgunit_contract_real_compact")
+    clear_compact_page_module_cache()
+    compact = load_compact_page_module()
+    _capture_render_helpers(monkeypatch, org_page)
+    df = org_page._normalize_org_column(_analysis_snapshot())
+    metric_config = org_page._get_metric_config(df, "MAK")
+
+    downloads = []
+    monkeypatch.setattr(
+        org_page,
+        "lazy_excel_download_button_compat",
+        lambda **kwargs: downloads.append({**kwargs, "data": kwargs["data_builder"]()}),
+    )
+
+    org_page._render_org_rangliste(
+        df,
+        "MAK",
+        metric_config,
+        compact,
+        display_orgs=["OE A", "OE B"],
+        value_label="Simulation",
+    )
+
+    workbook = pd.ExcelFile(io.BytesIO(downloads[0]["data"]))
+    lineage = pd.read_excel(workbook, sheet_name="Lineage_Report")
+
+    assert lineage["Lineage-ID"].tolist() == ["10-02", "10-07"]
+
+
+def test_jobfamily_ranking_with_real_compact_export_contains_lineage_report(monkeypatch):
+    jobfamily_page = _load_page_module("Jobfamily_Analyse", "jobfamily_contract_real_compact")
+    clear_compact_page_module_cache()
+    compact = load_compact_page_module()
+    _capture_render_helpers(monkeypatch, jobfamily_page)
+    df = _analysis_snapshot()
+    metric_config = jobfamily_page._get_metric_config(df, "MAK")
+
+    downloads = []
+    monkeypatch.setattr(
+        jobfamily_page,
+        "lazy_excel_download_button_compat",
+        lambda **kwargs: downloads.append({**kwargs, "data": kwargs["data_builder"]()}),
+    )
+
+    jobfamily_page._render_jobfamily_rangliste(
+        df,
+        "MAK",
+        metric_config,
+        compact,
+        value_label="Simulation",
+        key_prefix="contract_jobfamily",
+        top_n="Alle",
+        display_jobfamilies=["JF A", "JF B"],
+        is_simulation=True,
+    )
+
+    workbook = pd.ExcelFile(io.BytesIO(downloads[0]["data"]))
+    lineage = pd.read_excel(workbook, sheet_name="Lineage_Report")
+
+    assert lineage["Lineage-ID"].tolist() == ["11-02", "11-05"]

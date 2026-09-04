@@ -296,6 +296,37 @@ def inject_ui_theme() -> None:
             margin: 0.85rem 0;
         }}
 
+        section[data-testid="stSidebar"] [data-testid="stSidebarNav"] {{
+            margin-bottom: 0.85rem;
+        }}
+
+        section[data-testid="stSidebar"] [data-testid="stNavSectionHeader"] {{
+            color: var(--dashboard-text-muted) !important;
+            font-size: 0.72rem !important;
+            font-weight: 800 !important;
+            letter-spacing: 0.07em !important;
+            text-transform: uppercase !important;
+            padding: 0.68rem 0.45rem 0.28rem 0.45rem !important;
+            margin-top: 0.25rem !important;
+            border-top: 1px solid var(--dashboard-border-soft);
+        }}
+
+        section[data-testid="stSidebar"] [data-testid="stSidebarNavItems"] > li:first-child [data-testid="stNavSectionHeader"] {{
+            border-top: 0;
+            padding-top: 0.2rem !important;
+        }}
+
+        section[data-testid="stSidebar"] [data-testid="stSidebarNavLinkContainer"] {{
+            margin: 0.05rem 0;
+        }}
+
+        section[data-testid="stSidebar"] [data-testid="stSidebarNavSeparator"] {{
+            display: block !important;
+            height: 1px !important;
+            background: var(--dashboard-border-soft) !important;
+            margin: 0.7rem 0 0.55rem 0 !important;
+        }}
+
         section[data-testid="stSidebar"] h2 {{
             color: var(--dashboard-text);
             font-size: 1.02rem;

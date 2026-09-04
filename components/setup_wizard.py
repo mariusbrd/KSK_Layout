@@ -16,7 +16,7 @@ from datetime import datetime
 # Path setup
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from components.ui_compat import dataframe_compat
+from components.ui_compat import dataframe_compat, lazy_excel_download_button_compat
 from dataloader.jobfamily_matcher import (
     load_jobfamily_definitions,
     save_jobfamily_definitions,
@@ -1363,13 +1363,18 @@ def render_review_step(df: Optional[pd.DataFrame] = None):
 
         with col2:
             if OPENPYXL_AVAILABLE:
-                excel_export = export_to_excel(definitions)
-                st.download_button(
-                    "📊 Excel herunterladen",
-                    data=excel_export,
+                lazy_excel_download_button_compat(
+                    label="📊 Excel herunterladen",
+                    data_builder=lambda: export_to_excel(definitions),
                     file_name="jobfamilies_export.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
+                    key="setup_wizard_jobfamilies_excel_export",
+                    fingerprint=(
+                        "setup_wizard_jobfamilies_excel_export",
+                        len(definitions),
+                        tuple(sorted(str(key) for key in definitions.keys())),
+                    ),
+                    use_container_width=True,
                 )
             else:
                 st.button("📊 Excel (nicht verfügbar)", disabled=True, use_container_width=True)

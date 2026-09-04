@@ -71,6 +71,17 @@ def test_generate_upload_template_has_expected_columns_and_hidden_lists_sheet(sp
                 assert idx in validated_cols, f"{spec_key}: missing dropdown validation on '{col['name']}'"
 
 
+@pytest.mark.parametrize("spec_key", list(TEMPLATE_SPECS.keys()))
+def test_upload_templates_contain_lineage_report(spec_key):
+    data = generate_upload_template_bytes(spec_key)
+    xls = pd.ExcelFile(io.BytesIO(data))
+
+    assert "Lineage_Report" in xls.sheet_names
+    lineage = pd.read_excel(xls, sheet_name="Lineage_Report")
+    assert lineage["Lineage-ID"].tolist() == ["2-02"]
+    assert f"Template={spec_key}" in lineage.loc[0, "Export-Kontext"]
+
+
 def test_strict_choice_columns_use_stop_validation_and_soft_ones_use_warning():
     data = generate_upload_template_bytes("ATZ")
     wb = openpyxl.load_workbook(io.BytesIO(data))
@@ -100,6 +111,16 @@ def test_generate_tvoed_template_matches_loader_layout():
     assert list(df.columns) == ["€", 1, 2, 3, 4, 5, 6]
     assert list(df[df.columns[0]]) == TARIFF_GROUPS
     assert df.drop(columns=[df.columns[0]]).isna().all().all()
+
+
+def test_tvoed_template_contains_lineage_report():
+    data = generate_tvoed_template_bytes()
+    xls = pd.ExcelFile(io.BytesIO(data))
+
+    assert "Lineage_Report" in xls.sheet_names
+    lineage = pd.read_excel(xls, sheet_name="Lineage_Report")
+    assert lineage["Lineage-ID"].tolist() == ["2-03"]
+    assert "Exporttyp=TVOED Upload-Template" in lineage.loc[0, "Export-Kontext"]
 
 
 def test_render_settings_page_offers_a_download_button_for_every_upload_template(monkeypatch):
@@ -135,12 +156,27 @@ def test_render_settings_page_offers_a_download_button_for_every_upload_template
     download_calls: list[dict] = []
 
     def _fake_download_button(label, *args, **kwargs):
-        download_calls.append({"label": label, "file_name": kwargs.get("file_name"), "key": kwargs.get("key")})
+        download_calls.append({
+            "label": label,
+            "data": kwargs.get("data"),
+            "file_name": kwargs.get("file_name"),
+            "key": kwargs.get("key"),
+        })
         return False
 
     for fn in ["title", "subheader", "caption", "divider", "markdown", "info", "warning", "success", "error", "write", "dataframe"]:
         monkeypatch.setattr(module.st, fn, lambda *args, **kwargs: None)
     monkeypatch.setattr(module.st, "download_button", _fake_download_button)
+    monkeypatch.setattr(
+        module,
+        "lazy_excel_download_button_compat",
+        lambda **kwargs: download_calls.append({
+            "label": kwargs.get("label"),
+            "data": kwargs["data_builder"](),
+            "file_name": kwargs.get("file_name"),
+            "key": kwargs.get("key"),
+        }),
+    )
     monkeypatch.setattr(module.st, "container", lambda *args, **kwargs: DummyContext())
     monkeypatch.setattr(module.st, "expander", lambda *args, **kwargs: DummyContext())
     monkeypatch.setattr(module.st, "form", lambda *args, **kwargs: DummyContext())
@@ -182,3 +218,109 @@ def test_render_settings_page_offers_a_download_button_for_every_upload_template
     assert file_names["dl_template_atz"] == "ATZ_Template.xlsx"
     assert file_names["dl_template_ausbildung"] == "Ausbildung_Template.xlsx"
     assert file_names["dl_template_tvoed"] == "TVOED_Template.xlsx"
+
+    expected_lineage = {
+        "dl_template_mitarbeiter": "2-02",
+        "dl_template_planstellen": "2-02",
+        "dl_template_atz": "2-02",
+        "dl_template_ausbildung": "2-02",
+        "dl_template_tvoed": "2-03",
+    }
+    for key, lineage_id in expected_lineage.items():
+        payload = next(call["data"] for call in download_calls if call["key"] == key)
+        lineage = pd.read_excel(io.BytesIO(payload), sheet_name="Lineage_Report")
+        assert lineage["Lineage-ID"].tolist() == [lineage_id]
+
+
+def test_render_settings_page_cluster_template_download_contains_lineage_report(monkeypatch):
+    module = _load_settings_module()
+
+    import utils.settings_loader as settings_loader
+
+    st.session_state.update(
+        {
+            "global_uploads": {},
+            "show_reload_success": False,
+            "tvoed_available": False,
+            "tvoed_lookup": {},
+        }
+    )
+
+    module.render_metric_selector_only = lambda *args, **kwargs: None
+    module.set_metric_page_hint = lambda *args, **kwargs: None
+    module.t = lambda key, **kwargs: key
+    module.load_and_prepare_data = lambda *args, **kwargs: (
+        pd.DataFrame({
+            "Kürzel OrgEinheit": ["100", "200"],
+            "OrgEinheitNr": [100, 200],
+            "Organisationseinheit": ["Markt", "IT"],
+            "Planstelle": ["Berater/in", "Administrator/in"],
+        }),
+        pd.DataFrame(),
+        pd.DataFrame(),
+        {},
+    )
+    module.load_jobfamily_definitions = lambda *args, **kwargs: {}
+    module.SourceService.GROUPS = {}
+    monkeypatch.setattr(settings_loader, "get_setting", lambda key, default=None: default)
+    monkeypatch.setattr(settings_loader, "set_setting", lambda *args, **kwargs: None)
+    monkeypatch.setattr(settings_loader, "save_user_settings", lambda *args, **kwargs: None)
+    monkeypatch.setattr(settings_loader, "load_user_settings", lambda *args, **kwargs: {})
+
+    download_calls: list[dict] = []
+
+    def _fake_download_button(label, *args, **kwargs):
+        download_calls.append({
+            "label": label,
+            "data": kwargs.get("data"),
+            "file_name": kwargs.get("file_name"),
+            "key": kwargs.get("key"),
+        })
+        return False
+
+    def _fake_button(label, *args, **kwargs):
+        return "settings.cluster_generate_template" in str(label)
+
+    for fn in ["title", "subheader", "caption", "divider", "markdown", "info", "warning", "success", "error", "write", "dataframe"]:
+        monkeypatch.setattr(module.st, fn, lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.st, "download_button", _fake_download_button)
+    monkeypatch.setattr(
+        module,
+        "lazy_excel_download_button_compat",
+        lambda **kwargs: download_calls.append({
+            "label": kwargs.get("label"),
+            "data": None,
+            "file_name": kwargs.get("file_name"),
+            "key": kwargs.get("key"),
+        }),
+    )
+    monkeypatch.setattr(module.st, "container", lambda *args, **kwargs: DummyContext())
+    monkeypatch.setattr(module.st, "expander", lambda *args, **kwargs: DummyContext())
+    monkeypatch.setattr(module.st, "form", lambda *args, **kwargs: DummyContext())
+    monkeypatch.setattr(
+        module.st,
+        "columns",
+        lambda spec: [DummyContext() for _ in range(spec if isinstance(spec, int) else len(spec))],
+    )
+    monkeypatch.setattr(module.st, "spinner", lambda *args, **kwargs: DummyContext())
+    monkeypatch.setattr(module.st, "button", _fake_button)
+    monkeypatch.setattr(module.st, "form_submit_button", lambda *args, **kwargs: False)
+    monkeypatch.setattr(module.st, "date_input", lambda label, value=None, **kwargs: value)
+    monkeypatch.setattr(module.st, "checkbox", lambda label, value=False, **kwargs: value)
+    monkeypatch.setattr(
+        module.st,
+        "number_input",
+        lambda label, value=None, min_value=None, **kwargs: value if value is not None else min_value,
+    )
+    monkeypatch.setattr(module.st, "selectbox", lambda label, options, index=0, **kwargs: options[index])
+    monkeypatch.setattr(module.st, "text_input", lambda label, value="", **kwargs: value)
+    monkeypatch.setattr(module.st, "rerun", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.st, "file_uploader", lambda label, *args, **kwargs: None)
+
+    module.render_settings_page()
+
+    cluster_download = next(call for call in download_calls if call["key"] == "dl_cluster_template")
+    assert cluster_download["file_name"] == "Cluster-Template.xlsx"
+
+    lineage = pd.read_excel(io.BytesIO(cluster_download["data"]), sheet_name="Lineage_Report")
+    assert lineage["Lineage-ID"].tolist() == ["2-04"]

@@ -19,13 +19,19 @@ import sys
 import os
 import io
 from datetime import datetime
-from typing import Dict
+from typing import Dict, Sequence
 
 # Path setup
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from abgaenge.schemas import normalize_persnr
-from components.ui_compat import dataframe_compat, download_button_compat, ensure_iframe_compat
+from components.ui_compat import (
+    dataframe_compat,
+    dataframe_export_fingerprint,
+    download_button_compat,
+    ensure_iframe_compat,
+    lazy_excel_download_button_compat,
+)
 from dataloader.loader import load_and_prepare_data
 from dataloader.jobfamily_service import JOBFAMILY_UNMAPPED, normalize_jobfamily_column, normalize_jobfamily_series
 from dataloader.soll_ist_koepfe_engine import build_soll_ist_koepfe_result
@@ -40,6 +46,7 @@ from config.settings import (
 from dataloader.jobfamily_matcher import assign_jobfamilies, load_jobfamily_definitions
 from utils.compact_ist_export import build_compact_ist_demographics_export_bytes
 from utils.i18n import get_language, t
+from utils.lineage import write_lineage_sheet
 from utils.plot_helpers import apply_legend_bottom
 from utils.settings_loader import get_setting
 
@@ -1012,6 +1019,7 @@ def export_to_excel(
     dimension_name: str = "",
     value_type: str = "",
     table_title: str = "",
+    lineage_ids: Sequence[str] | None = None,
 ) -> bytes:
     """
     Exportiert eine Tabelle als Excel-Datei (XLSX) mit zwei Sheets:
@@ -1019,6 +1027,7 @@ def export_to_excel(
     - 'Dokumentation':  Tabellenkontext, aktive Filter und Spalten-Erklärungen
     """
     from utils.settings_loader import get_setting
+    from utils.lineage import write_lineage_sheet
 
     stichtag = get_setting("stichtag", "unbekannt")
     tab_label = _KEY_PREFIX_LABEL.get(key_prefix, key_prefix)
@@ -1055,6 +1064,19 @@ def export_to_excel(
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df.to_excel(writer, sheet_name="Daten", index=False)
         meta_df.to_excel(writer, sheet_name="Dokumentation", index=False)
+        write_lineage_sheet(
+            writer,
+            lineage_ids,
+            export_context={
+                "Tabelle": title,
+                "Tab / Thema": tab_label,
+                "Kennzahl": val_label,
+                "Stichtag": stichtag,
+                "Dimension": dimension_name,
+                "Zeilen": len(df),
+                "Spalten": ", ".join(str(col) for col in df.columns),
+            },
+        )
 
         # Spaltenbreiten anpassen
         for sheet_name in writer.sheets:
@@ -1067,6 +1089,37 @@ def export_to_excel(
 
 
 _EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _render_lazy_excel_export(
+    df: pd.DataFrame,
+    *,
+    file_name: str,
+    key: str,
+    label: str = "Excel Download",
+    width: str | None = "stretch",
+    **export_kwargs,
+):
+    export_options = dict(export_kwargs)
+    lineage_ids = tuple(export_options.pop("lineage_ids", ()) or ())
+    lazy_excel_download_button_compat(
+        label=label,
+        data_builder=lambda: export_to_excel(df, lineage_ids=lineage_ids, **export_options),
+        file_name=file_name,
+        mime=_EXCEL_MIME,
+        key=key,
+        fingerprint=dataframe_export_fingerprint(
+            df,
+            file_name,
+            key,
+            export_options.get("key_prefix"),
+            export_options.get("dimension_name"),
+            export_options.get("value_type"),
+            export_options.get("table_title"),
+            lineage_ids,
+        ),
+        width=width,
+    )
 
 
 # =============================================================================
@@ -2377,21 +2430,34 @@ def _render_ist_ohne_plan_soll_warning(comp_df: pd.DataFrame, key_prefix: str) -
     detail_df = detail_df.rename(columns={"SOLL_MAK": "Soll_MAK", "SOLL_EUR": "Soll_Cost_Year",
                                           "Ist_Entgeltgruppe": "TrfGr", "Ist_Stufe": "Stufe"})
 
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        detail_df.to_excel(writer, sheet_name="IST ohne Plan-SOLL", index=False)
-        ws = writer.sheets["IST ohne Plan-SOLL"]
-        for col_cells in ws.columns:
-            max_len = max((len(str(c.value or "")) for c in col_cells), default=10)
-            ws.column_dimensions[col_cells[0].column_letter].width = min(max_len + 4, 50)
-    buf.seek(0)
+    def _build_ist_ohne_plan_soll_export() -> bytes:
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            detail_df.to_excel(writer, sheet_name="IST ohne Plan-SOLL", index=False)
+            write_lineage_sheet(
+                writer,
+                ["1-01"],
+                export_context={
+                    "Exporttyp": "Kompakt IST ohne Plan-SOLL",
+                    "Key-Prefix": key_prefix,
+                    "Zeilen": len(detail_df),
+                    "Findings": len(subset),
+                },
+            )
+            ws = writer.sheets["IST ohne Plan-SOLL"]
+            for col_cells in ws.columns:
+                max_len = max((len(str(c.value or "")) for c in col_cells), default=10)
+                ws.column_dimensions[col_cells[0].column_letter].width = min(max_len + 4, 50)
+        buf.seek(0)
+        return buf.getvalue()
 
-    download_button_compat(
+    lazy_excel_download_button_compat(
         label="Download: IST ohne Plan-SOLL",
-        data=buf.getvalue(),
+        data_builder=_build_ist_ohne_plan_soll_export,
         file_name=f"{key_prefix}_ist_ohne_plan_soll.xlsx",
         mime=_EXCEL_MIME,
         key=f"download_{key_prefix}_ist_ohne_plan_soll",
+        fingerprint=dataframe_export_fingerprint(detail_df, key_prefix, "1-01", len(subset)),
         width="stretch",
     )
 
@@ -2613,19 +2679,14 @@ def render_compensation_planlevel_section(
         )
         dataframe_compat(tbl, width="stretch", hide_index=True)
 
-        excel_data = export_to_excel(
+        _render_lazy_excel_export(
             comp_df,
             dimension_name="Verguetung auf Planebene" if has_planlevel else "Verguetung nach Entgeltgruppen",
             value_type=value_type,
             key_prefix=key_prefix,
-        )
-        download_button_compat(
-            label="Excel Download",
-            data=excel_data,
+            lineage_ids=("1-06",),
             file_name=f"{key_prefix}_verguetung_planebene.xlsx",
-            mime=_EXCEL_MIME,
             key=f"download_{key_prefix}_verguetung_planebene",
-            width="stretch",
         )
 
     _render_compensation_unassigned_box(comp_df, metric, aggregation)
@@ -3039,21 +3100,32 @@ def render_compensation_band_fit_section(
         display_df = _format_compensation_fit_summary_for_display(fit_summary_df, value_label)
         dataframe_compat(display_df, width="stretch", hide_index=True)
 
-        try:
+        def _build_compensation_fit_export() -> bytes:
             buf = io.BytesIO()
             with pd.ExcelWriter(buf, engine="openpyxl") as writer:
                 fit_summary_df.to_excel(writer, sheet_name="Fit-Uebersicht", index=False)
+                write_lineage_sheet(
+                    writer,
+                    ["1-02"],
+                    export_context={
+                        "Exporttyp": "Kompakt Verguetung Fit",
+                        "Key-Prefix": key_prefix,
+                        "Kennzahl": value_label,
+                        "Zeilen": len(fit_summary_df),
+                    },
+                )
             buf.seek(0)
-            download_button_compat(
-                label="Excel Download",
-                data=buf.getvalue(),
-                file_name=f"{key_prefix}_verguetung_fit.xlsx",
-                mime=_EXCEL_MIME,
-                key=f"download_{key_prefix}_verguetung_fit",
-                width="stretch",
-            )
-        except Exception:
-            pass
+            return buf.getvalue()
+
+        lazy_excel_download_button_compat(
+            label="Excel Download",
+            data_builder=_build_compensation_fit_export,
+            file_name=f"{key_prefix}_verguetung_fit.xlsx",
+            mime=_EXCEL_MIME,
+            key=f"download_{key_prefix}_verguetung_fit",
+            fingerprint=dataframe_export_fingerprint(fit_summary_df, key_prefix, value_label, "1-02"),
+            width="stretch",
+        )
 
     with st.expander("Interpretationshilfe", expanded=False):
         st.markdown(
@@ -3398,24 +3470,19 @@ def render_education_range_section(df: pd.DataFrame,
         display_df.columns = ["Planstelle", "Min", "n(Min)", "Mittel", "Max", "n(Max)", "Gesamt"]
         dataframe_compat(display_df, width="stretch", hide_index=True)
 
-        excel_data = export_to_excel(
-            range_df[["Planstelle", "min_label", "n_min", "max_label", "n_max",
-                       "mean_label", "min_ord", "max_ord", "mean_ord", "count"]],
+        export_df = range_df[["Planstelle", "min_label", "n_min", "max_label", "n_max",
+                              "mean_label", "min_ord", "max_ord", "mean_ord", "count"]]
+        _render_lazy_excel_export(
+            export_df,
             dimension_name="Qualifikationsspannweite pro Planstelle",
             key_prefix=key_prefix,
-        )
-        download_button_compat(
-            label="Excel Download",
-            data=excel_data,
+            lineage_ids=("1-07",),
             file_name=f"{key_prefix}_qualifikation_spannweite.xlsx",
-            mime=_EXCEL_MIME,
             key=f"download_{key_prefix}_edu_range",
-            width="stretch",
         )
 
     if print_mode:
         st.markdown('</div>', unsafe_allow_html=True)
-
 
 # =============================================================================
 # TABELLEN-FORMATIERUNG
@@ -3540,19 +3607,14 @@ def render_single_breakdown(df: pd.DataFrame, dimension_name: str, dimension_col
 
             dataframe_compat(display_df, width="stretch", hide_index=True)
 
-            excel_data = export_to_excel(
+            _render_lazy_excel_export(
                 breakdown_df,
                 dimension_name=localized_dimension_name,
                 value_type=value_type,
                 key_prefix=key_prefix,
-            )
-            download_button_compat(
-                label="Excel Download",
-                data=excel_data,
+                lineage_ids=("1-10",),
                 file_name=f"{key_prefix}_verguetungsklassen.xlsx",
-                mime=_EXCEL_MIME,
                 key=f"download_{key_prefix}_{dimension_col}",
-                width="stretch",
             )
     else:
         # Standard: Horizontales Balkendiagramm
@@ -3581,19 +3643,14 @@ def render_single_breakdown(df: pd.DataFrame, dimension_name: str, dimension_col
             display_df = format_dataframe_for_display(breakdown_df, value_type)
             dataframe_compat(display_df, width="stretch", hide_index=True)
 
-            excel_data = export_to_excel(
+            _render_lazy_excel_export(
                 breakdown_df,
                 dimension_name=localized_dimension_name,
                 value_type=value_type,
                 key_prefix=key_prefix,
-            )
-            download_button_compat(
-                label="Excel Download",
-                data=excel_data,
+                lineage_ids=("1-08",),
                 file_name=f"{key_prefix}_{localized_dimension_name.lower().replace(' ', '_')}.xlsx",
-                mime=_EXCEL_MIME,
                 key=f"download_{key_prefix}_{dimension_col}",
-                width="stretch",
             )
 
     # Print-Block Wrapper schließen
@@ -3618,107 +3675,6 @@ def render_single_comparison(df: pd.DataFrame, dimension_name: str, dimension_co
         key_prefix=key_prefix,
         print_mode=print_mode,
     )
-    is_verguetung = dimension_col == "Vergütungsklasse"
-
-    if not is_verguetung and dimension_col not in df.columns:
-        st.warning(f"Dimension '{localized_dimension_name}' nicht verfügbar.")
-        return
-
-    if is_verguetung and ("TrfGr" not in df.columns or "St" not in df.columns):
-        st.warning(f"Vergütungsdaten nicht verfügbar (TrfGr/St fehlen).")
-        return
-
-    # Print-Block Wrapper für saubere Seitenumbrüche
-    if print_mode:
-        st.markdown('<div class="print-block">', unsafe_allow_html=True)
-
-    st.subheader(localized_dimension_name)
-
-    if is_verguetung:
-        col_chart, col_table = st.columns([3, 2])
-        with col_chart:
-            fig = create_stacked_tariff_comparison_chart(
-                df, ist_col, soll_col, title="", print_mode=print_mode, value_type=value_type,
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-        with col_table:
-            st.markdown(f"**{t('compact.common.data_table')}**")
-            breakdown_df = create_stacked_tariff_breakdown_table(df, ist_col)
-
-            # Formatierung der numerischen Spalten
-            display_df = breakdown_df.copy()
-            num_cols = [c for c in display_df.columns if c != "Entgeltgruppe"]
-            for col in num_cols:
-                if value_type == "eur":
-                    display_df[col] = display_df[col].apply(
-                        lambda x: format_currency(x) if pd.notna(x) and x != 0 else "-"
-                    )
-                elif value_type == "koepfe":
-                    display_df[col] = display_df[col].apply(
-                        lambda x: f"{int(x):,}".replace(",", ".") if pd.notna(x) and x != 0 else "-"
-                    )
-                else:  # mak
-                    display_df[col] = display_df[col].apply(
-                        lambda x: f"{x:,.2f}".replace(",", " ").replace(".", ",").replace(" ", ".")
-                        if pd.notna(x) and x != 0 else "-"
-                    )
-
-            dataframe_compat(display_df, width="stretch", hide_index=True)
-
-            excel_data = export_to_excel(
-                breakdown_df,
-                dimension_name=localized_dimension_name,
-                value_type=value_type,
-                key_prefix=key_prefix,
-            )
-            download_button_compat(
-                label="Excel Download",
-                data=excel_data,
-                file_name=f"{key_prefix}_verguetungsklassen.xlsx",
-                mime=_EXCEL_MIME,
-                key=f"download_{key_prefix}_{dimension_col}",
-                width="stretch",
-            )
-    else:
-        breakdown_df = create_breakdown_table(df, dimension_col, ist_col,
-                                              include_soll=True, soll_col=soll_col)
-
-        if breakdown_df.empty or "Hinweis" in breakdown_df.columns:
-            st.warning(f"Keine Daten für '{localized_dimension_name}' verfügbar.")
-            if print_mode:
-                st.markdown('</div>', unsafe_allow_html=True)
-            return
-
-        col_chart, col_table = st.columns([3, 2])
-
-        with col_chart:
-            fig = create_comparison_chart(breakdown_df, dimension_col, title="", print_mode=print_mode)
-            st.plotly_chart(fig, use_container_width=True)
-
-        with col_table:
-            st.markdown(f"**{t('compact.common.data_table')}**")
-            display_df = format_dataframe_for_display(breakdown_df, value_type)
-            dataframe_compat(display_df, width="stretch", hide_index=True)
-
-            excel_data = export_to_excel(
-                breakdown_df,
-                dimension_name=localized_dimension_name,
-                value_type=value_type,
-                key_prefix=key_prefix,
-            )
-            download_button_compat(
-                label="Excel Download",
-                data=excel_data,
-                file_name=f"{key_prefix}_{localized_dimension_name.lower().replace(' ', '_')}.xlsx",
-                mime=_EXCEL_MIME,
-                key=f"download_{key_prefix}_{dimension_col}",
-                width="stretch",
-            )
-
-    # Print-Block Wrapper schließen
-    if print_mode:
-        st.markdown('</div>', unsafe_allow_html=True)
 
 
 def _render_single_breakdown_clean(
@@ -3775,19 +3731,14 @@ def _render_single_breakdown_clean(
                     )
 
             dataframe_compat(display_df, width="stretch", hide_index=True)
-            excel_data = export_to_excel(
+            _render_lazy_excel_export(
                 breakdown_df,
                 dimension_name=localized_dimension_name,
                 value_type=value_type,
                 key_prefix=key_prefix,
-            )
-            download_button_compat(
-                label="Excel Download",
-                data=excel_data,
+                lineage_ids=("1-10",),
                 file_name=f"{key_prefix}_verguetungsklassen.xlsx",
-                mime=_EXCEL_MIME,
                 key=f"download_{key_prefix}_{dimension_col}",
-                width="stretch",
             )
     else:
         breakdown_df = create_breakdown_table(df, dimension_col, value_col)
@@ -3818,19 +3769,14 @@ def _render_single_breakdown_clean(
             st.markdown(f"**{t('compact.common.data_table')}**")
             display_df = format_dataframe_for_display(breakdown_df, value_type)
             dataframe_compat(display_df, width="stretch", hide_index=True)
-            excel_data = export_to_excel(
+            _render_lazy_excel_export(
                 breakdown_df,
                 dimension_name=localized_dimension_name,
                 value_type=value_type,
                 key_prefix=key_prefix,
-            )
-            download_button_compat(
-                label="Excel Download",
-                data=excel_data,
+                lineage_ids=("1-08",),
                 file_name=f"{key_prefix}_{localized_dimension_name.lower().replace(' ', '_')}.xlsx",
-                mime=_EXCEL_MIME,
                 key=f"download_{key_prefix}_{dimension_col}",
-                width="stretch",
             )
 
     if print_mode:
@@ -3907,19 +3853,14 @@ def _render_single_comparison_clean(
                         )
 
                 dataframe_compat(display_df, width="stretch", hide_index=True)
-                excel_data = export_to_excel(
+                _render_lazy_excel_export(
                     breakdown_df,
                     dimension_name=localized_dimension_name,
                     value_type=value_type,
                     key_prefix=key_prefix,
-                )
-                download_button_compat(
-                    label="Excel Download",
-                    data=excel_data,
+                    lineage_ids=("1-11",),
                     file_name=f"{key_prefix}_verguetungsklassen.xlsx",
-                    mime=_EXCEL_MIME,
                     key=f"download_{key_prefix}_{dimension_col}",
-                    width="stretch",
                 )
     else:
         breakdown_df = create_breakdown_table(
@@ -3949,19 +3890,14 @@ def _render_single_comparison_clean(
             st.markdown(f"**{t('compact.common.data_table')}**")
             display_df = format_dataframe_for_display(breakdown_df, value_type)
             dataframe_compat(display_df, width="stretch", hide_index=True)
-            excel_data = export_to_excel(
+            _render_lazy_excel_export(
                 breakdown_df,
                 dimension_name=localized_dimension_name,
                 value_type=value_type,
                 key_prefix=key_prefix,
-            )
-            download_button_compat(
-                label="Excel Download",
-                data=excel_data,
+                lineage_ids=("1-09",),
                 file_name=f"{key_prefix}_{localized_dimension_name.lower().replace(' ', '_')}.xlsx",
-                mime=_EXCEL_MIME,
                 key=f"download_{key_prefix}_{dimension_col}",
-                width="stretch",
             )
 
     if print_mode:
@@ -5409,19 +5345,15 @@ def _render_education_range_section_clean(df: pd.DataFrame,
         display_df.columns = table_columns
         dataframe_compat(display_df, width="stretch", hide_index=True)
 
-        excel_data = export_to_excel(
-            range_df[["Planstelle", "min_label", "n_min", "max_label", "n_max",
-                      "mean_label", "min_ord", "max_ord", "mean_ord", "count"]],
+        export_df = range_df[["Planstelle", "min_label", "n_min", "max_label", "n_max",
+                              "mean_label", "min_ord", "max_ord", "mean_ord", "count"]]
+        _render_lazy_excel_export(
+            export_df,
             dimension_name=export_dimension_name,
             key_prefix=key_prefix,
-        )
-        download_button_compat(
-            label="Excel Download",
-            data=excel_data,
+            lineage_ids=("1-07",),
             file_name=f"{key_prefix}_qualifikation_spannweite.xlsx",
-            mime=_EXCEL_MIME,
             key=f"download_{key_prefix}_edu_range",
-            width="stretch",
         )
 
     if print_mode:
@@ -6459,20 +6391,30 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
             key="ist_vs_soll_koepfe_matrix_band",
         )
 
-        try:
+        def _build_soll_ist_band_export() -> bytes:
             band_buf = io.BytesIO()
             with pd.ExcelWriter(band_buf, engine="openpyxl") as writer:
                 band_pivot_display.to_excel(writer, sheet_name="Soll-Ist-Köpfe-Spannen")
+                write_lineage_sheet(
+                    writer,
+                    ["1-03"],
+                    export_context={
+                        "Exporttyp": "Kompakt Soll-Ist Koepfe Spannenmatrix",
+                        "Zeilen": len(band_pivot_display),
+                        "Spalten": ", ".join(str(col) for col in band_pivot_display.columns),
+                    },
+                )
             band_buf.seek(0)
-            download_button_compat(
-                label=t("compact.ist_soll_heads.matrix_band.download"),
-                data=band_buf.getvalue(),
-                file_name="ist_soll_koepfe_spannen.xlsx",
-                mime=_EXCEL_MIME,
-                key="download_ist_soll_koepfe_band",
-            )
-        except Exception:
-            pass
+            return band_buf.getvalue()
+
+        lazy_excel_download_button_compat(
+            label=t("compact.ist_soll_heads.matrix_band.download"),
+            data_builder=_build_soll_ist_band_export,
+            file_name="ist_soll_koepfe_spannen.xlsx",
+            mime=_EXCEL_MIME,
+            key="download_ist_soll_koepfe_band",
+            fingerprint=dataframe_export_fingerprint(band_pivot_display, "1-03"),
+        )
 
     # ── Fit-Übersicht: SOLL vs. IST je Entgeltgruppen-Spanne (explizit) ───────
     st.subheader(t("compact.ist_soll_heads.fit.heading"))
@@ -6487,20 +6429,36 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
         fit_display_df = _format_fit_summary_for_display(fit_summary_df)
         st.dataframe(fit_display_df, use_container_width=True, hide_index=True, key="ist_vs_soll_koepfe_fit_table")
 
-        try:
+        def _build_soll_ist_fit_export() -> bytes:
             fit_buf = io.BytesIO()
             with pd.ExcelWriter(fit_buf, engine="openpyxl") as writer:
                 fit_summary_df.to_excel(writer, sheet_name="Fit-Uebersicht", index=False)
+                write_lineage_sheet(
+                    writer,
+                    ["1-04"],
+                    export_context={
+                        "Exporttyp": "Kompakt Soll-Ist Koepfe Fit",
+                        "Zeilen": len(fit_summary_df),
+                        "Gesamt-SOLL": totals.get("planstellen", 0),
+                        "Passquote": totals.get("passquote", 0),
+                    },
+                )
             fit_buf.seek(0)
-            download_button_compat(
-                label=t("compact.ist_soll_heads.fit.download"),
-                data=fit_buf.getvalue(),
-                file_name="ist_soll_koepfe_fit.xlsx",
-                mime=_EXCEL_MIME,
-                key="download_ist_soll_koepfe_fit",
-            )
-        except Exception:
-            pass
+            return fit_buf.getvalue()
+
+        lazy_excel_download_button_compat(
+            label=t("compact.ist_soll_heads.fit.download"),
+            data_builder=_build_soll_ist_fit_export,
+            file_name="ist_soll_koepfe_fit.xlsx",
+            mime=_EXCEL_MIME,
+            key="download_ist_soll_koepfe_fit",
+            fingerprint=dataframe_export_fingerprint(
+                fit_summary_df,
+                "1-04",
+                totals.get("planstellen", 0),
+                totals.get("passquote", 0),
+            ),
+        )
 
     if not print_mode:
         st.markdown("---")
@@ -6894,7 +6852,7 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
                 # Ist-EG-Balkendiagramm oben, unabhaengig von der Teilmengen-Auswahl).
                 ist_eg_export = ist_counts.rename(columns={"_Ist_EG": "Ist-Entgeltgruppe", "n": "Anzahl"})
 
-                try:
+                def _build_detail_breakdown_export() -> bytes:
                     breakdown_buf = io.BytesIO()
                     with pd.ExcelWriter(breakdown_buf, engine="openpyxl") as writer:
                         uebersicht_export.to_excel(writer, sheet_name="Übersicht", index=False)
@@ -6917,16 +6875,34 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
                             pd.DataFrame(richtung_rows).to_excel(
                                 writer, sheet_name="Planstellentyp Richtung je OE", index=False
                             )
+                        write_lineage_sheet(
+                            writer,
+                            ["1-05"],
+                            export_context={
+                                "Exporttyp": "Kompakt Soll-Ist Koepfe Detailaufschluesselung",
+                                "Soll-EG-Spanne": selected_band,
+                                "Teilmengenfilter": _subset_label,
+                                "Planstellen gesamt": n_total,
+                                "Planstellen Teilmenge": len(breakdown_subset),
+                            },
+                        )
                     breakdown_buf.seek(0)
-                    download_button_compat(
-                        label=t("compact.ist_soll_heads.detail.breakdown.download"),
-                        data=breakdown_buf.getvalue(),
-                        file_name="ist_soll_koepfe_detail_aufschluesselung.xlsx",
-                        mime=_EXCEL_MIME,
-                        key="download_ist_soll_koepfe_detail_breakdown",
-                    )
-                except Exception:
-                    pass
+                    return breakdown_buf.getvalue()
+
+                lazy_excel_download_button_compat(
+                    label=t("compact.ist_soll_heads.detail.breakdown.download"),
+                    data_builder=_build_detail_breakdown_export,
+                    file_name="ist_soll_koepfe_detail_aufschluesselung.xlsx",
+                    mime=_EXCEL_MIME,
+                    key="download_ist_soll_koepfe_detail_breakdown",
+                    fingerprint=dataframe_export_fingerprint(
+                        uebersicht_export,
+                        "1-05",
+                        selected_band,
+                        _subset_label,
+                        len(breakdown_subset),
+                    ),
+                )
 
     with st.expander(t("compact.ist_soll_heads.special_cases.heading").lstrip("# "), expanded=False):
         st.caption(t("compact.ist_soll_heads.special_cases.caption"))
@@ -7315,16 +7291,20 @@ def main():
         
         with st.sidebar:
             st.divider()
-            compact_ist_export = build_compact_ist_demographics_export_bytes(
-                prepared_df=prepared_df,
-                stichtag=get_setting("stichtag", summary.get("stichtag", "unbekannt") if isinstance(summary, dict) else "unbekannt"),
+            stichtag = get_setting(
+                "stichtag",
+                summary.get("stichtag", "unbekannt") if isinstance(summary, dict) else "unbekannt",
             )
-            download_button_compat(
+            lazy_excel_download_button_compat(
                 label="IST-Demografie als Excel exportieren",
-                data=compact_ist_export,
+                data_builder=lambda: build_compact_ist_demographics_export_bytes(
+                    prepared_df=prepared_df,
+                    stichtag=stichtag,
+                ),
                 file_name=f"Kompakt_IST_Demografie_{datetime.now():%Y%m%d}.xlsx",
                 mime=_EXCEL_MIME,
                 key="compact_ist_demographics_export",
+                fingerprint=dataframe_export_fingerprint(prepared_df, "compact_ist_demographics", stichtag),
                 width="stretch",
             )
 

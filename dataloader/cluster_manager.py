@@ -29,6 +29,7 @@ from dataloader.cluster_resolver import (
     get_active_cluster_source,
 )
 from utils.cache_utils import coerce_file_bytes, get_file_signature
+from utils.lineage import write_lineage_sheet
 
 
 def _normalize_plan_id(value) -> str:
@@ -592,6 +593,15 @@ def generate_template_bytes(df_ma: pd.DataFrame, jf_definitions: Dict) -> bytes:
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         unique_oes.to_excel(writer, sheet_name="OrgUnits", index=False)
         unique_pos.to_excel(writer, sheet_name="JobFamilies", index=False)
+        write_lineage_sheet(
+            writer,
+            ["2-04"],
+            export_context={
+                "Exporttyp": "Cluster Mapping Template",
+                "Organisationseinheiten": len(unique_oes),
+                "Jobfamily-Zeilen": len(unique_pos),
+            },
+        )
 
     return output.getvalue()
 

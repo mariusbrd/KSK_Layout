@@ -6,6 +6,7 @@ Cluster-Management, Stichtag/Filter, Simulationsparameter und Soll-Korrekturen.
 """
 
 import io
+import hashlib
 import streamlit as st
 import pandas as pd
 import sys
@@ -47,6 +48,8 @@ from config.settings import BASE_DIR
 from components.sidebar import render_metric_selector_only, set_metric_page_hint
 from utils.cache_utils import bump_cache_version
 from utils.i18n import t
+from utils.lineage import build_complete_glossary_workbook_bytes
+from components.ui_compat import lazy_excel_download_button_compat
 from components.ui_shell import render_context_box, render_page_header, render_section_intro
 
 
@@ -65,6 +68,8 @@ CLUSTER_ACTIVE_SESSION_KEYS = (
     "cluster_upload_active_bytes",
     "cluster_upload_active_filename",
 )
+
+_EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 def _now_iso() -> str:
@@ -128,13 +133,18 @@ def _render_data_integrity_section() -> None:
             st.caption(check.description)
             st.dataframe(check.detail, use_container_width=True, hide_index=True)
 
-    excel_bytes = build_integrity_report_excel(report)
-    st.download_button(
-        "📥 Evaluations-Excel herunterladen",
-        data=excel_bytes,
+    lazy_excel_download_button_compat(
+        label="📥 Evaluations-Excel herunterladen",
+        data_builder=lambda: build_integrity_report_excel(report),
         file_name=f"Datenintegritaet_Evaluation_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="dl_data_integrity_report",
+        fingerprint=(
+            "data_integrity_report",
+            report.error_count,
+            report.warning_count,
+            tuple((check.title, check.severity, check.count) for check in report.checks),
+        ),
         help="Detaillierte Auflistung aller gefundenen Abweichungen je Prüfung, als Excel-Arbeitsmappe.",
     )
 
@@ -218,6 +228,18 @@ def _ensure_global_uploads() -> dict:
     if "global_uploads" not in st.session_state or not isinstance(st.session_state.get("global_uploads"), dict):
         st.session_state["global_uploads"] = {}
     return st.session_state["global_uploads"]
+
+
+def _store_global_upload(role: str, uploaded_file) -> None:
+    data = uploaded_file.getvalue()
+    st.session_state["global_uploads"][role] = io.BytesIO(data)
+    metadata = st.session_state.setdefault("global_upload_metadata", {})
+    metadata[role] = {
+        "file_name": getattr(uploaded_file, "name", f"{role}.xlsx"),
+        "size_bytes": len(data),
+        "content_hash": hashlib.sha256(data).hexdigest(),
+        "uploaded_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    }
 
 
 def _set_cluster_feedback(level: str, message: str) -> None:
@@ -567,13 +589,14 @@ def render_settings_page():
     if "global_uploads" not in st.session_state:
         st.session_state["global_uploads"] = {}
 
-    def _render_template_download(data: bytes, file_name: str, key: str) -> None:
-        st.download_button(
-            "Vorlage herunterladen",
-            data=data,
+    def _render_template_download(data_builder, file_name: str, key: str) -> None:
+        lazy_excel_download_button_compat(
+            label="Vorlage herunterladen",
+            data_builder=data_builder,
             file_name=file_name,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=key,
+            fingerprint=(key, file_name),
             help="Leere Vorlage mit korrekten Spaltennamen und Dropdown-Hilfen herunterladen.",
             type="tertiary",
             icon="📥",
@@ -583,12 +606,11 @@ def render_settings_page():
     with col_up1:
         up_ma = st.file_uploader("Mitarbeiter.xlsx", type=["xlsx"], key="set_up_ma")
         if up_ma:
-            # Store as BytesIO for persistence
-            st.session_state["global_uploads"]["Mitarbeiter"] = io.BytesIO(up_ma.getvalue())
+            _store_global_upload("Mitarbeiter", up_ma)
         elif "Mitarbeiter" in st.session_state["global_uploads"] and not up_ma:
             pass
         _render_template_download(
-            generate_upload_template_bytes("Mitarbeiter"),
+            lambda: generate_upload_template_bytes("Mitarbeiter"),
             "Mitarbeiter_Template.xlsx",
             "dl_template_mitarbeiter",
         )
@@ -596,9 +618,9 @@ def render_settings_page():
     with col_up2:
         up_pl = st.file_uploader("Planstellen.xlsx", type=["xlsx"], key="set_up_pl")
         if up_pl:
-            st.session_state["global_uploads"]["Planstellen"] = io.BytesIO(up_pl.getvalue())
+            _store_global_upload("Planstellen", up_pl)
         _render_template_download(
-            generate_upload_template_bytes("Planstellen"),
+            lambda: generate_upload_template_bytes("Planstellen"),
             "Planstellen_Template.xlsx",
             "dl_template_planstellen",
         )
@@ -607,9 +629,9 @@ def render_settings_page():
     with col_up3:
         up_atz = st.file_uploader("ATZ.xlsx", type=["xlsx"], key="set_up_atz")
         if up_atz:
-            st.session_state["global_uploads"]["ATZ"] = io.BytesIO(up_atz.getvalue())
+            _store_global_upload("ATZ", up_atz)
         _render_template_download(
-            generate_upload_template_bytes("ATZ"),
+            lambda: generate_upload_template_bytes("ATZ"),
             "ATZ_Template.xlsx",
             "dl_template_atz",
         )
@@ -617,9 +639,9 @@ def render_settings_page():
     with col_up4:
         up_edu = st.file_uploader("Ausbildung.xlsx", type=["xlsx"], key="set_up_edu")
         if up_edu:
-            st.session_state["global_uploads"]["Ausbildung"] = io.BytesIO(up_edu.getvalue())
+            _store_global_upload("Ausbildung", up_edu)
         _render_template_download(
-            generate_upload_template_bytes("Ausbildung"),
+            lambda: generate_upload_template_bytes("Ausbildung"),
             "Ausbildung_Template.xlsx",
             "dl_template_ausbildung",
         )
@@ -628,9 +650,9 @@ def render_settings_page():
     with col_up5:
         up_tvoed = st.file_uploader(t("settings.tvoed_optional"), type=["xlsx"], key="set_up_tvoed")
         if up_tvoed:
-            st.session_state["global_uploads"]["TVÖD"] = io.BytesIO(up_tvoed.getvalue())
+            _store_global_upload("TVÖD", up_tvoed)
         _render_template_download(
-            generate_tvoed_template_bytes(),
+            lambda: generate_tvoed_template_bytes(),
             "TVOED_Template.xlsx",
             "dl_template_tvoed",
         )
@@ -640,11 +662,26 @@ def render_settings_page():
         if st.button(t("settings.delete_uploads")):
             delete_result = _delete_cluster_uploads()
             st.session_state["global_uploads"] = {}
+            st.session_state["global_upload_metadata"] = {}
             fallback = delete_result["active_source"].display_label
             _set_cluster_feedback("info", f"Alle Uploads wurden entfernt. Aktive Clusterquelle: {fallback}.")
             st.rerun()
 
     _render_data_integrity_section()
+
+    lazy_excel_download_button_compat(
+        label="KPI-Glossar herunterladen",
+        data_builder=lambda: build_complete_glossary_workbook_bytes(
+            export_context={"Exporttyp": "Vollstaendiges KPI- und Berechnungsglossar"}
+        ),
+        file_name="KPI_Glossar_und_Berechnungslineage.xlsx",
+        mime=_EXCEL_MIME,
+        key="dl_lineage_glossary",
+        fingerprint=("lineage_glossary",),
+        help="Vollstaendiges Glossar aller registrierten Dashboard-Elemente inklusive Quellen, Spalten, Formeln, Transformationsschritten und Testnachweisen.",
+        type="tertiary",
+        icon="📘",
+    )
 
     st.divider()
 

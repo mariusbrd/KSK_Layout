@@ -89,7 +89,7 @@ def test_render_ist_soll_koepfe_tab_uses_raw_logic_kpis_and_control_captions(mon
 
     monkeypatch.setattr(module, "_build_soll_ist_pivot_raw_logic", lambda use_max_eg=True: raw_result)
     monkeypatch.setattr(module, "render_kpi_cards_styled", lambda kpis: captured["kpi_calls"].append(kpis))
-    monkeypatch.setattr(module, "download_button_compat", lambda **kwargs: captured.__setitem__("downloads", captured["downloads"] + 1))
+    monkeypatch.setattr(module, "lazy_excel_download_button_compat", lambda **kwargs: captured.__setitem__("downloads", captured["downloads"] + 1))
     monkeypatch.setattr(module, "apply_legend_bottom", lambda fig: fig)
 
     monkeypatch.setattr(module.st, "toggle", lambda *args, **kwargs: True)
@@ -922,7 +922,13 @@ def test_render_ist_soll_koepfe_tab_detail_excel_export_matches_charts_and_hover
     downloads = []
     monkeypatch.setattr(module, "_build_soll_ist_pivot_raw_logic", lambda use_max_eg=True: raw_result)
     monkeypatch.setattr(module, "render_kpi_cards_styled", lambda kpis: None)
-    monkeypatch.setattr(module, "download_button_compat", lambda **kwargs: downloads.append(kwargs))
+
+    def _capture_lazy_download(**kwargs):
+        captured = dict(kwargs)
+        captured["data"] = kwargs["data_builder"]()
+        downloads.append(captured)
+
+    monkeypatch.setattr(module, "lazy_excel_download_button_compat", _capture_lazy_download)
     monkeypatch.setattr(module, "apply_legend_bottom", lambda fig: fig)
     monkeypatch.setattr(module.st, "info", lambda *args, **kwargs: None)
     monkeypatch.setattr(module.st, "warning", lambda *args, **kwargs: None)
@@ -936,12 +942,23 @@ def test_render_ist_soll_koepfe_tab_detail_excel_export_matches_charts_and_hover
 
     module.render_ist_soll_koepfe_tab(pd.DataFrame(), print_mode=False)
 
+    band_download = next(d for d in downloads if "spannen" in d["file_name"])
+    band_workbook = pd.ExcelFile(io.BytesIO(band_download["data"]))
+    band_lineage = band_workbook.parse("Lineage_Report")
+    assert band_lineage["Lineage-ID"].tolist() == ["1-03"]
+
+    fit_download = next(d for d in downloads if d["file_name"] == "ist_soll_koepfe_fit.xlsx")
+    fit_workbook = pd.ExcelFile(io.BytesIO(fit_download["data"]))
+    fit_lineage = fit_workbook.parse("Lineage_Report")
+    assert fit_lineage["Lineage-ID"].tolist() == ["1-04"]
+
     detail_download = next(d for d in downloads if "detail_aufschluesselung" in d["file_name"])
     workbook = pd.ExcelFile(io.BytesIO(detail_download["data"]))
 
     assert set(workbook.sheet_names) == {
         "Übersicht", "Ist-Eingruppierung", "Organisationseinheiten",
         "Planstellentypen", "Planstellentypen je OE", "Planstellentyp Richtung je OE",
+        "Lineage_Report", "Input_Lineage", "Transformations_Lineage",
     }
 
     uebersicht = workbook.parse("Übersicht")
@@ -965,6 +982,9 @@ def test_render_ist_soll_koepfe_tab_detail_excel_export_matches_charts_and_hover
         (richtung_sheet["Planstelle"] == "Berater/in") & (richtung_sheet["Organisationseinheit"] == "OE Alpha")
     ].iloc[0]
     assert (alpha_typ_row["Übergruppiert"], alpha_typ_row["Untergruppiert"]) == (1, 1)
+    lineage = workbook.parse("Lineage_Report")
+    assert lineage["Lineage-ID"].tolist() == ["1-05"]
+    assert "Soll-EG-Spanne=E10-E11" in lineage.loc[0, "Export-Kontext"]
 
 
 def test_render_ist_soll_koepfe_tab_hover_omits_direction_split_for_single_category_subsets(monkeypatch):

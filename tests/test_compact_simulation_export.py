@@ -147,15 +147,18 @@ def test_export_workbook_contains_parameters_and_result_sheets() -> None:
         "Jobfamily_Demografie",
         "MAK_Personen_Audit",
         "Validation_Checks",
+        "Lineage_Report",
     }
 
     parameter_df = pd.read_excel(workbook, sheet_name="Parameter")
     summary_df = pd.read_excel(workbook, sheet_name="Jobfamily_Summary")
+    lineage_df = pd.read_excel(workbook, sheet_name="Lineage_Report")
 
     assert "quit.quit_rate_base" in set(parameter_df["Parameter"])
     assert "atz.new_atz_rate" in set(parameter_df["Parameter"])
     assert "azubi.retention_rate" in set(parameter_df["Parameter"])
     assert set(summary_df["Jobfamily"]) == {"Beratung", "IT"}
+    assert {"7-01", "10-01", "10-07", "11-01", "11-05"}.issubset(set(lineage_df["Lineage-ID"]))
 
 
 def test_export_workbook_contains_ordered_management_sheets() -> None:

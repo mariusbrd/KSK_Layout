@@ -28,7 +28,11 @@ from components.sidebar import (
     render_global_filters,
     set_metric_page_hint,
 )
-from components.ui_compat import dataframe_compat, download_button_compat
+from components.ui_compat import (
+    dataframe_compat,
+    dataframe_export_fingerprint,
+    lazy_excel_download_button_compat,
+)
 from components.ui_shell import (
     render_active_filter_banner,
     render_context_box,
@@ -69,6 +73,13 @@ _MIN_SIZE_DEFAULT = "Alle"
 _SIM_FOCUS_OPTIONS = ["Alle", "Nur mit Veränderung", "Nur mit Abgängen"]
 _SIM_FOCUS_SESSION_KEY = "orgunit_analysis_sim_focus"
 _SIM_FOCUS_DEFAULT = "Alle"
+
+
+def _org_lineage_ids(value_label: str, ist_id: str, sim_id: str) -> list[str]:
+    ids = [sim_id] if value_label == "Simulation" else [ist_id]
+    if value_label == "Simulation":
+        ids.append("10-07")
+    return ids
 
 DETAIL_BLOCKS = [
     ("Geschlecht", "Geschlecht"),
@@ -759,19 +770,26 @@ def _render_org_rangliste(
             ORG_COL: display_orgs,
             value_label: [float(agg[o]) for o in display_orgs],
         })
-        excel_data = compact.export_to_excel(
-            excel_df,
-            key_prefix="org_rangliste",
-            dimension_name="Organisationseinheiten",
-            value_type=metric_config["value_type"],
-            table_title="Rangliste Organisationseinheiten",
-        )
-        download_button_compat(
+        lineage_ids = _org_lineage_ids(value_label, "9-14", "10-02")
+        lazy_excel_download_button_compat(
             label="Excel Download",
-            data=excel_data,
+            data_builder=lambda: compact.export_to_excel(
+                excel_df,
+                key_prefix="org_rangliste",
+                dimension_name="Organisationseinheiten",
+                value_type=metric_config["value_type"],
+                table_title="Rangliste Organisationseinheiten",
+                lineage_ids=lineage_ids,
+            ),
             file_name="org_rangliste.xlsx",
             mime=compact._EXCEL_MIME,
             key="download_org_rangliste",
+            fingerprint=dataframe_export_fingerprint(
+                excel_df,
+                "org_rangliste",
+                metric_config["value_type"],
+                tuple(lineage_ids),
+            ),
             width="stretch",
         )
 
@@ -852,19 +870,27 @@ def _render_org_rangliste_comparison(
         st.plotly_chart(fig, use_container_width=True)
     with col_table:
         dataframe_compat(display_table, width="stretch", hide_index=True)
-        excel_data = compact.export_to_excel(
-            comparison_df[display_cols],
-            key_prefix="org_rangliste_comparison",
-            dimension_name="Organisationseinheiten",
-            value_type=metric_config["value_type"],
-            table_title="Rangliste Organisationseinheiten Vergleich",
-        )
-        download_button_compat(
+        lineage_ids = ["10-03", "10-04", "10-07"]
+        excel_df = comparison_df[display_cols]
+        lazy_excel_download_button_compat(
             label="Excel Download",
-            data=excel_data,
+            data_builder=lambda: compact.export_to_excel(
+                excel_df,
+                key_prefix="org_rangliste_comparison",
+                dimension_name="Organisationseinheiten",
+                value_type=metric_config["value_type"],
+                table_title="Rangliste Organisationseinheiten Vergleich",
+                lineage_ids=lineage_ids,
+            ),
             file_name="org_rangliste_vergleich.xlsx",
             mime=compact._EXCEL_MIME,
             key="download_org_rangliste_comparison",
+            fingerprint=dataframe_export_fingerprint(
+                excel_df,
+                "org_rangliste_comparison",
+                metric_config["value_type"],
+                tuple(lineage_ids),
+            ),
             width="stretch",
         )
 
@@ -1116,19 +1142,30 @@ def _render_org_split_block(
         st.plotly_chart(fig, use_container_width=True)
     with col_table:
         dataframe_compat(display_df, width="stretch", hide_index=True)
-        excel_data = compact.export_to_excel(
-            pivot_df,
-            key_prefix=key_prefix,
-            dimension_name=f"Organisationseinheit x {title}",
-            value_type=metric_config["value_type"],
-            table_title=f"Organisationseinheit nach {title}",
+        lineage_ids = _org_lineage_ids(
+            value_label,
+            "9-16" if split_col == "TrfGr" else "9-15",
+            "10-05",
         )
-        download_button_compat(
+        lazy_excel_download_button_compat(
             label="Excel Download",
-            data=excel_data,
+            data_builder=lambda: compact.export_to_excel(
+                pivot_df,
+                key_prefix=key_prefix,
+                dimension_name=f"Organisationseinheit x {title}",
+                value_type=metric_config["value_type"],
+                table_title=f"Organisationseinheit nach {title}",
+                lineage_ids=lineage_ids,
+            ),
             file_name=f"{key_prefix}_{split_col.lower().replace(' ', '_')}.xlsx",
             mime=compact._EXCEL_MIME,
             key=f"download_{key_prefix}_{split_col}",
+            fingerprint=dataframe_export_fingerprint(
+                pivot_df,
+                key_prefix,
+                metric_config["value_type"],
+                tuple(lineage_ids),
+            ),
             width="stretch",
         )
 

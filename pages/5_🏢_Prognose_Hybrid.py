@@ -2337,7 +2337,12 @@ def main():
     with t_list:
         st.markdown(t("hybrid.list.heading"))
         st.dataframe(combined_events[["event_date", "reason_label", "headcount_change", "mak_change", "Organisationseinheit", "Jobfamily"]], use_container_width=True)
-        st.download_button("📥 Gesamte Liste exportieren (CSV)", data=to_csv_bytes(combined_events), file_name="hybrid_prognose_details.csv")
+        st.download_button(
+            "📥 Gesamte Liste exportieren (CSV)",
+            data=to_csv_bytes(combined_events),
+            file_name="hybrid_prognose_details.csv",
+            mime="text/csv",
+        )
 
 
 main()

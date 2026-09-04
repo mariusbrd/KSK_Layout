@@ -170,3 +170,28 @@ def test_excel_export_is_clean_when_report_has_no_findings():
 
     xlsx_bytes = build_integrity_report_excel(report)
     assert len(xlsx_bytes) > 0
+
+
+def test_integrity_excel_export_contains_lineage_report():
+    mitarbeiter = _mitarbeiter_df([{"PersNr": "000001"}])
+    planstellen = _planstellen_df([
+        {"Personalnummer": "000001", "Planstellennr": 1},
+        {"Personalnummer": "000099", "Planstellennr": 2},
+    ])
+
+    report = check_mitarbeiter_planstellen_integrity(mitarbeiter, planstellen)
+    xlsx_bytes = build_integrity_report_excel(report)
+
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(BytesIO(xlsx_bytes), read_only=True)
+    assert "Lineage_Report" in workbook.sheetnames
+
+    sheet = workbook["Lineage_Report"]
+    headers = [cell.value for cell in next(sheet.iter_rows(min_row=1, max_row=1))]
+    values = [cell.value for cell in next(sheet.iter_rows(min_row=2, max_row=2))]
+    lineage_row = dict(zip(headers, values, strict=False))
+
+    assert lineage_row["Lineage-ID"] == "2-01"
+    assert lineage_row["Label"] == "Datenintegritaets-Evaluation"
+    assert "Findings=1" in lineage_row["Export-Kontext"]
