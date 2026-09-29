@@ -579,7 +579,7 @@ def test_orgunit_ranking_chart_axis_places_largest_value_at_top(monkeypatch):
 
     monkeypatch.setattr(org_page, "st", capture_st)
     monkeypatch.setattr(org_page, "dataframe_compat", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(org_page, "download_button_compat", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(org_page, "lazy_excel_download_button_compat", lambda *_args, **_kwargs: None)
 
     org_page._render_org_rangliste(
         df,
@@ -603,7 +603,7 @@ def test_jobfamily_ranking_chart_axis_places_largest_value_at_top(monkeypatch):
 
     monkeypatch.setattr(jobfamily_page, "st", capture_st)
     monkeypatch.setattr(jobfamily_page, "dataframe_compat", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(jobfamily_page, "download_button_compat", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(jobfamily_page, "lazy_excel_download_button_compat", lambda *_args, **_kwargs: None)
 
     jobfamily_page._render_jobfamily_rangliste(
         df,

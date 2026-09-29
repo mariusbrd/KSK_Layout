@@ -260,6 +260,9 @@ def build_mak_allocation_validation_summary(df: pd.DataFrame) -> pd.DataFrame:
         work = work[work["Is_Vacant"] != True].copy()
     if "PersNr" not in work.columns or work.empty:
         return pd.DataFrame()
+    work = work[work["PersNr"].notna() & work["PersNr"].astype(str).str.strip().ne("")].copy()
+    if work.empty:
+        return pd.DataFrame()
     grouped = work.groupby("PersNr", dropna=False).agg(
         Personen_MAK=("Personen_MAK", "max"),
         MAK_Technical_Total=("MAK_Technical_Uncorrected", "sum"),

@@ -360,26 +360,17 @@ def test_K01_azubi_detected_by_tvaoed_tariff():
     assert len(az_grads) > 0, "AZ_BESTAND (TVAoeD) should produce graduation events"
 
 
-def test_K02_azubi_detected_by_jobfamily_ausbildung_bug():
+def test_K02_azubi_detected_by_jobfamily_ausbildung():
     """
-    BEKANNTER BUG: Bestands-Azubis mit Jobfamily='Ausbildung' aber NICHT-TVA-Tarif
-    (z.B. TrfGr='E9A') verlieren ihre Erkennung ab Periode 2.
-
-    Ursache: _simulate_azubis ueberschreibt Jobfamily -> 'Sonstige' in Periode 1.
-    In Periode 2 wird mask_azubi neu ausgewertet:
-      - TrfGr='E9A' enthaelt kein 'TVA' -> False
-      - Jobfamily='Sonstige' enthaelt kein 'Azubi' oder 'Ausbildung' -> False
-    => Der Azubi ist unsichtbar und graduiert nie.
-
-    Robuste Erkennung benoetigt einen persistenten Marker (z.B. GraduationDate vorhanden
-    ODER TrfGr=TVAoeD). Azubis sollten nur mit TVAoeD-Tarif im System gebucht werden.
+    Bestands-Azubis mit Jobfamily='Ausbildung' werden auch dann bis zum
+    Abschluss fortgeschrieben, wenn der Tarif nicht TVAoeD enthaelt.
     """
     snap = pd.DataFrame([
         {
             "PersNr": "AZ002",
             "Organisationseinheit": "OE1",
             "Jobfamily": "Ausbildung",
-            "TrfGr": "E9A",  # Kein TVA -> Detection bricht nach Periode 1 ab
+            "TrfGr": "E9A",
             "active": True,
             "mak": 0.0,
             "Eintritt": "2023-01-01",
@@ -401,13 +392,7 @@ def test_K02_azubi_detected_by_jobfamily_ausbildung_bug():
     grad_events = events[events["type"].isin(["Azubi_Conversion_Out", "Azubi_Conversion_In", "Azubi_Exit"])]
     az_grads = grad_events[grad_events["persnr"] == "AZ002"]
 
-    # Documents the bug: AZ002 does NOT graduate (detection lost after period 1)
-    assert len(az_grads) == 0, (
-        f"BUG REGRESSION: AZ002 (Ausbildung+E9A) should NOT graduate "
-        f"(bug: detection lost after period 1). Got {len(az_grads)} events."
-    )
-    print("  NOTE K02: Bug confirmed - Jobfamily-only Azubi detection breaks after period 1.")
-    print("  Fix: Ensure Azubis always have TrfGr=TVAoeD, OR use GraduationDate as persistent marker.")
+    assert len(az_grads) > 0, "AZ002 (Ausbildung+E9A) should produce graduation events."
 
 
 def test_K03_non_azubi_not_affected_by_azubi_logic():

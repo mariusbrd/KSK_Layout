@@ -112,7 +112,7 @@ def test_abgaenge_dimension_values_use_active_cluster_file(tmp_path):
 
     org_units, job_families = module._get_param_dimension_values(df_ma, source, None)
 
-    assert org_units == ["OE A", "OE B"]
+    assert org_units == ["Cluster A", "Cluster B"]
     assert job_families == ["JF Cluster A", "JF Cluster B"]
 
 
@@ -245,5 +245,5 @@ def test_abgaenge_dimensions_rehydrate_session_upload_from_session_state():
         None,
     )
 
-    assert org_units == ["OE Session"]
+    assert org_units == ["Cluster Session"]
     assert job_families == ["Session Uploaded JF"]

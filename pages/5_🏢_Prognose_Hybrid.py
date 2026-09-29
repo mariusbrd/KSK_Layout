@@ -757,7 +757,7 @@ def main():
 
     render_page_header(
         "Prognose: Hybrid",
-        "Prognose von Hybrid-Szenarien mit Abgängen und Zugängen - getrennt nach MAK und Headcount.",
+        t("hybrid.subtitle"),
     )
     set_metric_page_hint(
         t("hybrid.metric_hint")

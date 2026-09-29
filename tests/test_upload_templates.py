@@ -147,7 +147,7 @@ def test_render_settings_page_offers_a_download_button_for_every_upload_template
         {},
     )
     module.load_jobfamily_definitions = lambda *args, **kwargs: {}
-    module.SourceService.GROUPS = {}
+    monkeypatch.setattr(module.SourceService, "GROUPS", {})
     monkeypatch.setattr(settings_loader, "get_setting", lambda key, default=None: default)
     monkeypatch.setattr(settings_loader, "set_setting", lambda *args, **kwargs: None)
     monkeypatch.setattr(settings_loader, "save_user_settings", lambda *args, **kwargs: None)
@@ -261,7 +261,7 @@ def test_render_settings_page_cluster_template_download_contains_lineage_report(
         {},
     )
     module.load_jobfamily_definitions = lambda *args, **kwargs: {}
-    module.SourceService.GROUPS = {}
+    monkeypatch.setattr(module.SourceService, "GROUPS", {})
     monkeypatch.setattr(settings_loader, "get_setting", lambda key, default=None: default)
     monkeypatch.setattr(settings_loader, "set_setting", lambda *args, **kwargs: None)
     monkeypatch.setattr(settings_loader, "save_user_settings", lambda *args, **kwargs: None)

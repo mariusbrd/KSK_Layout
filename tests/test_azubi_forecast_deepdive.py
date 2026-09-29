@@ -167,18 +167,19 @@ def _baseline_outcome_with_new_hires(new_cases_per_year: int) -> str:
 
 
 def _check_c3_shared_takeover_debt_interaction() -> CheckResult:
-    # Scan multiple new_cases_per_year values to detect whether baseline outcome changes.
+    # Baseline decisions use a separate debt pool and must not change when the
+    # number of forecast Azubi hires changes.
     outcomes = {}
     for n in range(0, 31):
         outcomes[n] = _baseline_outcome_with_new_hires(n)
 
     unique_outcomes = sorted(set(outcomes.values()))
-    assert len(unique_outcomes) >= 2, "No observable baseline-outcome change across new hire intensities"
+    assert len(unique_outcomes) == 1, f"Baseline outcome changed across new hire intensities: {outcomes}"
 
     sample = [f"{k}:{v}" for k, v in outcomes.items() if v != "none"][:8]
     return CheckResult(
         code="C3",
-        title="Shared takeover debt influences baseline decisions",
+        title="Forecast takeover debt is isolated from baseline decisions",
         status="PASS",
         evidence=f"Observed outcomes={unique_outcomes}; sample={', '.join(sample)}",
     )

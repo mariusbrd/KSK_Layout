@@ -28,6 +28,7 @@ CLUSTER_SUMMARY_KEYS = {
 FROZEN_SETTINGS = {
     "stichtag": "2025-12-31",
     "include_future_hires": True,
+    "occupied_placeholder_soll_correction": False,
     "exclusions": {
         "vorstand": True,
         "ruhend_bv": True,
@@ -126,6 +127,8 @@ def _build_reference_original_pipeline():
         for name, path in sorted(loader.ORIGINAL_FILES.items())
     )
     original = loader.load_original_data(file_signatures=original_file_signatures)
+    active_cluster_source, _ = loader._resolve_loader_cluster_source(None)
+    cluster_mapping_bundle = loader.load_cluster_mappings_from_source(active_cluster_source)
     tvoed_lookup = loader._load_tvoed_lookup_cached(
         None,
         loader.get_file_signature(loader.TVOED_FILE),
@@ -142,6 +145,7 @@ def _build_reference_original_pipeline():
         employer_factor=loader.EMPLOYER_COST_FACTOR,
         azubi_salaries=DEFAULT_AZUBI_SALARIES,
         vorstand_salary=200000.0,
+        occupied_placeholder_soll_correction=FROZEN_SETTINGS["occupied_placeholder_soll_correction"],
     )
     snapshot_df = loader.enrich_snapshot_data(
         snapshot_df,
@@ -149,14 +153,20 @@ def _build_reference_original_pipeline():
         cohort_definitions=DEFAULT_COHORTS,
     )
     snapshot_df = loader._apply_jobfamilies(snapshot_df)
-    snapshot_df = loader.apply_clusters_to_snapshot(snapshot_df)
+    snapshot_df = loader.apply_clusters_to_snapshot_from_source(
+        snapshot_df,
+        active_cluster_source,
+        mapping_bundle=cluster_mapping_bundle,
+    )
     snapshot_df = loader._zero_out_azubi_mak(snapshot_df)
     snapshot_df = loader.apply_exclusions(snapshot_df, FROZEN_SETTINGS["exclusions"])
+    snapshot_df = loader.apply_person_mak_allocation(snapshot_df)
 
     history_df = loader.generate_history_from_snapshot(snapshot_df)
     org_df = loader.create_org_structure(original["planstellen"])
     summary = loader.get_data_summary(snapshot_df)
     summary["data_source_type"] = "Original-Daten"
+    summary.update(loader._build_cluster_summary_fields(active_cluster_source))
     return snapshot_df, history_df, org_df, summary
 
 

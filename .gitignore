@@ -1,5 +1,10 @@
 # Python
 __pycache__/
+**/__pycache__/
+.pytest_cache/
+.pytest_cache*/
+*.pyc
+*.pyo
 *.py[cod]
 *$py.class
 *.so
@@ -54,6 +59,10 @@ data/sample_data/*.csv
 # Logs
 *.log
 logs/
+.coverage
+coverage.xml
+htmlcov/
+tests/_results/
 
 # Temporary files
 *.tmp

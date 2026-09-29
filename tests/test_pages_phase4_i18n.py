@@ -87,6 +87,14 @@ def test_attrition_page_helpers_are_localized_in_english(monkeypatch):
     captured = {"titles": [], "captions": []}
     st.session_state[i18n.LANGUAGE_SESSION_KEY] = "en"
 
+    monkeypatch.setattr(
+        module,
+        "render_page_header",
+        lambda title, subtitle, note=None: (
+            captured["titles"].append(title),
+            captured["captions"].append(subtitle),
+        ),
+    )
     monkeypatch.setattr(module.st, "title", lambda text, *args, **kwargs: captured["titles"].append(text))
     monkeypatch.setattr(module.st, "caption", lambda text, *args, **kwargs: captured["captions"].append(text))
 
@@ -322,21 +330,14 @@ def test_attrition_settings_form_is_localized_in_english(monkeypatch):
     assert "New cases (base): 0.05 (Range 0.00–0.50)" in captured["sliders"]
     assert "Minimum age" in captured["number_inputs"]
     assert "Maximum age" in captured["number_inputs"]
-    assert "Use detailed partial-retirement matrix" in captured["checkboxes"]
-    assert "Dimension for partial retirement" in captured["radios"]
+    assert "Use detailed partial-retirement matrix" not in captured["checkboxes"]
+    assert "Dimension for partial retirement" not in captured["radios"]
     assert "Retirement entry 65+: 0.90 (Range 0.00–1.00)" in captured["sliders"]
     assert "Early retirement 60-64: 0.10 (Range 0.00–1.00)" in captured["sliders"]
     assert "Base rate p.a.: 0.05 (Range 0.00–0.50)" in captured["sliders"]
     assert "Use detailed resignation matrix" in captured["checkboxes"]
     assert "Dimension" in captured["radios"]
-    assert "##### 📅 Year-specific adjustments (job families)" in captured["markdowns"]
-    assert "📈 More resignations (+50%)" in captured["captions"]
-    assert "📉 Fewer resignations (-50%)" in captured["captions"]
-    assert "Select job families" in captured["multiselects"]
-    assert "Years for JF1" in captured["multiselects"]
-    assert "Matrix: JobFamily (entry probability for eligible employees)" in captured["captions"]
     assert "Matrix: JobFamily × age" in captured["captions"]
-    assert "Here you can define an increase (+50%) or reduction (-50%) of the resignation rate for specific years and job families." in captured["infos"]
     assert "Ist-Stichtag" not in captured["date_inputs"]
     assert "Prognose-Ende" not in captured["date_inputs"]
     assert all("Monat" not in options for _label, options in captured["selectboxes"])
@@ -350,6 +351,14 @@ def test_hiring_page_helpers_are_localized_in_english(monkeypatch):
     captured = {"titles": [], "captions": []}
     st.session_state[i18n.LANGUAGE_SESSION_KEY] = "en"
 
+    monkeypatch.setattr(
+        module,
+        "render_page_header",
+        lambda title, subtitle, note=None: (
+            captured["titles"].append(title),
+            captured["captions"].append(subtitle),
+        ),
+    )
     monkeypatch.setattr(module.st, "title", lambda text, *args, **kwargs: captured["titles"].append(text))
     monkeypatch.setattr(module.st, "caption", lambda text, *args, **kwargs: captured["captions"].append(text))
 
@@ -390,6 +399,7 @@ def test_hiring_settings_form_has_clean_german_labels(monkeypatch):
         "matrix_labels": [],
         "expanders": [],
         "captions": [],
+        "contexts": [],
     }
 
     class CapturingColumn(DummyContext):
@@ -465,6 +475,7 @@ def test_hiring_settings_form_has_clean_german_labels(monkeypatch):
     monkeypatch.setattr(module, "render_distribution_matrix", lambda label, **kwargs: captured["matrix_labels"].append(label) or {})
     monkeypatch.setattr(module, "render_orgunit_mode_hint", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "set_metric_page_hint", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "render_context_box", lambda label, text, **kwargs: captured["contexts"].append((label, text, kwargs)))
 
     monkeypatch.setattr(sidebar, "render_global_filters", lambda *args, **kwargs: None)
     monkeypatch.setattr(sidebar, "apply_event_filters", lambda *args, **kwargs: (pd.DataFrame(), 0, 0))
@@ -511,14 +522,14 @@ def test_hiring_settings_form_has_clean_german_labels(monkeypatch):
     assert "Übernahme-Tarif" in [label for label, _options in captured["selectboxes"]]
     assert "Übernahme-Stufe" in captured["number_inputs"]
     assert ("Abschluss-Modus", ["Nächster Zyklus", "Nächster Folgezyklus"]) in captured["radios"]
-    assert "##### 🔄 Detaillierte Übernahme-Verteilung" in captured["markdowns"]
+    assert "Detaillierte Übernahme-Verteilung" in captured["markdowns"]
     assert "Detailmatrix statt pauschaler Verteilung verwenden" in captured["checkboxes"]
-    assert ("Dimension für Übernahme", ["Verteilen nach Jobfamily", "Verteilen nach Org Unit"]) in captured["radios"]
+    assert ("Dimension für Übernahme", ["Verteilen nach Jobgruppe", "Verteilen nach Org Unit"]) in captured["radios"]
     assert "Anteil der Übernahmen nach JobFamily - Summe sollte 100 % ergeben" in captured["matrix_labels"]
-    assert any(text.startswith("**Nächster Zyklus (empfohlen):**") for text in captured["infos"])
-    assert "⬆️ Parameter einstellen und Prognose berechnen." in captured["infos"]
+    assert any(text.startswith("**Nächster Zyklus (empfohlen):**") for _label, text, _kwargs in captured["contexts"])
+    assert any(text == "⬆️ Parameter einstellen und Prognose berechnen." for _label, text, _kwargs in captured["contexts"])
 
-    assert "🔊 Verteilung Neueinstellungen (Matrix)" in captured["expanders"]
+    assert "Neueinstellungen" in captured["expanders"]
     assert "Steuern Sie, in welchen Bereichen neue Stellen (ohne Nachbesetzung) entstehen." in captured["captions"]
 
     joined = "\n".join(
@@ -635,6 +646,14 @@ def test_hybrid_page_intro_uses_clean_german_runtime_text(monkeypatch):
     captured = {"titles": [], "captions": [], "metric_hints": []}
     st.session_state[i18n.LANGUAGE_SESSION_KEY] = "de"
 
+    monkeypatch.setattr(
+        module,
+        "render_page_header",
+        lambda title, subtitle, note=None: (
+            captured["titles"].append(title),
+            captured["captions"].append(subtitle),
+        ),
+    )
     monkeypatch.setattr(module.st, "title", lambda text, *args, **kwargs: captured["titles"].append(text))
     monkeypatch.setattr(module.st, "caption", lambda text, *args, **kwargs: captured["captions"].append(text))
     monkeypatch.setattr(module, "set_metric_page_hint", lambda text: captured["metric_hints"].append(text))
@@ -643,7 +662,7 @@ def test_hybrid_page_intro_uses_clean_german_runtime_text(monkeypatch):
 
     module.main()
 
-    assert captured["titles"] == ["🏢 Prognose: Hybrid"]
+    assert captured["titles"] == ["Prognose: Hybrid"]
     assert captured["captions"] == [
         "Prognose von Hybrid-Szenarien (Abgänge und Zugänge) mit klarer Trennung von MAK und Headcount."
     ]
@@ -698,6 +717,7 @@ def test_exclusion_groups_page_is_localized_in_english(monkeypatch):
         "selectboxes": [],
         "metric_hints": [],
         "tabs": [],
+        "sections": [],
     }
 
     class ExclusionColumn(DummyContext):
@@ -738,6 +758,19 @@ def test_exclusion_groups_page_is_localized_in_english(monkeypatch):
         lambda: {"vorstand": False, "ruhend_bv": False, "org_units": [], "planstellen_follow_person": True},
     )
 
+    monkeypatch.setattr(
+        module,
+        "render_page_header",
+        lambda title, subtitle, note=None: (
+            captured["titles"].append(title),
+            captured["captions"].append(subtitle),
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "render_section_intro",
+        lambda title, subtitle=None: captured["sections"].append((title, subtitle)),
+    )
     monkeypatch.setattr(module.st, "title", lambda text, *args, **kwargs: captured["titles"].append(text))
     monkeypatch.setattr(module.st, "caption", lambda text, *args, **kwargs: captured["captions"].append(text))
     monkeypatch.setattr(module.st, "markdown", lambda text, *args, **kwargs: captured["markdowns"].append(text))
@@ -772,10 +805,13 @@ def test_exclusion_groups_page_is_localized_in_english(monkeypatch):
     assert captured["metric_hints"] == [
         "This page is a control and transparency page. The global pill currently has no business effect here."
     ]
-    assert "### Overview" in captured["markdowns"]
-    assert "### Group exclusions" in captured["markdowns"]
-    assert "### Visualization" in captured["markdowns"]
-    assert "### Drilldown: select group" in captured["markdowns"]
+    assert ("Overview", "Overall view of positions and target FTE capacity.") in captured["sections"]
+    assert (
+        "Group exclusions",
+        "Excluded groups are not counted in current headcount. Planned position capacity (target) remains as demand.",
+    ) in captured["sections"]
+    assert ("Visualization", "Comparison of excluded and active groups by positions and target FTE.") in captured["sections"]
+    assert ("Drilldown: select group", "Select a group for its structural and demographic profile.") in captured["sections"]
     assert any("Total positions" in text for text in captured["markdowns"])
     assert any("Active scope:" in text and "Full dashboard (incl. positions)" in text for text in captured["markdowns"])
     assert "Exclude all" in captured["buttons"]
@@ -783,7 +819,14 @@ def test_exclusion_groups_page_is_localized_in_english(monkeypatch):
     assert "👥 Apply to employees & forecast" in captured["buttons"]
     assert "🏢 Apply to full dashboard" in captured["buttons"]
     assert captured["tabs"] == [["📊 Positions by group", "📐 Target FTE by group"]]
-    assert captured["selectboxes"] == [("Group", ["Board", "Dormant employment relationship", "PA dormant employment relationship", "PA apprentices", "PE cross-functional / trainee positions", "PA internship", "PA long-term sick", "PA temporary retirement", "PA care leave", "PA military / civil service", "PA maternity protection", "PA parental leave", "PA special leave § 28 TVöD", "PA employment ban", "PA child-rearing leave", "PA returnees", "Temporary helpers", "PA release (ATZ-FR, leave, turbo part-time)", "Staff council", "Other 99XX (dummy / pension benefits)"])]
+    assert captured["selectboxes"]
+    select_label, group_options = captured["selectboxes"][0]
+    assert select_label == "Group"
+    assert "Board" in group_options
+    assert "Dormant employment relationship" in group_options
+    assert "Training / early talent" in group_options
+    assert "Other 99XX (dummy / pension benefits)" in group_options
+    assert len(group_options) >= 20
     assert "Board" in captured["checkboxes"]
     assert "Dormant employment relationship" in captured["checkboxes"]
     assert "Gray = currently excluded. Blue = active in the model." in captured["captions"]

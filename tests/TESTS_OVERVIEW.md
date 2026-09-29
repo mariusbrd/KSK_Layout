@@ -15,6 +15,7 @@ Ignore when:
 Typical use:
 
 - start with `test_*`
+- run the ordered app validation via `py -3 -B tests/run_app_validation.py --profile standard`
 - use `check_*` for focused checks
 - use `repro_*`, `debug_*`, `trace_*` only for bug hunting
 - `fixtures/` holds golden-master/reference data

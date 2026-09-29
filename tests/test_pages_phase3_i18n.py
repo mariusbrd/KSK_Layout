@@ -54,8 +54,11 @@ def test_settings_page_renders_core_texts_in_english(monkeypatch):
     captured = {
         "titles": [],
         "subheaders": [],
+        "sections": [],
         "captions": [],
         "expanders": [],
+        "file_uploaders": [],
+        "excel_downloads": [],
         "form_submit_labels": [],
         "buttons": [],
     }
@@ -78,6 +81,16 @@ def test_settings_page_renders_core_texts_in_english(monkeypatch):
     monkeypatch.setattr(settings_loader, "save_user_settings", lambda *args, **kwargs: None)
     monkeypatch.setattr(settings_loader, "load_user_settings", lambda *args, **kwargs: {})
 
+    monkeypatch.setattr(
+        module,
+        "render_page_header",
+        lambda title, subtitle, note=None: captured["titles"].append(title),
+    )
+    monkeypatch.setattr(
+        module,
+        "render_section_intro",
+        lambda title, text=None, **kwargs: captured["sections"].append(title),
+    )
     monkeypatch.setattr(module.st, "title", lambda text, *args, **kwargs: captured["titles"].append(text))
     monkeypatch.setattr(module.st, "subheader", lambda text, *args, **kwargs: captured["subheaders"].append(text))
     monkeypatch.setattr(module.st, "caption", lambda text, *args, **kwargs: captured["captions"].append(text))
@@ -96,7 +109,8 @@ def test_settings_page_renders_core_texts_in_english(monkeypatch):
     monkeypatch.setattr(module.st, "form", lambda *args, **kwargs: DummyContext())
     monkeypatch.setattr(module.st, "columns", _dummy_columns)
     monkeypatch.setattr(module.st, "spinner", lambda *args, **kwargs: DummyContext())
-    monkeypatch.setattr(module.st, "file_uploader", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.st, "file_uploader", lambda label, *args, **kwargs: captured["file_uploaders"].append(label) or None)
+    monkeypatch.setattr(module, "lazy_excel_download_button_compat", lambda label, **kwargs: captured["excel_downloads"].append(label) or False)
     monkeypatch.setattr(module.st, "button", lambda label, **kwargs: captured["buttons"].append(label) or False)
     monkeypatch.setattr(module.st, "form_submit_button", lambda label, **kwargs: captured["form_submit_labels"].append(label) or False)
     monkeypatch.setattr(module.st, "date_input", lambda label, value=None, **kwargs: value)
@@ -108,10 +122,12 @@ def test_settings_page_renders_core_texts_in_english(monkeypatch):
     module.render_settings_page()
 
     assert captured["titles"] == ["Settings"]
-    assert "Data management" in captured["subheaders"]
-    assert "Simulation parameters" in captured["subheaders"]
-    assert any("Upload files" in label for label in captured["expanders"])
-    assert any("Custom clusters (Excel mapping)" in label for label in captured["expanders"])
+    assert "Data management" in captured["sections"]
+    assert "Simulation parameters" in captured["sections"]
+    assert "Mitarbeiter.xlsx" in captured["file_uploaders"]
+    assert "Planstellen.xlsx" in captured["file_uploaders"]
+    assert "Upload mapping file (.xlsx)" in captured["file_uploaders"]
+    assert "Download template" in captured["excel_downloads"]
     assert "Save simulation parameters" in captured["form_submit_labels"]
     assert "Reload data" in captured["buttons"]
 
@@ -266,7 +282,7 @@ def test_compact_plus_simulation_main_uses_localized_control_intro(monkeypatch):
     monkeypatch.setattr(module.st, "tabs", lambda labels, **kwargs: [DummyContext() for _ in labels])
 
     monkeypatch.setattr(module, "build_status_quo_snapshot", lambda *a, **kw: pd.DataFrame())
-    monkeypatch.setattr(module, "button_compat", lambda *a, **kw: False)
+    monkeypatch.setattr(module, "lazy_excel_download_button_compat", lambda *a, **kw: False)
 
     module.main()
 
@@ -344,7 +360,7 @@ def test_compact_plus_simulation_routes_heads_metric_view(monkeypatch):
         ),
     )
     monkeypatch.setattr(module, "build_status_quo_snapshot", lambda *a, **kw: pd.DataFrame())
-    monkeypatch.setattr(module, "button_compat", lambda *a, **kw: False)
+    monkeypatch.setattr(module, "lazy_excel_download_button_compat", lambda *a, **kw: False)
     monkeypatch.setattr(module, "render_section_intro", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "render_context_box", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "render_global_filters", lambda *args, **kwargs: None)

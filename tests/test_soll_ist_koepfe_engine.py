@@ -101,22 +101,22 @@ def test_soll_ist_koepfe_engine_reproduces_raw_counts_without_exclusions():
     result = build_soll_ist_koepfe_result(exclusions={})
     summary = result["summary"]
 
-    assert summary["rows_total_after_exclusions"] == 1728
-    assert summary["regular_total"] == 991
-    assert summary["regular_occupied"] == 903
-    assert summary["regular_vacant"] == 88
-    assert summary["technical_total"] == 737
-    assert summary["technical_9xxx_total"] == 393
-    assert summary["technical_9xxx_occupied"] == 257
-    assert summary["technical_non9xxx_total"] == 344
-    assert summary["technical_non9xxx_occupied"] == 87
-    assert summary["technical_9910_total"] == 208
+    assert summary["rows_total_after_exclusions"] == 1662
+    assert summary["regular_total"] == 1001
+    assert summary["regular_occupied"] == 934
+    assert summary["regular_vacant"] == 67
+    assert summary["technical_total"] == 661
+    assert summary["technical_9xxx_total"] == 388
+    assert summary["technical_9xxx_occupied"] == 233
+    assert summary["technical_non9xxx_total"] == 273
+    assert summary["technical_non9xxx_occupied"] == 60
+    assert summary["technical_9910_total"] == 214
     assert summary["regular_no_soll_eg_total"] == 6
     assert summary["regular_no_soll_eg_occupied"] == 6
-    assert summary["matrix_total"] == 985
-    assert summary["matrix_occupied"] == 897
-    assert summary["matrix_unbesetzt"] == 88
-    assert summary["matrix_not_found"] == 0
+    assert summary["matrix_total"] == 995
+    assert summary["matrix_occupied"] == 898
+    assert summary["matrix_unbesetzt"] == 67
+    assert summary["matrix_not_found"] == 30
 
 
 def test_soll_ist_koepfe_engine_applies_variant_b_exclusions():
@@ -228,28 +228,29 @@ def test_soll_ist_koepfe_engine_matches_current_deep_dive_settings():
     result = build_soll_ist_koepfe_result()
     summary = result["summary"]
 
-    # Werte aktualisiert fuer apply_exclusions() v2.3 (dataloader/loader.py): besetzte
+    # Werte aktualisiert fuer aktuellen Original-Datenstand und apply_exclusions() v2.3
+    # (dataloader/loader.py): besetzte
     # Planstellen, die NUR ueber einen technischen Platzhaltergrund (Sollarbeitszeit ≈ 0,01 /
     # Jobfamily-Validierungsliste) exkludiert wuerden, behalten ihre reale IST-Kapazitaet, wenn
     # die besetzende Person BsGrd>0 hat (87 betroffene Planstellen unternehmensweit, siehe
     # apply_exclusions()-Docstring). "Hart" exkludierte Gruppen (Vorstand/Ruhend/PA-Bereich/
     # Azubi) sind unveraendert.
     expected = {
-        "rows_total_after_exclusions": 1334,
+        "rows_total_after_exclusions": 1260,
         "regular_total": 988,
-        "regular_occupied": 900,
-        "regular_vacant": 88,
+        "regular_occupied": 921,
+        "regular_vacant": 67,
         "regular_no_soll_eg_total": 3,
         "regular_no_soll_eg_occupied": 3,
         "matrix_total": 985,
-        "matrix_occupied": 897,
-        "matrix_unbesetzt": 88,
-        "matrix_not_found": 0,
-        "technical_total": 346,
+        "matrix_occupied": 888,
+        "matrix_unbesetzt": 67,
+        "matrix_not_found": 30,
+        "technical_total": 272,
         "technical_9xxx_total": 2,
         "technical_9xxx_occupied": 0,
-        "technical_non9xxx_total": 344,
-        "technical_non9xxx_occupied": 87,
+        "technical_non9xxx_total": 270,
+        "technical_non9xxx_occupied": 57,
         "technical_9910_total": 0,
     }
 

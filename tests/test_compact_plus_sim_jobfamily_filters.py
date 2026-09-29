@@ -21,6 +21,7 @@ from dataloader.compact_simulation_engine import (
 from dataloader.loader import load_and_prepare_data, load_atz_data_cached
 from kpi_reference import get_current_stichtag
 from utils.compact_page_loader import load_compact_page_module
+from zugaenge.params import default_params as default_zugaenge_params
 
 
 PLACEHOLDER_JOBFAMILIES = {
@@ -51,12 +52,18 @@ def compact_plus_future_context():
     base_date = pd.Timestamp(get_current_stichtag()).normalize()
     target_date = (base_date + pd.DateOffset(years=2)).normalize()
     df_atz = load_atz_data_cached(str(ROOT))
+    zugaenge_params = default_zugaenge_params()
+    zugaenge_params["azubi"]["retention_rate"] = 1.0
+    zugaenge_params["azubi"]["new_cases_per_year"] = 15
+    zugaenge_params["trainee"]["new_cases_per_year"] = 5
+    zugaenge_params["new_hires"]["count_per_year"] = 10
 
     sim_result = simulate_compact_snapshot(
         snapshot_df=snapshot_df,
         df_atz=df_atz,
         target_date=target_date,
         base_date=base_date,
+        zugaenge_params=zugaenge_params,
         active_cluster_source=active_cluster_source,
         cluster_mapping_bundle=cluster_mapping_bundle,
         cluster_source_signature=summary.get("active_cluster_source_signature"),
@@ -71,6 +78,7 @@ def compact_plus_future_context():
         for value in cluster_mapping_bundle.jf_map.values()
         if str(value).strip()
     }
+    final_jobfamilies.add("Sonstiges")
 
     return {
         "current_df": current_df,

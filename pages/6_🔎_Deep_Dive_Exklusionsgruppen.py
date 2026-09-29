@@ -473,11 +473,14 @@ def _render_demo_profile(group_df: pd.DataFrame) -> None:
 # Haupt-Rendering
 # ---------------------------------------------------------------------------
 
+def _section_title(key: str) -> str:
+    return t(key).replace("### ", "", 1).strip()
+
+
 def main():
     render_page_header(
         t("exclusion.title"),
-        "Definiere den Analyse-Scope des Dashboards: Exklusionsgruppen entfernen ausgewählte "
-        "Planstellen- und Personengruppen aus Mitarbeiter-, Planstellen- und Prognoseanalysen.",
+        t("exclusion.subtitle"),
     )
 
     # ── Daten laden ──────────────────────────────────────────────────────────
@@ -602,7 +605,10 @@ def main():
     )
 
     # ── BEREICH 1: Globale KPIs ───────────────────────────────────────────────
-    render_section_intro("Übersicht", "Planstellen und MAK-Kapazität im Gesamtüberblick.")
+    render_section_intro(
+        _section_title("exclusion.section.overview"),
+        t("exclusion.section.overview.caption"),
+    )
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         _metric_card(t("exclusion.metric.total_positions"), _fmt_int(total_planstellen),
@@ -638,7 +644,10 @@ def main():
     st.divider()
 
     # ── BEREICH 2: Gruppen-Tabelle mit Checkboxen ────────────────────────────
-    render_section_intro("Gruppen-Ausschlüsse", t("exclusion.group_exclusions.caption"))
+    render_section_intro(
+        _section_title("exclusion.section.group_exclusions"),
+        t("exclusion.group_exclusions.caption"),
+    )
 
     # Bulk-Aktionen (nur session state — kein Persist, Nutzer bestätigt unten)
     bulk_col1, bulk_col2, bulk_col3 = st.columns(3)
@@ -848,7 +857,10 @@ def main():
     st.divider()
 
     # ── BEREICH 3: Charts ─────────────────────────────────────────────────────
-    render_section_intro("Visualisierung", "Vergleich exkludierter und aktiver Gruppen nach Planstellen und Soll-MAK.")
+    render_section_intro(
+        _section_title("exclusion.section.visualization"),
+        t("exclusion.section.visualization.caption"),
+    )
 
     # Aktuelle ex_keys neu berechnen (nach möglichem rerun)
     fresh_ex = _load_current_exclusions()
@@ -891,7 +903,10 @@ def main():
     st.divider()
 
     # ── BEREICH 4: Drilldown ──────────────────────────────────────────────────
-    render_section_intro("Drilldown", "Wähle eine Gruppe für das strukturelle und demografische Profil.")
+    render_section_intro(
+        _section_title("exclusion.section.drilldown"),
+        t("exclusion.section.drilldown.caption"),
+    )
 
     all_group_opts = {label: key for key, label, _ in GROUP_ORDER}
     selected_label = st.selectbox(t("exclusion.select.group"), options=list(all_group_opts.keys()),

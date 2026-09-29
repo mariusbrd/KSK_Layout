@@ -92,8 +92,8 @@ def _build_hiring_distribution_base(
 
 def _render_page_intro():
     render_page_header(
-        "Prognose: Zugänge",
-        "Modelliere zukünftige Zugänge durch Auszubildende, Trainees und Neueinstellungen - mit Wirkung auf Headcount und MAK.",
+        t("hiring.title"),
+        t("hiring.subtitle"),
     )
 
 

@@ -340,6 +340,11 @@ def test_compact_soll_ist_heads_runtime_text_is_localized_in_english(monkeypatch
     monkeypatch.setattr(module.st, "selectbox", lambda label, options, **kwargs: options[0])
     monkeypatch.setattr(module.st, "radio", lambda label, options, **kwargs: captured["radios"].append((label, options)) or options[0])
     monkeypatch.setattr(module.st, "columns", lambda *args, **kwargs: [DummyContext(), DummyContext()])
+    monkeypatch.setattr(
+        module.st,
+        "expander",
+        lambda label, *args, **kwargs: captured["markdown"].append(label) or DummyContext(),
+    )
 
     module.render_ist_soll_koepfe_tab(raw_df)
 

@@ -1,35 +1,14 @@
 {
-    "stichtag": "2026-05-20",
+    "stichtag": "2026-08-31",
     "simulation": {
         "horizon_months": 99
     },
     "include_future_hires": true,
     "exclusions": {
-        "vorstand": true,
-        "ruhend_bv": true,
+        "vorstand": false,
+        "ruhend_bv": false,
         "planstellen_follow_person": true,
-        "org_units": [
-            "9900",
-            "9910",
-            "9920",
-            "9921",
-            "9940",
-            "9941",
-            "9945",
-            "9960",
-            "9970",
-            "9971",
-            "9972",
-            "9973",
-            "9975",
-            "9980",
-            "9981",
-            "9990"
-        ],
-        "special_groups": [
-            "ausbildung_nachwuchs",
-            "jobfamily_validation_special_positions",
-            "sollarbeitszeit_001_positions"
-        ]
+        "org_units": [],
+        "special_groups": []
     }
 }

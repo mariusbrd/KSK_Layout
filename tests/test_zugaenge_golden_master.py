@@ -138,6 +138,10 @@ def _build_scenario():
     vacancies_df = _build_page4_vacancies(snapshot_df, df_atz, FROZEN_END_DATE)
 
     params = default_zugaenge_params()
+    params["azubi"]["retention_rate"] = 1.0
+    params["azubi"]["new_cases_per_year"] = 15
+    params["trainee"]["new_cases_per_year"] = 5
+    params["new_hires"]["count_per_year"] = 10
     params["azubi"]["jf_to_cluster_map"] = build_jf_to_cluster_map(snapshot_df)
     params["random_seed"] = 42
 

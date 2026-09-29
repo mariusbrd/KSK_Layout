@@ -137,13 +137,21 @@ def _reference_prepare_hybrid_view_state(
     ist_stichtag: pd.Timestamp,
     forecast_end_date: pd.Timestamp,
     freq_label: str,
+    base_abg_kpis: pd.DataFrame | None = None,
 ) -> dict:
-    filt_abg_events, n_abg_before, n_abg_after = apply_event_filters_with_state(
-        raw_abg_events,
-        snapshot_df,
-        active_filters=active_filters,
-        mode="attrition",
-    )
+    has_effective_filters = hybrid._has_effective_hybrid_filters(active_filters)
+
+    if has_effective_filters:
+        filt_abg_events, n_abg_before, n_abg_after = apply_event_filters_with_state(
+            raw_abg_events,
+            snapshot_df,
+            active_filters=active_filters,
+            mode="attrition",
+        )
+    else:
+        filt_abg_events = raw_abg_events.copy()
+        n_abg_before = len(raw_abg_events)
+        n_abg_after = len(filt_abg_events)
 
     abg_cols = [
         "period_label", "period_start", "period_end", "event_date", "persnr",
@@ -170,18 +178,26 @@ def _reference_prepare_hybrid_view_state(
             filt_abg_events["Jobfamily"] = filt_abg_events["_pid_clean"].map(jf_map).fillna("Unbekannt")
         filt_abg_events = filt_abg_events.drop(columns=["_pid_clean"], errors="ignore")
 
-    df_snapshot_filtered = filter_dataframe_by_view_filters(df_ma, active_filters)
+    if has_effective_filters:
+        df_snapshot_filtered = filter_dataframe_by_view_filters(df_ma, active_filters)
+    else:
+        df_snapshot_filtered = df_ma.copy()
 
     if "org_unit" in raw_zug_events.columns and "Organisationseinheit" not in raw_zug_events.columns:
         raw_zug_events = raw_zug_events.rename(columns={"org_unit": "Organisationseinheit"})
     elif "org_unit" in raw_zug_events.columns and "Organisationseinheit" in raw_zug_events.columns:
         raw_zug_events = raw_zug_events.drop(columns=["org_unit"])
-    filt_zug_events, n_zug_before, n_zug_after = apply_event_filters_with_state(
-        raw_zug_events,
-        snapshot_df,
-        active_filters=active_filters,
-        mode="accession",
-    )
+    if has_effective_filters:
+        filt_zug_events, n_zug_before, n_zug_after = apply_event_filters_with_state(
+            raw_zug_events,
+            snapshot_df,
+            active_filters=active_filters,
+            mode="accession",
+        )
+    else:
+        filt_zug_events = raw_zug_events.copy()
+        n_zug_before = len(raw_zug_events)
+        n_zug_after = len(filt_zug_events)
 
     if "date" in filt_zug_events.columns:
         filt_zug_events["date"] = pd.to_datetime(filt_zug_events["date"])
@@ -307,14 +323,17 @@ def _reference_prepare_hybrid_view_state(
             end_date=pd.Timestamp(forecast_end_date),
             freq=agg_freq,
         )
-        abg_view_kpis = aggregate_forecast_results(
-            df_initial=df_view_agg,
-            events_df=filt_abg_events,
-            start_date=pd.Timestamp(ist_stichtag),
-            end_date=pd.Timestamp(forecast_end_date),
-            freq=agg_freq,
-            params=None,
-        )
+        if not has_effective_filters and base_abg_kpis is not None and not base_abg_kpis.empty:
+            abg_view_kpis = base_abg_kpis.copy()
+        else:
+            abg_view_kpis = aggregate_forecast_results(
+                df_initial=df_view_agg,
+                events_df=filt_abg_events,
+                start_date=pd.Timestamp(ist_stichtag),
+                end_date=pd.Timestamp(forecast_end_date),
+                freq=agg_freq,
+                params=None,
+            )
         zug_view_kpis = aggregate_forecast_results(
             df_initial=df_view_agg,
             events_df=filt_zug_events_std,
@@ -418,6 +437,7 @@ def test_hybrid_view_state_matches_reference_without_filters(active_filters):
         ist_stichtag=FROZEN_STICHTAG,
         forecast_end_date=FROZEN_END_DATE,
         freq_label="Monat",
+        base_abg_kpis=scenario["abg_res"]["forecast_kpis"],
     )
     actual = scenario["hybrid"]._prepare_hybrid_view_state(
         scenario["abg_res"]["events_person_level"].copy(),

@@ -320,7 +320,7 @@ def test_hybrid_distribution_base_cache_matches_reference():
         ascending=[False, True, True],
     ).reset_index(drop=True)
 
-    actual = hybrid._build_hybrid_distribution_base(df_ma)
+    actual = hybrid._build_hybrid_distribution_base(df_ma, {"is_source_backed": False})
 
     pd.testing.assert_frame_equal(actual, expected, check_dtype=True, check_like=False)
 

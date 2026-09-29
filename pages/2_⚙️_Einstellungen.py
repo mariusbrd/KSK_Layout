@@ -591,13 +591,13 @@ def render_settings_page():
 
     def _render_template_download(data_builder, file_name: str, key: str) -> None:
         lazy_excel_download_button_compat(
-            label="Vorlage herunterladen",
+            label=t("settings.template_download"),
             data_builder=data_builder,
             file_name=file_name,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=key,
             fingerprint=(key, file_name),
-            help="Leere Vorlage mit korrekten Spaltennamen und Dropdown-Hilfen herunterladen.",
+            help=t("settings.template_download.help"),
             type="tertiary",
             icon="📥",
         )

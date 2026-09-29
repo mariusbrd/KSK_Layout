@@ -243,7 +243,7 @@ def test_jobfamily_matrix_warning_is_localized(monkeypatch):
 
     assert result == {}
     assert warnings == [
-        "No job families defined yet. Please create job families in the 'Definitions' tab first."
+        "No job groups defined yet. Please create job groups in the 'Definitions' tab first."
     ]
 
 
@@ -287,7 +287,7 @@ def test_setup_wizard_steps_are_localized(monkeypatch):
     assert setup_wizard.get_wizard_steps() == [
         "Welcome",
         "Choose data source",
-        "Define job families",
+        "Define job groups",
         "Review assignment",
         "Finish",
     ]

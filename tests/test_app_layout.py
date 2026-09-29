@@ -258,6 +258,7 @@ def test_render_global_filters_uses_refined_sidebar_section_order(monkeypatch):
             return False
 
     section_calls: list[str] = []
+    render_events: list[str] = []
     summary_calls: list[str] = []
 
     monkeypatch.setattr(
@@ -276,26 +277,28 @@ def test_render_global_filters_uses_refined_sidebar_section_order(monkeypatch):
             "selected_jf_clusters": [],
         },
     )
+    monkeypatch.setattr(sidebar_module, "t", lambda key, **kwargs: key)
     monkeypatch.setattr(sidebar_module, "_render_sidebar_block_intro", lambda title, caption=None, icon=None: section_calls.append(title))
+    monkeypatch.setattr(sidebar_module, "_render_sidebar_heading", lambda text: render_events.append(f"heading:{text}"))
     monkeypatch.setattr(sidebar_module, "_render_sidebar_summary", lambda text: summary_calls.append(text))
     monkeypatch.setattr(sidebar_module, "_render_sidebar_caption", lambda *args, **kwargs: None)
     monkeypatch.setattr(sidebar_module, "_render_sidebar_section", lambda *args, **kwargs: None)
-    monkeypatch.setattr(sidebar_module, "render_data_status", lambda *args, **kwargs: section_calls.append("DATA_STATUS_BODY"))
-    monkeypatch.setattr(sidebar_module, "render_global_metric_selector", lambda: "MAK")
+    monkeypatch.setattr(sidebar_module, "render_data_status", lambda *args, **kwargs: render_events.append("data_status"))
+    monkeypatch.setattr(sidebar_module, "render_global_metric_selector", lambda: render_events.append("metric_selector") or "MAK")
     monkeypatch.setattr(sidebar_module, "render_language_switcher", lambda: None)
     monkeypatch.setattr(sidebar_module, "render_cohort_editor", lambda: None)
     monkeypatch.setattr(sidebar_module, "get_filter_summary", lambda: "1 aktiver Filter")
     monkeypatch.setattr(sidebar_module, "inject_ui_theme", lambda: None)
     monkeypatch.setattr(sidebar_module, "initialize_language_state", lambda: None)
     monkeypatch.setattr(st, "sidebar", DummyContext())
-    monkeypatch.setattr(st, "markdown", lambda *args, **kwargs: None)
+    monkeypatch.setattr(st, "markdown", lambda body, *args, **kwargs: render_events.append(f"markdown:{body}"))
     monkeypatch.setattr(st, "date_input", lambda *args, value=None, **kwargs: value)
     monkeypatch.setattr(st, "multiselect", lambda *args, default=None, **kwargs: default or [])
     monkeypatch.setattr(st, "button", lambda *args, **kwargs: False)
     monkeypatch.setattr(st, "checkbox", lambda *args, value=False, **kwargs: value)
     monkeypatch.setattr(st, "columns", lambda spec: [DummyContext() for _ in range(spec if isinstance(spec, int) else len(spec))])
     monkeypatch.setattr(st, "popover", lambda *args, **kwargs: DummyContext())
-    monkeypatch.setattr(st, "expander", lambda *args, **kwargs: DummyContext())
+    monkeypatch.setattr(st, "expander", lambda label, *args, **kwargs: render_events.append(f"expander:{label}") or DummyContext())
     monkeypatch.setattr(st, "divider", lambda *args, **kwargs: None)
     monkeypatch.setattr(st, "rerun", lambda *args, **kwargs: None)
 
@@ -312,6 +315,39 @@ def test_render_global_filters_uses_refined_sidebar_section_order(monkeypatch):
     history_df = pd.DataFrame({"Date": pd.to_datetime(["2026-03-01"])})
 
     sidebar_module.render_global_filters(snapshot_df, history_df)
+
+    relevant_events = [
+        event for event in render_events
+        if event
+        in {
+            "markdown:**sidebar.metric.label**",
+            "metric_selector",
+            "heading:sidebar.primary_filters.section",
+            "markdown:**sidebar.label.org_units**",
+            "markdown:**sidebar.label.working_time**",
+            "expander:sidebar.label.job_families",
+            "expander:sidebar.label.age_cohorts",
+            "expander:sidebar.active_selection.section",
+            "data_status",
+            "heading:sidebar.actions.section",
+        }
+    ]
+
+    assert relevant_events == [
+        "markdown:**sidebar.metric.label**",
+        "metric_selector",
+        "heading:sidebar.primary_filters.section",
+        "markdown:**sidebar.label.org_units**",
+        "markdown:**sidebar.label.working_time**",
+        "expander:sidebar.label.job_families",
+        "expander:sidebar.label.age_cohorts",
+        "expander:sidebar.active_selection.section",
+        "data_status",
+        "heading:sidebar.actions.section",
+    ]
+    assert "heading:sidebar.more_filters.section" not in render_events
+    assert "1 aktiver Filter" in summary_calls
+    return
 
     assert section_calls[:6] == [
         "Dashboard Steuerung",

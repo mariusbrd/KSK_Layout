@@ -431,7 +431,7 @@ def test_page7_recomputes_when_cluster_signature_changes(monkeypatch):
             return None
 
     monkeypatch.setattr(module, "_inject_page_styles", lambda: None)
-    monkeypatch.setattr(module, "_render_hero", lambda: None)
+    monkeypatch.setattr(module, "_render_page_header", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "load_compact_page_module", lambda: CompactDummy())
     monkeypatch.setattr(module, "get_current_stichtag", lambda: "2026-03-27")
     monkeypatch.setattr(
@@ -471,7 +471,11 @@ def test_page7_recomputes_when_cluster_signature_changes(monkeypatch):
     monkeypatch.setattr(module.st, "markdown", lambda *args, **kwargs: None)
     monkeypatch.setattr(module.st, "caption", lambda *args, **kwargs: None)
     monkeypatch.setattr(module.st, "date_input", lambda label, value=None, **kwargs: value)
-    monkeypatch.setattr(module.st, "button", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        module.st,
+        "button",
+        lambda label, *args, **kwargs: "Simulation" in str(label),
+    )
     monkeypatch.setattr(module.st, "warning", lambda *args, **kwargs: None)
     monkeypatch.setattr(module.st, "tabs", lambda labels, **kwargs: [DummyContext() for _ in labels])
 
