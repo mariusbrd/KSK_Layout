@@ -4,6 +4,25 @@ Parameter helpers for Abgaenge forecast.
 
 from typing import Dict, Any
 import json
+import math
+
+
+def get_retirement_ages(retirement: Dict[str, Any]) -> tuple[int, int]:
+    """Resolve backwards-compatible age limits and reject ambiguous intervals."""
+    ages = []
+    for key, fallback in (("retirement_age", 65), ("early_retirement_age", 60)):
+        raw = retirement.get(key, fallback)
+        try:
+            value = float(raw)
+            if isinstance(raw, bool) or not math.isfinite(value) or not value.is_integer() or not 1 <= value <= 120:
+                raise ValueError
+        except (ValueError, TypeError):
+            raise ValueError("Rentenalter müssen ganze Jahre zwischen 1 und 120 sein.") from None
+        ages.append(int(value))
+    regular, early = ages
+    if early >= regular:
+        raise ValueError("Frühverrentung muss vor dem regulären Renteneintritt beginnen.")
+    return regular, early
 
 
 def default_params() -> Dict[str, Any]:
@@ -29,6 +48,8 @@ def default_params() -> Dict[str, Any]:
         "retirement": {
             "rent_rate_65": 0.90,
             "rent_rate_60_65": 0.10,
+            "retirement_age": 65,
+            "early_retirement_age": 60,
         },
         "quit": {
             "quit_rate_base": 0.05,
@@ -79,8 +100,13 @@ def build_params_from_ui(ui_state: Dict[str, Any]) -> Dict[str, Any]:
         params["atz"]["atz_matrix"] = percent_to_weights(atz_mat)
 
     quit_mat = params.get("quit", {}).get("quit_matrix")
+    # Explicit UI percentages also disambiguate matrices containing only 0–1 %.
+    # Remove the UI marker before passing parameters to the unchanged engine.
+    quit_scale = params.get("quit", {}).pop("_matrix_scale", None)
     if quit_mat:
-        quit_mat = migrate_to_percent(quit_mat)        # auto-upgrade old 0–1
+        if quit_scale != "percent":
+            quit_mat = migrate_to_percent(quit_mat)    # unchanged legacy auto-upgrade
         params["quit"]["quit_matrix"] = percent_to_weights(quit_mat)
 
+    get_retirement_ages(params["retirement"])
     return params

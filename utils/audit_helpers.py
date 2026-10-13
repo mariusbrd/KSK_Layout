@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from abgaenge.params import get_retirement_ages
 
 
 MAK_CANDIDATES = ("MAK_Calculated", "mak", "MAK", "FTE_person", "BsGrd")
@@ -1607,7 +1608,9 @@ def build_65plus_audit(df: pd.DataFrame, params: dict[str, Any] | None = None) -
         work = work[work["Is_Vacant"] != True].copy()
 
     age = pd.to_numeric(work.get("Alter_Jahre", work.get("Alter", pd.Series(0, index=work.index))), errors="coerce")
-    work = work[age >= 65].copy()
+    retirement = params.get("retirement", {}) if isinstance(params, dict) else {}
+    retirement_age, _ = get_retirement_ages(retirement)
+    work = work[age >= retirement_age].copy()
     if work.empty:
         return pd.DataFrame()
 

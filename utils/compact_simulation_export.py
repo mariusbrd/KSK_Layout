@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Any, Iterable
 
 import pandas as pd
+from abgaenge.params import get_retirement_ages
 
 from dataloader.kpi_engine import get_unique_employees
 from dataloader.mak_allocation import (
@@ -326,7 +327,8 @@ def _total_metrics(df: pd.DataFrame) -> dict[str, float]:
     }
 
 
-def _readme_sheet(metadata: dict[str, Any] | None, status_quo_date: pd.Timestamp | None) -> pd.DataFrame:
+def _readme_sheet(metadata: dict[str, Any] | None, status_quo_date: pd.Timestamp | None,
+                  abgaenge_params: dict[str, Any] | None = None) -> pd.DataFrame:
     metadata = metadata or {}
     rows = [
         ("Status quo Stichtag", _display_value(status_quo_date or metadata.get("base_date", ""))),
@@ -339,6 +341,11 @@ def _readme_sheet(metadata: dict[str, Any] | None, status_quo_date: pd.Timestamp
         ("264 Personen außerhalb Steuerungsscope", "Diese Personen werden nicht künstlich regulären Job Families zugeordnet, sondern separat auditiert."),
         ("EUR für Missing Persons", "EUR wird für diese Personen nur verwendet, wenn belastbar ableitbar; sonst bleibt die Sicht gekennzeichnet."),
     ]
+    regular, early = get_retirement_ages((abgaenge_params or {}).get("retirement", {}))
+    rows.extend([
+        ("Rentenaltersgrenzen", f"Frühverrentung {early}–{regular - 1} Jahre; regulärer Renteneintritt ab {regular} Jahren."),
+        ("65plus-Audit (technischer Tabellenname)", f"Die Rentengrenzen-Prüfberichte beziehen sich auf die eingestellte Grenze von {regular} Jahren, nicht auf eine feste Grenze von 65."),
+    ])
     return pd.DataFrame(rows, columns=["Thema", "Beschreibung"])
 
 
@@ -368,7 +375,7 @@ def _executive_summary_sheet(status_quo_snapshot: pd.DataFrame, forecast_df: pd.
         ("D. Full Employee Scope", "Abdeckungsquote", status_heads / full_heads if full_heads else 1.0),
         ("E. Offene Fachentscheidungen", "Azubi Übernahmen ohne Ziel Jobfamily", "prüfen"),
         ("E. Offene Fachentscheidungen", "Sonstiges Mapping", "prüfen"),
-        ("E. Offene Fachentscheidungen", "65+ Weiterbeschäftigungsflag", "prüfen"),
+        ("E. Offene Fachentscheidungen", "Weiterbeschäftigungsflag ab Rentengrenze", "prüfen"),
         ("E. Offene Fachentscheidungen", "Personen außerhalb Steuerungsscope", "fachliche Behandlung festlegen"),
     ]
     return pd.DataFrame(rows, columns=["Block", "Kennzahl", "Wert"])
@@ -987,7 +994,7 @@ def build_compact_simulation_export_bytes(
     if not allocation_validation.empty:
         validation_df = pd.concat([validation_df, allocation_validation], ignore_index=True)
 
-    readme_df = _readme_sheet(metadata, status_quo_date)
+    readme_df = _readme_sheet(metadata, status_quo_date, abgaenge_params)
     executive_df = _executive_summary_sheet(status_quo_snapshot, prepared_df, missing_audit)
     scope_export_df = _scope_check_sheet(scope_check, missing_category_summary)
     full_workforce_df = _full_workforce_comparison(status_quo_snapshot, prepared_df, missing_audit)

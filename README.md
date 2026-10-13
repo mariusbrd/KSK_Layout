@@ -2,6 +2,50 @@
 
 Core app folder.
 
+## Kündigungsquoten mit Excel bearbeiten
+
+Auf **Prognose Abgänge** und **Simulationsparameter** steht unter der detaillierten
+Kündigungsmatrix der Bereich **Quoten mit Excel bearbeiten** bereit:
+
+1. Dimension auswählen (Organisationseinheit oder Jobfamily) und Vorlage herunterladen.
+2. Quoten im Tabellenblatt `Quoten` ändern: `3` bedeutet 3 % pro Jahr, `0,5` bedeutet 0,5 %.
+3. Datei hochladen, die Vorschau prüfen und **Quoten übernehmen** klicken.
+4. Auf der Abgangsseite berechnen bzw. auf der Parameterseite **Parameter speichern** klicken.
+
+Die einfache Vorlage enthält eine Quote je Gruppe, die für alle vier Altersgruppen
+gilt. Sind bereits unterschiedliche Altersquoten eingestellt, wird die detaillierte
+Vorlage vorbelegt. Wer dann die einfache Vorlage auswählt, erhält für diese Gruppen
+leere Quoten und trägt die gewünschte einheitliche Quote selbst ein.
+
+Teilimporte ändern ausschließlich enthaltene Gruppen. Nicht benötigte Zeilen komplett
+entfernen. Leere Quoten, unbekannte Gruppen, Duplikate und Werte außerhalb von 0–100 %
+verhindern die gesamte Übernahme. Gruppennamen und führende Nullen unverändert lassen.
+`Default` ist weiterhin der Rückfallwert. Die Parameterstände der beiden Seiten bleiben
+getrennt; der Upload verändert keine Original-Personaldaten.
+
+## Dynamische Rentenaltersgrenzen
+
+In den Renten-Parametern von **Prognose Abgänge** und **Simulationsparameter** sind
+**Renteneintritt ab Alter** und **Frühverrentung ab Alter** einstellbar. Die Obergrenze
+der Frühverrentung ergibt sich automatisch: Bei 67/62 gilt sie für 62–66 Jahre,
+die reguläre Renteneintrittsquote gilt ab 67. Eine Zusammenfassung zeigt die Bereiche
+und jährlichen Wahrscheinlichkeiten; `0,90` im bisherigen Quotenregler bedeutet 90 %.
+
+Die Altersfelder verändern die Wahrscheinlichkeitsbereiche, keinen zwingenden
+Austrittstermin. ATZ-Vertragsenden bleiben separat. Frühverrentung muss vor dem
+regulären Renteneintritt beginnen; ungültige Bereiche lassen sich nicht berechnen
+oder speichern. Standard und Rückfallwerte für ältere Parameterstände bleiben 65/60.
+
+Die neuen Alterswerte werden über die bisherigen Berechnungs-/Speicheraktionen
+übernommen. Gespeicherte Simulationsparameter gehen an CompactPlus und werden in
+dessen Parameterexport dokumentiert. Prüfberichte mit technischen Namen wie
+`65plus_Audit` verwenden die eingestellte Rentengrenze; das Excel-Readme erläutert sie.
+
+Alle Wahrscheinlichkeitsregler auf den beiden Parameterseiten verwenden Schritte
+von **0,25 Prozentpunkten** (`0,0025` auf der Skala 0–1). Prozentmatrizen verwenden
+`0,25` und zwei Nachkommastellen. Die Regler zeigen vier Nachkommastellen; ein Wert
+von `0,0275` entspricht 2,75 %. Bestehende Werte und Berechnungsregeln werden nicht gerundet.
+
 Read:
 
 1. `app.py`

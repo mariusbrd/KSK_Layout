@@ -157,7 +157,10 @@ def test_run_forecast_abgaenge_matches_golden_master():
     result = run_forecast_abgaenge(df_ma, df_atz, start_date, end_date, "M", copy.deepcopy(params))
     final_state = _reconstruct_final_state(df_ma, df_atz, result["events_person_level"])
 
-    assert result["assumptions"] == golden["assumptions"]
+    assumptions = copy.deepcopy(result["assumptions"])
+    assert assumptions["retirement"].pop("retirement_age") == 65
+    assert assumptions["retirement"].pop("early_retirement_age") == 60
+    assert assumptions == golden["assumptions"]
     pd.testing.assert_frame_equal(result["forecast_kpis"], golden["forecast_kpis"], check_dtype=True, check_like=False)
     pd.testing.assert_frame_equal(result["events_person_level"], golden["events_person_level"], check_dtype=True, check_like=False)
     for table_name in sorted(golden["tables"]):

@@ -36,6 +36,16 @@ class AttritionParityScenario:
 SCENARIOS = [
     AttritionParityScenario("baseline_defaults_12m", 12),
     AttritionParityScenario(
+        "retirement_dynamic_67_62_12m", 12,
+        components={"atz": False, "retirement": True, "quit": False, "ruhend": False},
+        retirement={"retirement_age": 67, "early_retirement_age": 62, "rent_rate_65": 1.0, "rent_rate_60_65": 0.0},
+    ),
+    AttritionParityScenario(
+        "retirement_dynamic_67_62_36m", 36,
+        components={"atz": False, "retirement": True, "quit": False, "ruhend": False},
+        retirement={"retirement_age": 67, "early_retirement_age": 62, "rent_rate_65": 1.0, "rent_rate_60_65": 0.0},
+    ),
+    AttritionParityScenario(
         "retirement_only_12m",
         12,
         components={"atz": False, "retirement": True, "quit": False, "ruhend": False},

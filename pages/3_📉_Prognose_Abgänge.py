@@ -51,6 +51,8 @@ from components.sidebar import render_global_filters, apply_filters, apply_event
 from components.ui_shell import render_context_box, render_page_header, render_section_intro
 from utils.i18n import t
 from utils.matrix_helpers import migrate_to_percent
+from components.quit_matrix_excel import render_quit_matrix_with_excel
+from components.retirement_controls import render_retirement_age_inputs, render_retirement_summary
 from utils.plot_helpers import apply_legend_bottom
 
 
@@ -431,7 +433,7 @@ def main():
             # ── ATZ Row 1: General Constraints ──
             ac1, ac2, ac3, ac4, ac5 = st.columns(5)
             with ac1:
-                new_atz_base = st.slider(t("attrition.atz.base_rate"), min_value=0.0, max_value=0.5, value=float(params["atz"].get("new_atz_rate", 0.05)), step=0.005, format="%.3f", help=t("attrition.atz.base_rate.help"), key="slide_atz_base")
+                new_atz_base = st.slider(t("attrition.atz.base_rate"), min_value=0.0, max_value=0.5, value=float(params["atz"].get("new_atz_rate", 0.05)), step=0.0025, format="%.4f", help=t("attrition.atz.base_rate.help"), key="slide_atz_base")
                 params["atz"]["new_atz_rate"] = new_atz_base
             with ac2:
                 eligible_age = st.number_input(t("attrition.atz.min_age"), value=int(params["atz"]["atz_eligible_age_min"]), step=1, key="num_atz_age_min")
@@ -454,13 +456,16 @@ def main():
             params["atz"]["atz_matrix"] = new_atz_matrix
 
         with st.expander(t("attrition.expander.retirement"), expanded=False):
+            retirement_age, early_retirement_age = render_retirement_age_inputs(params["retirement"], key_prefix="abgaenge")
+            params["retirement"].update({"retirement_age": retirement_age, "early_retirement_age": early_retirement_age})
             rc1, rc2 = st.columns(2)
             with rc1:
-                rent65 = st.slider(t("attrition.retirement.rate_65"), min_value=0.0, max_value=1.0, value=float(params["retirement"]["rent_rate_65"]), step=0.05, key="slide_rent_65")
+                rent65 = st.slider(t("attrition.retirement.rate_65"), min_value=0.0, max_value=1.0, value=float(params["retirement"]["rent_rate_65"]), step=0.0025, format="%.4f", key="slide_rent_65")
                 params["retirement"]["rent_rate_65"] = rent65
             with rc2:
-                rent60 = st.slider(t("attrition.retirement.rate_60_64"), min_value=0.0, max_value=1.0, value=float(params["retirement"]["rent_rate_60_65"]), step=0.05, key="slide_rent_60")
+                rent60 = st.slider(t("attrition.retirement.rate_60_64"), min_value=0.0, max_value=1.0, value=float(params["retirement"]["rent_rate_60_65"]), step=0.0025, format="%.4f", key="slide_rent_60")
                 params["retirement"]["rent_rate_60_65"] = rent60
+            render_retirement_summary(retirement_age, early_retirement_age, rent65, rent60)
 
         with st.expander(t("attrition.expander.quit"), expanded=False):
             # ── Controls Row ──
@@ -471,7 +476,8 @@ def main():
                     t("attrition.quit.base_rate"),
                     min_value=0.0, max_value=0.5,
                     value=float(params["quit"]["quit_rate_base"]),
-                    step=0.01,
+                    step=0.0025,
+                    format="%.4f",
                     help=t("attrition.quit.base_rate.help"),
                     key="slide_quit_base_live"
                 )
@@ -513,7 +519,9 @@ def main():
             age_labels = {"alter_unter_30": "u30", "alter_30_45": "30-45", "alter_45_55": "45-55", "alter_55_plus": "ü55"}
 
             # 2. Build DataFrame (percent scale)
-            current_quit_matrix = migrate_to_percent(params["quit"].get("quit_matrix", {}))
+            current_quit_matrix = params["quit"].get("quit_matrix", {})
+            if params["quit"].get("_matrix_scale") != "percent":
+                current_quit_matrix = migrate_to_percent(current_quit_matrix)
             dim_items = ["Default"] + unique_vals
             editor_data = []
 
@@ -534,7 +542,7 @@ def main():
             for c in age_cohorts:
                 col_conf[c] = st.column_config.NumberColumn(
                     age_labels.get(c, c) + " (%)",
-                    min_value=0.0, max_value=100.0, step=0.5, format="%.1f"
+                    min_value=0.0, max_value=100.0, step=0.25, format="%.2f"
                 )
 
             # Key includes a hash of the current dimension values so the editor
@@ -542,8 +550,9 @@ def main():
             # after a new Mitarbeiterdaten upload), not only when the cluster
             # source signature changes.
             _dim_vals_hash = hashlib.md5("|".join(dim_items).encode()).hexdigest()[:8]
-            edited_df = st.data_editor(
+            edited_df = render_quit_matrix_with_excel(
                 df_matrix,
+                dimension=quit_dim,
                 use_container_width=True,
                 height=min(400, 50 + len(dim_items) * 35),
                 disabled=not use_quit_matrix,
@@ -557,6 +566,7 @@ def main():
                 for c in age_cohorts:
                     new_quit_matrix[c][str(dim_val)] = float(row[c])
             params["quit"]["quit_matrix"] = new_quit_matrix
+            params["quit"]["_matrix_scale"] = "percent"
 
             current_adj = params["quit"].get("quit_adjustments", {"more": {}, "less": {}})
             quit_adjustments = {"more": current_adj.get("more", {}), "less": current_adj.get("less", {})}
@@ -599,12 +609,15 @@ def main():
             "retirement": {
                 "rent_rate_65": rent65,
                 "rent_rate_60_65": rent60,
+                "retirement_age": retirement_age,
+                "early_retirement_age": early_retirement_age,
             },
             "quit": {
                 "quit_rate_base": quit_base,
                 "use_quit_matrix": use_quit_matrix,
                 "quit_dimension": quit_dim,
                 "quit_matrix": new_quit_matrix,
+                "_matrix_scale": "percent",
                 "quit_adjustments": quit_adjustments,
             },
             "ruhend": {
@@ -788,12 +801,13 @@ def main():
              "atz_dimension": atz_dim,
              "atz_matrix": new_atz_matrix,
         },
-        "retirement": { "rent_rate_65": rent65, "rent_rate_60_65": rent60 },
+        "retirement": { "rent_rate_65": rent65, "rent_rate_60_65": rent60, "retirement_age": retirement_age, "early_retirement_age": early_retirement_age },
         "quit": {
             "quit_rate_base": quit_base,
             "use_quit_matrix": use_quit_matrix,
             "quit_dimension": quit_dim,
             "quit_matrix": new_quit_matrix,
+            "_matrix_scale": "percent",
         },
         "ruhend": {
             "ruhend_new_cases_per_year": ruhend_new,
