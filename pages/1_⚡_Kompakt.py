@@ -6943,9 +6943,10 @@ def render_ist_soll_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
 
             # OE-Exklusion auf Rohdaten anwenden (inkludierte OEs gemaess Einstellungen)
             from utils.settings_loader import get_setting as _get_setting
-            _ex       = _get_setting("exclusions", {})
+            from utils.exclusion_groups import effective_exclusions, ma_typ_exclusion_mask
+            _ex       = effective_exclusions(_get_setting("exclusions", {}))
             _ex_units = _ex.get("org_units", [])
-            ueb_base  = df.copy()
+            ueb_base  = df.loc[~ma_typ_exclusion_mask(df, _ex)].copy()
             if _ex_units and "Kürzel OrgEinheit" in ueb_base.columns:
                 _s_ou     = ueb_base["Kürzel OrgEinheit"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
                 _explicit = [u for u in _ex_units if u != "99XX"]

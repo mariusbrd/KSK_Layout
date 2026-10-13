@@ -84,6 +84,7 @@ PHASES: tuple[Phase, ...] = (
             "test_matrix_helpers.py",
             "test_jobfamily_logic.py",
             "test_exclusion_groups.py",
+            "test_ma_typ_exclusions.py",
             "test_status_quo_baseline.py",
             "test_azubi_baseline_logic.py",
             "test_azubi_forecast_logic.py",

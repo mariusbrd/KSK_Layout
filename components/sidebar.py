@@ -909,7 +909,8 @@ def get_filter_summary() -> str:
         String mit Filter-Zusammenfassung
     """
     from utils.settings_loader import get_setting
-    ex_config = get_setting("exclusions", {})
+    from utils.exclusion_groups import effective_exclusions
+    ex_config = effective_exclusions(get_setting("exclusions", {}))
     
     active_filters = []
 
@@ -952,6 +953,8 @@ def get_filter_summary() -> str:
 
     # Gruppen-Ausschlüsse (Neu: Aus JSON-Config)
     exclusion_labels = []
+    if ex_config.get("selection_basis") in {"ma_typ", "combined"}:
+        exclusion_labels.extend("MA-Typ: " + str(value) for value in (ex_config.get("ma_typ_values") or []))
     if ex_config.get("vorstand"):
         exclusion_labels.append(t("sidebar.summary.exclusion_board"))
     if ex_config.get("ruhend_bv"):

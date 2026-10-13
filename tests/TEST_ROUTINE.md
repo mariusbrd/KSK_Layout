@@ -49,6 +49,13 @@ py -3 -B tests/run_app_validation.py --profile standard -- -q -x
 
 ## Interpretation
 
+`test_ma_typ_exclusions.py` prueft die optionale MA-Typ-Auswahl, Moduswechsel
+und Anwenden mit Streamlit AppTest. Die bisherigen Ausschlussfunktionen aus
+Commit `18ddb23` sind unter `fixtures/exclusions_legacy_reference.py` eingefroren.
+Der Vergleich umfasst komplette DataFrames im bisherigen Modus sowie kombinierte
+Auswahlen ohne zusaetzliche MA-Typen. Die Referenz nicht an neue Ergebnisse anpassen:
+Sie dient als Nachweis, dass die alte Exklusionswirkung erhalten bleibt.
+
 Wenn eine fruehe Phase fehlschlaegt, sind spaetere Fehler oft Folgefehler. Die
 Routine stoppt deshalb standardmaessig nach der ersten fehlerhaften Phase. Mit
 `--continue-on-fail` kann ein vollstaendiger Fehlerueberblick erzeugt werden.
@@ -62,3 +69,9 @@ Dateien mit Prefix `analyse_`, `check_`, `debug_`, `repro_`, `trace_`,
 `validate_`, `verify_`, `benchmark_` und `run_compact_` bleiben als fachliche
 Spezialnachweise erhalten. Sie sind nicht Teil der Standardroutine, ausser ihre
 Logik wurde bereits in `test_*.py` ueberfuehrt.
+# Stellenplan-Auswertung (Einstellungen)
+
+Gezielter Test: `py -m pytest tests/test_stellenplan_audit.py tests/test_data_integrity.py tests/test_settings_lineage_coverage.py tests/test_cluster_settings_flow.py -q`
+
+Die neue Auswertung prüft Originaldateien vor Stichtag, Statuskorrekturen und Ausschlüssen. Sie verändert den Loader nicht. Abgedeckt sind optionale MA-Typ-Spalten, fehlende und doppelte Personalnummern, mehrfach zugeordnete Personen ohne doppelte MAK, 0 Sollstunden mit positiver Ist-MAK, unbekannte Kapazitäten, leere Dateien sowie beide Wasserfälle und OE-Filter in Streamlit. Die vorhandene Evaluations-Excel enthält weiterhin die bisherigen Integritätsprüfungen; die neuen Matrizen und Wasserfälle sind Bildschirmansichten.
+

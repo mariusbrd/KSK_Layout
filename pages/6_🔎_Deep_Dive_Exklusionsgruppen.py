@@ -5,7 +5,7 @@ Kombinierte Transparenz- und Steuerungsseite.
 Zeigt alle exkludierbaren Personengruppen mit Kennzahlen und ermöglicht
 deren Aktivierung/Deaktivierung direkt im Kontext der Datenlage.
 
-Keine Änderung der Exclusions-Engine – nur UI-Migration aus Einstellungen.
+Optionale MA-Typ-Auswahl verwendet dieselbe Exklusionswirkung wie die Gruppenregeln.
 """
 
 import streamlit as st
@@ -16,11 +16,12 @@ import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from dataloader.loader import load_and_prepare_data
+from dataloader.loader import load_and_prepare_data, apply_exclusions
 from components.sidebar import render_global_filters, apply_filters, set_metric_page_hint
 from config.settings import COLORS, EXCLUSION_ORG_UNITS
 from utils.exclusion_groups import (
     build_group_masks,
+    selected_group_keys, ma_typ_series,
     get_all_group_stats,
     get_group_detail,
     resolve_mak_series,
@@ -74,6 +75,8 @@ def _persist_exclusions(
     org_units: list,
     special_groups: list | None = None,
     planstellen_follow_person: bool = False,
+    selection_basis: str = "legacy",
+    ma_typ_values: list | None = None,
 ):
     """Speichert Exklusions-Einstellungen in Settings und Session State."""
     # dict.fromkeys: dedupliziert und erhält Reihenfolge (verhindert T3c-Inkonsistenz)
@@ -85,8 +88,12 @@ def _persist_exclusions(
         "planstellen_follow_person": planstellen_follow_person,
         "org_units": org_units_clean,
         "special_groups": special_groups_clean,
+        "selection_basis": selection_basis,
+        "ma_typ_values": list(dict.fromkeys(ma_typ_values or [])),
     }
-    set_setting("exclusions", updated)
+    if not set_setting("exclusions", updated):
+        st.error(t("exclusion.selection.save_failed"))
+        return False
     st.session_state["exclude_vorstand"] = vorstand
     st.session_state["exclude_ruhend"] = ruhend_bv
     st.session_state["exclude_org_units"] = org_units_clean
@@ -95,6 +102,7 @@ def _persist_exclusions(
     # Exklusions-Stände zurückliefern, da apply_exclusions() in load_and_prepare_data()
     # neue Settings erst nach Cache-Invalidierung wirksam werden.
     bump_cache_version("data_prep")
+    return True
 
 
 def _load_current_exclusions() -> dict:
@@ -529,13 +537,7 @@ def main():
     total_planstellen = len(snapshot_df)
 
     # Aktuell exkludierte Keys zusammenstellen
-    ex_keys: set = set()
-    if current_ex.get("vorstand"):
-        ex_keys.add(VORSTAND_KEY)
-    if current_ex.get("ruhend_bv"):
-        ex_keys.add(RUHEND_KEY)
-    ex_keys.update(ex_org_units)
-    ex_keys.update(ex_special_groups)
+    ex_keys = selected_group_keys(current_ex)
 
     # Exkludierte Kennzahlen via Union-Maske (verhindert Doppelzählung bei Mehrfachzuordnung,
     # z. B. Zeilen die gleichzeitig Ruhendes BV UND OE 9900 sind)
@@ -591,103 +593,6 @@ def main():
         else float(resolve_mak_series(emp_active).sum())
     )
 
-    # ── Header-Meta-Zeile ─────────────────────────────────────────────────────
-    scope_label = (
-        t("exclusion.scope.dashboard_full")
-        if current_ex.get("planstellen_follow_person")
-        else t("exclusion.scope.employees_only")
-    )
-    st.caption(
-        f"Vollpopulation · {len(all_masks)} Exklusionsgruppen · "
-        f"{_fmt_int(ex_planstellen)} ausgeschlossen · {_fmt_int(active_planstellen)} aktiv · "
-        f"Scope: {scope_label} · "
-        "Datenbasis: ungefilterter Snapshot, Sidebar-Filter nicht angewendet"
-    )
-
-    # ── BEREICH 1: Globale KPIs ───────────────────────────────────────────────
-    render_section_intro(
-        _section_title("exclusion.section.overview"),
-        t("exclusion.section.overview.caption"),
-    )
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        _metric_card(t("exclusion.metric.total_positions"), _fmt_int(total_planstellen),
-                     sub=t("exclusion.metric.total_positions.sub"),
-                     color=COLORS["accent_blue"])
-    with c2:
-        _metric_card(t("exclusion.metric.total_target_fte"), _fmt_mak(total_soll_mak),
-                     sub=t("exclusion.metric.total_target_fte.sub"),
-                     color=COLORS["accent_blue"])
-    with c3:
-        _metric_card(t("exclusion.metric.excluded_positions"), _fmt_int(ex_planstellen),
-                     sub=t("exclusion.metric.excluded_positions.sub", share=f"{ex_planstellen / total_planstellen * 100:.1f} %") if total_planstellen else "",
-                     color=COLORS["accent_amber"])
-    with c4:
-        _metric_card(t("exclusion.metric.excluded_target_fte"), _fmt_mak(ex_soll_mak),
-                     sub=t("exclusion.metric.excluded_target_fte.sub", share=_fmt_pct(anteil_ex_pct)),
-                     color=COLORS["accent_amber"])
-
-    c5, c6, c7, _ = st.columns(4)
-    with c5:
-        _metric_card(t("exclusion.metric.active_positions"), _fmt_int(active_planstellen),
-                     sub=t("exclusion.metric.active_positions.sub"),
-                     color=COLORS["accent_green"])
-    with c6:
-        _metric_card(t("exclusion.metric.active_target_fte"), _fmt_mak(active_soll_mak),
-                     sub=t("exclusion.metric.active_target_fte.sub"),
-                     color=COLORS["accent_green"])
-    with c7:
-        _metric_card(t("exclusion.metric.active_current_fte"), _fmt_mak(active_ist_mak),
-                     sub=t("exclusion.metric.active_current_fte.sub"),
-                     color=COLORS["accent_green"])
-
-    st.divider()
-
-    # ── BEREICH 2: Gruppen-Tabelle mit Checkboxen ────────────────────────────
-    render_section_intro(
-        _section_title("exclusion.section.group_exclusions"),
-        t("exclusion.group_exclusions.caption"),
-    )
-
-    # Bulk-Aktionen (nur session state — kein Persist, Nutzer bestätigt unten)
-    bulk_col1, bulk_col2, bulk_col3 = st.columns(3)
-    if bulk_col1.button(t("exclusion.action.exclude_all"), key="btn_ex_all", use_container_width=True):
-        for k, _l, _c in [(VORSTAND_KEY, "", "special"), (RUHEND_KEY, "", "special")] + \
-                         [(code, "", "pa") for code, _ in PA_GROUPS] + \
-                         [(key, "", "special_group") for key, _ in SPECIAL_GROUPS]:
-            st.session_state[f"ex_chk_{k}"] = True
-        st.rerun()
-    if bulk_col2.button(t("exclusion.action.include_all"), key="btn_in_all", use_container_width=True):
-        for k, _l, _c in [(VORSTAND_KEY, "", "special"), (RUHEND_KEY, "", "special")] + \
-                         [(code, "", "pa") for code, _ in PA_GROUPS] + \
-                         [(key, "", "special_group") for key, _ in SPECIAL_GROUPS]:
-            st.session_state[f"ex_chk_{k}"] = False
-        st.rerun()
-    if bulk_col3.button(t("exclusion.action.jobfamily_validation_preset"), key="btn_jf_validation_preset", use_container_width=True):
-        pa_validation_codes = {code for code, _ in PA_GROUPS if code not in {"9999", "99XX"}}
-        special_validation_keys = {key for key, _ in SPECIAL_GROUPS}
-        for k, _l, cat in [(VORSTAND_KEY, "", "special"), (RUHEND_KEY, "", "special")] + \
-                          [(code, "", "pa") for code, _ in PA_GROUPS] + \
-                          [(key, "", "special_group") for key, _ in SPECIAL_GROUPS]:
-            if k == VORSTAND_KEY:
-                st.session_state[f"ex_chk_{k}"] = False
-            elif k == RUHEND_KEY:
-                st.session_state[f"ex_chk_{k}"] = True
-            elif cat == "pa":
-                st.session_state[f"ex_chk_{k}"] = k in pa_validation_codes
-            else:
-                st.session_state[f"ex_chk_{k}"] = k in special_validation_keys
-        st.rerun()
-
-    st.markdown("&nbsp;", unsafe_allow_html=True)
-
-    # Anteil je Gruppe berechnen
-    df_stats["anteil_pct"] = (
-        df_stats["soll_mak"] / total_soll_mak * 100
-        if total_soll_mak > 0
-        else 0.0
-    )
-
     # ── Feste Gruppen-Definitionen ────────────────────────────────────────────
     # Reihenfolge: Vorstand, Ruhendes BV, dann alle PA-Bereiche alphabetisch nach Code
     GROUP_ORDER = [
@@ -710,258 +615,238 @@ def main():
             else:
                 st.session_state[ck] = key in ex_org_units
 
-    # Tabellen-Header
-    hdr = st.columns([3, 1, 1, 1, 1, 1, 1])
-    hdr[0].markdown(f"**{t('exclusion.table.group')}**")
-    hdr[1].markdown(f"**{t('exclusion.table.positions')}**")
-    hdr[2].markdown(f"**{t('exclusion.table.target_fte')}**")
-    hdr[3].markdown(f"**{t('exclusion.table.current_fte')}**")
-    hdr[4].markdown(f"**{t('exclusion.table.share')}**")
-    hdr[5].markdown(f"**{t('exclusion.table.filled')}**")
-    hdr[6].markdown(f"**{t('exclusion.table.exclude')}**")
-    st.markdown(
-        "<hr style='margin:4px 0 8px 0;border-color:#E0E0E0;'>",
-        unsafe_allow_html=True,
-    )
+    # Detach hidden widgets from cleanup so switching modes preserves draft choices.
+    for draft_key in list(st.session_state):
+        if draft_key.startswith("ex_chk_") or draft_key == "ex_ma_typ_values":
+            st.session_state[draft_key] = st.session_state[draft_key]
+    basis_labels = {key: t("exclusion.selection." + key) for key in ("legacy", "ma_typ", "combined")}
+    active_basis = current_ex.get("selection_basis", "legacy")
+    if active_basis not in basis_labels:
+        active_basis = "legacy"
+    st.caption(t("exclusion.selection.active", basis=basis_labels[active_basis],
+              types=", ".join(current_ex.get("ma_typ_values") or []) if active_basis != "legacy" else "—"))
+    pending_notice = st.empty()
+    configure_tab, impact_tab, detail_tab = st.tabs([
+        t("exclusion.layout.configure"), t("exclusion.layout.impact"), t("exclusion.layout.detail")])
+    with configure_tab:
+        if "ex_selection_basis" not in st.session_state:
+            st.session_state["ex_selection_basis"] = active_basis
+        with st.container():
+            st.markdown("### " + t("exclusion.selection.heading"))
+            pending_basis = st.radio(t("exclusion.selection.basis"), list(basis_labels),
+                                     format_func=basis_labels.get, horizontal=True, key="ex_selection_basis")
+            st.caption(t("exclusion.selection.help_" + pending_basis))
+            available_types = sorted(set(ma_typ_series(snapshot_df)) - {""})
+            if "ex_ma_typ_values" not in st.session_state:
+                st.session_state["ex_ma_typ_values"] = list(current_ex.get("ma_typ_values") or [])
+            if "MA-Typ" not in snapshot_df.columns:
+                if pending_basis != "legacy" or active_basis != "legacy":
+                    st.warning(t("exclusion.selection.missing"))
+                else:
+                    st.caption(t("exclusion.selection.missing"))
+            if pending_basis != "legacy":
+                options = sorted(set(available_types) | set(st.session_state["ex_ma_typ_values"]))
+                counts = ma_typ_series(snapshot_df).value_counts()
+                st.multiselect(t("exclusion.selection.types"), options, key="ex_ma_typ_values",
+                               format_func=lambda value: t("exclusion.layout.type_count", label=value, count=int(counts.get(value, 0))),
+                               disabled="MA-Typ" not in snapshot_df.columns)
+                st.caption(t("exclusion.selection.empty", count=int(ma_typ_series(snapshot_df).eq("").sum())))
+                unavailable = set(st.session_state["ex_ma_typ_values"]) - set(available_types)
+                if unavailable:
+                    st.warning(t("exclusion.selection.unavailable", types=", ".join(sorted(unavailable))))
+            pending_types = list(st.session_state["ex_ma_typ_values"])
 
-    for key, label, category in GROUP_ORDER:
-        stats_row = df_stats[df_stats["gruppe_key"] == key]
-        if stats_row.empty:
-            planst, soll_mak, ist_mak, besetzt, anteil = 0, 0.0, 0.0, 0, 0.0
+        if pending_basis != "ma_typ":
+            # Bulk-Aktionen (nur session state — kein Persist, Nutzer bestätigt unten)
+            bulk_col1, bulk_col2, bulk_col3 = st.columns(3)
+            if bulk_col1.button(t("exclusion.action.exclude_all"), key="btn_ex_all", use_container_width=True):
+                for k, _l, _c in [(VORSTAND_KEY, "", "special"), (RUHEND_KEY, "", "special")] + \
+                                 [(code, "", "pa") for code, _ in PA_GROUPS] + \
+                                 [(key, "", "special_group") for key, _ in SPECIAL_GROUPS]:
+                    st.session_state[f"ex_chk_{k}"] = True
+                st.rerun()
+            if bulk_col2.button(t("exclusion.action.include_all"), key="btn_in_all", use_container_width=True):
+                for k, _l, _c in [(VORSTAND_KEY, "", "special"), (RUHEND_KEY, "", "special")] + \
+                                 [(code, "", "pa") for code, _ in PA_GROUPS] + \
+                                 [(key, "", "special_group") for key, _ in SPECIAL_GROUPS]:
+                    st.session_state[f"ex_chk_{k}"] = False
+                st.rerun()
+            if bulk_col3.button(t("exclusion.action.jobfamily_validation_preset"), key="btn_jf_validation_preset", use_container_width=True):
+                pa_validation_codes = {code for code, _ in PA_GROUPS if code not in {"9999", "99XX"}}
+                special_validation_keys = {key for key, _ in SPECIAL_GROUPS}
+                for k, _l, cat in [(VORSTAND_KEY, "", "special"), (RUHEND_KEY, "", "special")] + \
+                                  [(code, "", "pa") for code, _ in PA_GROUPS] + \
+                                  [(key, "", "special_group") for key, _ in SPECIAL_GROUPS]:
+                    if k == VORSTAND_KEY:
+                        st.session_state[f"ex_chk_{k}"] = False
+                    elif k == RUHEND_KEY:
+                        st.session_state[f"ex_chk_{k}"] = True
+                    elif cat == "pa":
+                        st.session_state[f"ex_chk_{k}"] = k in pa_validation_codes
+                    else:
+                        st.session_state[f"ex_chk_{k}"] = k in special_validation_keys
+                st.rerun()
+
+            st.caption(t("exclusion.layout.checked_help"))
+            for categories, title in [({"special"}, "status"), ({"pa"}, "org"), ({"special_group"}, "special")]:
+                with st.expander(t("exclusion.layout." + title), expanded=categories != {"pa"}):
+                    for key, label, category in GROUP_ORDER:
+                        if category not in categories:
+                            continue
+                        group_mask = all_masks.get(key, pd.Series(False, index=snapshot_df.index))
+                        count = int(group_mask.sum())
+                        group_df = snapshot_df.loc[group_mask]
+                        heads = len(get_unique_employees(group_df)) if "PersNr" in group_df.columns else None
+                        stats = df_stats.loc[df_stats["gruppe_key"].eq(key)].iloc[0]
+                        display_label = f"{key} · {label}" if category == "pa" else label
+                        st.checkbox(display_label, key=f"ex_chk_{key}",
+                                    help=t("exclusion.layout.position_count", count=count))
+                        st.caption(t("exclusion.layout.group_numbers", positions=_fmt_int(count),
+                                     heads=_fmt_int(heads) if heads is not None else "—",
+                                     actual=_fmt_mak(stats["ist_mak"]), target=_fmt_mak(stats["soll_mak"])))
+
+        # ── Bestätigungs-Buttons ──────────────────────────────────────────────────
+        # Aktuelle Checkbox-Zustände aus session_state lesen
+        pending_vorstand = st.session_state.get(f"ex_chk_{VORSTAND_KEY}", current_ex.get("vorstand", False))
+        pending_ruhend = st.session_state.get(f"ex_chk_{RUHEND_KEY}", current_ex.get("ruhend_bv", False))
+        pending_org = [key for key, _l, cat in GROUP_ORDER
+                       if cat == "pa" and st.session_state.get(f"ex_chk_{key}", False)]
+        pending_special = [key for key, _l, cat in GROUP_ORDER
+                           if cat == "special_group" and st.session_state.get(f"ex_chk_{key}", False)]
+
+        current_follow = current_ex.get("planstellen_follow_person", False)
+        with st.container(border=True):
+            st.markdown("### " + t("exclusion.selection.review"))
+            if "ex_scope" not in st.session_state:
+                st.session_state["ex_scope"] = bool(current_follow)
+            pending_follow = st.radio(t("exclusion.selection.scope"), [False, True],
+                                     format_func=lambda value: t("exclusion.scope.dashboard_full" if value else "exclusion.scope.employees_only"),
+                                     horizontal=True, key="ex_scope")
+            st.caption(t("exclusion.selection.scope_help"))
+            pending = dict(current_ex, vorstand=pending_vorstand, ruhend_bv=pending_ruhend,
+                           org_units=pending_org, special_groups=pending_special,
+                           selection_basis=pending_basis, ma_typ_values=pending_types,
+                           planstellen_follow_person=pending_follow)
+            has_pending = any(pending.get(key) != current_ex.get(key, default) for key, default in
+                              [("vorstand", False), ("ruhend_bv", False), ("org_units", []),
+                               ("special_groups", []), ("selection_basis", "legacy"),
+                               ("ma_typ_values", []), ("planstellen_follow_person", False)])
+            # Reuse the engine for previews, including its historical 99XX semantics.
+            preview = apply_exclusions(snapshot_df, pending, record_counts=False)
+            preview_mask = preview["Is_Excluded"].fillna(False)
+            legacy_preview = apply_exclusions(snapshot_df, dict(pending, selection_basis="legacy"), record_counts=False)
+            type_preview = apply_exclusions(snapshot_df, dict(pending, selection_basis="ma_typ"), record_counts=False)
+            legacy_mask = legacy_preview["Is_Excluded"].fillna(False)
+            type_mask = type_preview["Is_Excluded"].fillna(False)
+            cols = st.columns(3 if pending_basis == "combined" else 1)
+            cols[0].metric(t("exclusion.selection.affected"), int(preview_mask.sum()))
+            if pending_basis == "combined":
+                cols[1].metric(t("exclusion.selection.overlap"), int((legacy_mask & type_mask).sum()))
+                cols[2].metric(t("exclusion.selection.additional"), int((~legacy_mask & type_mask).sum()))
+            st.caption(t("exclusion.selection.preview_help"))
+            with st.expander(t("exclusion.selection.inspect")):
+                fields = [c for c in ["Planstellennr", "Planstelle", "Organisationseinheit", "MA-Typ", "Exclusion_Group"] if c in preview.columns]
+                st.dataframe(preview.loc[preview_mask, fields], hide_index=True, use_container_width=True)
+            if has_pending:
+                pending_notice.info(t("exclusion.selection.unsaved"))
+            if st.button(t("exclusion.selection.apply"), type="primary", key="btn_apply_exclusions",
+                         use_container_width=True):
+                if _persist_exclusions(pending_vorstand, pending_ruhend, pending_org, pending_special,
+                                       planstellen_follow_person=pending_follow,
+                                       selection_basis=pending_basis, ma_typ_values=pending_types):
+                    st.rerun()
+
+    with impact_tab:
+        st.caption(t("exclusion.layout.applied_only"))
+        columns = st.columns(3)
+        columns[0].metric(t("exclusion.metric.excluded_positions"), _fmt_int(ex_planstellen))
+        columns[1].metric(t("exclusion.metric.excluded_target_fte"), _fmt_mak(ex_soll_mak))
+        columns[2].metric(t("exclusion.metric.active_current_fte"), _fmt_mak(active_ist_mak))
+        st.markdown("### " + t("exclusion.layout.comparison"))
+        measure = st.radio(t("exclusion.layout.measure"), ["positions", "mak"],
+                           format_func=lambda value: t("exclusion.layout." + value),
+                           horizontal=True, key="ex_impact_measure")
+        kept, removed = (active_planstellen, ex_planstellen) if measure == "positions" else (active_soll_mak, ex_soll_mak)
+        chart = go.Figure()
+        for label, value, color in [(t("exclusion.layout.included"), kept, COLORS["accent_blue"]),
+                                     (t("exclusion.layout.excluded"), removed, "#94A3B8")]:
+            chart.add_trace(go.Bar(name=label, x=[value], y=[t("exclusion.layout." + measure)],
+                                  orientation="h", marker_color=color,
+                                  text=[_fmt_int(int(value)) if measure == "positions" else _fmt_mak(value)],
+                                  textposition="auto", hovertemplate="%{x}<extra>%{fullData.name}</extra>"))
+        chart.update_layout(barmode="stack", height=240, margin=dict(l=0, r=0, t=15, b=0),
+                            legend=dict(orientation="h", y=-0.25), paper_bgcolor="rgba(0,0,0,0)",
+                            plot_bgcolor="rgba(0,0,0,0)", xaxis_title=t("exclusion.layout." + measure))
+        st.plotly_chart(chart, use_container_width=True)
+        if ist_preserved_mask.any():
+            st.info(t("exclusion.layout.preserved", count=int(ist_preserved_mask.sum())))
+        selected_stats = df_stats[df_stats["gruppe_key"].isin(ex_keys)]
+        if not selected_stats.empty:
+            with st.expander(t("exclusion.layout.group_effects")):
+                st.caption(t("exclusion.layout.overlap_note"))
+                st.dataframe(selected_stats[["gruppe_name", "planstellen", "soll_mak", "ist_mak"]].rename(columns={
+                    "gruppe_name": t("exclusion.table.group"), "planstellen": t("exclusion.layout.positions"),
+                    "soll_mak": t("exclusion.table.target_fte"), "ist_mak": t("exclusion.table.current_fte")}),
+                    hide_index=True, use_container_width=True)
+
+    with detail_tab:
+        st.caption(t("exclusion.layout.applied_only"))
+        all_group_opts = dict(zip(df_stats["gruppe_name"], df_stats["gruppe_key"]))
+        selected_label = st.selectbox(t("exclusion.select.group"), options=list(all_group_opts.keys()),
+                                      key="ex_drilldown_group")
+        selected_key = all_group_opts[selected_label]
+
+        dd_row = df_stats[df_stats["gruppe_key"] == selected_key]
+        if dd_row.empty or dd_row.iloc[0]["planstellen"] == 0:
+            st.info(t("exclusion.info.no_people"))
         else:
-            r = stats_row.iloc[0]
-            planst = int(r["planstellen"])
-            soll_mak = float(r["soll_mak"])
-            ist_mak = float(r["ist_mak"])
-            besetzt = int(r["davon_besetzt"])
-            anteil = float(r["anteil_pct"])
+            r = dd_row.iloc[0]
+            dc1, dc2, dc3, dc4 = st.columns(4)
+            with dc1:
+                _metric_card(t("exclusion.table.positions"), _fmt_int(int(r["planstellen"])),
+                             color=COLORS["accent_blue"])
+            with dc2:
+                _metric_card(t("exclusion.table.target_fte"), _fmt_mak(r["soll_mak"]),
+                             color=COLORS["accent_amber"])
+            with dc3:
+                _metric_card(t("exclusion.table.current_fte"), _fmt_mak(r["ist_mak"]),
+                             color=COLORS["accent_green"])
+            with dc4:
+                status = t("exclusion.layout.selected") if selected_key in ex_keys else t("exclusion.layout.not_selected")
+                status_color = COLORS["accent_red"] if selected_key in ex_keys else COLORS["accent_green"]
+                _metric_card(t("exclusion.metric.status"), status, color=status_color)
 
-        ck = f"ex_chk_{key}"
-        is_excluded = st.session_state.get(ck, False)
-
-        # Zeilenfarbe: gedämpft wenn exkludiert, amber-Warnung bei 0 IST-MAK ohne Exklusion
-        if is_excluded:
-            row_style = "color:#A9A9A9;"
-        elif planst > 0 and ist_mak == 0.0 and not is_excluded:
-            row_style = "color:#b45309;"  # Amber – natürliche Null
-        else:
-            row_style = ""
-
-        cols = st.columns([3, 1, 1, 1, 1, 1, 1])
-
-        # Gruppe Label
-        with cols[0]:
-            if category in {"special", "special_group"}:
-                st.markdown(f"<span style='{row_style}font-weight:600'>{label}</span>",
-                            unsafe_allow_html=True)
-            else:
-                code = key if key != "99XX" else "99XX"
-                st.markdown(
-                    f"<span style='{row_style}'>{label}</span> "
-                    f"<span style='color:#A9A9A9;font-size:0.78rem;'>{code}</span>",
-                    unsafe_allow_html=True,
+            col_oe, col_jf = st.columns(2)
+            with col_oe:
+                render_context_box(
+                    t("exclusion.top_org_units"),
+                    r["top_oes"] if r["top_oes"] != "—" else t("exclusion.info.none"),
+                    tone="info",
+                    compact=True,
+                )
+            with col_jf:
+                render_context_box(
+                    t("exclusion.top_jobfamilies"),
+                    r["top_jfs"] if r["top_jfs"] != "—" else t("exclusion.info.none"),
+                    tone="info",
+                    compact=True,
                 )
 
-        with cols[1]:
-            st.markdown(f"<span style='{row_style}'>{_fmt_int(planst) if planst else '—'}</span>",
-                        unsafe_allow_html=True)
-        with cols[2]:
-            st.markdown(f"<span style='{row_style}'>{_fmt_mak(soll_mak) if planst else '—'}</span>",
-                        unsafe_allow_html=True)
-        with cols[3]:
-            st.markdown(f"<span style='{row_style}'>{_fmt_mak(ist_mak) if planst else '—'}</span>",
-                        unsafe_allow_html=True)
-        with cols[4]:
-            st.markdown(
-                f"<span style='{row_style}'>{_fmt_pct(anteil) if planst else '—'}</span>",
-                unsafe_allow_html=True,
-            )
-        with cols[5]:
-            st.markdown(f"<span style='{row_style}'>{_fmt_int(besetzt) if planst else '—'}</span>",
-                        unsafe_allow_html=True)
-        with cols[6]:
-            st.checkbox(label, key=ck, label_visibility="collapsed")
+            group_mask = all_masks.get(selected_key, pd.Series(False, index=snapshot_df.index))
+            _render_structural_profile(snapshot_df[group_mask])
+            if selected_key in ex_keys:
+                st.caption(t("exclusion.layout.demo_note"))
+            _render_demo_profile(snapshot_df[group_mask])
 
-    st.markdown(
-        "<hr style='margin:8px 0 4px 0;border-color:#E0E0E0;'>",
-        unsafe_allow_html=True,
-    )
-    st.caption(t("exclusion.table.legend"))
-
-    # ── Bestätigungs-Buttons ──────────────────────────────────────────────────
-    # Aktuelle Checkbox-Zustände aus session_state lesen
-    pending_vorstand = st.session_state.get(f"ex_chk_{VORSTAND_KEY}", current_ex.get("vorstand", False))
-    pending_ruhend = st.session_state.get(f"ex_chk_{RUHEND_KEY}", current_ex.get("ruhend_bv", False))
-    pending_org = [key for key, _l, cat in GROUP_ORDER
-                   if cat == "pa" and st.session_state.get(f"ex_chk_{key}", False)]
-    pending_special = [key for key, _l, cat in GROUP_ORDER
-                       if cat == "special_group" and st.session_state.get(f"ex_chk_{key}", False)]
-
-    current_follow = current_ex.get("planstellen_follow_person", False)
-
-    has_pending = (
-        pending_vorstand != current_ex.get("vorstand", False)
-        or pending_ruhend != current_ex.get("ruhend_bv", False)
-        or set(pending_org) != set(current_ex.get("org_units", []))
-        or set(pending_special) != set(current_ex.get("special_groups") or [])
-    )
-
-    if has_pending:
-        st.info(t("exclusion.info.unsaved"))
-
-    # Aktuellen Scope anzeigen
-    scope_label = t("exclusion.scope.dashboard_full") if current_follow else t("exclusion.scope.employees_only")
-    scope_color = "#0d6efd" if current_follow else "#6c757d"
-    st.markdown(
-        f"<div style='margin:8px 0 12px 0;font-size:0.85rem;color:#757575;'>"
-        f"{t('exclusion.scope.active')} <span style='background:{scope_color};color:#fff;"
-        f"padding:2px 8px;border-radius:4px;font-size:0.8rem;'>{scope_label}</span></div>",
-        unsafe_allow_html=True,
-    )
-
-    btn_col_a, btn_col_b = st.columns(2, gap="medium")
-    with btn_col_a:
-        if st.button(
-            t("exclusion.action.apply_employees"),
-            type="primary" if (has_pending or current_follow) else "secondary",
-            use_container_width=True,
-            key="btn_apply_excl_ma",
-            help=t("exclusion.action.apply_employees.help"),
-        ):
-            _persist_exclusions(
-                pending_vorstand,
-                pending_ruhend,
-                pending_org,
-                pending_special,
-                planstellen_follow_person=False,
-            )
-            st.rerun()
-
-    with btn_col_b:
-        if st.button(
-            t("exclusion.action.apply_dashboard"),
-            type="primary" if (has_pending or not current_follow) else "secondary",
-            use_container_width=True,
-            key="btn_apply_excl_all",
-            help=t("exclusion.action.apply_dashboard.help"),
-        ):
-            _persist_exclusions(
-                pending_vorstand,
-                pending_ruhend,
-                pending_org,
-                pending_special,
-                planstellen_follow_person=True,
-            )
-            st.rerun()
-
-    st.divider()
-
-    # ── BEREICH 3: Charts ─────────────────────────────────────────────────────
-    render_section_intro(
-        _section_title("exclusion.section.visualization"),
-        t("exclusion.section.visualization.caption"),
-    )
-
-    # Aktuelle ex_keys neu berechnen (nach möglichem rerun)
-    fresh_ex = _load_current_exclusions()
-    fresh_ex_keys: set = set()
-    if fresh_ex.get("vorstand"):
-        fresh_ex_keys.add(VORSTAND_KEY)
-    if fresh_ex.get("ruhend_bv"):
-        fresh_ex_keys.add(RUHEND_KEY)
-    fresh_ex_keys.update(fresh_ex.get("org_units", []))
-    fresh_ex_keys.update(fresh_ex.get("special_groups") or [])
-
-    tab_planst, tab_mak = st.tabs([t("exclusion.tab.positions"), t("exclusion.tab.target_fte")])
-
-    with tab_planst:
-        fig_k = _bar_chart(
-            df_stats, "planstellen",
-            t("exclusion.chart.positions.title"),
-            t("exclusion.chart.positions.axis"),
-            COLORS["accent_blue"], "#C0C0C0", fresh_ex_keys,
-        )
-        if fig_k:
-            st.plotly_chart(fig_k, use_container_width=True)
-            st.caption(t("exclusion.chart.caption.blue"))
-        else:
-            st.info(t("exclusion.chart.no_data"))
-
-    with tab_mak:
-        fig_m = _bar_chart(
-            df_stats, "soll_mak",
-            t("exclusion.chart.target_fte.title"),
-            t("exclusion.chart.target_fte.axis"),
-            COLORS["accent_amber"], "#C0C0C0", fresh_ex_keys,
-        )
-        if fig_m:
-            st.plotly_chart(fig_m, use_container_width=True)
-            st.caption(t("exclusion.chart.caption.amber"))
-        else:
-            st.info(t("exclusion.chart.no_data"))
-
-    st.divider()
-
-    # ── BEREICH 4: Drilldown ──────────────────────────────────────────────────
-    render_section_intro(
-        _section_title("exclusion.section.drilldown"),
-        t("exclusion.section.drilldown.caption"),
-    )
-
-    all_group_opts = {label: key for key, label, _ in GROUP_ORDER}
-    selected_label = st.selectbox(t("exclusion.select.group"), options=list(all_group_opts.keys()),
-                                  key="ex_drilldown_group")
-    selected_key = all_group_opts[selected_label]
-
-    dd_row = df_stats[df_stats["gruppe_key"] == selected_key]
-    if dd_row.empty or dd_row.iloc[0]["planstellen"] == 0:
-        st.info(t("exclusion.info.no_people"))
-    else:
-        r = dd_row.iloc[0]
-        dc1, dc2, dc3, dc4 = st.columns(4)
-        with dc1:
-            _metric_card(t("exclusion.table.positions"), _fmt_int(int(r["planstellen"])),
-                         color=COLORS["accent_blue"])
-        with dc2:
-            _metric_card(t("exclusion.table.target_fte"), _fmt_mak(r["soll_mak"]),
-                         color=COLORS["accent_amber"])
-        with dc3:
-            _metric_card(t("exclusion.table.current_fte"), _fmt_mak(r["ist_mak"]),
-                         color=COLORS["accent_green"])
-        with dc4:
-            status = t("exclusion.status.excluded") if selected_key in fresh_ex_keys else t("exclusion.status.active")
-            status_color = COLORS["accent_red"] if selected_key in fresh_ex_keys else COLORS["accent_green"]
-            _metric_card(t("exclusion.metric.status"), status, color=status_color)
-
-        col_oe, col_jf = st.columns(2)
-        with col_oe:
-            render_context_box(
-                t("exclusion.top_org_units"),
-                r["top_oes"] if r["top_oes"] != "—" else t("exclusion.info.none"),
-                tone="info",
-                compact=True,
-            )
-        with col_jf:
-            render_context_box(
-                t("exclusion.top_jobfamilies"),
-                r["top_jfs"] if r["top_jfs"] != "—" else t("exclusion.info.none"),
-                tone="info",
-                compact=True,
-            )
-
-        group_mask = all_masks.get(selected_key, pd.Series(False, index=snapshot_df.index))
-        _render_structural_profile(snapshot_df[group_mask])
-        _render_demo_profile(snapshot_df[group_mask])
-
-        with st.expander(t("exclusion.expander.rows"), expanded=False):
-            detail = get_group_detail(snapshot_df, selected_key)
-            if detail.empty:
-                st.info(t("exclusion.info.no_rows"))
-            else:
-                # Anzeige-Umbenennung: interner Spaltenname Soll_FTE -> MAK-Terminologie
-                display_detail = detail.rename(columns={"Soll_FTE": "Soll_MAK"})
-                st.dataframe(display_detail, use_container_width=True, hide_index=True)
-                st.caption(t("exclusion.caption.rows", count=len(detail)))
+            with st.expander(t("exclusion.expander.rows"), expanded=False):
+                detail = get_group_detail(snapshot_df, selected_key)
+                if detail.empty:
+                    st.info(t("exclusion.info.no_rows"))
+                else:
+                    # Anzeige-Umbenennung: interner Spaltenname Soll_FTE -> MAK-Terminologie
+                    display_detail = detail.rename(columns={"Soll_FTE": "Soll_MAK"})
+                    st.dataframe(display_detail, use_container_width=True, hide_index=True)
+                    st.caption(t("exclusion.caption.rows", count=len(detail)))
 
 
 if not globals().get("_UNIT_TESTING", False):
