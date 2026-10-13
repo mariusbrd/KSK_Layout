@@ -724,6 +724,9 @@ def test_exclusion_groups_page_is_localized_in_english(monkeypatch):
         def markdown(self, text, *args, **kwargs):
             captured["markdowns"].append(text)
 
+        def metric(self, label, value, **kwargs):
+            captured["markdowns"].append(label)
+
         def button(self, label, *args, **kwargs):
             captured["buttons"].append(label)
             return False
@@ -778,6 +781,8 @@ def test_exclusion_groups_page_is_localized_in_english(monkeypatch):
     monkeypatch.setattr(module.st, "warning", lambda text, *args, **kwargs: captured["warnings"].append(text))
     monkeypatch.setattr(module.st, "error", lambda text, *args, **kwargs: captured["errors"].append(text))
     monkeypatch.setattr(module.st, "columns", exclusion_columns)
+    monkeypatch.setattr(module.st, "container", lambda **kwargs: DummyContext())
+    monkeypatch.setattr(module.st, "radio", lambda label, options, key, **kwargs: st.session_state.get(key, options[0]))
     monkeypatch.setattr(module.st, "button", lambda label, *args, **kwargs: captured["buttons"].append(label) or False)
     monkeypatch.setattr(module.st, "checkbox", lambda label, *args, **kwargs: captured["checkboxes"].append(label) or False)
     monkeypatch.setattr(
@@ -799,26 +804,20 @@ def test_exclusion_groups_page_is_localized_in_english(monkeypatch):
 
     assert captured["titles"] == ["🔎 Exclusion groups"]
     assert captured["captions"][0] == (
-        "Transparency and controls for all excludable staff groups. Groups can be included or excluded directly here, "
-        "and the change takes effect immediately on all other pages."
+        "Choose a basis, select groups to exclude and review the effect. The dashboard selection is saved only when you click Apply changes."
     )
     assert captured["metric_hints"] == [
         "This page is a control and transparency page. The global pill currently has no business effect here."
     ]
-    assert ("Overview", "Overall view of positions and target FTE capacity.") in captured["sections"]
-    assert (
-        "Group exclusions",
-        "Excluded groups are not counted in current headcount. Planned position capacity (target) remains as demand.",
-    ) in captured["sections"]
-    assert ("Visualization", "Comparison of excluded and active groups by positions and target FTE.") in captured["sections"]
-    assert ("Drilldown: select group", "Select a group for its structural and demographic profile.") in captured["sections"]
-    assert any("Total positions" in text for text in captured["markdowns"])
-    assert any("Active scope:" in text and "Full dashboard (incl. positions)" in text for text in captured["markdowns"])
+    assert not captured["sections"]
+    assert "### Included and excluded" in captured["markdowns"]
+    assert any("Active: Existing group rules" in text for text in captured["captions"])
+    assert "### 1 · Choose basis and groups" in captured["markdowns"]
+    assert "### 2 · Review and apply" in captured["markdowns"]
     assert "Exclude all" in captured["buttons"]
     assert "Include all" in captured["buttons"]
-    assert "👥 Apply to employees & forecast" in captured["buttons"]
-    assert "🏢 Apply to full dashboard" in captured["buttons"]
-    assert captured["tabs"] == [["📊 Positions by group", "📐 Target FTE by group"]]
+    assert "Apply changes" in captured["buttons"]
+    assert captured["tabs"] == [["Set exclusions", "Impact", "Explore groups"]]
     assert captured["selectboxes"]
     select_label, group_options = captured["selectboxes"][0]
     assert select_label == "Group"
@@ -829,5 +828,4 @@ def test_exclusion_groups_page_is_localized_in_english(monkeypatch):
     assert len(group_options) >= 20
     assert "Board" in captured["checkboxes"]
     assert "Dormant employment relationship" in captured["checkboxes"]
-    assert "Gray = currently excluded. Blue = active in the model." in captured["captions"]
-    assert "Gray = currently excluded. Amber = active in the model." in captured["captions"]
+    assert "Last applied selection · Pending changes are not included here." in captured["captions"]

@@ -183,7 +183,10 @@ def load_soll_ist_koepfe_basis() -> pd.DataFrame:
 
 
 def _apply_variant_b_exclusions(df: pd.DataFrame, exclusions: Dict[str, Any]) -> pd.DataFrame:
+    from utils.exclusion_groups import effective_exclusions, ma_typ_exclusion_mask
+    exclusions = effective_exclusions(exclusions)
     result = df.copy()
+    result = result.loc[~ma_typ_exclusion_mask(result, exclusions)].copy()
 
     ex_units = exclusions.get("org_units", []) or []
     if ex_units and "Kürzel OrgEinheit" in result.columns:

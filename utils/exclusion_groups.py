@@ -79,6 +79,44 @@ SPECIAL_GROUPS: List[tuple[str, str]] = [
     (SOLLARBEITSZEIT_001_KEY, "Planstellen mit Sollarbeitszeit = 0,01"),
 ]
 
+MA_TYP_PREFIX = "ma_typ:"
+
+
+def ma_typ_series(df: pd.DataFrame) -> pd.Series:
+    """Normalize optional type labels without turning missing values into categories."""
+    return df.get("MA-Typ", pd.Series("", index=df.index)).fillna("").astype(str).str.strip()
+
+
+def effective_exclusions(exclusions: dict) -> dict:
+    """Resolve the active selection, preserving stored inactive choices and legacy defaults."""
+    result = dict(exclusions)
+    basis = result.get("selection_basis", "legacy")
+    if basis == "ma_typ":
+        result.update(vorstand=False, ruhend_bv=False, org_units=[], special_groups=[])
+    if basis in {"ma_typ", "combined"}:
+        values = [str(v).strip() for v in (result.get("ma_typ_values") or []) if v is not None and str(v).strip()]
+        result["special_groups"] = list(dict.fromkeys(
+            list(result.get("special_groups") or []) + [MA_TYP_PREFIX + v for v in values]
+        ))
+    return result
+
+
+def selected_group_keys(exclusions: dict) -> set[str]:
+    effective = effective_exclusions(exclusions)
+    keys = set(effective.get("org_units") or []) | set(effective.get("special_groups") or [])
+    keys.update(key for key in (VORSTAND_KEY, RUHEND_KEY) if effective.get(key))
+    return keys
+
+
+def ma_typ_exclusion_mask(df: pd.DataFrame, exclusions: dict) -> pd.Series:
+    """Use the same optional group masks in the existing raw-data analysis paths."""
+    masks = build_group_masks(df)
+    result = pd.Series(False, index=df.index)
+    for key in selected_group_keys(exclusions):
+        if key.startswith(MA_TYP_PREFIX) and key in masks:
+            result |= masks[key]
+    return result
+
 
 def _normalize_oe(series: pd.Series) -> pd.Series:
     """Normalisiert OE-Kürzel: strip, .0-Suffix entfernen (z. B. '9900.0' → '9900')."""
@@ -194,6 +232,9 @@ def build_group_masks(df: pd.DataFrame) -> Dict[str, pd.Series]:
     else:
         masks[SOLLARBEITSZEIT_001_KEY] = false_mask.copy()
 
+    types = ma_typ_series(df)
+    for value in sorted(set(types) - {""}):
+        masks[MA_TYP_PREFIX + value] = types.eq(value)
     return masks
 
 
@@ -283,6 +324,7 @@ def get_all_group_stats(df: pd.DataFrame) -> pd.DataFrame:
         (VORSTAND_KEY, "Vorstand"),
         (RUHEND_KEY, "Ruhendes Beschäftigungsverhältnis"),
     ] + [(code, label) for code, label in PA_GROUPS] + [(key, label) for key, label in SPECIAL_GROUPS]
+    group_defs += [(key, "MA-Typ: " + key[len(MA_TYP_PREFIX):]) for key in masks if key.startswith(MA_TYP_PREFIX)]
 
     rows = []
     for key, label in group_defs:
@@ -307,7 +349,7 @@ def get_group_detail(df: pd.DataFrame, group_key: str) -> pd.DataFrame:
             "PersNr", "Kürzel OrgEinheit", "Organisationseinheit",
             "MitarbGruppenbez.", "Jobfamily", "TrfGr", "St",
             "Status kundenindividuell", "Soll_FTE", "MAK_Calculated",
-            "Is_Vacant", "ATZ_Status", "Vertragsart", "Planstellennr", "Planstelle",
+            "Is_Vacant", "ATZ_Status", "Vertragsart", "Planstellennr", "Planstelle", "MA-Typ",
         ]
         if c in sub.columns
     ]

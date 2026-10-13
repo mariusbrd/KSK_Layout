@@ -46,7 +46,8 @@ from dataloader.data_integrity import (
 )
 from config.settings import BASE_DIR
 from components.sidebar import render_metric_selector_only, set_metric_page_hint
-from utils.cache_utils import bump_cache_version
+from utils.cache_utils import bump_cache_version, coerce_file_bytes
+from components.stellenplan_audit import render_stellenplan_audit
 from utils.i18n import t
 from utils.lineage import build_complete_glossary_workbook_bytes
 from components.ui_compat import lazy_excel_download_button_compat
@@ -99,8 +100,8 @@ def _render_data_integrity_section() -> None:
         return
 
     try:
-        ma_bytes = uploads["Mitarbeiter"].getvalue()
-        pl_bytes = uploads["Planstellen"].getvalue()
+        ma_bytes = coerce_file_bytes(uploads["Mitarbeiter"])
+        pl_bytes = coerce_file_bytes(uploads["Planstellen"])
         report = _run_data_integrity_check_cached(ma_bytes, pl_bytes)
     except Exception as exc:
         st.error(_format_upload_exception("Datenintegritäts-Prüfung fehlgeschlagen", exc))
@@ -113,7 +114,8 @@ def _render_data_integrity_section() -> None:
             "✅ Personalnummern stimmen überein: jede besetzte Planstelle hat einen passenden "
             "Mitarbeiter-Datensatz und umgekehrt."
         )
-        return
+
+    render_stellenplan_audit(ma_bytes, pl_bytes)
 
     if report.error_count:
         st.error(
@@ -141,6 +143,7 @@ def _render_data_integrity_section() -> None:
         key="dl_data_integrity_report",
         fingerprint=(
             "data_integrity_report",
+            hashlib.sha256(ma_bytes + pl_bytes).hexdigest(),
             report.error_count,
             report.warning_count,
             tuple((check.title, check.severity, check.count) for check in report.checks),
@@ -583,6 +586,52 @@ def render_settings_page():
             # Reset flag after rendering once
             st.session_state["show_reload_success"] = False
 
+    # --- Allgemeine Einstellungen (Stichtag) ---
+    render_section_intro(t("settings.general"), "Stichtag und Filteroptionen für die Datenauswertung.")
+
+    from utils.settings_loader import get_setting, set_setting, save_user_settings, load_user_settings
+
+    # Stichtag
+    current_stichtag_str = get_setting("stichtag", STICHTAG_DEFAULT)
+    try:
+        current_stichtag = pd.to_datetime(current_stichtag_str).date()
+    except Exception:
+        current_stichtag = pd.to_datetime(STICHTAG_DEFAULT).date()
+        
+    new_stichtag = st.date_input(
+        t("settings.reference_date"),
+        value=current_stichtag,
+        help=t("settings.reference_date.help"),
+    )
+    
+    if new_stichtag != current_stichtag:
+        if st.button(t("settings.reference_date.save")):
+            set_setting("stichtag", str(new_stichtag))
+            st.success(t("settings.reference_date.saved", date=new_stichtag))
+            
+    # Zukünftige Eintritte
+    include_future_hires = get_setting("include_future_hires", False)
+    include_future_cb = st.checkbox(
+        t("settings.include_future_hires"),
+        value=include_future_hires,
+        help=t("settings.include_future_hires.help"),
+    )
+    
+    if include_future_cb != include_future_hires:
+        set_setting("include_future_hires", include_future_cb)
+        st.rerun()
+
+    # Statistik anzeigen
+    if "stats_future_hires" in st.session_state:
+        future_count = st.session_state["stats_future_hires"]
+        status_text = t("settings.future_hires.included") if include_future_cb else t("settings.future_hires.filtered")
+        if future_count > 0:
+            st.info(t("settings.future_hires.info", count=future_count, date=current_stichtag, status=status_text))
+        else:
+            st.caption(t("settings.future_hires.none", date=current_stichtag))
+
+    st.divider()
+
     # --- Datenmanagement ---
     render_section_intro(t("settings.data_management"), t("settings.data_management.caption"))
     
@@ -666,24 +715,6 @@ def render_settings_page():
             fallback = delete_result["active_source"].display_label
             _set_cluster_feedback("info", f"Alle Uploads wurden entfernt. Aktive Clusterquelle: {fallback}.")
             st.rerun()
-
-    _render_data_integrity_section()
-
-    lazy_excel_download_button_compat(
-        label="KPI-Glossar herunterladen",
-        data_builder=lambda: build_complete_glossary_workbook_bytes(
-            export_context={"Exporttyp": "Vollstaendiges KPI- und Berechnungsglossar"}
-        ),
-        file_name="KPI_Glossar_und_Berechnungslineage.xlsx",
-        mime=_EXCEL_MIME,
-        key="dl_lineage_glossary",
-        fingerprint=("lineage_glossary",),
-        help="Vollstaendiges Glossar aller registrierten Dashboard-Elemente inklusive Quellen, Spalten, Formeln, Transformationsschritten und Testnachweisen.",
-        type="tertiary",
-        icon="📘",
-    )
-
-    st.divider()
 
     # --- Cluster-Management ---
     render_section_intro(t("settings.cluster_management"), t("settings.cluster_management.caption"))
@@ -782,49 +813,21 @@ def render_settings_page():
 
     st.divider()
 
-    # --- Allgemeine Einstellungen (Stichtag) ---
-    render_section_intro(t("settings.general"), "Stichtag und Filteroptionen für die Datenauswertung.")
+    _render_data_integrity_section()
 
-    from utils.settings_loader import get_setting, set_setting, save_user_settings, load_user_settings
-
-    # Stichtag
-    current_stichtag_str = get_setting("stichtag", STICHTAG_DEFAULT)
-    try:
-        current_stichtag = pd.to_datetime(current_stichtag_str).date()
-    except Exception:
-        current_stichtag = pd.to_datetime(STICHTAG_DEFAULT).date()
-        
-    new_stichtag = st.date_input(
-        t("settings.reference_date"),
-        value=current_stichtag,
-        help=t("settings.reference_date.help"),
+    lazy_excel_download_button_compat(
+        label="KPI-Glossar herunterladen",
+        data_builder=lambda: build_complete_glossary_workbook_bytes(
+            export_context={"Exporttyp": "Vollstaendiges KPI- und Berechnungsglossar"}
+        ),
+        file_name="KPI_Glossar_und_Berechnungslineage.xlsx",
+        mime=_EXCEL_MIME,
+        key="dl_lineage_glossary",
+        fingerprint=("lineage_glossary",),
+        help="Vollstaendiges Glossar aller registrierten Dashboard-Elemente inklusive Quellen, Spalten, Formeln, Transformationsschritten und Testnachweisen.",
+        type="tertiary",
+        icon="📘",
     )
-    
-    if new_stichtag != current_stichtag:
-        if st.button(t("settings.reference_date.save")):
-            set_setting("stichtag", str(new_stichtag))
-            st.success(t("settings.reference_date.saved", date=new_stichtag))
-            
-    # Zukünftige Eintritte
-    include_future_hires = get_setting("include_future_hires", False)
-    include_future_cb = st.checkbox(
-        t("settings.include_future_hires"),
-        value=include_future_hires,
-        help=t("settings.include_future_hires.help"),
-    )
-    
-    if include_future_cb != include_future_hires:
-        set_setting("include_future_hires", include_future_cb)
-        st.rerun()
-
-    # Statistik anzeigen
-    if "stats_future_hires" in st.session_state:
-        future_count = st.session_state["stats_future_hires"]
-        status_text = t("settings.future_hires.included") if include_future_cb else t("settings.future_hires.filtered")
-        if future_count > 0:
-            st.info(t("settings.future_hires.info", count=future_count, date=current_stichtag, status=status_text))
-        else:
-            st.caption(t("settings.future_hires.none", date=current_stichtag))
 
     st.divider()
 
@@ -859,12 +862,6 @@ def render_settings_page():
             }
             set_setting("simulation", new_sim_settings)
             st.success(t("settings.simulation.saved"))
-
-    st.divider()
-
-    # --- Gruppen-Ausschlüsse (verschoben) ---
-    render_section_intro(t("settings.exclusion_groups"))
-    render_context_box("Hinweis", t("settings.exclusion_groups.info"), tone="info")
 
     st.divider()
 

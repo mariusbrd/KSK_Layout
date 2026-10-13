@@ -458,7 +458,7 @@ def _zero_out_azubi_mak(df: pd.DataFrame) -> pd.DataFrame:
     return df_out
 
 
-def apply_exclusions(df: pd.DataFrame, exclusions: Dict[str, Any]) -> pd.DataFrame:
+def apply_exclusions(df: pd.DataFrame, exclusions: Dict[str, Any], *, record_counts: bool = True) -> pd.DataFrame:
     """
     Wendet Gruppen-Ausschlüsse auf den Snapshot an.
     Exkludierte Personen werden als Vakanz markiert (Ist entfernt, Soll bleibt).
@@ -496,6 +496,8 @@ def apply_exclusions(df: pd.DataFrame, exclusions: Dict[str, Any]) -> pd.DataFra
 
     df_out = df.copy()
     exclusion_mask = pd.Series(False, index=df_out.index)
+    from utils.exclusion_groups import effective_exclusions, MA_TYP_PREFIX
+    exclusions = effective_exclusions(exclusions)
     hard_exclusion_mask = pd.Series(False, index=df_out.index)
     _sub_masks: list[tuple[str, pd.Series]] = []
 
@@ -560,7 +562,8 @@ def apply_exclusions(df: pd.DataFrame, exclusions: Dict[str, Any]) -> pd.DataFra
                 exclusion_mask |= _m
                 if group_key not in _TECHNICAL_PLACEHOLDER_GROUPS:
                     hard_exclusion_mask |= _m
-                _sub_masks.append((_EXCL_GROUP_LABELS.get(group_key, group_key), _m))
+                label = "MA-Typ: " + group_key[len(MA_TYP_PREFIX):] if group_key.startswith(MA_TYP_PREFIX) else _EXCL_GROUP_LABELS.get(group_key, group_key)
+                _sub_masks.append((label, _m))
 
     # Exklusionsflag — immer initialisieren (auch wenn keine Exklusion aktiv)
     df_out["Is_Excluded"] = False
@@ -584,8 +587,9 @@ def apply_exclusions(df: pd.DataFrame, exclusions: Dict[str, Any]) -> pd.DataFra
     if exclusion_mask.any():
         try:
             import streamlit as st
-            st.session_state["last_exclusion_count"] = int(exclusion_mask.sum())
-            st.session_state["last_ist_preserved_count"] = int(ist_preserve_mask.sum())
+            if record_counts:
+                st.session_state["last_exclusion_count"] = int(exclusion_mask.sum())
+                st.session_state["last_ist_preserved_count"] = int(ist_preserve_mask.sum())
         except Exception:
             pass
 
