@@ -332,8 +332,11 @@ def test_attrition_settings_form_is_localized_in_english(monkeypatch):
     assert "Maximum age" in captured["number_inputs"]
     assert "Use detailed partial-retirement matrix" not in captured["checkboxes"]
     assert "Dimension for partial retirement" not in captured["radios"]
-    assert "Retirement entry 65+: 0.90 (Range 0.00–1.00)" in captured["sliders"]
-    assert "Early retirement 60-64: 0.10 (Range 0.00–1.00)" in captured["sliders"]
+    assert "Retirement probability p.a. (0–1)" in captured["sliders"]
+    assert "Early retirement probability p.a. (0–1)" in captured["sliders"]
+    assert "Retirement from age" in captured["number_inputs"]
+    assert "Early retirement from age" in captured["number_inputs"]
+    assert any("ages 60–64" in text and "from age 65" in text for text in captured["captions"])
     assert "Base rate p.a.: 0.05 (Range 0.00–0.50)" in captured["sliders"]
     assert "Use detailed resignation matrix" in captured["checkboxes"]
     assert "Dimension" in captured["radios"]

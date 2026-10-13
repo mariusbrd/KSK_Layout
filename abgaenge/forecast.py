@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+from .params import get_retirement_ages
 
 from .schemas import (
     COL_PERSNR,
@@ -587,6 +588,9 @@ def run_forecast_abgaenge(
     if end_date <= start_date:
         raise ValueError("forecast_end_date muss nach ist_stichtag liegen.")
 
+    if params.get("components", {}).get("retirement", True):
+        retirement_age, early_retirement_age = get_retirement_ages(params.get("retirement", {}))
+
     # Validate required columns
     required_cols = [COL_PERSNR, COL_GEB, COL_EINTRITT, COL_BSGRD, COL_STATUS]
     missing = [c for c in required_cols if c not in df_ma.columns]
@@ -764,7 +768,7 @@ def run_forecast_abgaenge(
                 ages = eligible["age"]
                 p65 = _annual_to_period_rate(params.get("retirement", {}).get("rent_rate_65", 0.9), period_days)
                 p60 = _annual_to_period_rate(params.get("retirement", {}).get("rent_rate_60_65", 0.1), period_days)
-                probs = np.where(ages >= 65, p65, np.where((ages >= 60) & (ages < 65), p60, 0.0))
+                probs = np.where(ages >= retirement_age, p65, np.where((ages >= early_retirement_age) & (ages < retirement_age), p60, 0.0))
                 draws = rng_ret.random(len(eligible))
                 retire_ids = eligible.index[draws < probs].tolist()
 

@@ -16,6 +16,9 @@ if str(BASE_PATH) not in sys.path:
     sys.path.append(str(BASE_PATH))
 
 from abgaenge.params import build_params_from_ui
+from components.quit_matrix_excel import render_quit_matrix_with_excel
+from components.retirement_controls import render_retirement_age_inputs, render_retirement_summary
+from utils.i18n import t
 from components.ui_shell import render_context_box, render_page_header, render_section_intro
 from dataloader.loader import load_and_prepare_data
 from config.settings import TARIFF_GROUPS
@@ -82,8 +85,8 @@ def _matrix_flat_editor(
                 "Wahrscheinlichkeit (%)",
                 min_value=0.0,
                 max_value=100.0,
-                step=0.5,
-                format="%.1f",
+                step=0.25,
+                format="%.2f",
                 required=True,
             ),
         },
@@ -122,8 +125,9 @@ def _quit_matrix_editor(
         for cohort in AGE_COHORTS:
             row[cohort] = float((matrix_pct.get(cohort) or {}).get(name, default_percent))
         rows.append(row)
-    edited = st.data_editor(
+    edited = render_quit_matrix_with_excel(
         pd.DataFrame(rows),
+        dimension=dimension,
         use_container_width=True,
         num_rows="dynamic",
         disabled=disabled,
@@ -135,8 +139,8 @@ def _quit_matrix_editor(
                     AGE_LABELS[cohort],
                     min_value=0.0,
                     max_value=100.0,
-                    step=0.5,
-                    format="%.1f",
+                    step=0.25,
+                    format="%.2f",
                     required=True,
                 )
                 for cohort in AGE_COHORTS
@@ -180,8 +184,8 @@ def _distribution_editor(
                 "Anteil (%)",
                 min_value=0.0,
                 max_value=100.0,
-                step=0.5,
-                format="%.1f",
+                step=0.25,
+                format="%.2f",
                 required=True,
             ),
         },
@@ -206,7 +210,7 @@ def _hire_distribution_editor(value: list[dict[str, Any]], key: str) -> list[dic
                 "Anteil (0.0 - 1.0)",
                 min_value=0.0,
                 max_value=1.0,
-                step=0.01,
+                step=0.25,
                 format="%.2f",
             ),
         },
@@ -260,7 +264,7 @@ def _render_abgaenge(group: dict[str, Any], key_prefix: str, *, include_ruhend: 
     with st.expander("ATZ-Parameter", expanded=False):
         atz = params.get("atz", {})
         a1, a2, a3, a4, a5 = st.columns(5)
-        new_atz_rate = a1.slider("Neue Fälle (Basis)", 0.0, 0.5, float(atz.get("new_atz_rate", 0.05)), 0.005, format="%.3f", key=f"{key_prefix}_atz_rate")
+        new_atz_rate = a1.slider("Neue Fälle (Basis)", 0.0, 0.5, float(atz.get("new_atz_rate", 0.05)), 0.0025, format="%.4f", key=f"{key_prefix}_atz_rate")
         age_min = a2.number_input("Mindestalter", value=int(atz.get("atz_eligible_age_min", 55)), step=1, key=f"{key_prefix}_atz_age_min")
         age_max = a3.number_input("Höchstalter", value=int(atz.get("atz_eligible_age_max", 60)), step=1, key=f"{key_prefix}_atz_age_max")
         ar_years = a4.number_input("AR-Dauer (Jahre)", value=float(atz.get("atz_duration_ar_years", 2.5)), step=0.5, key=f"{key_prefix}_atz_ar")
@@ -271,14 +275,16 @@ def _render_abgaenge(group: dict[str, Any], key_prefix: str, *, include_ruhend: 
 
     with st.expander("Renten-Parameter", expanded=False):
         retirement = params.get("retirement", {})
+        retirement_age, early_retirement_age = render_retirement_age_inputs(retirement, key_prefix=key_prefix)
         r1, r2 = st.columns(2)
-        rent65 = r1.slider("Renteneintritt 65+", 0.0, 1.0, float(retirement.get("rent_rate_65", 0.9)), 0.05, key=f"{key_prefix}_rent65")
-        rent60 = r2.slider("Frühverrentung 60-64", 0.0, 1.0, float(retirement.get("rent_rate_60_65", 0.1)), 0.05, key=f"{key_prefix}_rent60")
+        rent65 = r1.slider(t("attrition.retirement.rate_65"), 0.0, 1.0, float(retirement.get("rent_rate_65", 0.9)), 0.0025, format="%.4f", key=f"{key_prefix}_rent65")
+        rent60 = r2.slider(t("attrition.retirement.rate_60_64"), 0.0, 1.0, float(retirement.get("rent_rate_60_65", 0.1)), 0.0025, format="%.4f", key=f"{key_prefix}_rent60")
+        render_retirement_summary(retirement_age, early_retirement_age, rent65, rent60)
 
     with st.expander("Kündigungs-Parameter", expanded=False):
         quit_params = params.get("quit", {})
         q1, q2, q3 = st.columns([3, 3, 2])
-        quit_base = q1.slider("Basisrate p.a.", 0.0, 0.5, float(quit_params.get("quit_rate_base", 0.05)), 0.01, key=f"{key_prefix}_quit_base")
+        quit_base = q1.slider("Basisrate p.a.", 0.0, 0.5, float(quit_params.get("quit_rate_base", 0.05)), 0.0025, format="%.4f", key=f"{key_prefix}_quit_base")
         use_quit_matrix = q2.checkbox("Detaillierte Kündigungsmatrix verwenden", value=bool(quit_params.get("use_quit_matrix", True)), key=f"{key_prefix}_quit_use_matrix")
         quit_dimension = q3.radio("Dimension", ["JobFamily", "OrgUnit"], index=0 if quit_params.get("quit_dimension", "JobFamily") == "JobFamily" else 1, horizontal=True, key=f"{key_prefix}_quit_dimension")
         _dim_vals = valid_jfs if quit_dimension == "JobFamily" else (active_org_units or [])
@@ -299,7 +305,7 @@ def _render_abgaenge(group: dict[str, Any], key_prefix: str, *, include_ruhend: 
         with st.expander("Ruhend-Parameter", expanded=False):
             h1, h2, h3 = st.columns(3)
             ruhend_new = h1.number_input("Neue Fälle / Jahr", value=int(ruhend.get("ruhend_new_cases_per_year", 0)), step=1, key=f"{key_prefix}_ruh_new")
-            ruhend_return = h2.slider("Rückkehrquote p.a.", 0.0, 1.0, float(ruhend.get("ruhend_return_rate", 0.95)), 0.05, key=f"{key_prefix}_ruh_return")
+            ruhend_return = h2.slider("Rückkehrquote p.a.", 0.0, 1.0, float(ruhend.get("ruhend_return_rate", 0.95)), 0.0025, format="%.4f", key=f"{key_prefix}_ruh_return")
             ruhend_duration = h3.number_input("Durchschnittliche Dauer (Monate)", value=int(ruhend.get("ruhend_avg_duration_months", 12)), step=1, key=f"{key_prefix}_ruh_duration")
     else:
         ruhend_new = int(ruhend.get("ruhend_new_cases_per_year", 0))
@@ -318,12 +324,13 @@ def _render_abgaenge(group: dict[str, Any], key_prefix: str, *, include_ruhend: 
             "atz_duration_ar_years": ar_years,
             "atz_duration_fr_years": fr_years,
         },
-        "retirement": {"rent_rate_65": rent65, "rent_rate_60_65": rent60},
+        "retirement": {"rent_rate_65": rent65, "rent_rate_60_65": rent60, "retirement_age": retirement_age, "early_retirement_age": early_retirement_age},
         "quit": {
             "quit_rate_base": quit_base,
             "use_quit_matrix": use_quit_matrix,
             "quit_dimension": quit_dimension,
             "quit_matrix": quit_matrix_pct,
+            "_matrix_scale": "percent",
             "quit_adjustments": quit_adjustments,
         },
         "ruhend": {
@@ -359,7 +366,7 @@ def _render_zugaenge(group: dict[str, Any], key_prefix: str, *, hybrid: bool = F
         az = params.get("azubi", {})
         a1, a2, a3, a4 = st.columns(4)
         azubi_count = a1.number_input("Neue Azubis pro Jahr", 0, 100, int(az.get("new_cases_per_year", 15)), key=f"{key_prefix}_az_count")
-        retention = a2.slider("Azubi-Übernahme", 0.0, 1.0, float(az.get("retention_rate", 1.0)), 0.05, key=f"{key_prefix}_az_retention")
+        retention = a2.slider("Azubi-Übernahme", 0.0, 1.0, float(az.get("retention_rate", 1.0)), 0.0025, format="%.4f", key=f"{key_prefix}_az_retention")
         duration = a3.number_input("Ausbildungsdauer (Jahre)", 1.0, 5.0, float(az.get("duration_years", 3.0)), 0.5, key=f"{key_prefix}_az_duration")
         strategy_options = ["Random", "OrgUnit"]
         az_strategy = a4.selectbox("Azubi-Verteilung", strategy_options, index=strategy_options.index(az.get("strategy", "Random")) if az.get("strategy", "Random") in strategy_options else 0, key=f"{key_prefix}_az_strategy")
