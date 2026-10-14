@@ -2,6 +2,74 @@
 
 Core app folder.
 
+## OE-Simulation: Gesamtexport
+
+Auf **Organisationseinheiten-Analyse Simulation** steht am Ende der Auswertung
+**Gesamte OE-Simulationsanalyse als Excel exportieren** bereit. Die Datei wird erst
+beim Klick erstellt und enthält die aktuellen KPI-Anzeigen, Rangliste, Diagrammdaten,
+Detailtabellen, Kopfzahl-/Kapazitätsübersicht, Datenqualität und gegebenenfalls
+Abgänge nach Grund. Filter, Kennzahl, Top-N, Mindestgröße und IST-Vergleich werden
+mit dokumentiert. Bestehende Einzelexporte bleiben verfügbar.
+
+Der Bereich **Veränderungen pro Jahr** verwendet ausschließlich Ereignisse desselben
+gespeicherten Simulationslaufs. Seine Auswahl ist unabhängig von Bestandsfiltern.
+Der Gesamtexport enthält die aktuelle Jahresmatrix, Diagrammdaten und Ereignisdetails
+sowie getrennt davon die vollständigen Jahres- und Gesamtsummen je OE und OE-Cluster.
+Teiljahre, Ereignisarten, Laufkennung und die gespeicherte Cluster-Zuordnung werden
+dokumentiert. Die Werte sind Ereignisänderungen, keine Jahresendbestände. Interne
+Wechsel und reine MAK-Veränderungen werden nicht als Personalabgänge gezählt.
+Für vollständige Cluster-Quelldefinitionen in älteren Sitzungen die Simulation
+einmal neu berechnen; aktuelle Cluster-Dateien werden beim Export nicht nachgeladen.
+
+**Verbleibender Bestand aus Abgangsprognose** zeigt zusätzlich einen Bestandsverlauf,
+wenn alle Zugangsbausteine deaktiviert sind und die Überleitung insgesamt sowie
+je OE und Cluster zum gespeicherten Endbestand passt. Köpfe stimmen exakt, MAK
+gemäß der bestehenden Rundung auf zwei Nachkommastellen überein. Abweichungen
+werden ausgewiesen und nicht korrigiert. Der Export enthält den Endwertabgleich
+und bei erfolgreicher Abstimmung den vollständigen Verlauf sowie die aktuelle
+Organisations-/Kennzahlauswahl. Für diesen Bereich die Simulation einmal neu berechnen.
+
+Die Bestandsdarstellung ist direkt unter **Veränderungen pro Jahr** integriert:
+bei **Darstellung** zwischen **Veränderungen** und **Verbleibender Bestand** wechseln.
+Jahres- und OE-/Cluster-Auswahl gelten gemeinsam. Im Bestandsmodus bleibt der
+Ausgangsstichtag zusätzlich sichtbar; alle ausgewählten Jahresstichtage erscheinen
+als einzelne Balken und Matrixspalten. Die Ereignisartauswahl betrifft ausschließlich
+Veränderungen, damit der abgestimmte Bestand stets alle relevanten Ereignisse enthält.
+
+Der neue eingeklappte Vergleich **IST und Simulation gegenüber dem Ausgangsstellenplan**
+verwendet unveränderte SOLL-MAK (`Soll_FTE`) aus dem gespeicherten Ausgangs-Snapshot.
+IST und Simulation werden jeweils dagegen verglichen. Kopfzahlen und Planstellenzeilen
+sind separate Größen; Zeilenzahlen werden nicht als SOLL-Köpfe ausgegeben. Bei fehlender
+Ausgangsbasis oder fehlender SOLL-Spalte wird kein Ersatz aus aktuellen Dateien geladen.
+
+Die Datei enthält gespeicherte Laufparameter, ein Exportinventar, gefilterte
+Ausgangs-/Simulationsbasiszeilen sowie `Lineage_Report`, `Input_Lineage` und
+`Transformations_Lineage`. Historische Eingabe- oder Codeversionen, die beim Lauf
+nicht gespeichert wurden, werden nicht nachträglich als gesichert ausgegeben:
+Input-/Code-Lineage dokumentiert zusätzlich die aktuell zugänglichen Quellen.
+Die großen Exporte prüfen alle Tabellenzeilen auf Änderungen; keine Stichproben-Hashes.
+
+Die Bestandsüberleitung rechnet intern mit ungerundeten MAK (Toleranz 0,000001).
+Abgänge von Personen mit mehreren Ausgangs-OEs wirken auf jede dort gezählte
+Kopfzahl; MAK werden anhand der gespeicherten Ausgangsverteilung zugeordnet.
+Gruppen-Kopfzahlen sind deshalb nicht immer zum Gesamtbestand addierbar.
+Bei weiteren Abweichungen zeigt **Personenbezogene Ursachenanalyse** nicht durch
+Ereignisse erklärte Kopf-/MAK-Effekte und geänderte OE-Zuordnungen. Ohne belegten
+Zeitpunkt werden diese Unterschiede nicht auf Jahre verteilt. Der Export enthält
+Personalnummern der Ereignisse und vollständige Laufgrundlagen zur Prüfung.
+Neue Auswertungslogik wird aus dem vorhandenen gespeicherten Lauf aktualisiert,
+ohne einen zusätzlichen Simulationslauf zu starten.
+
+Die Überleitung verwendet die bestehenden deterministischen Aufbereitungsregeln
+für den technischen Übergang vom IST zur Prognosebasis. Diese Effekte erscheinen
+getrennt als **Prognosebasiseffekte**, nicht als tatsächliche Personalwechsel.
+Die Berichtswirkung von Abgangsereignissen berücksichtigt die bereits verfügbare
+Kapazität: eine schon freigestellte Person verliert beim erneut gemeldeten ATZ-
+Phasenwechsel keine weitere MAK. Originalereignisse bleiben im Export erhalten;
+abweichende Berichtswirkungen stehen unter **Bestand_Reportingereignisse**.
+Ereigniszeiten mit Subsekunden werden als ISO-Text exportiert, damit Excel sie
+nicht auf den nächsten Tag oder das nächste Jahr rundet.
+
 ## Kündigungsquoten mit Excel bearbeiten
 
 Auf **Prognose Abgänge** und **Simulationsparameter** steht unter der detaillierten

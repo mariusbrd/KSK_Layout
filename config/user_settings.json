@@ -5,7 +5,7 @@
     },
     "include_future_hires": true,
     "exclusions": {
-        "vorstand": false,
+        "vorstand": true,
         "ruhend_bv": true,
         "planstellen_follow_person": true,
         "org_units": [
@@ -24,14 +24,15 @@
             "9975",
             "9980",
             "9981",
-            "9990"
+            "9990",
+            "9999"
         ],
         "special_groups": [
             "ausbildung_nachwuchs",
             "jobfamily_validation_special_positions",
             "sollarbeitszeit_001_positions"
         ],
-        "selection_basis": "ma_typ",
+        "selection_basis": "legacy",
         "ma_typ_values": []
     }
 }

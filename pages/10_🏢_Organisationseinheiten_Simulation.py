@@ -5,6 +5,7 @@ Streamlit page: Organisationseinheiten-Analyse (Simulation).
 from __future__ import annotations
 
 import importlib.util
+from copy import deepcopy
 from pathlib import Path
 import sys
 
@@ -19,6 +20,7 @@ else:
     sys.path.append(str(BASE_PATH))
 
 from components.ui_shell import render_context_box, render_page_header
+from utils.org_simulation_events import build_simulation_event_summary, RECONCILIATION_VERSION
 
 
 ORG_ANALYSIS_PAGE = BASE_PATH / "pages" / "9_🏢_Organisationseinheiten_Analyse.py"
@@ -64,6 +66,22 @@ def _get_departure_events() -> pd.DataFrame:
         out["event_date"] = pd.to_datetime(out["event_date"], errors="coerce")
         out["Jahr"] = out["event_date"].dt.year
     return out
+
+
+def _get_current_event_summary():
+    summary = st.session_state.get("compact_sim_event_summary")
+    context = st.session_state.get("compact_sim_event_context")
+    signature = st.session_state.get("compact_sim_signature")
+    if context and signature and context.get("run_signature") == signature and (
+        not summary or summary.get("run_signature") != signature or summary.get("reconciliation_version") != RECONCILIATION_VERSION
+    ):
+        context = deepcopy(context)
+        saved_settings = st.session_state.get("compact_sim_export_context")
+        if "run_settings" not in context and saved_settings is not None:
+            context["run_settings"] = deepcopy(saved_settings)
+        summary = build_simulation_event_summary(context, expected_run_signature=signature)
+        st.session_state["compact_sim_event_summary"] = summary
+    return summary
 
 
 def main() -> None:
@@ -116,6 +134,16 @@ def main() -> None:
         comparison_label="IST",
         enable_comparison_toggle=True,
         departure_events_df=_get_departure_events(),
+        event_summary=_get_current_event_summary(),
+        export_context={
+            "Lauf": deepcopy(metadata),
+            "Laufkennung": st.session_state.get("compact_sim_signature"),
+            "Laufeinstellungen": deepcopy(st.session_state.get("compact_sim_export_context", {})),
+            "abgaenge_params": deepcopy(st.session_state.get("compact_sim_abgaenge_params")),
+            "zugaenge_params": deepcopy(st.session_state.get("compact_sim_zugaenge_params")),
+            "Clusterquelle": str(st.session_state.get("compact_sim_active_cluster_source", "nicht gespeichert")),
+            "Parameterherkunft": "Gespeicherter Lauf; fehlende Werte werden nicht aus aktuellen Entwürfen ergänzt.",
+        },
     )
 
 

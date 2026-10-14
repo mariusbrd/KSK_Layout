@@ -47,6 +47,7 @@ from dataloader.kpi_engine import (
 )
 from dataloader.loader import load_and_prepare_data
 from utils.compact_page_loader import load_compact_page_module
+from utils.org_simulation_export import render_org_simulation_export
 from utils.plot_helpers import (
     AGE_COHORT_ORDER,
     apply_legend_bottom,
@@ -691,6 +692,7 @@ def _render_org_rangliste(
     compact,
     display_orgs: list[str],
     value_label: str = "IST",
+    export_tables: dict | None = None,
 ) -> None:
     work_df = mapped_df[mapped_df[ORG_COL].isin(display_orgs)].copy()
     if "Is_Vacant" in work_df.columns:
@@ -725,6 +727,9 @@ def _render_org_rangliste(
     chart_df["Anteil"] = chart_df["Wert"].apply(
         lambda v: compact.format_percent(float(v) / total) if total > 0 else "0,0%"
     )
+
+    if export_tables is not None:
+        export_tables["Rangliste"] = chart_df.copy()
 
     # Plotly Express maps y-axis category_orders to the visible top-to-bottom order
     # for horizontal bars. display_orgs is already sorted descending.
@@ -805,6 +810,7 @@ def _render_org_rangliste_comparison(
     value_label: str,
     comparison_label: str,
     departure_events: pd.DataFrame | None = None,
+    export_tables: dict | None = None,
 ) -> None:
     comparison_df = _build_org_metric_comparison(
         mapped_df,
@@ -819,6 +825,9 @@ def _render_org_rangliste_comparison(
     if comparison_df.empty:
         st.info("Keine auswertbaren Vergleichsdaten im aktuellen Filterkontext.")
         return
+
+    if export_tables is not None:
+        export_tables["Rangliste_Vergleich"] = comparison_df.copy()
 
     chart_df = comparison_df[[ORG_COL, comparison_label, value_label]].melt(
         id_vars=ORG_COL,
@@ -1034,6 +1043,7 @@ def _render_org_split_block(
     comparison_active: bool = False,
     value_label: str = "Simulation",
     comparison_label: str = "IST",
+    export_tables: dict | None = None,
 ) -> None:
     agg_df = _aggregate_org_split(mapped_df, split_col, metric_view, metric_config, display_orgs)
     if agg_df.empty:
@@ -1079,6 +1089,10 @@ def _render_org_split_block(
         chart_df[ORG_COL] = chart_df[ORG_COL].astype(str)
         chart_df["_Anzeige_OE"] = chart_df[ORG_COL]
         display_df = _format_split_display(pivot_df, metric_view, compact)
+
+    if export_tables is not None:
+        export_tables[f"{title}_Grafik"] = chart_df.copy()
+        export_tables[f"{title}_Tabelle"] = comparison_df.copy() if comparison_active and comparison_mapped_df is not None else pivot_df.reset_index()
 
     chart_df["Wert_Anzeige"] = chart_df["Wert"].apply(
         lambda value: _format_metric_value(float(value), metric_view, compact)
@@ -1191,6 +1205,7 @@ def _build_role_summary_table(
     mapped_df: pd.DataFrame,
     display_orgs: list[str],
     compact,
+    export_rows: list | None = None,
 ) -> pd.DataFrame:
     work = mapped_df[mapped_df[ORG_COL].isin(display_orgs)].copy()
     if "Is_Vacant" in work.columns:
@@ -1209,6 +1224,8 @@ def _build_role_summary_table(
         sub = work[work[ORG_COL] == oe]
         koepfe = int(sub[id_col].nunique()) if id_col else len(sub)
         mak = float(sub[mak_col].sum()) if mak_col else 0.0
+        if export_rows is not None:
+            export_rows.append({ORG_COL: oe, "Köpfe": koepfe, "MAK": mak, "Ø MAK": mak / koepfe if koepfe else None})
         rows.append({
             ORG_COL: oe,
             "Köpfe": koepfe,
@@ -1228,6 +1245,7 @@ def _render_role_breakdown_block(
     comparison_active: bool = False,
     value_label: str = "Simulation",
     comparison_label: str = "IST",
+    export_tables: dict | None = None,
 ) -> None:
     has_tarifgruppe = "TrfGr" in mapped_df.columns
 
@@ -1255,12 +1273,16 @@ def _render_role_breakdown_block(
         comparison_active=comparison_active,
         value_label=value_label,
         comparison_label=comparison_label,
+            **({"export_tables": export_tables} if export_tables is not None else {}),
     )
 
     # Summary table: Köpfe, MAK, Ø MAK per OE — keine Euro-Werte
     st.divider()
     st.subheader("Kopfzahl und Kapazität pro Organisationseinheit")
-    summary_df = _build_role_summary_table(mapped_df, display_orgs, compact)
+    raw_rows = [] if export_tables is not None else None
+    summary_df = _build_role_summary_table(mapped_df, display_orgs, compact, **({"export_rows": raw_rows} if raw_rows is not None else {}))
+    if export_tables is not None:
+        export_tables["Köpfe_Kapazität"] = pd.DataFrame(raw_rows)
     if not summary_df.empty:
         dataframe_compat(summary_df, width="stretch", hide_index=True)
 
@@ -1276,6 +1298,7 @@ def _render_data_quality_block(
     metric_view: str,
     metric_config: dict[str, str],
     compact,
+    export_tables: dict | None = None,
 ) -> None:
     total_rows = len(filtered_df)
     unmapped_rows = len(unmapped_df)
@@ -1284,6 +1307,13 @@ def _render_data_quality_block(
     unmapped_share = unmapped_metric / total_metric if total_metric > 0 else 0
     unmapped_employees = len(get_unique_employees(unmapped_df)) if not unmapped_df.empty else 0
     mapped_share = _get_metric_total(mapped_df, metric_view, compact) / total_metric if total_metric > 0 else 0
+
+    if export_tables is not None:
+        export_tables["Datenqualität"] = pd.DataFrame([{
+            "Sichtbare Zeilen": total_rows, "Nicht zugeordnete Zeilen": unmapped_rows,
+            "Nicht zugeordnete MA": unmapped_employees, "Gesamtkennzahl": total_metric,
+            "Nicht zugeordnete Kennzahl": unmapped_metric, "Nicht zugeordneter Anteil": unmapped_share,
+            "Zugeordneter Anteil": mapped_share}])
 
     if unmapped_rows == 0:
         st.success("Alle sichtbaren Datensätze sind einer Organisationseinheit zugeordnet.")
@@ -1346,8 +1376,11 @@ def render_orgunit_analysis_page(
     comparison_label: str = "IST",
     enable_comparison_toggle: bool = False,
     departure_events_df: pd.DataFrame | None = None,
+    export_context: dict | None = None,
+    event_summary: dict | None = None,
 ) -> None:
     compact = load_compact_page_module()
+    export_tables = {} if export_context is not None else None
 
     render_page_header(
         title,
@@ -1385,12 +1418,36 @@ def render_orgunit_analysis_page(
     mapped_df = filtered_df[filtered_df[ORG_COL] != ORG_NOT_ASSIGNED].copy()
     unmapped_df = filtered_df[filtered_df[ORG_COL] == ORG_NOT_ASSIGNED].copy()
 
+    def finish_export(display_orgs):
+        if export_tables is None:
+            return
+        from components.org_simulation_yearly import render_org_simulation_yearly
+        yearly_view = render_org_simulation_yearly(event_summary, run_signature=export_context.get("Laufkennung"))
+        stock_view = yearly_view.get("stock_view") if yearly_view is not None else None
+        if stock_view is not None:
+            yearly_view = None
+        render_org_simulation_export(
+            export_tables, export_context, current=filtered_df, baseline=comparison_filtered_df,
+            event_summary=event_summary, yearly_view=yearly_view,
+            stock_view=stock_view,
+            display_orgs=display_orgs, compact=compact, view={
+                "Kennzahl": metric_view, "Filter": get_active_view_filters(), "Filterübersicht": filter_summary,
+                "Top-N": st.session_state.get(_TOP_N_SESSION_KEY, _TOP_N_DEFAULT),
+                "Sortierung": st.session_state.get(_SORT_SESSION_KEY, _SORT_DEFAULT),
+                "Mindestgröße": st.session_state.get(_MIN_SIZE_SESSION_KEY, _MIN_SIZE_DEFAULT),
+                "Simulationsfokus": st.session_state.get(_SIM_FOCUS_SESSION_KEY, _SIM_FOCUS_DEFAULT),
+                "IST-Vergleich": comparison_active, "IST verfügbar": comparison_filtered_df is not None,
+            },
+        )
+
     # --- KPI block (always uses full mapped_df) ---
     render_section_intro(
         "KPI-Überblick",
         f"Kennzahl: {metric_view} · aktueller Filterkontext",
     )
     kpis = _build_kpis(mapped_df, filtered_df, unmapped_df, metric_view, compact)
+    if export_tables is not None:
+        export_tables["KPI_Anzeige"] = pd.DataFrame(kpis).reindex(columns=["title", "value", "subtitle", "status"])
     if kpis:
         compact.render_kpi_cards_styled(kpis)
     comparison_active = False
@@ -1406,7 +1463,8 @@ def render_orgunit_analysis_page(
             "Im aktuellen Filterkontext sind keine zugeordneten Organisationseinheiten sichtbar. Die fachliche Hauptanalyse bleibt deshalb leer; der Datenqualitätsblock unten zeigt den verbleibenden Rest transparent an.",
             tone="warning",
         )
-        _render_data_quality_block(filtered_df, mapped_df, unmapped_df, metric_view, metric_config, compact)
+        _render_data_quality_block(filtered_df, mapped_df, unmapped_df, metric_view, metric_config, compact, **({"export_tables": export_tables} if export_tables is not None else {}))
+        finish_export([])
         return
 
     # --- Top filters ---
@@ -1504,6 +1562,9 @@ def render_orgunit_analysis_page(
 
     if not display_orgs:
         st.info("Im aktuellen Filterkontext sind keine Organisationseinheiten für die Analyse verfügbar.")
+        _render_data_quality_block(filtered_df, mapped_df, unmapped_df, metric_view, metric_config, compact,
+                                       **({"export_tables": export_tables} if export_tables is not None else {})) if export_tables is not None else None
+        finish_export([])
         return
 
     # --- Rangliste (display_orgs order follows selected sort; values follow global metric) ---
@@ -1523,9 +1584,10 @@ def render_orgunit_analysis_page(
             value_label=value_label,
             comparison_label=comparison_label,
             departure_events=filtered_departure_events,
+            **({"export_tables": export_tables} if export_tables is not None else {}),
         )
     else:
-        _render_org_rangliste(mapped_df, metric_view, metric_config, compact, display_orgs, value_label=value_label)
+        _render_org_rangliste(mapped_df, metric_view, metric_config, compact, display_orgs, value_label=value_label, **({"export_tables": export_tables} if export_tables is not None else {}))
 
     # --- Zusammensetzung (all three blocks use same display_orgs) ---
     if selected_top_n == "Alle":
@@ -1554,6 +1616,7 @@ def render_orgunit_analysis_page(
             comparison_active=comparison_active,
             value_label=value_label,
             comparison_label=comparison_label,
+            **({"export_tables": export_tables} if export_tables is not None else {}),
         )
 
     # --- Personalstruktur nach Tarifgruppe (folgt dem globalen Metrik-Switch, keine EUR-Werte) ---
@@ -1571,17 +1634,22 @@ def render_orgunit_analysis_page(
         comparison_active=comparison_active,
         value_label=value_label,
         comparison_label=comparison_label,
+    **({"export_tables": export_tables} if export_tables is not None else {}),
     )
 
     if comparison_active and not filtered_departure_events.empty:
         reason_df = _build_departure_reason_summary(filtered_departure_events)
         if not reason_df.empty:
+            if export_tables is not None:
+                export_tables["Abgänge_nach_Grund"] = reason_df.copy()
             with st.expander("Simulierte Abgänge nach Grund", expanded=False):
                 dataframe_compat(reason_df, width="stretch", hide_index=True)
 
     # --- Datenqualität (always full filtered_df, never limited by top_n) ---
     with st.expander("Datenqualität", expanded=False):
-        _render_data_quality_block(filtered_df, mapped_df, unmapped_df, metric_view, metric_config, compact)
+        _render_data_quality_block(filtered_df, mapped_df, unmapped_df, metric_view, metric_config, compact, **({"export_tables": export_tables} if export_tables is not None else {}))
+
+    finish_export(display_orgs)
 
     with st.expander("Hinweise zur Methodik", expanded=False):
         if methodology_text:

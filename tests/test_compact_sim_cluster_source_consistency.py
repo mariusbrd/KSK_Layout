@@ -454,6 +454,12 @@ def test_page7_recomputes_when_cluster_signature_changes(monkeypatch):
             or SimpleNamespace(
                 future_snapshot_df=pd.DataFrame({"PersNr": ["1"], "Organisationseinheit": ["A"]}),
                 metadata={},
+                audit_tables={},
+                abgaenge_result={"events_person_level": pd.DataFrame({"persnr": ["000002"], "headcount_change": [-1],
+                    "mak_change": [-0.5], "reason_code": ["QUIT"], "event_date": [pd.Timestamp("2026-03-27")],
+                    "Organisationseinheit": ["A"]})},
+                zugaenge_result={"events": pd.DataFrame({"persnr": ["NH_1"], "count": [1], "mak": [1.0],
+                    "type": ["New_Hire"], "date": [pd.Timestamp("2026-03-27")], "org_unit": ["A"]})},
             )
         ),
     )
@@ -483,3 +489,31 @@ def test_page7_recomputes_when_cluster_signature_changes(monkeypatch):
 
     assert calls["simulate"] == 1
     assert st.session_state["compact_sim_cluster_source_signature"] == "cluster-sig-new"
+    context = st.session_state["compact_sim_event_context"]
+    assert context["run_signature"] == st.session_state["compact_sim_signature"]
+    assert context["departure_events"]["persnr"].tolist() == ["000002"]
+    assert context["accession_events"]["persnr"].tolist() == ["NH_1"]
+    summary = st.session_state["compact_sim_event_summary"]
+    assert summary["run_signature"] == context["run_signature"]
+    assert summary["annual_oe"]["Abgänge"].sum() == 1
+    assert summary["annual_cluster"]["MAK-Veränderung"].sum() == 0.5
+    # A rerun with no compute button reuses the same stored context.
+    monkeypatch.setattr(module.st, "button", lambda *args, **kwargs: False)
+    module.main()
+    assert calls["simulate"] == 1
+    assert st.session_state["compact_sim_event_context"] is context
+    assert st.session_state["compact_sim_event_summary"] is summary
+    # An explicit new computation replaces all event outputs with the new mapping.
+    monkeypatch.setattr(module.st, "button", lambda label, *args, **kwargs: "Simulation" in str(label))
+    monkeypatch.setattr(module, "_get_simulation_cluster_context", lambda source_summary: (
+        _active_source("cluster-sig-next"),
+        ClusterMappingBundle(oe_map={"A": "New Cluster"}, source_signature="cluster-sig-next"),
+        "cluster-sig-next"))
+    module.main()
+    assert calls["simulate"] == 2  # One call per explicitly requested computation.
+    new_context = st.session_state["compact_sim_event_context"]
+    new_summary = st.session_state["compact_sim_event_summary"]
+    assert new_context is not context and new_summary is not summary
+    assert new_summary["run_signature"] == new_context["run_signature"] == st.session_state["compact_sim_signature"]
+    assert new_summary["run_signature"] != summary["run_signature"]
+    assert new_summary["annual_cluster"]["OE-Cluster"].unique().tolist() == ["New Cluster"]

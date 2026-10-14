@@ -485,11 +485,15 @@ def main() -> None:
         compact=True,
     )
 
-    tabs = st.tabs(["Prognose Abgänge"])
+    tabs = st.tabs(["Prognose Abgänge", "Prognose Zugänge"])
 
     with tabs[0]:
         render_section_intro("Prognose Abgänge", "Spiegelt die bestehende Abgänge-Seite; Ruhend bleibt hier wie dort fachlich deaktiviert.")
         draft["abgaenge"] = _render_abgaenge(draft["abgaenge"], "sim_params_abgaenge", include_ruhend=False, active_org_units=active_org_units, valid_jfs=valid_jfs)
+
+    with tabs[1]:
+        render_section_intro("Prognose Zugänge", "Azubis, Trainees und Neueinstellungen einzeln aktivieren oder deaktivieren. Änderungen mit 'Parameter speichern' übernehmen.")
+        draft["zugaenge"] = _render_zugaenge(draft["zugaenge"], "sim_params_zugaenge")
 
     st.divider()
     c_save, c_note = st.columns([1, 3])
