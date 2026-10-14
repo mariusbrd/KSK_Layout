@@ -835,7 +835,8 @@ def run_forecast_abgaenge(
                 eligible = eligible.sort_index()
                 period_year = period.start.year
                 annual_probs = _select_quit_probs_frame(eligible, params, period_year)
-                probs = _annual_to_period_rates(annual_probs, period_days)
+                quit_period_days = period_days + 1
+                probs = _annual_to_period_rates(annual_probs, quit_period_days)
                 draws = rng_quit.random(len(eligible))
                 quit_ids = eligible.index[draws < probs].tolist()
                 quit_audit_rows.extend({
@@ -844,8 +845,8 @@ def run_forecast_abgaenge(
                     "exposures": int(mask.sum()),
                     "expected": float(probs[mask].sum()),
                     "variance": float((probs[mask] * (1 - probs[mask])).sum()),
-                    "annual_rate_exposure": float(annual_probs[mask].sum() * period_days / 365.25),
-                    "person_years": float(mask.sum() * period_days / 365.25),
+                    "annual_rate_exposure": float(annual_probs[mask].sum() * quit_period_days / 365.25),
+                    "person_years": float(mask.sum() * quit_period_days / 365.25),
                     "observed": int((draws[mask] < probs[mask]).sum()),
                 } for org in eligible["Organisationseinheit"].dropna().unique()
                   for mask in [eligible["Organisationseinheit"].eq(org).to_numpy()])

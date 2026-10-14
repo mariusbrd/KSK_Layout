@@ -103,6 +103,27 @@ FREQ = "M"
 EMPTY_ATZ = pd.DataFrame(columns=["PersNr", "Phase", "Beginn", "Ende", "Ende ATZ Vertrag"])
 
 
+def test_quit_audit_uses_inclusive_calendar_days_for_months_and_quarters():
+    employee = pd.DataFrame([_make_employee("101")])
+    params = _params_only_quit(rate_base=0.05)
+
+    for start, end, freq, days in [
+        ("2026-01-01", "2026-01-31", "M", 31),
+        ("2026-02-01", "2026-02-28", "M", 28),
+        ("2028-02-01", "2028-02-29", "M", 29),
+        ("2026-01-01", "2026-03-31", "Q", 90),
+    ]:
+        result = run_forecast_abgaenge(
+            employee, EMPTY_ATZ, pd.Timestamp(start), pd.Timestamp(end), freq, params
+        )
+        audit = result["tables"]["quit_probability_audit"]
+        expected = 1 - (1 - 0.05) ** (days / 365.25)
+        assert len(audit) == 1
+        assert np.isclose(audit["expected"].iloc[0], expected)
+        assert np.isclose(audit["person_years"].iloc[0], days / 365.25)
+        assert np.isclose(audit["annual_rate_exposure"].iloc[0], 0.05 * days / 365.25)
+
+
 def test_quit_audit_uses_matrix_rates_and_matches_observed_events():
     employees = pd.DataFrame([
         _make_employee("101", org="A"),

@@ -250,7 +250,7 @@ def render_org_simulation_yearly(summary: dict | None, *, run_signature: str | N
             view["atz_chart"] = build_atz_chart_data(view["atz_evaluation"], dimension=dimension)
     with export_column:
         from utils.org_yearly_view_export import render_yearly_view_export
-        render_yearly_view_export(summary, view)
+        render_yearly_view_export(summary, view, stock_view=stock_view)
     for row in view["periods"].itertuples(index=False):
         if row.Teiljahr:
             st.caption(f"{row.Jahr}: Teiljahr {row.Von:%d.%m.%Y} bis {row.Bis:%d.%m.%Y}.")
