@@ -14,7 +14,7 @@ from utils.lineage_code import (
 from utils.lineage_registry import get_lineage_spec
 
 
-EXPECTED_FUNCTION_REFERENCE_COUNT = 72
+EXPECTED_FUNCTION_REFERENCE_COUNT = 95  # Includes the selected yearly-view export.
 
 
 def test_function_lineage_resolves_registry_references():

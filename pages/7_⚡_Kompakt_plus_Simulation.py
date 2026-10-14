@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import html as _html
 import json
+from copy import deepcopy
 from pathlib import Path
 import sys
 
@@ -46,6 +47,7 @@ from utils.status_quo_baseline import (
 )
 from utils.i18n import t
 from utils.simulation_params import get_compact_plus_params
+from utils.org_simulation_events import build_simulation_event_summary
 from utils.settings_loader import get_setting
 
 
@@ -94,6 +96,8 @@ def _clear_simulation_cache():
         "compact_sim_status_quo_signature",
         "compact_sim_metadata",
         "compact_sim_audit_tables",
+        "compact_sim_event_context",
+        "compact_sim_event_summary",
         "compact_sim_target_date_cached",
         "compact_sim_abgaenge_params",
         "compact_sim_zugaenge_params",
@@ -103,6 +107,27 @@ def _clear_simulation_cache():
         "compact_sim_export_bytes",
     ]:
         st.session_state.pop(key, None)
+
+
+def _build_simulation_event_context(sim_result, cluster_mapping_bundle, run_signature, *,
+                                    baseline_snapshot=None, final_snapshot=None, zugaenge_params=None, run_settings=None):
+    """Keep unaggregated outputs and mapping from one run, without recomputation."""
+    context = {
+        "run_signature": run_signature,
+        "metadata": deepcopy(sim_result.metadata),
+        "departure_events": deepcopy(sim_result.abgaenge_result.get("events_person_level", pd.DataFrame())),
+        "accession_events": deepcopy(sim_result.zugaenge_result.get("events", pd.DataFrame())),
+        "cluster_mapping": deepcopy(cluster_mapping_bundle.to_dict()),
+    }
+    if baseline_snapshot is not None:
+        context["baseline_snapshot"] = baseline_snapshot.copy(deep=True)
+    if final_snapshot is not None:
+        context["final_snapshot"] = final_snapshot.copy(deep=True)
+    if zugaenge_params is not None:
+        context["zugaenge_params"] = deepcopy(zugaenge_params)
+    if run_settings is not None:
+        context["run_settings"] = deepcopy(run_settings)
+    return context
 
 
 def _get_simulation_cluster_context(summary):
@@ -586,6 +611,15 @@ def main():
                     build_status_quo_snapshot(snapshot_df, base_date)
                 )
                 computed_signature = draft_signature
+                event_context = _build_simulation_event_context(
+                    sim_result, cluster_mapping_bundle, computed_signature,
+                    baseline_snapshot=status_quo_prepared_df, final_snapshot=prepared_df,
+                    zugaenge_params=zugaenge_params,
+                    run_settings={"exclusions": get_setting("exclusions", {})},
+                )
+                event_summary = build_simulation_event_summary(
+                    event_context, expected_run_signature=computed_signature
+                )
                 st.session_state["compact_sim_signature"] = computed_signature
                 st.session_state["compact_sim_cluster_source_signature"] = cluster_source_signature
                 st.session_state["compact_sim_prepared_df"] = prepared_df
@@ -593,6 +627,8 @@ def main():
                 st.session_state["compact_sim_status_quo_signature"] = computed_signature
                 st.session_state["compact_sim_metadata"] = sim_result.metadata
                 st.session_state["compact_sim_audit_tables"] = sim_result.audit_tables
+                st.session_state["compact_sim_event_context"] = event_context
+                st.session_state["compact_sim_event_summary"] = event_summary
                 st.session_state["compact_sim_target_date_cached"] = target_date
                 st.session_state["compact_sim_abgaenge_params"] = abgaenge_params
                 st.session_state["compact_sim_zugaenge_params"] = zugaenge_params

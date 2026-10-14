@@ -50,6 +50,42 @@ def _step(
 
 
 TRANSFORMATION_STEPS: dict[str, TransformationStep] = {
+    "stock.reconcile": _step(
+        "stock.reconcile", "Abgänge-only Bestand mit dem Endwert abstimmen",
+        "Der Verlauf beginnt beim gespeicherten IST und berücksichtigt alle Abgangs- und Kapazitätsereignisse. Nur bei erfolgreichem Endwertabgleich wird eine Bestandskurve ausgegeben.",
+        ("baseline_snapshot", "final_snapshot", "departure_events", "zugaenge_params"),
+        "Ungerundeter Ausgangsbestand plus kumulierte Veränderungen nach gespeicherter Personen-/Planstellenverteilung; Endwert insgesamt und je OE/Cluster vergleichen. Köpfe exakt, MAK mit maximal 0,000001 Differenz. Ungeklärte Effekte personenbezogen ausweisen; keine Korrekturwerte ohne belegten Zeitpunkt.",
+        ("Bestand_Überleitung_vollständig", "Bestand_Endwertabgleich", "Bestand_Auswahl_Grafik"),
+        "utils/org_simulation_reconciliation.py:build_departure_stock_bridge; components/org_simulation_stock.py:render_departure_stock",
+        "Aktive Zugänge, unbekannte Ereignisse, negative Bestände, mehrdeutige Zuordnungen und Endwertabweichungen verhindern eine bestätigte Bestandsdarstellung.",
+    ),
+    "events.normalize": _step(
+        "events.normalize", "Gespeicherte Ereignisse zuordnen und klassifizieren",
+        "Die Auswertung verwendet Ereignisse und Cluster-Zuordnung genau eines gespeicherten Laufs. Personalabgänge, externe Zugänge, interne Wechsel und reine Kapazitätsänderungen bleiben getrennt.",
+        ("departure_events", "accession_events", "cluster_mapping", "run_signature"),
+        "Datum und signierte Kopf-/MAK-Änderungen vereinheitlichen; OE auf gespeicherten Cluster abbilden; Abgänge nur für tatsächliche Personalabgangsarten zählen.",
+        ("events", "Jahr", "OE-Cluster", "Kategorie", "Abgänge", "Zugänge"),
+        "utils/org_simulation_events.py:normalize_simulation_events",
+        "Laufkennung prüfen; ungültige Werte ablehnen; nicht zugeordnete OEs sichtbar behalten.",
+    ),
+    "events.aggregate": _step(
+        "events.aggregate", "Jahres- und Gesamtsummen bilden",
+        "Die bereits erzeugten Ereignisse werden nach Jahr, Organisation und Ereignisart aufsummiert. Die Simulation wird dabei nicht erneut ausgeführt und es werden keine Jahresendbestände rekonstruiert.",
+        ("events", "Jahr", "Organisationseinheit", "OE-Cluster", "Ereignisart"),
+        "Summe der signierten Kopf-/MAK-Änderungen und der Zu-/Abgänge je Jahr, OE oder Cluster, Kategorie und Ereignisart; für Gesamtsummen ohne Jahresgruppierung.",
+        ("annual_oe", "annual_cluster", "total_oe", "total_cluster"),
+        "utils/org_simulation_events.py:aggregate_simulation_events",
+        "Jahres-, OE-, Cluster- und Gesamtsummen stimmen mit derselben Ereignisbasis überein.",
+    ),
+    "events.select": _step(
+        "events.select", "Aktuelle Jahresauswahl darstellen",
+        "Jahre, Organisationen und Ereignisarten werden für diesen Bereich unabhängig von der Bestandsansicht ausgewählt. Vollständige Laufdaten bleiben daneben im Export verfügbar.",
+        ("annual_oe", "annual_cluster", "Jahresauswahl", "Laufzeitraum"),
+        "Gespeicherte Summen auf die Auswahl einschränken; Matrix und Diagramm bilden; ereignisfreie Jahre mit Null und angebrochene Jahre mit tatsächlichem Zeitraum ausweisen.",
+        ("Jahresauswahl_Matrix", "Jahresauswahl_Grafik", "Jahresauswahl_Details", "Jahreszeiträume"),
+        "components/org_simulation_yearly.py:build_yearly_view; utils/org_simulation_export.py:append_yearly_export",
+        "Anzeige und Excel nutzen dieselben Tabellen; vollständige Summen bleiben unabhängig von der Auswahl.",
+    ),
     "input.excel_headers": _step(
         "input.excel_headers",
         "Excel-Eingaben erfassen",
@@ -429,6 +465,9 @@ TRACE_STEP_IDS_BY_LINEAGE: dict[str, tuple[str, ...]] = {
     "10-05": ("input.excel_headers", "prep.normalize_keys", "prep.combine_snapshot", "prep.capacity_cost", "compact.prepare_reporting", "simulation.future_snapshot", "prep.apply_filters", "analysis.split_composition", "export.same_dataframe"),
     "10-06": ("input.excel_headers", "prep.normalize_keys", "prep.combine_snapshot", "prep.capacity_cost", "compact.prepare_reporting", "simulation.future_snapshot", "prep.apply_filters", "analysis.group_metric", "analysis.sort_top", "simulation.departure_events", "export.same_dataframe"),
     "10-07": ("input.excel_headers", "prep.normalize_keys", "prep.combine_snapshot", "prep.capacity_cost", "compact.prepare_reporting", "simulation.future_snapshot", "prep.apply_filters", "analysis.group_metric", "analysis.split_composition", "simulation.compare_status_quo", "simulation.departure_events", "export.same_dataframe"),
+    "10-08": ("input.excel_headers", "prep.normalize_keys", "prep.combine_snapshot", "prep.capacity_cost", "compact.prepare_reporting", "simulation.future_snapshot", "prep.apply_filters", "analysis.group_metric", "simulation.compare_status_quo", "export.same_dataframe"),
+    "10-09": ("events.normalize", "events.aggregate", "events.select", "export.same_dataframe"),
+    "10-10": ("events.normalize", "events.aggregate", "stock.reconcile", "export.same_dataframe"),
     "11-01": ("input.excel_headers", "prep.normalize_keys", "prep.combine_snapshot", "prep.capacity_cost", "compact.prepare_reporting", "simulation.future_snapshot", "prep.apply_filters", "export.same_dataframe"),
     "11-02": ("input.excel_headers", "prep.normalize_keys", "prep.combine_snapshot", "prep.capacity_cost", "compact.prepare_reporting", "simulation.future_snapshot", "prep.apply_filters", "analysis.group_metric", "analysis.sort_top", "export.same_dataframe"),
     "11-03": ("input.excel_headers", "prep.normalize_keys", "prep.combine_snapshot", "prep.capacity_cost", "compact.prepare_reporting", "simulation.future_snapshot", "prep.apply_filters", "analysis.split_composition", "export.same_dataframe"),
