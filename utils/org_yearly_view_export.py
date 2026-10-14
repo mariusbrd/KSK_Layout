@@ -53,9 +53,10 @@ def build_stock_slide_table(summary, view, *, metric=None):
     previous = {year: float(yearly.get(year - 1, start)) for year in years}
     add("Bestand", "Rückgang gegenüber Vorjahresstichtag", {year: previous[year] - stocks[year] for year in years})
 
+    retirement_types = ("RETIREMENT", "ATZ_END", "ATZ_AR_TO_FR") if metric == "MAK" else ("RETIREMENT", "ATZ_END")
     categories = [
         ("Fluktuation", "Abgänge durch Fluktuation", ("QUIT",)),
-        ("Renteneintritte (inkl. ATZ)", "Renteneintritte (inkl. ATZ)", ("RETIREMENT", "ATZ_END")),
+        ("Renteneintritte (inkl. ATZ)", "Renteneintritte (inkl. ATZ)", retirement_types),
         ("Renteneintritte (inkl. ATZ)", "Rente (direkt)", ("RETIREMENT",)),
         ("Renteneintritte (inkl. ATZ)", "Rente nach ATZ-Vertragsende", ("ATZ_END",)),
         ("Weitere Abgänge", LABELS.get("Azubi_Exit", "Azubi: Nichtübernahme"), ("Azubi_Exit",)),
@@ -93,7 +94,7 @@ def prepare_yearly_view_export(summary, view, *, stock=False, stock_view=None):
         append_stock_slide_tables(tables, summary, view)
         context["Folienvorlage"] = {
             "Kennzahlen": ["MAK", "Köpfe"], "Ebene": view["level"],
-            "Bedeutung": "Positive Abgangswerte sind Verluste aus der abgestimmten Berichtswirkung. Rückkehr aus Ruhend ist negativ. Der Bestandsrückgang kann zusätzlich technische Prognosebasis- und undatierte Aufbereitungseffekte enthalten.",
+            "Bedeutung": "Positive Abgangswerte sind Verluste aus der abgestimmten Berichtswirkung. Renteneintritte inkl. ATZ enthalten bei MAK auch die ATZ-Freistellung; bei Köpfen erst das Vertragsende. Die separate ATZ-Freistellungszeile ist eine Aufschlüsselung und darf nicht nochmals addiert werden. Rückkehr aus Ruhend ist negativ. Der Bestandsrückgang kann zusätzlich technische Prognosebasis- und undatierte Aufbereitungseffekte enthalten.",
         }
         append_yearly_export(tables, context, summary, None)
     else:

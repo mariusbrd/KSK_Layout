@@ -8,7 +8,7 @@ from test_org_simulation_reconciliation import _bridge_context
 from components.org_simulation_yearly import build_yearly_view
 from utils.org_simulation_events import build_simulation_event_summary
 from utils.org_simulation_export import build_org_simulation_export_bytes, export_fingerprint
-from utils.org_yearly_view_export import prepare_yearly_view_export
+from utils.org_yearly_view_export import build_stock_slide_table, prepare_yearly_view_export
 
 
 @pytest.mark.parametrize("level,metric", [("Organisationseinheit", "Köpfe"), ("OE-Cluster", "MAK")])
@@ -56,12 +56,14 @@ def test_stock_slide_table_uses_reporting_events_and_separates_departure_reasons
         yearly = events.loc[events["Jahr"].eq(year)]
         quit_loss = -yearly.loc[yearly["Ereignisart"].eq("QUIT"), "MAK-Veränderung"].sum()
         retirement_loss = -yearly.loc[
-            yearly["Ereignisart"].isin(["RETIREMENT", "ATZ_END"]), "MAK-Veränderung"
+            yearly["Ereignisart"].isin(["RETIREMENT", "ATZ_END", "ATZ_AR_TO_FR"]), "MAK-Veränderung"
         ].sum()
         assert slide.loc["Abgänge durch Fluktuation", year] == pytest.approx(quit_loss)
         assert slide.loc["Renteneintritte (inkl. ATZ)", year] == pytest.approx(retirement_loss)
         assert slide.loc["Renteneintritte (inkl. ATZ)", year] == pytest.approx(
-            slide.loc["Rente (direkt)", year] + slide.loc["Rente nach ATZ-Vertragsende", year]
+            slide.loc["Rente (direkt)", year]
+            + slide.loc["Rente nach ATZ-Vertragsende", year]
+            + slide.loc["ATZ-Freistellung", year]
         )
     assert slide.loc["Verbleibender heutiger Bestand", "Start"] == pytest.approx(
         summary["stock_reconciliation"]["annual"].loc[
@@ -80,6 +82,29 @@ def test_stock_slide_table_uses_reporting_events_and_separates_departure_reasons
         assert headcount.loc["Abgänge durch Fluktuation", year] == pytest.approx(
             -yearly.loc[yearly["Ereignisart"].eq("QUIT"), "Köpfe-Veränderung"].sum()
         )
+        assert headcount.loc["Renteneintritte (inkl. ATZ)", year] == pytest.approx(
+            headcount.loc["Rente (direkt)", year] + headcount.loc["Rente nach ATZ-Vertragsende", year]
+        )
+        assert headcount.loc["ATZ-Freistellung", year] == 0
+
+    # The reference run has no positive ATZ release in this selection. Add a
+    # reporting event to verify the MAK subtotal includes that capacity loss.
+    release = events.iloc[[0]].copy()
+    release["Jahr"] = years[0]
+    release["Ereignisart"] = "ATZ_AR_TO_FR"
+    release["MAK-Veränderung"] = -1.25
+    release["Köpfe-Veränderung"] = 0
+    changed = dict(summary)
+    changed["stock_reconciliation"] = dict(summary["stock_reconciliation"])
+    changed["stock_reconciliation"]["reporting_events"] = pd.concat([events, release], ignore_index=True)
+    mak_with_release = build_stock_slide_table(changed, view, metric="MAK").set_index("Kennzahl")
+    heads_with_release = build_stock_slide_table(changed, view, metric="Köpfe").set_index("Kennzahl")
+    assert mak_with_release.loc["Renteneintritte (inkl. ATZ)", years[0]] == pytest.approx(
+        slide.loc["Renteneintritte (inkl. ATZ)", years[0]] + 1.25
+    )
+    assert heads_with_release.loc["Renteneintritte (inkl. ATZ)", years[0]] == headcount.loc[
+        "Renteneintritte (inkl. ATZ)", years[0]
+    ]
 
     source = summary["annual_oe"]
     event_view = build_yearly_view(
