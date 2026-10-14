@@ -5,6 +5,7 @@ Streamlit page: Organisationseinheiten-Analyse (IST).
 from __future__ import annotations
 
 from pathlib import Path
+from numbers import Real
 import sys
 
 import pandas as pd
@@ -243,8 +244,11 @@ def _build_departure_org_summary(events: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=columns)
 
     work = events.copy()
-    if ORG_COL not in work.columns:
-        work[ORG_COL] = ORG_NOT_ASSIGNED
+    if ORG_COL in work:
+        work[ORG_COL] = work[ORG_COL].map(
+            lambda value: str(int(value)) if isinstance(value, Real) and pd.notna(value)
+            and float(value).is_integer() else value)
+    work = _normalize_org_column(work)
     if "persnr" not in work.columns:
         work["persnr"] = pd.NA
 
@@ -1424,8 +1428,6 @@ def render_orgunit_analysis_page(
         from components.org_simulation_yearly import render_org_simulation_yearly
         yearly_view = render_org_simulation_yearly(event_summary, run_signature=export_context.get("Laufkennung"))
         stock_view = yearly_view.get("stock_view") if yearly_view is not None else None
-        if stock_view is not None:
-            yearly_view = None
         render_org_simulation_export(
             export_tables, export_context, current=filtered_df, baseline=comparison_filtered_df,
             event_summary=event_summary, yearly_view=yearly_view,

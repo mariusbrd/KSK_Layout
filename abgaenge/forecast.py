@@ -133,14 +133,15 @@ def _build_atz_pivot(df_atz: pd.DataFrame) -> pd.DataFrame:
 
 
 def _enforce_min_ar_duration(
-    atz_pivot: pd.DataFrame, min_ar_months: int, min_fr_months: int
+    atz_pivot: pd.DataFrame, min_ar_months: int, min_fr_months: int,
+    already_in_fr: set[str] | None = None,
 ) -> pd.DataFrame:
     """Enforce minimum AR duration on existing ATZ cases.
 
     If an existing case has fr_begin - ar_begin < min_ar_months, shift
     fr_begin (and fr_end / contract_end) so that the AR phase meets the
-    configured minimum.  New cases created by _schedule_new_atz_cases
-    already respect this, so this only corrects legacy data.
+    configured minimum. A person already released at the forecast start keeps
+    the original dates. New cases already respect the configured duration.
     """
     if atz_pivot.empty:
         return atz_pivot
@@ -152,6 +153,8 @@ def _enforce_min_ar_duration(
             pivot[col] = pd.to_datetime(pivot[col], errors="coerce")
 
     mask_valid = pivot["ar_begin"].notna() & pivot["fr_begin"].notna()
+    if already_in_fr:
+        mask_valid &= ~pivot[COL_PERSNR].isin(already_in_fr)
     if not mask_valid.any():
         return pivot
 
@@ -364,6 +367,7 @@ def _schedule_new_atz_cases(
     params: Dict[str, Any],
     period: PeriodInfo,
     rng: np.random.RandomState,
+    audit_rows: List[Dict[str, Any]] | None = None,
 ) -> pd.DataFrame:
     atz_params = params.get("atz", {})
     eligible_age_min = int(atz_params.get("atz_eligible_age_min", 55))
@@ -394,6 +398,16 @@ def _schedule_new_atz_cases(
     # Determine individual probabilities and aggregate expected value
     probs = _select_atz_probs_frame(eligible, params, period_fraction)
     expected = float(np.sum(probs))
+    audit_start = len(audit_rows) if audit_rows is not None else 0
+    if audit_rows is not None:
+        for org in sorted(eligible["Organisationseinheit"].astype(str).unique()):
+            org_mask = eligible["Organisationseinheit"].astype(str).eq(org).to_numpy()
+            audit_rows.append({"period_start": period.start, "period_end": period.end,
+                               "Jahr": period.start.year, "Organisationseinheit": org,
+                               "Berechtigte Personen": int(org_mask.sum()),
+                               "Berechtigte mit positiver Quote": int((probs[org_mask] > 0).sum()),
+                               "Erwartete neue ATZ-Fälle": float(probs[org_mask].sum()),
+                               "Neue ATZ-Fälle": 0})
     
     if expected <= 0:
         return atz_pivot
@@ -421,6 +435,10 @@ def _schedule_new_atz_cases(
         weights=p_normalized,
         random_state=rng,
     ).index.tolist()
+    if audit_rows is not None:
+        selected_orgs = eligible.loc[chosen, "Organisationseinheit"].astype(str).value_counts()
+        for row in audit_rows[audit_start:]:
+            row["Neue ATZ-Fälle"] = int(selected_orgs.get(row["Organisationseinheit"], 0))
 
     new_rows = []
     for persnr in chosen:
@@ -432,6 +450,8 @@ def _schedule_new_atz_cases(
         contract_end = fr_end
         new_rows.append({
             COL_PERSNR: persnr,
+            "atz_origin": "Simulation",
+            "Organisationseinheit": str(eligible.at[persnr, "Organisationseinheit"]),
             "ar_begin": ar_start,
             "ar_end": ar_end,
             "fr_begin": fr_start,
@@ -628,9 +648,12 @@ def run_forecast_abgaenge(
     # ATZ current FR at start
     atz_fr_active = set()
     if not df_atz.empty and COL_ATZ_PHASE in df_atz.columns:
-        fr_rows = df_atz[df_atz[COL_ATZ_PHASE] == "FR"]
+        phases = df_atz[COL_ATZ_PHASE].astype(str).str.strip().str.casefold()
+        fr_rows = df_atz[phases.isin(("fr", "freistellungsphase", "passivphase"))].copy()
+        fr_begin = pd.to_datetime(fr_rows[COL_ATZ_BEGINN], errors="coerce")
+        fr_end = pd.to_datetime(fr_rows[COL_ATZ_ENDE], errors="coerce")
         fr_active = fr_rows[
-            (fr_rows[COL_ATZ_BEGINN] <= start_date) & (fr_rows[COL_ATZ_ENDE] >= start_date)
+            (fr_begin <= start_date) & (fr_end >= start_date)
         ]
         atz_fr_active = set(fr_active[COL_PERSNR].dropna().astype(str).str.split('.').str[0].str.zfill(6))
 
@@ -650,6 +673,7 @@ def run_forecast_abgaenge(
 
     if "MAK_Calculated" in df_state.columns:
         df_state["mak"] = pd.to_numeric(df_state["MAK_Calculated"], errors="coerce").fillna(0.0)
+        df_state.loc[df_state["atz_fr_active"], "mak"] = 0.0
     else:
         raw_mak = (bsgrd / 100.0) * soll_fte_factor
         df_state["mak"] = np.where(
@@ -686,11 +710,18 @@ def run_forecast_abgaenge(
     
     min_fr_months = int(round(float(atz_params.get("atz_duration_fr_years", 2.5)) * 12))
         
-    atz_pivot = _enforce_min_ar_duration(atz_pivot, min_ar_months, min_fr_months)
+    atz_pivot["atz_original_fr_begin"] = atz_pivot["fr_begin"]
+    atz_pivot["atz_original_contract_end"] = atz_pivot["contract_end"]
+    atz_pivot = _enforce_min_ar_duration(atz_pivot, min_ar_months, min_fr_months, atz_fr_active)
+    atz_pivot["atz_already_fr_at_start"] = atz_pivot[COL_PERSNR].isin(atz_fr_active)
+    atz_pivot["atz_origin"] = "Ausgangsbestand"
+    atz_pivot["Organisationseinheit"] = atz_pivot[COL_PERSNR].map(df_state["Organisationseinheit"])
 
     periods = _periods(start_date, end_date, freq)
     
     events: List[Dict[str, Any]] = []
+    atz_audit_rows: List[Dict[str, Any]] = []
+    quit_audit_rows: List[Dict[str, Any]] = []
 
     for period in periods:
         period_days = max(1, (period.end - period.start).days)
@@ -706,7 +737,7 @@ def run_forecast_abgaenge(
         # A. ATZ Scheduling (uses rng_atz)
         if params.get("components", {}).get("atz", True):
             # Sort for deterministic selection? _schedule_new_atz_cases should sort its mask.
-            atz_pivot = _schedule_new_atz_cases(df_state, atz_pivot, params, period, rng_atz)
+            atz_pivot = _schedule_new_atz_cases(df_state, atz_pivot, params, period, rng_atz, atz_audit_rows)
             df_state["in_atz"] = df_state.index.isin(atz_pivot[COL_PERSNR].unique())
 
         # B. ATZ Status Change (Deterministic based on pivot)
@@ -714,9 +745,10 @@ def run_forecast_abgaenge(
             ar_to_fr, atz_end = _get_atz_events_from_schedule(atz_pivot, period.start, period.end)
 
             for persnr in sorted(ar_to_fr): # Deterministic order
-                if persnr in df_state.index and df_state.at[persnr, "active"]:
+                if (persnr in df_state.index and df_state.at[persnr, "active"]
+                        and not df_state.at[persnr, "atz_fr_active"]):
                     current_mak = float(df_state.at[persnr, "mak"])
-                    mak_change = -current_mak if current_mak > 0.001 else -1.0 
+                    mak_change = -current_mak
                     age = float(df_state.at[persnr, "age"])
                     tenure = float(df_state.at[persnr, "tenure"])
                     org_unit = str(df_state.at[persnr, "Organisationseinheit"])
@@ -806,6 +838,17 @@ def run_forecast_abgaenge(
                 probs = _annual_to_period_rates(annual_probs, period_days)
                 draws = rng_quit.random(len(eligible))
                 quit_ids = eligible.index[draws < probs].tolist()
+                quit_audit_rows.extend({
+                    "Jahr": period_year,
+                    "Organisationseinheit": str(org),
+                    "exposures": int(mask.sum()),
+                    "expected": float(probs[mask].sum()),
+                    "variance": float((probs[mask] * (1 - probs[mask])).sum()),
+                    "annual_rate_exposure": float(annual_probs[mask].sum() * period_days / 365.25),
+                    "person_years": float(mask.sum() * period_days / 365.25),
+                    "observed": int((draws[mask] < probs[mask]).sum()),
+                } for org in eligible["Organisationseinheit"].dropna().unique()
+                  for mask in [eligible["Organisationseinheit"].eq(org).to_numpy()])
 
                 for persnr in quit_ids:
                     mak_change = -float(df_state.at[persnr, "mak"])
@@ -906,7 +949,10 @@ def run_forecast_abgaenge(
     )
     
     tables = {
-        "atz_pivot": atz_pivot,
+        "atz_pivot": atz_pivot[[COL_PERSNR, "ar_begin", "ar_end", "fr_begin", "fr_end", "contract_end"]].copy(),
+        "atz_schedule_audit": atz_pivot.copy(),
+        "atz_entry_audit": pd.DataFrame(atz_audit_rows),
+        "quit_probability_audit": pd.DataFrame(quit_audit_rows),
         "atz": events_df[events_df["reason_code"].isin([REASON_ATZ_AR_TO_FR, REASON_ATZ_END])] if not events_df.empty else pd.DataFrame(),
         "retirement": events_df[events_df["reason_code"] == REASON_RETIREMENT] if not events_df.empty else pd.DataFrame(),
         "quit": events_df[events_df["reason_code"] == REASON_QUIT] if not events_df.empty else pd.DataFrame(),

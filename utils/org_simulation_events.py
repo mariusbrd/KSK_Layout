@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 UNASSIGNED = "Nicht zugeordnet"
-RECONCILIATION_VERSION = 4
+RECONCILIATION_VERSION = 6
 DEPARTURES = {"QUIT", "RETIREMENT", "ATZ_END", "Azubi_Exit"}
 ENTRIES = {"New_Hire", "Trainee_Hire", "Azubi_Hire"}
 INTERNAL = {"Azubi_Conversion_In", "Azubi_Conversion_Out"}
@@ -83,6 +83,7 @@ def build_simulation_event_summary(context: dict, *, expected_run_signature: str
     events = normalize_simulation_events(context, expected_run_signature=expected_run_signature)
     summary = {"run_signature": context["run_signature"],
                "reconciliation_version": RECONCILIATION_VERSION,
+               "abgaenge_params": deepcopy(context.get("abgaenge_params")),
                "cluster_mapping": deepcopy(context.get("cluster_mapping", {})),
                "metadata": deepcopy(context.get("metadata", {})), "events": events}
     for level, dimension in (("oe", "Organisationseinheit"), ("cluster", "OE-Cluster")):
@@ -91,10 +92,18 @@ def build_simulation_event_summary(context: dict, *, expected_run_signature: str
     from utils.org_simulation_reconciliation import build_departure_stock_bridge
     summary["stock_reconciliation"] = build_departure_stock_bridge(
         context, events, expected_run_signature=expected_run_signature)
-    columns = ["PersNr", "Organisationseinheit", "Planstelle", "Planstellennr", "Is_Vacant", "Is_Excluded",
+    columns = ["PersNr", "GebDatum", "Organisationseinheit", "Planstelle", "Planstellennr", "Is_Vacant", "Is_Excluded",
                "Exclusion_Group", "MAK_Reporting", "MAK_Calculated", "Personen_MAK_Source", "Personen_MAK",
                "BsGrd_Source", "BsGrd", "Allocation_Weight", "Soll_FTE", "Status kundenindividuell",
                "Ist_Azubi", "ATZ_Status", "ist_atz_fr"]
     summary["stock_basis"] = {key: context[key][[c for c in columns if c in context[key]]].copy(deep=True)
                               for key in ("baseline_snapshot", "final_snapshot") if context.get(key) is not None}
+    df_atz = context.get("df_atz")
+    for key in ("atz_pivot", "atz_entry_audit", "quit_probability_audit"):
+        value = context.get(key)
+        if isinstance(value, pd.DataFrame):
+            summary[key] = value.copy(deep=True)
+    if isinstance(df_atz, pd.DataFrame) and "PersNr" in df_atz:
+        from abgaenge.schemas import normalize_persnr
+        summary["atz_person_ids"] = set(normalize_persnr(df_atz.PersNr).dropna())
     return summary

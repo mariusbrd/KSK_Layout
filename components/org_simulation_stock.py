@@ -1,10 +1,12 @@
 """Display only certified, saved departure-only stock bridges."""
 import hashlib
 
+import pandas as pd
 import streamlit as st
 
 
-def render_departure_stock(summary, *, run_signature, level=None, years=None, organizations=None, embedded=False):
+def render_departure_stock(summary, *, run_signature, level=None, years=None, organizations=None, embedded=False,
+                           metric=None):
     if not embedded:
         st.subheader("Verbleibender Bestand aus Abgangsprognose")
     if not summary or not run_signature or summary.get("run_signature") != run_signature:
@@ -27,6 +29,11 @@ def render_departure_stock(summary, *, run_signature, level=None, years=None, or
                 st.dataframe(diagnostics, hide_index=True, use_container_width=True)
         return None
     st.success("Mit dem finalen Simulationsbestand abgestimmt: Köpfe exakt, MAK intern ungerundet geprüft.")
+    documented = bridge.get("documented_effects")
+    if documented is not None and not documented.empty:
+        st.info("Zusätzliche belegte Aufbereitungseffekte sind im Endwert enthalten. Ihr Jahr ist nicht belegt; die Jahreswerte der Ereignisse bleiben unverändert.")
+        with st.expander("Belegte Aufbereitungseffekte"):
+            st.dataframe(documented, hide_index=True, use_container_width=True)
     st.caption("Ausgangs-IST plus technische Prognosebasis-Aufbereitung und Berichtswirkung der Abgangsereignisse, einschließlich ATZ-Freistellung "
                "und ruhender Beschäftigung. Originalereignisse bleiben unverändert. Keine Zugänge. Eigene Organisationsauswahl, unabhängig von "
                "Bestandsfiltern und der Auswahl einzelner Ereignisarten. MAK werden wie die Bestandskennzahl auf zwei Nachkommastellen dargestellt.")
@@ -36,7 +43,8 @@ def render_departure_stock(summary, *, run_signature, level=None, years=None, or
                          horizontal=True, key="org_stock_level")
     metric_column, export_column = st.columns([3, 1])
     with metric_column:
-        metric = st.radio("Kennzahl des Bestandsverlaufs", ["Köpfe", "MAK"], horizontal=True, key="org_stock_metric")
+        if metric is None:
+            metric = st.radio("Kennzahl des Bestandsverlaufs", ["Köpfe", "MAK"], horizontal=True, key="org_stock_metric")
     rows = bridge["annual"].loc[bridge["annual"].Ebene == level].copy()
     options = sorted(rows.Organisation.unique())
     orgs = organizations if organizations is not None else st.multiselect("Organisationen im Bestandsverlauf", options, default=options,
@@ -57,9 +65,29 @@ def render_departure_stock(summary, *, run_signature, level=None, years=None, or
     value = f"Bestand-{metric}"
     chart = chart[["Stichtag", "Organisation", value]]
     table = chart.pivot(index="Organisation", columns="Stichtag", values=value)
+    display_table = table.copy()
+    if not display_table.empty:
+        reported = bridge.get("reporting_events")
+        from utils.org_simulation_events import DEPARTURES
+        if reported is not None and not reported.empty:
+            reported = reported.loc[reported.Ereignisart.isin(DEPARTURES)].copy()
+            if years is not None:
+                reported = reported.loc[reported.Jahr.isin(years)]
+            reported["Abgehende MAK"] = (-reported["MAK-Veränderung"].clip(upper=0))
+            if level == "Gesamt":
+                heads = pd.Series({"Gesamt": reported["Abgänge"].sum()})
+                mak = pd.Series({"Gesamt": reported["Abgehende MAK"].sum()})
+            else:
+                heads = reported.groupby(level)["Abgänge"].sum()
+                mak = reported.groupby(level)["Abgehende MAK"].sum()
+        else:
+            heads, mak = pd.Series(dtype=float), pd.Series(dtype=float)
+        display_table.insert(0, "Abgehende MAK", mak.reindex(table.index, fill_value=0))
+        display_table.insert(0, "Abgehende Köpfe", heads.reindex(table.index, fill_value=0))
+        display_table.insert(0, f"Bestand letzter Stichtag ({metric})", table.iloc[:, -1])
     view = {"run_signature": run_signature, "level": level, "metric": metric,
             "organizations": list(orgs), "years": list(years) if years is not None else sorted(rows.Jahr.unique()),
-            "chart": chart, "table": table}
+            "chart": chart, "table": table, "summary_table": display_table}
     if level != "Gesamt":
         from components.org_simulation_yearly import LABELS
         departure_types = sorted(summary["events"].loc[
@@ -76,9 +104,10 @@ def render_departure_stock(summary, *, run_signature, level=None, years=None, or
     plotted = chart.copy()
     plotted["Stichtag"] = plotted["Stichtag"].dt.strftime("%Y-%m-%d")
     st.bar_chart(plotted, x="Stichtag", y=value, color="Organisation", stack=False)
-    st.dataframe(table, use_container_width=True)
+    st.caption("Bestand am letzten ausgewählten Stichtag; abgehende Köpfe und MAK summieren die Abgangsereignisse der ausgewählten Jahre.")
+    st.dataframe(display_table, use_container_width=True)
     with st.expander("Bestandsüberleitung und Endwertabgleich"):
-        st.caption(f"MAK-Toleranz im ungerundeten Vergleich: {bridge['mak_tolerance']} MAK. Rundung nur für die Anzeige; keine Korrekturwerte.")
+        st.caption(f"MAK-Toleranz im ungerundeten Vergleich: {bridge['mak_tolerance']} MAK. Rundung nur für die Anzeige; belegte undatierte Aufbereitungseffekte sind gesondert ausgewiesen.")
         st.dataframe(rows, hide_index=True, use_container_width=True)
         st.dataframe(bridge["checks"], hide_index=True, use_container_width=True)
         effects = bridge.get("basis_effects")

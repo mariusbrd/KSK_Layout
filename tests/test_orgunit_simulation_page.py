@@ -300,6 +300,21 @@ def test_orgunit_simulation_departure_toggle_aggregates_company_leavers_by_org_u
     assert result.metadata["abgaenge_events"] == 1
 
 
+def test_orgunit_ranking_handles_missing_or_numeric_departure_org_keys():
+    org_page = _load_page_module("Organisationseinheiten_Analyse", "orgunit_analysis_mixed_departure_org")
+    mapped = pd.DataFrame({"PersNr": ["000001"], "Organisationseinheit": ["A"],
+                           "Is_Vacant": [False]})
+    departures = pd.DataFrame({"Organisationseinheit": [None, 123],
+                               "persnr": ["000002", "000003"],
+                               "headcount_change": [-1, -1], "mak_change": [-1.0, -0.5]})
+    summary = org_page._build_departure_org_summary(departures)
+    assert set(summary.Organisationseinheit) == {"Nicht zugeordnet", "123"}
+    ranking = org_page._build_orgunit_ranking_frame(
+        mapped, mapped, departures, "Köpfe", {"value_col": "Headcount", "value_type": "koepfe"},
+        comparison_active=True, value_label="Simulation", comparison_label="IST")
+    assert ranking.set_index("Organisationseinheit").loc["123", "Abgänge"] == 1
+
+
 def test_orgunit_comparison_summary_combines_ist_simulation_delta_and_departures():
     prepared_df, _result = _run_reusable_orgunit_simulation()
     org_page = _load_page_module("Organisationseinheiten_Analyse", "orgunit_analysis_comparison")

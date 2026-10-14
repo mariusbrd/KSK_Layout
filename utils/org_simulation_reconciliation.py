@@ -9,6 +9,39 @@ from dataloader.kpi_engine import compute_headcount, compute_fte_effektiv, get_u
 MAK_TOLERANCE = 1e-6  # Raw capacities; presentation alone rounds to two places.
 
 
+def documented_atz_capacity_effects(context, projection, final, events):
+    """Recognize only an undated ATZ capacity recovery supported by saved run data."""
+    params = context.get("abgaenge_params", {})
+    if not isinstance(params, dict) or params.get("components", {}).get("atz") is not False:
+        return pd.DataFrame()
+    before, after = _occupied(projection), _occupied(final)
+    required = {"ist_atz_fr", "Personen_MAK_Source", "MAK_Reporting", "Organisationseinheit"}
+    if not required.issubset(before.columns) or not required.issubset(after.columns):
+        return pd.DataFrame()
+    event_ids = set(normalize_persnr(events.get("persnr", pd.Series(dtype=object))).dropna())
+    rows = []
+    for pid in sorted(set(before._person) & set(after._person) - event_ids):
+        old, new = before.loc[before._person.eq(pid)], after.loc[after._person.eq(pid)]
+        if not old["ist_atz_fr"].fillna(False).astype(bool).all() or new["ist_atz_fr"].fillna(False).astype(bool).any():
+            continue
+        old_orgs, new_orgs = set(old.Organisationseinheit), set(new.Organisationseinheit)
+        if len(old_orgs) != 1 or old_orgs != new_orgs:
+            continue
+        old_mak = pd.to_numeric(old.MAK_Reporting, errors="coerce").fillna(0).sum()
+        new_mak = pd.to_numeric(new.MAK_Reporting, errors="coerce").fillna(0).sum()
+        source_mak = pd.to_numeric(old.Personen_MAK_Source, errors="coerce").dropna()
+        delta = float(new_mak - old_mak)
+        if abs(old_mak) > MAK_TOLERANCE or delta <= MAK_TOLERANCE or source_mak.empty:
+            continue
+        if abs(float(source_mak.iloc[0]) - delta) > MAK_TOLERANCE:
+            continue
+        rows.append({"PersNr": pid, "Organisationseinheit": next(iter(old_orgs)),
+                     "Köpfe-Effekt": 0, "MAK-Effekt": delta,
+                     "Ursache": "ATZ-Freistellungsstatus endet ohne ATZ-Ereignis",
+                     "Zeitbezug": "Bis Zielstichtag; Jahr nicht belegt"})
+    return pd.DataFrame(rows)
+
+
 def raw_stock_mak(snapshot: pd.DataFrame) -> float:
     employees = get_unique_employees(snapshot)
     for column in ("MAK_Reporting", "MAK_Calculated", "mak", "MAK"):
@@ -253,6 +286,11 @@ def build_departure_stock_bridge(context: dict, events: pd.DataFrame, *, expecte
     projection = prepare(reporting_projection_base(context, initial)) if end > start else initial.copy(deep=True)
     raw_events = events
     events = reporting_departure_events(projection, events, context)
+    atz_effects = documented_atz_capacity_effects(context, projection, final, raw_events)
+    if not atz_effects.empty:
+        atz_effects = atz_effects.copy()
+        atz_effects["OE-Cluster"] = atz_effects.Organisationseinheit.map(mapping).fillna("Nicht zugeordnet")
+    result["documented_effects"] = atz_effects
     events = events.copy(deep=True)
     events["_bridge_person"] = normalize_persnr(events.get("persnr", events.get("PersNr", pd.Series(pd.NA, index=events.index))))
     events["_bridge_known"] = events["_bridge_person"].isin(set(_occupied(initial)._person))
@@ -299,15 +337,30 @@ def build_departure_stock_bridge(context: dict, events: pd.DataFrame, *, expecte
                                "Bestand-Köpfe": hc + cumulative_hc, "Bestand-MAK": mak + cumulative_mak})
         projected_hc, projected_mak = hc + cumulative_hc, mak + cumulative_mak
         final_hc, final_mak = compute_headcount(after), raw_stock_mak(after)
-        diff_hc, diff_mak = projected_hc - final_hc, projected_mak - final_mak
+        effect_mak = 0.0 if atz_effects.empty else float(
+            atz_effects["MAK-Effekt"].sum() if level == "Gesamt" else
+            atz_effects.loc[atz_effects[level].eq(name), "MAK-Effekt"].sum())
+        diff_hc, diff_mak = projected_hc - final_hc, projected_mak + effect_mak - final_mak
         # Comparing rounded values again is unsafe at half-centimal boundaries:
         # binary summation noise can put equivalent raw sums on opposite sides.
         passed = diff_hc == 0 and abs(diff_mak) <= MAK_TOLERANCE + 1e-9
         checks.append({"Ebene": level, "Organisation": name, "Berechnete Köpfe": projected_hc,
-                       "Finale Köpfe": final_hc, "Differenz Köpfe": diff_hc, "Berechnete MAK": projected_mak,
+                       "Finale Köpfe": final_hc, "Differenz Köpfe": diff_hc, "Berechnete MAK": projected_mak + effect_mak,
                        "Finale MAK": final_mak, "Differenz MAK": diff_mak, "Abgestimmt": passed})
+        if abs(effect_mak) > MAK_TOLERANCE:
+            annual.append({"Ebene": level, "Organisation": name, "Stichtag": end, "Jahr": end.year,
+                           "Art": "Undatierter Aufbereitungseffekt bis Zielstichtag",
+                           "Ausgangs-Köpfe": hc, "Ausgangs-MAK": mak,
+                           "Jahresänderung-Köpfe": 0.0, "Jahresänderung-MAK": 0.0,
+                           "Technischer Effekt-Köpfe": 0.0, "Technischer Effekt-MAK": effect_mak,
+                           "Kumulierte Änderung-Köpfe": cumulative_hc,
+                           "Kumulierte Änderung-MAK": cumulative_mak + effect_mak,
+                           "Bestand-Köpfe": projected_hc, "Bestand-MAK": projected_mak + effect_mak})
     result["annual"], result["checks"] = pd.DataFrame(annual), pd.DataFrame(checks)
     result["person_diagnostics"] = person_stock_diagnostics(projection, final, events)
+    if not atz_effects.empty and not result["person_diagnostics"].empty:
+        result["person_diagnostics"] = result["person_diagnostics"].loc[
+            ~result["person_diagnostics"].PersNr.isin(atz_effects.PersNr)].copy()
     result["basis_effects"] = pd.DataFrame(basis_effects)
     result["reporting_events"] = events.drop(columns=["_bridge_person", "_bridge_known"], errors="ignore").copy()
     event_ids = normalize_persnr(events.get("persnr", events.get("PersNr", pd.Series(pd.NA, index=events.index))))

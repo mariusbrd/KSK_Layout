@@ -110,12 +110,16 @@ def _clear_simulation_cache():
 
 
 def _build_simulation_event_context(sim_result, cluster_mapping_bundle, run_signature, *,
-                                    baseline_snapshot=None, final_snapshot=None, zugaenge_params=None, run_settings=None):
+                                    baseline_snapshot=None, final_snapshot=None, zugaenge_params=None,
+                                    abgaenge_params=None, df_atz=None, run_settings=None):
     """Keep unaggregated outputs and mapping from one run, without recomputation."""
     context = {
         "run_signature": run_signature,
         "metadata": deepcopy(sim_result.metadata),
         "departure_events": deepcopy(sim_result.abgaenge_result.get("events_person_level", pd.DataFrame())),
+        "atz_pivot": deepcopy(sim_result.abgaenge_result.get("tables", {}).get("atz_schedule_audit", pd.DataFrame())),
+        "atz_entry_audit": deepcopy(sim_result.abgaenge_result.get("tables", {}).get("atz_entry_audit", pd.DataFrame())),
+        "quit_probability_audit": deepcopy(sim_result.abgaenge_result.get("tables", {}).get("quit_probability_audit", pd.DataFrame())),
         "accession_events": deepcopy(sim_result.zugaenge_result.get("events", pd.DataFrame())),
         "cluster_mapping": deepcopy(cluster_mapping_bundle.to_dict()),
     }
@@ -125,6 +129,10 @@ def _build_simulation_event_context(sim_result, cluster_mapping_bundle, run_sign
         context["final_snapshot"] = final_snapshot.copy(deep=True)
     if zugaenge_params is not None:
         context["zugaenge_params"] = deepcopy(zugaenge_params)
+    if abgaenge_params is not None:
+        context["abgaenge_params"] = deepcopy(abgaenge_params)
+    if df_atz is not None:
+        context["df_atz"] = df_atz.copy(deep=True)
     if run_settings is not None:
         context["run_settings"] = deepcopy(run_settings)
     return context
@@ -615,6 +623,8 @@ def main():
                     sim_result, cluster_mapping_bundle, computed_signature,
                     baseline_snapshot=status_quo_prepared_df, final_snapshot=prepared_df,
                     zugaenge_params=zugaenge_params,
+                    abgaenge_params=abgaenge_params,
+                    df_atz=df_atz,
                     run_settings={"exclusions": get_setting("exclusions", {})},
                 )
                 event_summary = build_simulation_event_summary(

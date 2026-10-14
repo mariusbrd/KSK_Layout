@@ -95,9 +95,9 @@ def _default_zugaenge_ui() -> dict[str, Any]:
     return {
         "start_date": None,
         "end_date": None,
-        "use_azubis": True,
-        "use_trainees": True,
-        "use_newhires": True,
+        "use_azubis": False,
+        "use_trainees": False,
+        "use_newhires": False,
     }
 
 
@@ -111,9 +111,9 @@ def _default_hybrid_ui() -> dict[str, Any]:
             "retirement": True,
             "quit": True,
             "ruhend": True,
-            "azubi": True,
-            "trainee": True,
-            "new_hires": True,
+            "azubi": False,
+            "trainee": False,
+            "new_hires": False,
         },
     }
 
@@ -123,15 +123,15 @@ def default_hybrid_zugaenge_params() -> dict[str, Any]:
     return {
         "azubi": {
             **params["azubi"],
-            "active": True,
+            "active": False,
         },
         "trainee": {
             **params["trainee"],
-            "active": True,
+            "active": False,
         },
         "new_hires": {
             **params["new_hires"],
-            "active": True,
+            "active": False,
             "distribution": [],
         },
         "available_org_units": [],

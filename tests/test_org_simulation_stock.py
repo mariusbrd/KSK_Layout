@@ -62,6 +62,7 @@ def test_stock_export_matches_ui_and_documents_full_checks():
     append_stock_export(tables, context, summary, view)
     pd.testing.assert_frame_equal(tables["Bestand_Auswahl_Grafik"], view["chart"], check_exact=True)
     pd.testing.assert_frame_equal(tables["Bestand_Auswahl_Matrix"], view["table"].reset_index(), check_exact=True)
+    pd.testing.assert_frame_equal(tables["Bestand_Auswahl_Summen"], view["summary_table"].reset_index(), check_exact=True)
     book = pd.ExcelFile(BytesIO(build_org_simulation_export_bytes(tables, context)))
     inventory = pd.read_excel(book, "Exportinventar").set_index("Bereich")
     checks = pd.read_excel(book, inventory.loc["Bestand_Endwertabgleich", "Tabellenblatt"])
@@ -97,8 +98,8 @@ st.session_state["combined_view"] = render_org_simulation_yearly(st.session_stat
 ''')
     app.session_state["summary"] = summary
     app.run()
-    app.radio(key="org_yearly_mode").set_value("Verbleibender Bestand").run()
     assert not app.exception
+    assert "org_yearly_mode" not in [radio.key for radio in app.radio]
     view = app.session_state["combined_view"]["stock_view"]
     assert view["level"] == "Organisationseinheit"
     assert view["chart"].Stichtag.dt.year.unique().tolist() == [2025, 2026, 2027]

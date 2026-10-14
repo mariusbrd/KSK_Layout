@@ -13,6 +13,11 @@ from utils.simulation_params import (
 from zugaenge.params import default_params as default_zugaenge_params
 
 
+def test_new_accession_defaults_are_disabled():
+    defaults = default_zugaenge_params()
+    assert all(not defaults[key]["active"] for key in ("azubi", "trainee", "new_hires"))
+
+
 def _clear_relevant_state():
     for key in [
         SESSION_KEY,

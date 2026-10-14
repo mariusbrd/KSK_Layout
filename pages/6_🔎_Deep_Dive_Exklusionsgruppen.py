@@ -23,7 +23,6 @@ from utils.exclusion_groups import (
     build_group_masks,
     selected_group_keys, ma_typ_series,
     get_all_group_stats,
-    get_group_detail,
     resolve_mak_series,
     VORSTAND_KEY,
     RUHEND_KEY,
@@ -365,6 +364,123 @@ def _normalize_gender_label(value) -> str:
     return str(value)
 
 
+def _numeric_column(df: pd.DataFrame, candidates: tuple[str, ...]) -> pd.Series:
+    """Return the first available numeric column without altering the snapshot."""
+    for column in candidates:
+        if column in df.columns:
+            return pd.to_numeric(df[column], errors="coerce").fillna(0.0)
+    return pd.Series(0.0, index=df.index)
+
+
+def _build_group_entry_analysis(group_df: pd.DataFrame, group_key: str) -> pd.DataFrame:
+    """Create a row-level explanation of capacity and exclusion treatment.
+
+    This is display-only. In particular, ``SOLL-MAK nach Ausschluss`` describes
+    the row-level exclusion effect, not a replacement for the dashboard's later
+    duplicate-plan-position and sidebar-filter calculations.
+    """
+    work = group_df.copy(deep=True)
+    if work.empty:
+        return pd.DataFrame()
+
+    soll = _numeric_column(work, ("Soll_FTE",))
+    soll_hours = _numeric_column(work, ("Sollarbeitszeit",))
+    technical_mak = _numeric_column(work, ("MAK_Calculated", "mak", "MAK"))
+    reporting_mak = _numeric_column(work, ("MAK_Reporting",))
+    source_capacity = _numeric_column(work, ("BsGrd_Source", "BsGrd", "Personen_MAK_Source"))
+    excluded = work.get("Is_Excluded", pd.Series(False, index=work.index)).fillna(False).astype(bool)
+    preserved = work.get("Is_IST_Preserved_Despite_Exclusion", pd.Series(False, index=work.index)).fillna(False).astype(bool)
+    vacant = work.get("Is_Vacant", pd.Series(False, index=work.index)).fillna(False).astype(bool)
+
+    work["Soll-Typ"] = "Ohne hinterlegten Soll-Bedarf"
+    work.loc[soll_hours.sub(0.01).abs().le(1e-9), "Soll-Typ"] = "Technische Platzhalterstelle (0,01 Std.)"
+    work.loc[soll.gt(0), "Soll-Typ"] = "Reguläre Sollstelle"
+
+    work["Beschäftigungsstatus"] = "Besetzt"
+    work.loc[vacant, "Beschäftigungsstatus"] = "Unbesetzt"
+    work.loc[excluded & ~preserved & source_capacity.gt(0), "Beschäftigungsstatus"] = "Ausgeschlossen – IST entfernt"
+    work.loc[excluded & preserved, "Beschäftigungsstatus"] = "Besetzt – IST trotz Ausschluss erhalten"
+
+    work["Ausschlusswirkung"] = "Nicht ausgeschlossen"
+    work.loc[excluded, "Ausschlusswirkung"] = "SOLL nach Ausschluss: 0"
+    work.loc[excluded & ~preserved, "Ausschlusswirkung"] = "SOLL: 0 · IST: 0"
+    work.loc[excluded & preserved, "Ausschlusswirkung"] = "SOLL: 0 · IST wird weitergeführt"
+    work["SOLL-MAK (roh)"] = soll
+    work["SOLL-MAK nach Ausschluss"] = soll.where(~excluded, 0.0)
+    work["IST-MAK technisch"] = technical_mak
+    work["IST-MAK Reporting"] = reporting_mak
+
+    work["Prüfhinweis"] = ""
+    work.loc[work["Soll-Typ"].eq("Technische Platzhalterstelle (0,01 Std.)"), "Prüfhinweis"] = (
+        "Technischer Platzhalter; Soll-Bedarf ist nicht belastbar."
+    )
+    if group_key == "jobfamily_validation_special_positions":
+        work.loc[work["Soll-Typ"].eq("Reguläre Sollstelle"), "Prüfhinweis"] = (
+            "Reguläre Sollstelle in historischer Sonderstellenliste – fachlich prüfen."
+        )
+    work.loc[excluded & preserved, "Prüfhinweis"] = (
+        "Technische Sonderstelle mit realer Kapazität; IST bleibt gemäß Regel erhalten."
+    )
+
+    column_map = {
+        "Planstellennr": "Planstellennummer", "Planstelle": "Planstelle",
+        "Kürzel OrgEinheit": "OE-Kürzel", "Organisationseinheit": "Organisationseinheit",
+        "OE-Cluster": "OE-Cluster", "Jobfamily": "Jobgruppe", "MA-Typ": "MA-Typ",
+        "Vertragsart": "Vertragsart", "MitarbGruppenbez.": "Mitarbeitergruppe",
+        "TrfGr": "Tarifgruppe", "ATZ_Status": "ATZ-Status", "BsGrd_Source": "Beschäftigungsgrad (%)",
+        "Sollarbeitszeit": "Sollstunden/Woche", "Exclusion_Group": "Ausschlussgrund",
+    }
+    columns = [source for source in column_map if source in work.columns]
+    columns += ["Soll-Typ", "Beschäftigungsstatus", "SOLL-MAK (roh)", "SOLL-MAK nach Ausschluss",
+                "IST-MAK technisch", "IST-MAK Reporting", "Ausschlusswirkung", "Prüfhinweis"]
+    result = work[columns].rename(columns=column_map)
+    numeric = ["Sollstunden/Woche", "Beschäftigungsgrad (%)", "SOLL-MAK (roh)", "SOLL-MAK nach Ausschluss",
+               "IST-MAK technisch", "IST-MAK Reporting"]
+    for column in numeric:
+        if column in result.columns:
+            result[column] = pd.to_numeric(result[column], errors="coerce").round(2)
+    return result
+
+
+def _render_group_entry_analysis(group_df: pd.DataFrame, group_key: str) -> None:
+    """Render an explainable, filterable view of the selected group's entries."""
+    detail = _build_group_entry_analysis(group_df, group_key)
+    if detail.empty:
+        st.info(t("exclusion.info.no_rows"))
+        return
+
+    regular = detail["Soll-Typ"].eq("Reguläre Sollstelle")
+    preserved = detail["Beschäftigungsstatus"].eq("Besetzt – IST trotz Ausschluss erhalten")
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Betroffene Planstellen", _fmt_int(len(detail)))
+    k2.metric("Zeilen mit IST-MAK", _fmt_int(int(detail["IST-MAK Reporting"].gt(0).sum())))
+    k3.metric("IST-MAK Reporting", _fmt_mak(float(detail["IST-MAK Reporting"].sum())))
+    k4.metric("SOLL-MAK nach Ausschluss", _fmt_mak(float(detail["SOLL-MAK nach Ausschluss"].sum())))
+    st.caption("Zeilenansicht: IST-MAK Reporting ist die berichtete Kapazität je Planstelle. "
+               "Die Soll-Spalte zeigt ausschließlich die Ausschlusswirkung; weitere Dashboard-Filter oder Planstellen-Deduplizierung sind hier nicht enthalten.")
+    if group_key == "jobfamily_validation_special_positions" and regular.any():
+        st.warning(f"{int(regular.sum())} reguläre Sollstellen liegen in der historischen Sonderstellenliste. "
+                   "Diese Fälle sind fachlich prüfbedürftig.")
+
+    filters = ["Alle", "Nur besetzt", "Nur technische Platzhalter", "Nur reguläre Sollstellen",
+               "IST trotz Ausschluss erhalten", "Nur prüfbedürftige Fälle"]
+    selected_filter = st.radio("Einträge filtern", filters, horizontal=True, key=f"ex_entry_filter_{group_key}")
+    visible = detail.copy()
+    if selected_filter == "Nur besetzt":
+        visible = visible.loc[~visible["Beschäftigungsstatus"].eq("Unbesetzt")]
+    elif selected_filter == "Nur technische Platzhalter":
+        visible = visible.loc[visible["Soll-Typ"].eq("Technische Platzhalterstelle (0,01 Std.)")]
+    elif selected_filter == "Nur reguläre Sollstellen":
+        visible = visible.loc[visible["Soll-Typ"].eq("Reguläre Sollstelle")]
+    elif selected_filter == "IST trotz Ausschluss erhalten":
+        visible = visible.loc[visible["Beschäftigungsstatus"].eq("Besetzt – IST trotz Ausschluss erhalten")]
+    elif selected_filter == "Nur prüfbedürftige Fälle":
+        visible = visible.loc[visible["Prüfhinweis"].str.contains("prüfen", case=False, na=False)]
+    st.dataframe(visible, use_container_width=True, hide_index=True)
+    st.caption(f"{len(visible)} von {len(detail)} betroffenen Planstellen angezeigt. "
+               f"{int(preserved.sum())} Zeilen behalten ihre IST-Kapazität trotz Ausschluss.")
+
+
 def _render_demo_profile(group_df: pd.DataFrame) -> None:
     """Rendert Alterskohorten- und Geschlechtsverteilung für die gewählte Gruppe.
 
@@ -699,8 +815,11 @@ def main():
                         heads = len(get_unique_employees(group_df)) if "PersNr" in group_df.columns else None
                         stats = df_stats.loc[df_stats["gruppe_key"].eq(key)].iloc[0]
                         display_label = f"{key} · {label}" if category == "pa" else label
+                        if key == "99XX":
+                            display_label = f"99XX · {t('exclusion.selection.99xx_label')}"
                         st.checkbox(display_label, key=f"ex_chk_{key}",
-                                    help=t("exclusion.layout.position_count", count=count))
+                                    help=t("exclusion.selection.99xx_help") if key == "99XX"
+                                    else t("exclusion.layout.position_count", count=count))
                         st.caption(t("exclusion.layout.group_numbers", positions=_fmt_int(count),
                                      heads=_fmt_int(heads) if heads is not None else "—",
                                      actual=_fmt_mak(stats["ist_mak"]), target=_fmt_mak(stats["soll_mak"])))
@@ -745,8 +864,9 @@ def main():
                 cols[2].metric(t("exclusion.selection.additional"), int((~legacy_mask & type_mask).sum()))
             st.caption(t("exclusion.selection.preview_help"))
             with st.expander(t("exclusion.selection.inspect")):
-                fields = [c for c in ["Planstellennr", "Planstelle", "Organisationseinheit", "MA-Typ", "Exclusion_Group"] if c in preview.columns]
-                st.dataframe(preview.loc[preview_mask, fields], hide_index=True, use_container_width=True)
+                st.caption("Vorschau der noch nicht gespeicherten Auswahl. Die Tabelle zeigt, welche SOLL- und IST-Wirkung "
+                           "jede betroffene Planstelle nach dem Anwenden hätte.")
+                _render_group_entry_analysis(preview.loc[preview_mask], "preview")
             if has_pending:
                 pending_notice.info(t("exclusion.selection.unsaved"))
             if st.button(t("exclusion.selection.apply"), type="primary", key="btn_apply_exclusions",
@@ -839,14 +959,7 @@ def main():
             _render_demo_profile(snapshot_df[group_mask])
 
             with st.expander(t("exclusion.expander.rows"), expanded=False):
-                detail = get_group_detail(snapshot_df, selected_key)
-                if detail.empty:
-                    st.info(t("exclusion.info.no_rows"))
-                else:
-                    # Anzeige-Umbenennung: interner Spaltenname Soll_FTE -> MAK-Terminologie
-                    display_detail = detail.rename(columns={"Soll_FTE": "Soll_MAK"})
-                    st.dataframe(display_detail, use_container_width=True, hide_index=True)
-                    st.caption(t("exclusion.caption.rows", count=len(detail)))
+                _render_group_entry_analysis(snapshot_df[group_mask], selected_key)
 
 
 if not globals().get("_UNIT_TESTING", False):

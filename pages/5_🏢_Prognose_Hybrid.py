@@ -862,11 +862,11 @@ def main():
         st.markdown(t("hybrid.settings.hiring_drivers").rstrip(":"))
         zc1, zc2, zc3 = st.columns(3)
         with zc1:
-            comp_azubi = st.checkbox(t("hybrid.settings.component.azubis"), value=True)
+            comp_azubi = st.checkbox(t("hybrid.settings.component.azubis"), value=False)
         with zc2:
-            comp_trainee = st.checkbox(t("hybrid.settings.component.trainees"), value=True)
+            comp_trainee = st.checkbox(t("hybrid.settings.component.trainees"), value=False)
         with zc3:
-            comp_hires = st.checkbox(t("hybrid.settings.component.new_hires"), value=True)
+            comp_hires = st.checkbox(t("hybrid.settings.component.new_hires"), value=False)
 
         st.divider()
 

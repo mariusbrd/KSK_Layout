@@ -129,8 +129,31 @@ def append_yearly_export(tables, context, summary, yearly_view):
     info["Clusterdefinition"] = "Vollständiges gespeichertes OE-Mapping" if "cluster_mapping" in summary else "Nur Ereignis-OEs; für vollständiges Mapping Simulation neu berechnen."
     if yearly_view is not None and yearly_view.get("run_signature") == summary["run_signature"]:
         tables["Jahresauswahl_Matrix"] = yearly_view["table"].reset_index()
-        tables["Jahresauswahl_Grafik"] = yearly_view["chart"].copy(deep=True)
+        if "summary_table" in yearly_view:
+            tables["Jahresauswahl_Summen"] = yearly_view["summary_table"].reset_index()
+        tables["Jahresauswahl_Grafik"] = yearly_view.get("stacked_chart", yearly_view["chart"]).copy(deep=True)
         tables["Jahresauswahl_Details"] = yearly_view["details"].copy(deep=True)
+        quit_evaluation = yearly_view.get("quit_evaluation")
+        if quit_evaluation is not None and not quit_evaluation.empty:
+            tables["Jahresauswahl_Kündigungseinordnung"] = quit_evaluation.copy(deep=True)
+            tables["Kündigungseinordnung_Grafik"] = yearly_view["quit_chart"].copy(deep=True)
+        retirement_evaluation = yearly_view.get("retirement_evaluation")
+        if retirement_evaluation is not None:
+            tables["Jahresauswahl_Renteneinordnung"] = retirement_evaluation["annual"].copy(deep=True)
+            tables["Renteneinordnung_Grafik"] = yearly_view["retirement_chart"].copy(deep=True)
+            tables["Rentenparameter_Vergleich"] = pd.DataFrame([
+                {"Altersgruppe": cohort, **values}
+                for cohort, values in retirement_evaluation["cohorts"].items()])
+        atz_evaluation = yearly_view.get("atz_evaluation")
+        if atz_evaluation is not None:
+            tables["Jahresauswahl_ATZ_Einordnung"] = atz_evaluation["annual"].copy(deep=True)
+            tables["ATZ_Gesamtsummen"] = atz_evaluation["totals"].copy(deep=True)
+            tables["ATZ_Einordnung_Grafik"] = yearly_view["atz_chart"].copy(deep=True)
+            tables["ATZ_Zeitplaene"] = atz_evaluation["details"].copy(deep=True)
+            tables["ATZ_Ausgangszeitplan"] = atz_evaluation["schedule_audit"].copy(deep=True)
+        documented_atz = summary.get("stock_reconciliation", {}).get("documented_effects")
+        if isinstance(documented_atz, pd.DataFrame) and not documented_atz.empty:
+            tables["ATZ_Undatierte_Bestandseffekte"] = documented_atz.copy(deep=True)
         from components.org_simulation_yearly import LABELS
         tables["Jahresauswahl_Details"]["Ereignisart"] = tables["Jahresauswahl_Details"]["Ereignisart"].map(
             lambda value: LABELS.get(value, value))
@@ -151,13 +174,16 @@ def append_stock_export(tables, context, summary, stock_view):
         return
     context["Bestandsüberleitung"] = {"Status": bridge["status"], "Grund": bridge["reason"],
         "Laufkennung": signature, "MAK-Toleranz": bridge["mak_tolerance"],
-        "Bedeutung": "Ausgangsbestand plus explizite technische Prognosebasis-Effekte plus Berichtswirkung der unveränderten Abgangsereignisse. Bestehende Aufbereitungsregeln mit gespeicherten Einstellungen; Köpfe exakt, MAK intern ungerundet geprüft. Keine Restkorrekturen.",
+        "Bedeutung": "Ausgangsbestand plus technische Prognosebasis-Effekte, Berichtswirkung aller Abgangsereignisse und belegte undatierte ATZ-Aufbereitungseffekte. Köpfe exakt, MAK intern ungerundet geprüft. Unbelegte Differenzen bleiben Abweichungen.",
         "Betrachtungsraum": "Gesamter gespeicherter Lauf, unabhängig von Bestands- und Ereignisfiltern."}
     if not bridge["checks"].empty:
         tables["Bestand_Endwertabgleich"] = bridge["checks"].copy(deep=True)
     diagnostics = bridge.get("person_diagnostics")
     if diagnostics is not None and not diagnostics.empty:
         tables["Bestand_Personendiagnose"] = diagnostics.copy(deep=True)
+    documented = bridge.get("documented_effects")
+    if documented is not None and not documented.empty:
+        tables["Bestand_Belegte_Aufbereitung"] = documented.copy(deep=True)
     for key, label in (("basis_effects", "Bestand_Prognosebasiseffekte"), ("reporting_events", "Bestand_Reportingereignisse")):
         if key in bridge:
             tables[label] = bridge[key].copy(deep=True)
@@ -170,6 +196,8 @@ def append_stock_export(tables, context, summary, stock_view):
     if stock_view and stock_view.get("run_signature") == signature:
         tables["Bestand_Auswahl_Grafik"] = stock_view["chart"].copy(deep=True)
         tables["Bestand_Auswahl_Matrix"] = stock_view["table"].reset_index()
+        if "summary_table" in stock_view:
+            tables["Bestand_Auswahl_Summen"] = stock_view["summary_table"].reset_index()
         context["Bestandsüberleitung"]["Auswahl"] = {k: stock_view[k] for k in ("level", "metric", "organizations", "years")}
 
 

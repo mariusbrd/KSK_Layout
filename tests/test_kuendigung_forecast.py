@@ -103,6 +103,24 @@ FREQ = "M"
 EMPTY_ATZ = pd.DataFrame(columns=["PersNr", "Phase", "Beginn", "Ende", "Ende ATZ Vertrag"])
 
 
+def test_quit_audit_uses_matrix_rates_and_matches_observed_events():
+    employees = pd.DataFrame([
+        _make_employee("101", org="A"),
+        _make_employee("102", org="B"),
+    ])
+    params = _params_only_quit(
+        rate_base=0.05, use_matrix=True, dimension="OrgUnit",
+        matrix={"alter_30_45": {"A": 0.0, "B": 1.0}},
+    )
+    result = run_forecast_abgaenge(employees, EMPTY_ATZ, START, START + pd.DateOffset(months=1), FREQ, params)
+    audit = result["tables"]["quit_probability_audit"]
+    assert set(audit["Organisationseinheit"]) == {"A", "B"}
+    assert audit.loc[audit["Organisationseinheit"].eq("A"), "expected"].sum() == 0
+    assert audit.loc[audit["Organisationseinheit"].eq("B"), "expected"].sum() == 1
+    quits = result["events_person_level"]
+    assert audit["observed"].sum() == quits["reason_code"].eq(REASON_QUIT).sum()
+
+
 # ===========================================================================
 # TEIL A: PAUSCHALE FLUKTUATIONSQUOTE (use_quit_matrix=False)
 # ===========================================================================

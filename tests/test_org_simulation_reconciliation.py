@@ -149,6 +149,37 @@ def test_end_value_discrepancy_is_reported_without_overwriting_projection():
     assert company["Finale MAK"] == 4.5
 
 
+def test_documented_atz_recovery_reconciles_end_value_without_annual_event():
+    context = _bridge_context("no_events")
+    pid = context["baseline_snapshot"].iloc[0]["PersNr"]
+    for key in ("baseline_snapshot", "final_snapshot"):
+        frame = context[key]
+        mask = frame.PersNr.eq(pid)
+        frame.loc[mask, "Personen_MAK_Source"] = 1.0
+        frame.loc[mask, "MAK_Reporting"] = 0.0 if key == "baseline_snapshot" else 1.0
+        frame.loc[mask, "ist_atz_fr"] = key == "baseline_snapshot"
+    context["abgaenge_params"] = {"components": {"atz": False, "quit": True}}
+    bridge = build_simulation_event_summary(context, expected_run_signature="a")["stock_reconciliation"]
+    assert bridge["status"] == "Abgestimmt"
+    assert bridge["documented_effects"]["MAK-Effekt"].sum() == pytest.approx(1.0)
+    company = bridge["annual"].loc[bridge["annual"].Ebene.eq("Gesamt")]
+    assert company["Jahresänderung-MAK"].sum() == 0.0
+    assert company.iloc[-1]["Bestand-MAK"] == pytest.approx(bridge["checks"].iloc[0]["Finale MAK"])
+
+
+def test_atz_recovery_without_saved_disabled_component_remains_unreconciled():
+    context = _bridge_context("no_events")
+    pid = context["baseline_snapshot"].iloc[0]["PersNr"]
+    for key in ("baseline_snapshot", "final_snapshot"):
+        frame = context[key]
+        mask = frame.PersNr.eq(pid)
+        frame.loc[mask, "Personen_MAK_Source"] = 1.0
+        frame.loc[mask, "MAK_Reporting"] = 0.0 if key == "baseline_snapshot" else 1.0
+        frame.loc[mask, "ist_atz_fr"] = key == "baseline_snapshot"
+    bridge = build_simulation_event_summary(context, expected_run_signature="a")["stock_reconciliation"]
+    assert bridge["status"] == "Abweichung"
+
+
 def test_ambiguous_multiple_oe_assignment_is_not_certified():
     context = _bridge_context("atz_ruhend")
     second = context["baseline_snapshot"].loc[context["baseline_snapshot"].PersNr == "000002"].copy()
