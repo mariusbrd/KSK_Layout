@@ -21,10 +21,10 @@ def test_selected_stock_workbook_equals_visible_selection(level, metric):
     assert any(button.label == "Excel exportieren" for button in app.button)
     view = app.session_state["view"]
     tables, context = prepare_yearly_view_export(summary, view, stock=True)
-    assert next(iter(tables)) == "Bestand_Folienvorlage"
+    assert list(tables)[:2] == ["Bestand_Folienvorlage_MAK", "Bestand_Folienvorlage_Koepfe"]
     before = export_fingerprint(tables, context)
     book = pd.ExcelFile(BytesIO(build_org_simulation_export_bytes(tables, context)))
-    assert book.sheet_names[1] == "01_Bestand_Folienvorlage"
+    assert book.sheet_names[1:3] == ["01_Bestand_Folienvorlage_MAK", "02_Bestand_Folienvorlage_Koepfe"]
     inventory = pd.read_excel(book, "Exportinventar").set_index("Bereich")
     actual = pd.read_excel(book, inventory.loc["Bestand_Auswahl_Grafik", "Tabellenblatt"])
     pd.testing.assert_frame_equal(actual, view["chart"].reset_index(drop=True), check_dtype=False)
@@ -42,7 +42,8 @@ def test_stock_slide_table_uses_reporting_events_and_separates_departure_reasons
     assert not app.exception
     view = app.session_state["view"]
     tables, _ = prepare_yearly_view_export(summary, view, stock=True)
-    slide = tables["Bestand_Folienvorlage"].set_index("Kennzahl")
+    slide = tables["Bestand_Folienvorlage_MAK"].set_index("Kennzahl")
+    headcount = tables["Bestand_Folienvorlage_Koepfe"].set_index("Kennzahl")
     years = [col for col in slide if isinstance(col, int)]
     assert years
     assert "Verbleibender heutiger Bestand" in slide.index
@@ -68,6 +69,17 @@ def test_stock_slide_table_uses_reporting_events_and_separates_departure_reasons
             "Bestand-MAK",
         ].iloc[0]
     )
+    assert headcount.loc["Verbleibender heutiger Bestand", "Start"] == pytest.approx(
+        summary["stock_reconciliation"]["annual"].loc[
+            lambda frame: frame["Ebene"].eq("Gesamt") & frame["Art"].eq("Ausgangsstichtag"),
+            "Bestand-Köpfe",
+        ].iloc[0]
+    )
+    for year in years:
+        yearly = events.loc[events["Jahr"].eq(year)]
+        assert headcount.loc["Abgänge durch Fluktuation", year] == pytest.approx(
+            -yearly.loc[yearly["Ereignisart"].eq("QUIT"), "Köpfe-Veränderung"].sum()
+        )
 
     source = summary["annual_oe"]
     event_view = build_yearly_view(
@@ -76,9 +88,9 @@ def test_stock_slide_table_uses_reporting_events_and_separates_departure_reasons
         event_types=[source.Ereignisart.iloc[0]], metric="MAK-Veränderung",
     )
     event_tables, event_context = prepare_yearly_view_export(summary, event_view, stock_view=view)
-    assert next(iter(event_tables)) == "Bestand_Folienvorlage"
+    assert list(event_tables)[:2] == ["Bestand_Folienvorlage_MAK", "Bestand_Folienvorlage_Koepfe"]
     event_book = pd.ExcelFile(BytesIO(build_org_simulation_export_bytes(event_tables, event_context)))
-    assert event_book.sheet_names[1] == "01_Bestand_Folienvorlage"
+    assert event_book.sheet_names[1:3] == ["01_Bestand_Folienvorlage_MAK", "02_Bestand_Folienvorlage_Koepfe"]
 
 
 def test_event_export_preserves_year_org_and_type_selection():

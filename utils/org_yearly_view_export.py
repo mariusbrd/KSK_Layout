@@ -8,12 +8,13 @@ from utils.org_simulation_export import (
 )
 
 
-def build_stock_slide_table(summary, view):
+def build_stock_slide_table(summary, view, *, metric=None):
     """Wide, presentation-ready stock and departure series for the visible selection."""
     from components.org_simulation_yearly import LABELS
 
     bridge = summary["stock_reconciliation"]
-    level, metric = view["level"], view["metric"]
+    level = view["level"]
+    metric = metric or view["metric"]
     organizations = set(view["organizations"])
     value = f"Bestand-{metric}"
     change = f"{metric}-Veränderung"
@@ -67,6 +68,14 @@ def build_stock_slide_table(summary, view):
     return pd.DataFrame(rows)
 
 
+SLIDE_SHEETS = ("Bestand_Folienvorlage_MAK", "Bestand_Folienvorlage_Koepfe")
+
+
+def append_stock_slide_tables(tables, summary, stock_view):
+    tables[SLIDE_SHEETS[0]] = build_stock_slide_table(summary, stock_view, metric="MAK")
+    tables[SLIDE_SHEETS[1]] = build_stock_slide_table(summary, stock_view, metric="Köpfe")
+
+
 def prepare_yearly_view_export(summary, view, *, stock=False, stock_view=None):
     if not view or view.get("run_signature") != summary.get("run_signature"):
         raise ValueError("Die Exportauswahl gehört nicht zum gespeicherten Lauf.")
@@ -81,16 +90,16 @@ def prepare_yearly_view_export(summary, view, *, stock=False, stock_view=None):
         if bridge.get("status") != "Abgestimmt":
             raise ValueError("Der Bestandsverlauf ist nicht abgestimmt.")
         append_stock_export(tables, context, summary, view)
-        tables["Bestand_Folienvorlage"] = build_stock_slide_table(summary, view)
+        append_stock_slide_tables(tables, summary, view)
         context["Folienvorlage"] = {
-            "Kennzahl": view["metric"], "Ebene": view["level"],
+            "Kennzahlen": ["MAK", "Köpfe"], "Ebene": view["level"],
             "Bedeutung": "Positive Abgangswerte sind Verluste aus der abgestimmten Berichtswirkung. Rückkehr aus Ruhend ist negativ. Der Bestandsrückgang kann zusätzlich technische Prognosebasis- und undatierte Aufbereitungseffekte enthalten.",
         }
         append_yearly_export(tables, context, summary, None)
     else:
         append_yearly_export(tables, context, summary, view)
         if stock_view and stock_view.get("run_signature") == summary.get("run_signature"):
-            tables["Bestand_Folienvorlage"] = build_stock_slide_table(summary, stock_view)
+            append_stock_slide_tables(tables, summary, stock_view)
     from components.org_simulation_yearly import LABELS, build_yearly_view
     events = summary["events"]
     departures = events.loc[events["Ereignisquelle"].eq("departure_events")]
@@ -124,7 +133,7 @@ def prepare_yearly_view_export(summary, view, *, stock=False, stock_view=None):
     # Put the displayed data first; retain the existing, explicitly named audit sheets.
     selection = {name: frame for name, frame in tables.items()
                  if "Auswahl" in name or "auswahl" in name}
-    slide = {"Bestand_Folienvorlage": tables["Bestand_Folienvorlage"]} if "Bestand_Folienvorlage" in tables else {}
+    slide = {name: tables[name] for name in SLIDE_SHEETS if name in tables}
     tables = {**slide, **selection, **tables}
     return tables, context
 
@@ -145,5 +154,6 @@ def render_yearly_view_export(summary, view, *, stock=False, stock_view=None):
         key="org_yearly_selection_export_stock" if stock else "org_yearly_selection_export_events",
         fingerprint=export_fingerprint(tables, context),
         help=("Aktuelle Auswahl inklusive Datenherkunft, Formeln und Berechnungsnachweis. "
-              + ("Die Folienvorlage steht im ersten Blatt." if "Bestand_Folienvorlage" in tables else "")),
+              + ("Die Folienvorlagen für MAK und Köpfe stehen in den ersten beiden Datenblättern."
+                 if all(name in tables for name in SLIDE_SHEETS) else "")),
     )
