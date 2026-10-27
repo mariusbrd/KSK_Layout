@@ -59,6 +59,7 @@ def _annual_comparison(original, adjusted) -> pd.DataFrame:
     parts = []
     persons = set(adjusted.metadata.get("adjustment", {}).get("persons", []))
     candidates = eligible_departures(original)
+    selected = []
     affected = set(candidates.loc[candidates["PersNr"].isin(persons), "Organisationseinheit"]) if not candidates.empty else set()
     for label, version in (("Original", original), ("Justierung", adjusted)):
         annual = version.event_summary.get("stock_reconciliation", {}).get("annual")
@@ -159,9 +160,9 @@ def main() -> None:
         scoped = candidates.loc[candidates["Organisationseinheit"].eq(org)]
         st.dataframe(scoped, use_container_width=True, hide_index=True)
         selected = st.multiselect(
-            "Abgänge in dieser OE zurücknehmen · Personalnummer",
+            "Diese Abgänge zurücknehmen · Personalnummer (nur ausgewählte Personen)",
             scoped["PersNr"].tolist(),
-            default=scoped["PersNr"].tolist(),
+            default=[],
         )
         if st.button("Justierung prüfen", disabled=not selected):
             try:
@@ -190,21 +191,34 @@ def main() -> None:
             st.rerun()
 
     st.subheader("Freigabe")
-    st.caption("Ohne Justierung wird genau der gespeicherte Originallauf freigegeben. Es erfolgt keine Neuberechnung der Simulation.")
+    st.caption("Ausgewählte Abgänge werden vor der Freigabe zurückgenommen und geprüft. Ohne Auswahl kann ein bereits geprüfter Entwurf freigegeben werden.")
     if status == "Abweichung":
         st.error("Die OE-Bestandsüberleitung ist nicht abgestimmt. Dieser Ergebnisstand kann noch nicht freigegeben werden.")
     if status == "Nicht verfügbar":
-        st.warning("Eine vollständige OE-Bestandsüberleitung ist für diesen Lauf nicht verfügbar. Die Freigabe bestätigt den gespeicherten Originallauf.")
+        st.warning("Eine vollständige OE-Bestandsüberleitung ist für den Originallauf nicht verfügbar. Ausgewählte Rücknahmen werden vor ihrer Freigabe gesondert geprüft.")
+    pending_adjustment = bool(selected) or draft is not None
+    if pending_adjustment and st.button(
+        "Ausgewählte Abgänge zurücknehmen und freigeben" if selected else "Geprüfte Justierung freigeben",
+        type="primary",
+        disabled=not selected and (status != "Abgestimmt" or (active.approved and active.version == draft.version)),
+    ):
+        try:
+            selected_ids = tuple(sorted(set(selected)))
+            draft_ids = tuple(sorted(draft.metadata.get("adjustment", {}).get("persons", ()))) if draft is not None else ()
+            if selected_ids and selected_ids != draft_ids:
+                with st.spinner("Ausgewählte Rücknahmen und Bestandsprüfungen erstellen ..."):
+                    result = derive_retained_departures(original, selected)
+                stage_adjustment(st.session_state, result)
+            approve_adjustment(st.session_state, approved_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+            st.rerun()
+        except (ValueError, KeyError) as exc:
+            st.error(str(exc))
     original_status = original.event_summary.get("stock_reconciliation", {}).get("status")
-    if st.button("Unveränderten Lauf freigeben", type="primary", disabled=original_status == "Abweichung" or (active.approved and active.version == original.version)):
+    if st.button("Originallauf ohne Rücknahme freigeben" if pending_adjustment else "Unveränderten Lauf freigeben",
+                 type="secondary" if pending_adjustment else "primary",
+                 disabled=original_status == "Abweichung" or (active.approved and active.version == original.version)):
         try:
             approve_original(st.session_state, approved_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
-            st.rerun()
-        except ValueError as exc:
-            st.error(str(exc))
-    if draft is not None and st.button("Justierten Ergebnisstand freigeben", type="primary", disabled=status != "Abgestimmt" or (active.approved and active.version == draft.version)):
-        try:
-            approve_adjustment(st.session_state, approved_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
             st.rerun()
         except ValueError as exc:
             st.error(str(exc))
