@@ -191,109 +191,122 @@ def main() -> None:
                          use_container_width=True, hide_index=True)
 
     st.subheader("2. Rücknahmen auswählen")
-    st.caption("Eine markierte Zeile bedeutet: Dieser bereits simulierte Abgang soll zurückgenommen werden.")
+    st.caption("Häkchen setzen und anschließend die Auswahl prüfen. Während des Setzens wird die Seite nicht neu geladen.")
     candidates = eligible_departures(original)
-    selected = []
     selected_org = None
-    if candidates.empty:
-        zugaenge = original.event_context.get("accession_events")
-        if isinstance(zugaenge, pd.DataFrame) and not zugaenge.empty:
-            st.info("Rücknahmen sind für Läufe mit Zugängen noch nicht verfügbar. Der Originallauf kann freigegeben werden.")
-        else:
-            st.info("Für diesen Lauf gibt es keine eindeutig geeigneten Abgänge zur Rücknahme.")
-    else:
+    if not candidates.empty:
         selected_org = st.selectbox("Organisationseinheit", sorted(candidates["Organisationseinheit"].unique()),
                                     key=f"approval_org_{original.instance}_{run_id}")
-        scoped = candidates.loc[candidates["Organisationseinheit"].eq(selected_org)].reset_index(drop=True)
-        state = st.dataframe(scoped, hide_index=True, use_container_width=True,
-                             on_select="rerun", selection_mode="multi-row",
-                             key=f"approval_rows_{original.instance}_{run_id}_{selected_org}")
-        selected = scoped.iloc[state.selection.rows]["PersNr"].astype(str).tolist()
-        st.caption(f"{len(selected)} von {len(scoped)} Abgängen zur Rücknahme markiert.")
+    with st.form(key=f"approval_changes_{original.instance}_{run_id}_{selected_org}",
+                 border=False, enter_to_submit=False):
+        selected = []
+        if candidates.empty:
+            zugaenge = original.event_context.get("accession_events")
+            if isinstance(zugaenge, pd.DataFrame) and not zugaenge.empty:
+                st.info("Rücknahmen sind für Läufe mit Zugängen noch nicht verfügbar. Der Originallauf kann freigegeben werden.")
+            else:
+                st.info("Für diesen Lauf gibt es keine eindeutig geeigneten Abgänge zur Rücknahme.")
+        else:
+            scoped = candidates.loc[candidates["Organisationseinheit"].eq(selected_org)].reset_index(drop=True)
+            editor = scoped.assign(Zurücknehmen=False)
+            edited = st.data_editor(editor, hide_index=True, use_container_width=True,
+                                    disabled=list(scoped.columns), num_rows="fixed",
+                                    column_order=["Zurücknehmen", *scoped.columns],
+                                    column_config={"Zurücknehmen": st.column_config.CheckboxColumn(
+                                        "Zurücknehmen", help="Diesen simulierten Abgang rückgängig machen")},
+                                    key=f"approval_rows_{original.instance}_{run_id}_{selected_org}")
+            selected = edited.loc[edited["Zurücknehmen"].fillna(False), "PersNr"].astype(str).tolist()
+            st.caption(f"{len(selected)} von {len(scoped)} Abgängen zur Rücknahme markiert.")
 
-    draft_ids = set(draft.metadata.get("adjustment", {}).get("persons", ())) if draft is not None else set()
-    draft_matches = draft is not None and bool(selected) and set(selected) == draft_ids
-    if draft is not None and not draft_matches:
-        st.warning("Die Auswahl hat sich seit der letzten Prüfung geändert. Bitte die aktuelle Auswahl erneut prüfen.")
-        if st.button("Vorherigen Entwurf verwerfen"):
-            clear_adjustment(st.session_state)
-            st.rerun()
-    if selected and not draft_matches and st.button("Ausgewählte Rücknahmen prüfen"):
-        try:
-            with st.spinner("Korrigierten Ergebnisstand und Bestandsprüfungen erstellen ..."):
-                result = derive_retained_departures(original, selected)
-            stage_adjustment(st.session_state, result)
-            st.rerun()
-        except (ValueError, KeyError) as exc:
-            st.error(str(exc))
+        draft_ids = set(draft.metadata.get("adjustment", {}).get("persons", ())) if draft is not None else set()
+        draft_matches = draft is not None and bool(selected) and set(selected) == draft_ids
+        if draft is not None and not draft_matches:
+            st.warning("Die Auswahl hat sich seit der letzten Prüfung geändert. Bitte die aktuelle Auswahl erneut prüfen.")
+            if st.form_submit_button("Vorherigen Entwurf verwerfen"):
+                clear_adjustment(st.session_state)
+                st.rerun()
+        if st.form_submit_button("Ausgewählte Rücknahmen prüfen"):
+            if not selected:
+                st.warning("Bitte zuerst mindestens einen Abgang anhaken.")
+            elif not draft_matches:
+                try:
+                    with st.spinner("Korrigierten Ergebnisstand und Bestandsprüfungen erstellen ..."):
+                        result = derive_retained_departures(original, selected)
+                    stage_adjustment(st.session_state, result)
+                    st.rerun()
+                except (ValueError, KeyError) as exc:
+                    st.error(str(exc))
 
-    st.subheader("3. Wirkung der Rücknahme prüfen")
-    if draft_matches:
-        st.success(f"Geprüfte Rücknahme in {selected_org}: {len(selected)} Abgänge · Personalnummern {', '.join(sorted(selected))}")
-        comparison = _annual_comparison(original, draft)
-        if not comparison.empty:
-            st.markdown(f"**Jahresscheiben für {selected_org}: Original und korrigierter Bestand**")
-            _render_annual_change_chart(comparison, selected_org)
-            with st.expander("Jahreswerte und Differenzen als Tabelle"):
-                st.dataframe(comparison.loc[comparison["Organisation"].eq(selected_org)],
-                             use_container_width=True, hide_index=True)
-        original_final = original.event_context.get("final_snapshot")
-        adjusted_final = draft.event_context.get("final_snapshot")
-        if isinstance(original_final, pd.DataFrame) and isinstance(adjusted_final, pd.DataFrame):
-            old_oe = original_final.loc[original_final["Organisationseinheit"].eq(selected_org)]
-            new_oe = adjusted_final.loc[adjusted_final["Organisationseinheit"].eq(selected_org)]
-            st.dataframe(pd.DataFrame([{
-                "OE": selected_org, "Köpfe Original": compute_headcount(old_oe),
-                "Köpfe korrigiert": compute_headcount(new_oe),
-                "Köpfe Änderung": compute_headcount(new_oe) - compute_headcount(old_oe),
-                "MAK Original": raw_stock_mak(old_oe), "MAK korrigiert": raw_stock_mak(new_oe),
-                "MAK Änderung": raw_stock_mak(new_oe) - raw_stock_mak(old_oe),
-            }]), use_container_width=True, hide_index=True)
-            with st.expander("Gesamtbestand: Original und Korrektur"):
-                st.dataframe(pd.DataFrame([
-                    {"Stand": "Original", "Köpfe": compute_headcount(original_final), "MAK": raw_stock_mak(original_final)},
-                    {"Stand": "Justierung", "Köpfe": compute_headcount(adjusted_final), "MAK": raw_stock_mak(adjusted_final)},
-                ]), use_container_width=True, hide_index=True)
-        if st.button("Justierung verwerfen"):
-            clear_adjustment(st.session_state)
-            st.rerun()
-    elif selected:
-        st.info("Die aktuelle Auswahl ist noch nicht geprüft. Bitte zuerst 'Ausgewählte Rücknahmen prüfen' klicken.")
-    else:
-        st.caption("Keine Rücknahme ausgewählt. Der Originallauf kann unverändert freigegeben werden.")
+        st.subheader("3. Wirkung der Rücknahme prüfen")
+        if draft_matches:
+            st.success(f"Geprüfte Rücknahme in {selected_org}: {len(selected)} Abgänge · Personalnummern {', '.join(sorted(selected))}")
+            comparison = _annual_comparison(original, draft)
+            if not comparison.empty:
+                st.markdown(f"**Jahresscheiben für {selected_org}: Original und korrigierter Bestand**")
+                _render_annual_change_chart(comparison, selected_org)
+                with st.expander("Jahreswerte und Differenzen als Tabelle"):
+                    st.dataframe(comparison.loc[comparison["Organisation"].eq(selected_org)],
+                                 use_container_width=True, hide_index=True)
+            original_final = original.event_context.get("final_snapshot")
+            adjusted_final = draft.event_context.get("final_snapshot")
+            if isinstance(original_final, pd.DataFrame) and isinstance(adjusted_final, pd.DataFrame):
+                old_oe = original_final.loc[original_final["Organisationseinheit"].eq(selected_org)]
+                new_oe = adjusted_final.loc[adjusted_final["Organisationseinheit"].eq(selected_org)]
+                st.dataframe(pd.DataFrame([{
+                    "OE": selected_org, "Köpfe Original": compute_headcount(old_oe),
+                    "Köpfe korrigiert": compute_headcount(new_oe),
+                    "Köpfe Änderung": compute_headcount(new_oe) - compute_headcount(old_oe),
+                    "MAK Original": raw_stock_mak(old_oe), "MAK korrigiert": raw_stock_mak(new_oe),
+                    "MAK Änderung": raw_stock_mak(new_oe) - raw_stock_mak(old_oe),
+                }]), use_container_width=True, hide_index=True)
+                with st.expander("Gesamtbestand: Original und Korrektur"):
+                    st.dataframe(pd.DataFrame([
+                        {"Stand": "Original", "Köpfe": compute_headcount(original_final), "MAK": raw_stock_mak(original_final)},
+                        {"Stand": "Justierung", "Köpfe": compute_headcount(adjusted_final), "MAK": raw_stock_mak(adjusted_final)},
+                    ]), use_container_width=True, hide_index=True)
+            if st.form_submit_button("Justierung verwerfen"):
+                clear_adjustment(st.session_state)
+                st.rerun()
+        elif selected:
+            st.info("Die aktuelle Auswahl ist noch nicht geprüft. Bitte zuerst 'Ausgewählte Rücknahmen prüfen' klicken.")
+        else:
+            st.caption("Keine Rücknahme ausgewählt. Der Originallauf kann unverändert freigegeben werden.")
 
-    st.subheader("4. Ergebnisstand freigeben")
-    st.caption("Der blaue Knopf gibt ausschließlich die oben geprüfte Auswahl frei. Der helle Knopf gibt den Originallauf ohne Rücknahmen frei.")
-    review_status = draft.event_summary.get("stock_reconciliation", {}).get("status") if draft_matches else status
-    if review_status == "Abweichung":
-        st.error("Die OE-Bestandsüberleitung ist nicht abgestimmt. Dieser Ergebnisstand kann noch nicht freigegeben werden.")
-    if review_status == "Nicht verfügbar":
-        st.warning("Eine vollständige OE-Bestandsüberleitung ist für den Originallauf nicht verfügbar. Ausgewählte Rücknahmen werden vor ihrer Freigabe gesondert geprüft.")
-    original_status = original.event_summary.get("stock_reconciliation", {}).get("status")
-    original_col, adjusted_col = st.columns(2)
-    with original_col:
-        approve_original_clicked = st.button(
-            "Lauf unverändert freigeben", type="secondary", use_container_width=True,
-            disabled=original_status == "Abweichung" or (active.approved and active.version == original.version),
-        )
-    with adjusted_col:
-        approve_adjustment_clicked = st.button(
-            "Lauf mit Änderungen freigeben", type="primary", use_container_width=True,
-            disabled=not draft_matches or review_status != "Abgestimmt" or
-                     (active.approved and active.version == draft.version),
-        )
-    if approve_adjustment_clicked:
-        try:
-            approve_adjustment(st.session_state, approved_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
-            st.rerun()
-        except (ValueError, KeyError) as exc:
-            st.error(str(exc))
-    if approve_original_clicked:
-        try:
-            approve_original(st.session_state, approved_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
-            st.rerun()
-        except ValueError as exc:
-            st.error(str(exc))
+        st.subheader("4. Ergebnisstand freigeben")
+        st.caption("Der blaue Knopf gibt ausschließlich die oben geprüfte Auswahl frei. Der helle Knopf gibt den Originallauf ohne Rücknahmen frei.")
+        review_status = draft.event_summary.get("stock_reconciliation", {}).get("status") if draft_matches else status
+        if review_status == "Abweichung":
+            st.error("Die OE-Bestandsüberleitung ist nicht abgestimmt. Dieser Ergebnisstand kann noch nicht freigegeben werden.")
+        if review_status == "Nicht verfügbar":
+            st.warning("Eine vollständige OE-Bestandsüberleitung ist für den Originallauf nicht verfügbar. Ausgewählte Rücknahmen werden vor ihrer Freigabe gesondert geprüft.")
+        original_status = original.event_summary.get("stock_reconciliation", {}).get("status")
+        original_col, adjusted_col = st.columns(2)
+        with original_col:
+            approve_original_clicked = st.form_submit_button(
+                "Lauf unverändert freigeben", type="secondary", use_container_width=True,
+                disabled=original_status == "Abweichung" or (active.approved and active.version == original.version),
+            )
+        with adjusted_col:
+            approve_adjustment_clicked = st.form_submit_button(
+                "Lauf mit Änderungen freigeben", type="primary", use_container_width=True,
+                disabled=not draft_matches or review_status != "Abgestimmt" or
+                         (active.approved and active.version == draft.version),
+            )
+        if approve_adjustment_clicked:
+            if not draft_matches or review_status != "Abgestimmt":
+                st.error("Die aktuelle Auswahl weicht von der geprüften Justierung ab. Bitte erneut prüfen.")
+            else:
+                try:
+                    approve_adjustment(st.session_state, approved_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+                    st.rerun()
+                except (ValueError, KeyError) as exc:
+                    st.error(str(exc))
+        if approve_original_clicked:
+            try:
+                approve_original(st.session_state, approved_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+                st.rerun()
+            except ValueError as exc:
+                st.error(str(exc))
     if active.approved:
         st.page_link("pages/7_⚡_Kompakt_plus_Simulation.py", label="Kompakt plus Simulation")
         st.page_link("pages/10_🏢_Organisationseinheiten_Simulation.py", label="OE-Analyse Simulation")
