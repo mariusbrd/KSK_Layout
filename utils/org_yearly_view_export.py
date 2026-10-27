@@ -143,18 +143,37 @@ def render_yearly_view_export(summary, view, *, stock=False, stock_view=None):
     import streamlit as st
     from components.ui_compat import lazy_excel_download_button_compat
 
-    tables, context = prepare_yearly_view_export(summary, view, stock=stock, stock_view=stock_view)
-    if st.session_state.get("compact_sim_signature") == summary["run_signature"]:
-        context["Laufeinstellungen"] = deepcopy(st.session_state.get("compact_sim_export_context", {}))
-        context["abgaenge_params"] = deepcopy(st.session_state.get("compact_sim_abgaenge_params"))
-        context["zugaenge_params"] = deepcopy(st.session_state.get("compact_sim_zugaenge_params"))
+    if not view or view.get("run_signature") != summary.get("run_signature"):
+        return
+    # Building every audit sheet on each widget rerun delays the charts even
+    # when nobody exports. Fingerprint the visible selection and build on click.
+    selection = {key: view.get(key) for key in ("dimension", "level", "metric", "years", "organizations", "event_types")}
+    if "periods" in view:
+        selection["years"] = view["periods"].Jahr.tolist()
+    if "table" in view and "organizations" not in view:
+        selection["organizations"] = view["table"].index.tolist()
+    fingerprint = export_fingerprint(
+        {key: view[key] for key in ("chart", "table") if isinstance(view.get(key), pd.DataFrame)},
+        {"run": summary["run_signature"], "summary_object": id(summary), "stock": stock,
+         "selection": selection, "stock_view": None if stock_view is None else
+         {key: stock_view.get(key) for key in ("level", "metric", "organizations", "years")}},
+    )
+
+    def build_payload():
+        tables, context = prepare_yearly_view_export(summary, view, stock=stock, stock_view=stock_view)
+        if st.session_state.get("compact_sim_signature") == summary["run_signature"]:
+            context["Laufeinstellungen"] = deepcopy(st.session_state.get("compact_sim_export_context", {}))
+            context["abgaenge_params"] = deepcopy(st.session_state.get("compact_sim_abgaenge_params"))
+            context["zugaenge_params"] = deepcopy(st.session_state.get("compact_sim_zugaenge_params"))
+        return build_org_simulation_export_bytes(tables, context)
+
     lazy_excel_download_button_compat(
-        label="Excel exportieren", data_builder=lambda: build_org_simulation_export_bytes(tables, context),
+        label="Excel exportieren", data_builder=build_payload,
         file_name="OE_Bestandsverlauf.xlsx" if stock else "OE_Veraenderungen.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="org_yearly_selection_export_stock" if stock else "org_yearly_selection_export_events",
-        fingerprint=export_fingerprint(tables, context),
+        fingerprint=fingerprint,
         help=("Aktuelle Auswahl inklusive Datenherkunft, Formeln und Berechnungsnachweis. "
               + ("Die Folienvorlagen für MAK und Köpfe stehen in den ersten beiden Datenblättern."
-                 if all(name in tables for name in SLIDE_SHEETS) else "")),
+                 if stock or stock_view is not None else "")),
     )

@@ -884,6 +884,15 @@ def _validation_sheet(validation_df: pd.DataFrame, status_quo_snapshot: pd.DataF
     return pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
 
 
+def _excel_safe_event_dates(frame: pd.DataFrame, columns: tuple[str, ...]) -> pd.DataFrame:
+    """Show the reporting day; Excel rounds 23:59:59.999999999 to tomorrow."""
+    out = frame.copy()
+    for column in columns:
+        if column in out:
+            out[column] = pd.to_datetime(out[column], errors="coerce").dt.normalize()
+    return out
+
+
 def build_compact_simulation_export_bytes(
     *,
     prepared_df: pd.DataFrame,
@@ -1060,7 +1069,10 @@ def build_compact_simulation_export_bytes(
             ("18_Abgaenge_Grund_JF", abgaenge_reason_jobfamily_df),
         ]
         for sheet_name, table in ordered_sheets:
-            _hide_eur(table if table is not None else pd.DataFrame()).to_excel(writer, sheet_name=sheet_name[:31], index=False)
+            export_table = _hide_eur(table if table is not None else pd.DataFrame())
+            if sheet_name == "15_Abgaenge_Personenliste":
+                export_table = _excel_safe_event_dates(export_table, ("Ausschlussdatum",))
+            export_table.to_excel(writer, sheet_name=sheet_name[:31], index=False)
 
         _hide_eur(parameter_df).to_excel(writer, sheet_name="Parameter", index=False)
         _hide_eur(summary_df).to_excel(writer, sheet_name="Jobfamily_Summary", index=False)
@@ -1106,7 +1118,12 @@ def build_compact_simulation_export_bytes(
         ):
             table = audit_tables.get(sheet_name)
             if table is not None and not table.empty:
-                _hide_eur(table).to_excel(writer, sheet_name=sheet_name[:31], index=False)
+                export_table = _hide_eur(table)
+                if sheet_name == "Abgaenge_Events_Raw":
+                    export_table = _excel_safe_event_dates(export_table, ("event_date",))
+                elif sheet_name == "MAK_Abgaenge_Check":
+                    export_table = _excel_safe_event_dates(export_table, ("Abgang_Date",))
+                export_table.to_excel(writer, sheet_name=sheet_name[:31], index=False)
         _hide_eur(validation_df).to_excel(writer, sheet_name="Validation_Checks", index=False)
         write_lineage_sheet(
             writer,

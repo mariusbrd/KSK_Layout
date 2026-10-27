@@ -136,9 +136,10 @@ def render_yearly_headline_metrics(metrics: dict) -> None:
     second = st.columns(2)
     second[0].metric(f"Rente inkl. ATZ bis {metrics['end_year']}", display(metrics["retirement_atz"]))
     second[1].metric(f"Kündigungen bis {metrics['end_year']}", display(metrics["quit"]))
-    st.caption(f"Alle Werte in {unit} für die gewählten Organisationen. Abgänge kumuliert vom Ausgangsstichtag bis Ende {metrics['end_year']}; die Auswahl einzelner Zwischenjahre und Ereignisarten ändert diese Kacheln nicht. Bei MAK zählt die ATZ-Freistellung als Kapazitätsabgang, bei Köpfen erst der ATZ-Austritt. Die Quote umfasst auch weitere Personalabgänge; technische Bestandseffekte sind ausgeschlossen.")
+    st.caption(f"Alle Werte in {unit} für die gewählten Organisationen. Abgänge kumuliert vom Ausgangsstichtag bis Ende {metrics['end_year']}; die Auswahl einzelner Zwischenjahre und Ereignisarten ändert diese Kacheln nicht. Bei MAK zählt die ATZ-Freistellung als Kapazitätsabgang, bei Köpfen erst der ATZ-Austritt. Die Quote umfasst auch weitere Personalabgänge; technische Bestandseffekte sind ausgeschlossen. Bei Auswahl mehrerer OEs können Personen mit mehreren OE-Zuordnungen in der Summe mehrfach gezählt werden; der Gesamtbestand zählt jede Person einmal.")
 
 
+@st.fragment
 def render_org_simulation_yearly(summary: dict | None, *, run_signature: str | None) -> dict | None:
     st.subheader("Veränderungen pro Jahr")
     if not summary:

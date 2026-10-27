@@ -19,6 +19,7 @@ else:
     sys.path.append(str(BASE_PATH))
 
 from components.ui_shell import render_context_box, render_page_header
+from components.jobfamily_simulation_yearly import render_jobfamily_simulation_yearly
 
 
 JOBFAMILY_ANALYSIS_PAGE = next(
@@ -92,6 +93,11 @@ def main() -> None:
             "wie die bestehende IST-Seite, aber mit dem simulierten Zielbild als Datenbasis.\n\n"
             "Filter und Exklusionen aus der Sidebar definieren den Betrachtungsraum innerhalb "
             "dieses Simulationsergebnisses."
+        ),
+        yearly_renderer=lambda: render_jobfamily_simulation_yearly(
+            st.session_state.get("compact_sim_event_context"),
+            st.session_state.get("compact_sim_event_summary"),
+            run_signature=st.session_state.get("compact_sim_signature"),
         ),
     )
 

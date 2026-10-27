@@ -93,6 +93,28 @@ def test_existing_release_phase_only_exits_heads_without_repeated_mak_loss():
     assert result["annual"]["ATZ-MAK-Veränderung"].sum() == 0
 
 
+def test_release_already_active_on_base_date_is_not_a_missing_event():
+    summary = _summary()
+    summary["metadata"]["base_date"] = "2027-06-15"
+    summary["atz_pivot"] = pd.DataFrame([{
+        "PersNr": "000001", "Organisationseinheit": "A", "atz_origin": "Ausgangsbestand",
+        "fr_begin": "2027-06-15", "contract_end": "2028-06-15",
+        "atz_already_fr_at_start": True,
+    }])
+    summary["events"] = summary["events"].loc[
+        summary["events"].Ereignisart.eq("ATZ_END")].copy()
+    summary["atz_entry_audit"] = summary["atz_entry_audit"].iloc[0:0].copy()
+
+    result = build_atz_evaluation(summary, dimension="Organisationseinheit",
+                                  years=[2027, 2028], organizations=["A"])
+
+    assert result["mismatches"] == 0
+    assert result["unexpected"] == 0
+    assert result["details"].loc[result["details"].Phase.eq("Freistellungsbeginn"),
+                                 "Status"].tolist() == ["Bereits freigestellt am Ausgangsstichtag"]
+    assert result["annual"]["Geplant: Freistellungsbeginn"].sum() == 0
+
+
 def test_transition_for_person_already_released_at_start_is_flagged():
     summary = _summary()
     summary["stock_basis"] = {"baseline_snapshot": pd.DataFrame([{

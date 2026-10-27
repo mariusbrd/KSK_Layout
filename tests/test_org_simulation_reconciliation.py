@@ -14,6 +14,19 @@ from test_compact_sim_cluster_source_consistency import _load_page7_module
 from dataloader.cluster_resolver import ClusterMappingBundle
 
 
+def test_person_budget_aggregation_matches_previous_per_person_calculation():
+    from utils.org_simulation_reconciliation import _occupied, _person_mak_budgets, raw_stock_mak
+
+    positions = pd.DataFrame({
+        "PersNr": ["000001", "000001", "1", "000002", "000003", None],
+        "Is_Vacant": [False, False, False, False, True, False],
+        "MAK_Reporting": [0.25, 0.35, 0.2, 0.8, 0.9, 0.7],
+    })
+    occupied = _occupied(positions)
+    expected = {pid: raw_stock_mak(group) for pid, group in occupied.groupby("_person")}
+    assert _person_mak_budgets(occupied) == expected
+
+
 def test_missing_atz_org_is_filled_from_same_run_without_changing_raw_result():
     result = _run("atz_ruhend")
     before = _payload(result)

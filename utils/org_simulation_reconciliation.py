@@ -43,9 +43,10 @@ def documented_atz_capacity_effects(context, projection, final, events):
 
 
 def raw_stock_mak(snapshot: pd.DataFrame) -> float:
-    employees = get_unique_employees(snapshot)
     for column in ("MAK_Reporting", "MAK_Calculated", "mak", "MAK"):
-        if column in employees:
+        if column in snapshot:
+            columns = [name for name in ("PersNr", "Is_Vacant", column) if name in snapshot]
+            employees = get_unique_employees(snapshot[columns])
             return float(pd.to_numeric(employees[column], errors="coerce").fillna(0).sum())
     # Legacy fallback has no raw reporting capacity available.
     return compute_fte_effektiv(snapshot)
@@ -57,6 +58,24 @@ def _occupied(snapshot):
         rows = rows.loc[~rows.Is_Vacant.fillna(True).astype(bool)].copy()
     rows["_person"] = normalize_persnr(rows.PersNr)
     return rows.loc[rows._person.notna()].copy()
+
+
+def _person_mak_budgets(rows):
+    """Sum occupied reporting capacity once per person for event replay.
+
+    ``rows`` already passed through ``_occupied``. The old per-person call to
+    ``raw_stock_mak`` rebuilt a full employee table for every person, although
+    its result is simply the sum of that person's position capacities.
+    """
+    column = next((c for c in ("MAK_Reporting", "MAK_Calculated", "mak", "MAK") if c in rows), None)
+    if column is None:
+        return {pid: raw_stock_mak(group) for pid, group in rows.groupby("_person")}
+    capacity = pd.to_numeric(rows[column], errors="coerce").fillna(0)
+    # Preserve the old two-stage order: get_unique_employees first summed by
+    # raw PersNr, then raw_stock_mak summed those person rows. This also keeps
+    # mixed raw identifiers with one normalized ID numerically consistent.
+    by_raw_id = capacity.groupby([rows["_person"], rows["PersNr"]], sort=True).sum()
+    return by_raw_id.groupby(level=0, sort=True).sum().to_dict()
 
 
 def _person_scope_weights(initial, dimension):
@@ -211,8 +230,8 @@ def reporting_departure_events(projection, events, context):
     potential = apply_exclusions(potential, context["run_settings"].get("exclusions", {}), record_counts=False)
     potential = apply_person_mak_allocation(potential)
     original = _occupied(projection)
-    budget = {pid: raw_stock_mak(rows) for pid, rows in original.groupby("_person")}
-    recovery = {pid: raw_stock_mak(rows) for pid, rows in _occupied(potential).groupby("_person")}
+    budget = _person_mak_budgets(original)
+    recovery = _person_mak_budgets(_occupied(potential))
     fr = set(original.loc[original.get("ist_atz_fr", pd.Series(False, index=original.index)).fillna(False).astype(bool), "_person"])
     out = events.copy(deep=True)
     out["Original MAK-Veränderung"] = out["MAK-Veränderung"]

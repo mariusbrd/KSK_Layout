@@ -208,34 +208,58 @@ def render_org_simulation_export(tables, context, *, current, baseline, display_
 
     if tables is None:
         return
-    tables = {name: frame.copy(deep=True) for name, frame in tables.items()}
-    tables["IST_Simulation_SOLL"] = build_plan_comparison(current, baseline, display_orgs, compact)
+    plan = build_plan_comparison(current, baseline, display_orgs, compact)
     source_columns = ["Organisationseinheit", "Kürzel OrgEinheit", "Planstelle", "PersNr", "Personalnummer",
                       "Is_Vacant", "Soll_FTE", "MAK_Reporting", "MAK_Calculated", "MAK", "Sollarbeitszeit"]
     # Saved snapshot rows allow capacity values to be traced without reloading originals.
-    tables["Simulationsbasis_gefiltert"] = current[[c for c in source_columns if c in current]].copy()
-    if baseline is not None:
-        tables["Ausgangsbasis_gefiltert"] = baseline[[c for c in source_columns if c in baseline]].copy()
     with st.expander("IST und Simulation gegenüber dem Ausgangsstellenplan", expanded=False):
         st.caption("SOLL-MAK stammen aus dem gespeicherten Ausgangsstellenplan im aktuellen Filterkontext. "
                    "Köpfe und Planstellenzeilen sind unterschiedliche Größen; es werden keine SOLL-Köpfe aus Zeilenzahlen abgeleitet.")
-        if tables["IST_Simulation_SOLL"].empty:
+        if plan.empty:
             st.info("Kein auswertbarer gespeicherter Ausgangsstand für diesen Ausschnitt verfügbar.")
         else:
-            st.dataframe(tables["IST_Simulation_SOLL"], hide_index=True, use_container_width=True)
+            st.dataframe(plan, hide_index=True, use_container_width=True)
             if baseline is not None and "Soll_FTE" not in baseline.columns:
                 st.info("SOLL-MAK sind im gespeicherten Ausgangsstand nicht verfügbar.")
     frozen = deepcopy(context)
     frozen["Anzeige"] = deepcopy(view)
     frozen["Anzeige"]["Organisationseinheiten"] = list(display_orgs)
-    append_yearly_export(tables, frozen, event_summary, yearly_view)
-    append_stock_export(tables, frozen, event_summary, stock_view)
-    # No sample hashes: changes to any row invalidate the entire workbook.
+    frozen["Jahresquelle_Object_Fingerprint"] = id(event_summary) if event_summary is not None else None
+    frozen["Jahresauswahl_Fingerprint"] = (
+        None if yearly_view is None else {
+            "Ebene": yearly_view.get("dimension"), "Kennzahl": yearly_view.get("metric"),
+            "Jahre": yearly_view.get("periods", pd.DataFrame()).get("Jahr", pd.Series(dtype=int)).tolist(),
+            "Organisationen": yearly_view.get("table", pd.DataFrame()).index.tolist(),
+            "Ereignisarten": yearly_view.get("event_types", []),
+        }
+    )
+    frozen["Bestandsauswahl_Fingerprint"] = None if stock_view is None else {
+        key: stock_view.get(key) for key in ("level", "metric", "organizations", "years")
+    }
+    # Fingerprint rendered data without constructing the full workbook tables.
+    fingerprint = export_fingerprint({**tables, "IST_Simulation_SOLL": plan,
+                                      "Simulationsbasis_gefiltert": current,
+                                      **({"Ausgangsbasis_gefiltert": baseline} if baseline is not None else {})}, frozen)
+
+    def build_payload():
+        export_tables = {name: frame.copy(deep=True) for name, frame in tables.items()}
+        export_tables["IST_Simulation_SOLL"] = plan.copy(deep=True)
+        export_tables["Simulationsbasis_gefiltert"] = current[[c for c in source_columns if c in current]].copy()
+        if baseline is not None:
+            export_tables["Ausgangsbasis_gefiltert"] = baseline[[c for c in source_columns if c in baseline]].copy()
+        export_context = deepcopy(frozen)
+        export_context.pop("Jahresquelle_Object_Fingerprint", None)
+        export_context.pop("Jahresauswahl_Fingerprint", None)
+        export_context.pop("Bestandsauswahl_Fingerprint", None)
+        append_yearly_export(export_tables, export_context, event_summary, yearly_view)
+        append_stock_export(export_tables, export_context, event_summary, stock_view)
+        return build_org_simulation_export_bytes(export_tables, export_context)
+
     lazy_excel_download_button_compat(
         label="Gesamte OE-Simulationsanalyse als Excel exportieren",
-        data_builder=lambda: build_org_simulation_export_bytes(tables, frozen),
+        data_builder=build_payload,
         file_name="OE_Simulation_Gesamtexport.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="org_simulation_full_export", fingerprint=export_fingerprint(tables, frozen),
+        key="org_simulation_full_export", fingerprint=fingerprint,
         use_container_width=True,
     )

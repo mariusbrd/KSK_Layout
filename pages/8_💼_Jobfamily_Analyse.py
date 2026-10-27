@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+from typing import Callable
 
 import pandas as pd
 import plotly.express as px
@@ -871,6 +872,7 @@ def render_jobfamily_analysis_page(
     value_label: str = "IST",
     methodology_text: str | None = None,
     key_prefix: str = "jobfamily_ist",
+    yearly_renderer: Callable[[], None] | None = None,
 ) -> None:
     compact = load_compact_page_module()
     is_simulation = value_label == "Simulation" or key_prefix == "jobfamily_simulation"
@@ -941,6 +943,8 @@ def render_jobfamily_analysis_page(
             compact,
             is_simulation=is_simulation,
         )
+        if yearly_renderer is not None:
+            yearly_renderer()
         return
 
     st.divider()
@@ -989,6 +993,8 @@ def render_jobfamily_analysis_page(
 
     if not display_jobfamilies:
         st.info("Im aktuellen Filterkontext sind keine Jobgruppen für die Analyse verfügbar.")
+        if yearly_renderer is not None:
+            yearly_renderer()
         return
 
     sort_label = _resolve_sort_metric(selected_sort, metric_view)
@@ -1044,6 +1050,10 @@ def render_jobfamily_analysis_page(
         display_jobfamilies=display_jobfamilies,
         is_simulation=is_simulation,
     )
+
+    if yearly_renderer is not None:
+        st.divider()
+        yearly_renderer()
 
     with st.expander("Datenqualität", expanded=False):
         _render_data_quality_block(

@@ -131,6 +131,33 @@ def test_event_export_preserves_year_org_and_type_selection():
         prepare_yearly_view_export(summary, dict(view, run_signature="wrong"))
 
 
+def test_yearly_export_tables_are_built_only_on_download(monkeypatch):
+    from utils import org_yearly_view_export as module
+    from components import ui_compat
+
+    summary = build_simulation_event_summary(_bridge_context("atz_ruhend"), expected_run_signature="a")
+    source = summary["annual_oe"]
+    view = build_yearly_view(summary, dimension="Organisationseinheit",
+                             years=sorted(source.Jahr.unique()),
+                             organizations=sorted(source.Organisationseinheit.unique()),
+                             event_types=sorted(source.Ereignisart.unique()), metric="Abgänge")
+    calls = []
+    original = module.prepare_yearly_view_export
+
+    def counted(*args, **kwargs):
+        calls.append("build")
+        return original(*args, **kwargs)
+
+    captured = {}
+    monkeypatch.setattr(module, "prepare_yearly_view_export", counted)
+    monkeypatch.setattr(ui_compat, "lazy_excel_download_button_compat", lambda **kwargs: captured.update(kwargs))
+    module.render_yearly_view_export(summary, view)
+    assert calls == []
+    assert captured["fingerprint"]
+    assert captured["data_builder"]()
+    assert calls == ["build"]
+
+
 @pytest.mark.parametrize("dimension,metric", [("Organisationseinheit", "Köpfe"), ("OE-Cluster", "MAK")])
 def test_individual_departure_matrices_match_existing_yearly_aggregation(dimension, metric):
     summary = build_simulation_event_summary(_bridge_context("atz_ruhend"), expected_run_signature="a")

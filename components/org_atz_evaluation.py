@@ -127,10 +127,14 @@ def build_atz_evaluation(summary: dict, *, dimension: str, years: list[int],
                               first_departure_type.get(pid) != kind)
             actual = events.loc[events.PersNr.eq(pid) & events.Ereignisart.eq(kind) &
                                 events.event_date.eq(period.end)]
+            released_at_start = getattr(row, "atz_already_fr_at_start", False)
+            already_released = (kind == "ATZ_AR_TO_FR" and pd.notna(released_at_start)
+                                and bool(released_at_start))
             details.append({dimension: scope, "Jahr": period.start.year, "PersNr": pid,
                             "Herkunft": origin, "Phase": label, "Geplanter Termin": planned_date,
                             "Ereignisdatum": actual.event_date.iloc[0] if not actual.empty else pd.NaT,
-                            "Status": "Vorher ausgeschieden" if competing_exit else
+                            "Status": "Bereits freigestellt am Ausgangsstichtag" if already_released else
+                                      "Vorher ausgeschieden" if competing_exit else
                                       ("Eingetreten" if not actual.empty else "Fehlt"),
                             "Köpfe-Veränderung": float(actual["Köpfe-Veränderung"].sum()),
                             "MAK-Veränderung": float(actual["MAK-Veränderung"].sum())})
@@ -141,7 +145,7 @@ def build_atz_evaluation(summary: dict, *, dimension: str, years: list[int],
             annual[f"Beobachtet: {label}"] = 0
             continue
         phase = details.loc[details.Phase.eq(label)]
-        planned = phase.loc[~phase.Status.eq("Vorher ausgeschieden")].groupby([dimension, "Jahr"]).size()
+        planned = phase.loc[~phase.Status.isin(("Vorher ausgeschieden", "Bereits freigestellt am Ausgangsstichtag"))].groupby([dimension, "Jahr"]).size()
         actual = phase.loc[phase.Status.eq("Eingetreten")].groupby([dimension, "Jahr"]).size()
         annual[f"Geplant: {label}"] = annual.set_index([dimension, "Jahr"]).index.map(planned).fillna(0).to_numpy()
         annual[f"Beobachtet: {label}"] = annual.set_index([dimension, "Jahr"]).index.map(actual).fillna(0).to_numpy()

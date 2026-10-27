@@ -274,3 +274,24 @@ def test_export_workbook_contains_jobfamily_profile_and_attrition_person_list() 
     assert person_list.loc[0, "Jobfamily_before"] == "Beratung"
     assert person_list.loc[0, "Abgangsgrund"] == "Kündigung"
     assert "GESAMT" in set(profile["Jobfamily"])
+
+
+def test_excel_event_dates_stay_in_the_simulated_year() -> None:
+    event_date = pd.Timestamp("2031-12-31 23:59:59.999999999")
+    audit_tables = {"Abgaenge_Events_Raw": pd.DataFrame([{
+        "persnr": "1", "event_date": event_date, "reason_code": "QUIT",
+        "headcount_change": -1, "mak_change": -1.0,
+        "Jobfamily": "Beratung", "Organisationseinheit": "Markt",
+    }])}
+    payload = build_compact_simulation_export_bytes(
+        prepared_df=_sample_prepared_df(), abgaenge_params={}, zugaenge_params={},
+        metadata={"base_date": pd.Timestamp("2026-09-01"), "target_date": pd.Timestamp("2031-12-31")},
+        status_quo_df=_sample_prepared_df(), status_quo_date=pd.Timestamp("2026-09-01"),
+        audit_tables=audit_tables,
+    )
+    workbook = pd.ExcelFile(io.BytesIO(payload))
+    raw = pd.read_excel(workbook, sheet_name="Abgaenge_Events_Raw")
+    persons = pd.read_excel(workbook, sheet_name="15_Abgaenge_Personenliste")
+    assert pd.Timestamp(raw.loc[0, "event_date"]) == pd.Timestamp("2031-12-31")
+    assert pd.Timestamp(persons.loc[0, "Ausschlussdatum"]) == pd.Timestamp("2031-12-31")
+    assert audit_tables["Abgaenge_Events_Raw"].loc[0, "event_date"] == event_date

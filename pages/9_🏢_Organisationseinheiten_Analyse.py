@@ -1395,6 +1395,14 @@ def render_orgunit_analysis_page(
         f"{title} nutzt den globalen Metrik-Switch direkt für KPIs, Rangliste und Detailblöcke."
     )
 
+    yearly_view = None
+
+    def render_yearly_view():
+        if export_tables is None:
+            return None
+        from components.org_simulation_yearly import render_org_simulation_yearly
+        return render_org_simulation_yearly(event_summary, run_signature=export_context.get("Laufkennung"))
+
     prepared_df = _normalize_org_column(prepared_df)
     comparison_prepared_df = None
     if comparison_df is not None and not comparison_df.empty:
@@ -1425,8 +1433,6 @@ def render_orgunit_analysis_page(
     def finish_export(display_orgs):
         if export_tables is None:
             return
-        from components.org_simulation_yearly import render_org_simulation_yearly
-        yearly_view = render_org_simulation_yearly(event_summary, run_signature=export_context.get("Laufkennung"))
         stock_view = yearly_view.get("stock_view") if yearly_view is not None else None
         render_org_simulation_export(
             export_tables, export_context, current=filtered_df, baseline=comparison_filtered_df,
@@ -1466,6 +1472,7 @@ def render_orgunit_analysis_page(
             tone="warning",
         )
         _render_data_quality_block(filtered_df, mapped_df, unmapped_df, metric_view, metric_config, compact, **({"export_tables": export_tables} if export_tables is not None else {}))
+        yearly_view = render_yearly_view()
         finish_export([])
         return
 
@@ -1566,6 +1573,7 @@ def render_orgunit_analysis_page(
         st.info("Im aktuellen Filterkontext sind keine Organisationseinheiten für die Analyse verfügbar.")
         _render_data_quality_block(filtered_df, mapped_df, unmapped_df, metric_view, metric_config, compact,
                                        **({"export_tables": export_tables} if export_tables is not None else {})) if export_tables is not None else None
+        yearly_view = render_yearly_view()
         finish_export([])
         return
 
@@ -1638,6 +1646,10 @@ def render_orgunit_analysis_page(
         comparison_label=comparison_label,
     **({"export_tables": export_tables} if export_tables is not None else {}),
     )
+
+    if export_tables is not None:
+        st.divider()
+        yearly_view = render_yearly_view()
 
     if comparison_active and not filtered_departure_events.empty:
         reason_df = _build_departure_reason_summary(filtered_departure_events)
