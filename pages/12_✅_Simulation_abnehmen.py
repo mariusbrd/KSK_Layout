@@ -59,7 +59,6 @@ def _annual_comparison(original, adjusted) -> pd.DataFrame:
     parts = []
     persons = set(adjusted.metadata.get("adjustment", {}).get("persons", []))
     candidates = eligible_departures(original)
-    selected = []
     affected = set(candidates.loc[candidates["PersNr"].isin(persons), "Organisationseinheit"]) if not candidates.empty else set()
     for label, version in (("Original", original), ("Justierung", adjusted)):
         annual = version.event_summary.get("stock_reconciliation", {}).get("annual")
@@ -118,6 +117,9 @@ def main() -> None:
     if isinstance(baseline, pd.DataFrame) and isinstance(final, pd.DataFrame):
         start_heads, end_heads = compute_headcount(baseline), compute_headcount(final)
         start_mak, end_mak = raw_stock_mak(baseline), raw_stock_mak(final)
+        st.markdown("""<style>
+        div[data-testid="stMetric"] { min-height: 8.5rem; width: 100%; }
+        </style>""", unsafe_allow_html=True)
         columns = st.columns(4)
         columns[0].metric("Ausgang · Köpfe", f"{start_heads:,}")
         columns[1].metric("Ziel · Köpfe", f"{end_heads:,}", delta=f"{end_heads - start_heads:+,}")
@@ -139,7 +141,8 @@ def main() -> None:
         st.dataframe(_mark_zero_mak_rows(final_stock, zero_orgs), use_container_width=True, hide_index=True)
     checks = bridge.get("checks")
     if isinstance(checks, pd.DataFrame) and not checks.empty:
-        st.dataframe(_mark_zero_mak_rows(checks, zero_orgs), use_container_width=True, hide_index=True)
+        with st.expander("Details der OE-Bestandsüberleitung"):
+            st.dataframe(_mark_zero_mak_rows(checks, zero_orgs), use_container_width=True, hide_index=True)
     annual = bridge.get("annual")
     if isinstance(annual, pd.DataFrame) and not annual.empty:
         with st.expander("Jahresscheiben und Bestandsverlauf"):
@@ -149,6 +152,7 @@ def main() -> None:
     st.subheader("Justierung")
     st.caption("Aktuell unterstützt: einzelne Kündigungs- oder Rentenabgänge aus einer eindeutig zugeordneten OE zurücknehmen. Andere Fälle bleiben zur fachlichen Prüfung gesperrt.")
     candidates = eligible_departures(original)
+    selected = []
     if candidates.empty:
         zugaenge = original.event_context.get("accession_events")
         if isinstance(zugaenge, pd.DataFrame) and not zugaenge.empty:
@@ -197,11 +201,20 @@ def main() -> None:
     if status == "Nicht verfügbar":
         st.warning("Eine vollständige OE-Bestandsüberleitung ist für den Originallauf nicht verfügbar. Ausgewählte Rücknahmen werden vor ihrer Freigabe gesondert geprüft.")
     pending_adjustment = bool(selected) or draft is not None
-    if pending_adjustment and st.button(
-        "Ausgewählte Abgänge zurücknehmen und freigeben" if selected else "Geprüfte Justierung freigeben",
-        type="primary",
-        disabled=not selected and (status != "Abgestimmt" or (active.approved and active.version == draft.version)),
-    ):
+    original_status = original.event_summary.get("stock_reconciliation", {}).get("status")
+    original_col, adjusted_col = st.columns(2)
+    with original_col:
+        approve_original_clicked = st.button(
+            "Lauf unverändert freigeben", type="secondary", use_container_width=True,
+            disabled=original_status == "Abweichung" or (active.approved and active.version == original.version),
+        )
+    with adjusted_col:
+        approve_adjustment_clicked = st.button(
+            "Lauf mit Änderungen freigeben", type="primary", use_container_width=True,
+            disabled=not pending_adjustment or (not selected and
+                      (status != "Abgestimmt" or (active.approved and active.version == draft.version))),
+        )
+    if approve_adjustment_clicked:
         try:
             selected_ids = tuple(sorted(set(selected)))
             draft_ids = tuple(sorted(draft.metadata.get("adjustment", {}).get("persons", ()))) if draft is not None else ()
@@ -213,10 +226,7 @@ def main() -> None:
             st.rerun()
         except (ValueError, KeyError) as exc:
             st.error(str(exc))
-    original_status = original.event_summary.get("stock_reconciliation", {}).get("status")
-    if st.button("Originallauf ohne Rücknahme freigeben" if pending_adjustment else "Unveränderten Lauf freigeben",
-                 type="secondary" if pending_adjustment else "primary",
-                 disabled=original_status == "Abweichung" or (active.approved and active.version == original.version)):
+    if approve_original_clicked:
         try:
             approve_original(st.session_state, approved_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
             st.rerun()
