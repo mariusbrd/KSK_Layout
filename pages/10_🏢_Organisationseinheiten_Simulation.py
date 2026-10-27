@@ -21,6 +21,7 @@ else:
 
 from components.ui_shell import render_context_box, render_page_header
 from utils.org_simulation_events import build_simulation_event_summary, RECONCILIATION_VERSION
+from utils.simulation_validation import current_view
 
 
 ORG_ANALYSIS_PAGE = BASE_PATH / "pages" / "9_🏢_Organisationseinheiten_Analyse.py"
@@ -48,8 +49,8 @@ def _format_target_date(value) -> str:
         return "unbekannt"
 
 
-def _get_departure_events() -> pd.DataFrame:
-    audit_tables = st.session_state.get("compact_sim_audit_tables", {}) or {}
+def _get_departure_events(audit_tables: dict | None = None) -> pd.DataFrame:
+    audit_tables = audit_tables if audit_tables is not None else st.session_state.get("compact_sim_audit_tables", {}) or {}
     events = audit_tables.get("Abgaenge_Events_Raw", pd.DataFrame())
     if events is None or events.empty:
         return pd.DataFrame()
@@ -85,9 +86,25 @@ def _get_current_event_summary():
 
 
 def main() -> None:
-    prepared_df = st.session_state.get("compact_sim_prepared_df")
-    status_quo_df = st.session_state.get("compact_sim_status_quo_df")
-    metadata = st.session_state.get("compact_sim_metadata", {})
+    view = current_view(st.session_state, require_approval=True)
+    if view is None:
+        render_page_header(
+            "Organisationseinheiten-Analyse Simulation",
+            "Auswertung des freigegebenen Simulationsergebnisses.",
+        )
+        render_context_box(
+            "Keine freigegebene Simulation verfügbar",
+            "Bitte zuerst eine Simulation auf 'Kompakt plus Simulation' berechnen und "
+            "anschließend auf 'Simulation validieren' freigeben.",
+            tone="warning",
+        )
+        st.page_link("pages/12_Simulation_validieren.py", label="Zur Simulation validieren")
+        return
+    prepared_df = view.prepared_df
+    status_quo_df = view.status_quo_df
+    metadata = view.metadata
+    if metadata.get("adjustment"):
+        st.info("Freigegebener justierter Ergebnisstand.")
     target_date = metadata.get("target_date") or st.session_state.get("compact_sim_target_date_cached")
     target_label = _format_target_date(target_date)
 
@@ -133,11 +150,12 @@ def main() -> None:
         comparison_df=status_quo_df,
         comparison_label="IST",
         enable_comparison_toggle=True,
-        departure_events_df=_get_departure_events(),
-        event_summary=_get_current_event_summary(),
+        departure_events_df=_get_departure_events(view.audit_tables),
+        event_summary=view.event_summary if view.version != f"{view.signature}::{view.instance}::original" else _get_current_event_summary(),
         export_context={
             "Lauf": deepcopy(metadata),
-            "Laufkennung": st.session_state.get("compact_sim_signature"),
+            "Laufkennung": view.event_summary.get("run_signature"),
+            "Ergebnisversion": view.version,
             "Laufeinstellungen": deepcopy(st.session_state.get("compact_sim_export_context", {})),
             "abgaenge_params": deepcopy(st.session_state.get("compact_sim_abgaenge_params")),
             "zugaenge_params": deepcopy(st.session_state.get("compact_sim_zugaenge_params")),

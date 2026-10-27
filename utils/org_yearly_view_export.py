@@ -161,7 +161,14 @@ def render_yearly_view_export(summary, view, *, stock=False, stock_view=None):
 
     def build_payload():
         tables, context = prepare_yearly_view_export(summary, view, stock=stock, stock_view=stock_view)
-        if st.session_state.get("compact_sim_signature") == summary["run_signature"]:
+        from utils.simulation_validation import current_view
+        active = current_view(st.session_state, require_approval=True)
+        if active is not None and active.event_summary is summary:
+            context["Laufeinstellungen"] = deepcopy(active.export_context)
+            context["abgaenge_params"] = deepcopy(st.session_state.get("compact_sim_abgaenge_params"))
+            context["zugaenge_params"] = deepcopy(st.session_state.get("compact_sim_zugaenge_params"))
+            context["Ergebnisversion"] = active.version
+        elif st.session_state.get("compact_sim_signature") == summary["run_signature"]:
             context["Laufeinstellungen"] = deepcopy(st.session_state.get("compact_sim_export_context", {}))
             context["abgaenge_params"] = deepcopy(st.session_state.get("compact_sim_abgaenge_params"))
             context["zugaenge_params"] = deepcopy(st.session_state.get("compact_sim_zugaenge_params"))

@@ -108,6 +108,7 @@ def build_pages():
         "Simulation": [
             st.Page("pages/8_⚙️_Simulationsparameter.py", title="Simulationsparameter", icon="⚙️"),
             st.Page("pages/7_⚡_Kompakt_plus_Simulation.py", title=t("navigation.compact_plus_simulation")),
+            st.Page("pages/12_Simulation_validieren.py", title="Simulation validieren"),
             st.Page("pages/10_🏢_Organisationseinheiten_Simulation.py", title="Organisationseinheiten-Analyse Simulation"),
             st.Page("pages/11_💼_Jobfamily_Simulation.py", title="Jobgruppen-Analyse Simulation"),
         ],

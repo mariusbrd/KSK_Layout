@@ -48,6 +48,7 @@ from utils.status_quo_baseline import (
 from utils.i18n import t
 from utils.simulation_params import get_compact_plus_params
 from utils.org_simulation_events import build_simulation_event_summary
+from utils.simulation_validation import current_view, invalidate_approval, register_new_run, value_fingerprint
 from utils.settings_loader import get_setting
 
 
@@ -88,6 +89,7 @@ def _build_simulation_signature(
 
 
 def _clear_simulation_cache():
+    invalidate_approval(st.session_state)
     for key in [
         "compact_sim_signature",
         "compact_sim_cluster_source_signature",
@@ -111,7 +113,8 @@ def _clear_simulation_cache():
 
 def _build_simulation_event_context(sim_result, cluster_mapping_bundle, run_signature, *,
                                     baseline_snapshot=None, final_snapshot=None, zugaenge_params=None,
-                                    abgaenge_params=None, df_atz=None, run_settings=None):
+                                    abgaenge_params=None, df_atz=None, run_settings=None,
+                                    source_snapshot=None):
     """Keep unaggregated outputs and mapping from one run, without recomputation."""
     context = {
         "run_signature": run_signature,
@@ -122,6 +125,10 @@ def _build_simulation_event_context(sim_result, cluster_mapping_bundle, run_sign
         "quit_probability_audit": deepcopy(sim_result.abgaenge_result.get("tables", {}).get("quit_probability_audit", pd.DataFrame())),
         "accession_events": deepcopy(sim_result.zugaenge_result.get("events", pd.DataFrame())),
         "cluster_mapping": deepcopy(cluster_mapping_bundle.to_dict()),
+        "source_snapshot": source_snapshot.copy(deep=True) if source_snapshot is not None else None,
+        "raw_final_snapshot": sim_result.future_snapshot_df,
+        "future_employee_state": getattr(sim_result, "future_employee_df", None),
+        "cost_lookup_fingerprint": value_fingerprint(st.session_state.get("tvoed_lookup", {})),
     }
     if baseline_snapshot is not None:
         context["baseline_snapshot"] = baseline_snapshot.copy(deep=True)
@@ -626,10 +633,12 @@ def main():
                     abgaenge_params=abgaenge_params,
                     df_atz=df_atz,
                     run_settings={"exclusions": get_setting("exclusions", {})},
+                    source_snapshot=snapshot_df,
                 )
                 event_summary = build_simulation_event_summary(
                     event_context, expected_run_signature=computed_signature
                 )
+                register_new_run(st.session_state)
                 st.session_state["compact_sim_signature"] = computed_signature
                 st.session_state["compact_sim_cluster_source_signature"] = cluster_source_signature
                 st.session_state["compact_sim_prepared_df"] = prepared_df
@@ -673,6 +682,10 @@ def main():
 
         cached_target = st.session_state.get("compact_sim_target_date_cached")
         display_target = pd.Timestamp(cached_target).normalize() if cached_target is not None else target_date
+        active_result = current_view(st.session_state)
+        if mode != "actual" and active_result is not None and active_result.approved:
+            prepared_df = active_result.prepared_df
+            status_quo_prepared_df = active_result.status_quo_df
 
         # ── Status section ────────────────────────────────────────────────
         if mode == "actual":
@@ -702,6 +715,7 @@ def main():
                     unsafe_allow_html=True,
                 )
         else:
+            validated_view = current_view(st.session_state)
             if just_computed:
                 st.success(
                     f"Simulation erfolgreich berechnet — Bestand für **{display_target.strftime('%d.%m.%Y')}** ist aktuell."
@@ -712,11 +726,17 @@ def main():
                     target_date=target_date,
                     cached_target=display_target if simulation_stale else None,
                 )
+            if validated_view and validated_view.approved:
+                label = "justierte" if validated_view.version != f"{validated_view.signature}::{validated_view.instance}::original" else "unveränderte"
+                st.success(f"Der {label} Ergebnisstand wurde auf 'Simulation validieren' freigegeben.")
+            else:
+                st.info("Vorläufiger Ergebnisstand. Für OE- und Jobgruppen-Analyse bitte auf 'Simulation validieren' freigeben.")
+                st.page_link("pages/12_Simulation_validieren.py", label="Simulation validieren")
 
         _render_summary_cards(
             base_date=base_date,
             display_target=display_target,
-            meta=st.session_state.get("compact_sim_metadata", {}),
+            meta=active_result.metadata if active_result and mode != "actual" else st.session_state.get("compact_sim_metadata", {}),
             mode=mode,
         )
 
@@ -726,9 +746,11 @@ def main():
             "salary_automation": get_setting("salary_automation", {}),
         }
         export_metadata = {
-            **st.session_state.get("compact_sim_metadata", {}),
+            **(active_result.metadata if active_result and mode != "actual" else st.session_state.get("compact_sim_metadata", {})),
             **export_context,
         }
+        if active_result and active_result.approved and mode != "actual":
+            export_metadata["Ergebnisversion"] = active_result.version
         if mode == "actual":
             export_download_label = "Ist-Stand als Excel exportieren"
             export_file_name = f"KompaktPlus_IstStand_{display_target:%Y%m%d}.xlsx"
@@ -747,14 +769,14 @@ def main():
                 zugaenge_params=st.session_state.get("compact_sim_zugaenge_params", zugaenge_params),
                 metadata=export_metadata,
                 active_cluster_source=st.session_state.get("compact_sim_active_cluster_source", active_cluster_source),
-                audit_tables=st.session_state.get("compact_sim_audit_tables", {}),
+                audit_tables=active_result.audit_tables if active_result and active_result.approved and mode != "actual" else st.session_state.get("compact_sim_audit_tables", {}),
                 status_quo_df=status_quo_prepared_df,
                 status_quo_date=base_date,
             ),
             file_name=export_file_name,
             mime=EXCEL_MIME,
             key="compact_plus_simulation_export",
-            fingerprint=computed_signature,
+            fingerprint=active_result.version if active_result and active_result.approved and mode != "actual" else computed_signature,
             use_container_width=True,
         )
         set_metric_page_hint(None)

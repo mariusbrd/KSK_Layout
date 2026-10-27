@@ -25,6 +25,24 @@ def test_saved_individual_rates_are_aggregated_for_selected_cluster():
     assert summarize_quit_evaluation(frame)["expected"] == pytest.approx(1.6)
 
 
+def test_adjusted_quit_count_uses_approved_events_and_preserves_original_draw_audit():
+    audit = pd.DataFrame({
+        "Jahr": [2029], "Organisationseinheit": ["A"],
+        "exposures": [10], "expected": [0.8], "variance": [0.7],
+        "annual_rate_exposure": [0.8], "person_years": [1.0], "observed": [2],
+    })
+    events = pd.DataFrame({
+        "Jahr": [2029], "Organisationseinheit": ["A"],
+        "Ereignisart": ["QUIT"], "Abgänge": [1],
+    })
+    summary = {"quit_probability_audit": audit, "events": events,
+               "adjustment": {"kind": "retain_departure"}}
+    result = build_quit_evaluation(summary, dimension="Organisationseinheit", years=[2029], organizations=["A"])
+    assert result.iloc[0]["Beobachtete Kündigungen"] == 1
+    assert result.iloc[0]["Erwartete Kündigungen (Simulationsquoten)"] == pytest.approx(0.8)
+    assert audit.iloc[0]["observed"] == 2
+
+
 def test_quit_evaluation_uses_prior_departures_and_keeps_last_year_plausible():
     events = pd.DataFrame({
         "Organisationseinheit": ["IC BB/Hbg"] * 5,

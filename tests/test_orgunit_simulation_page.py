@@ -217,6 +217,23 @@ def _run_reusable_orgunit_simulation() -> tuple[pd.DataFrame, object]:
     st.session_state["compact_sim_metadata"] = result.metadata
     st.session_state["compact_sim_audit_tables"] = result.audit_tables
     st.session_state["compact_sim_target_date_cached"] = TARGET_DATE
+    from utils.org_simulation_events import RECONCILIATION_VERSION
+    from utils.simulation_validation import approve_original, register_new_run
+
+    st.session_state["compact_sim_signature"] = "test-page-run"
+    st.session_state["compact_sim_event_context"] = {
+        "run_signature": "test-page-run",
+        "baseline_snapshot": status_quo_df,
+        "final_snapshot": prepared_df,
+    }
+    st.session_state["compact_sim_event_summary"] = {
+        "run_signature": "test-page-run",
+        "reconciliation_version": RECONCILIATION_VERSION,
+        "events": pd.DataFrame(),
+        "stock_reconciliation": {"status": "Nicht verfügbar"},
+    }
+    register_new_run(st.session_state)
+    approve_original(st.session_state, approved_at="2026-10-27T00:00:00+00:00")
     return prepared_df, result
 
 
@@ -269,6 +286,18 @@ def test_orgunit_simulation_page_uses_computed_future_snapshot_and_preserves_val
         check_dtype=False,
     )
     assert metric_config == {"value_col": "Headcount", "value_type": "koepfe"}
+
+
+@pytest.mark.parametrize("page_name,loader_name", [
+    ("Organisationseinheiten_Simulation", "_load_orgunit_analysis_module"),
+    ("Jobfamily_Simulation", "_load_jobfamily_analysis_module"),
+])
+def test_simulation_analysis_pages_do_not_render_without_approval(monkeypatch, page_name, loader_name):
+    _run_reusable_orgunit_simulation()
+    st.session_state.pop("simulation_validation_approval", None)
+    sim_page = _load_page_module(page_name, f"blocked_{page_name}")
+    monkeypatch.setattr(sim_page, loader_name, lambda: pytest.fail("analysis must remain gated"))
+    sim_page.main()
 
 
 def test_orgunit_simulation_departure_toggle_aggregates_company_leavers_by_org_unit():

@@ -71,6 +71,14 @@ def build_quit_evaluation(summary: dict, *, dimension: str, years: list[int], or
             ["exposures", "expected", "variance", "annual_rate_exposure", "person_years", "observed"]].sum()
         group = group.rename(columns={"exposures": "Kündigungsprüfungen", "expected": "Erwartete Kündigungen (Simulationsquoten)",
                                       "variance": "Varianz", "observed": "Beobachtete Kündigungen"})
+        if summary.get("adjustment"):
+            events = summary.get("events", pd.DataFrame())
+            quits = events.loc[events["Ereignisart"].eq("QUIT") & events[dimension].isin(organizations)
+                                & events["Jahr"].isin(years)] if not events.empty else events
+            counts = (quits.groupby([dimension, "Jahr"])["Abgänge"].sum()
+                      if not quits.empty else pd.Series(dtype=float))
+            group["Beobachtete Kündigungen"] = [int(counts.get((org, year), 0))
+                                                  for org, year in zip(group[dimension], group["Jahr"])]
         group["Gewichtete Jahresquote"] = group["annual_rate_exposure"].div(
             group["person_years"].where(group["person_years"].ne(0))).fillna(0.0)
         return group
