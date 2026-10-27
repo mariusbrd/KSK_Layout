@@ -140,7 +140,57 @@ def main() -> None:
     else:
         st.info("Dieser Lauf ist vorläufig. OE- und Jobgruppen-Analyse sind bis zur Freigabe gesperrt.")
 
-    st.subheader("1. Rücknahmen auswählen")
+    view = active
+    metadata = view.metadata
+    result_id = hashlib.sha256(view.version.encode("utf-8")).hexdigest()[:12]
+    st.caption(f"Aktuell angezeigte Ergebnisversion: {result_id}")
+
+    baseline = view.event_context.get("baseline_snapshot")
+    final = view.event_context.get("final_snapshot")
+    if isinstance(baseline, pd.DataFrame) and isinstance(final, pd.DataFrame):
+        start_heads, end_heads = compute_headcount(baseline), compute_headcount(final)
+        start_mak, end_mak = raw_stock_mak(baseline), raw_stock_mak(final)
+        st.markdown("""<style>
+        div[data-testid="stMetric"] { min-height: 8.5rem; width: 100%; }
+        </style>""", unsafe_allow_html=True)
+        columns = st.columns(4)
+        columns[0].metric("Ausgang · Köpfe", f"{start_heads:,}")
+        columns[1].metric("Ziel · Köpfe", f"{end_heads:,}", delta=f"{end_heads - start_heads:+,}")
+        columns[2].metric("Ausgang · MAK", f"{start_mak:,.2f}")
+        columns[3].metric("Ziel · MAK", f"{end_mak:,.2f}", delta=f"{end_mak - start_mak:+,.2f}")
+
+    bridge = view.event_summary.get("stock_reconciliation", {})
+    status = bridge.get("status", "Nicht verfügbar")
+    st.subheader("1. Bestandsprüfung")
+    if active.metadata.get("adjustment"):
+        st.caption("Aktuell freigegebener justierter Stand. Eine neue Auswahl in Schritt 2 ersetzt die bisherige Justierung.")
+    else:
+        st.caption("Originallauf vor einer Rücknahme. Die Wirkung einer geprüften Korrektur erscheint in Schritt 3.")
+    st.write(f"OE-Bestandsüberleitung: **{status}**")
+    if bridge.get("reason"):
+        st.caption(str(bridge["reason"]))
+    final_stock = _oe_final_stock(baseline, final) if isinstance(baseline, pd.DataFrame) and isinstance(final, pd.DataFrame) else pd.DataFrame()
+    tolerance = bridge.get("mak_tolerance", 1e-6)
+    zero_orgs = _new_zero_mak_orgs(final_stock, tolerance) if not final_stock.empty else set()
+    if zero_orgs:
+        st.warning("OE fällt bis zum Zielstichtag auf 0 MAK: " + ", ".join(sorted(zero_orgs)))
+    if not final_stock.empty:
+        st.caption(f"{len(final_stock)} OEs geprüft · {len(zero_orgs)} fallen auf 0 MAK · "
+                   f"{int((final_stock['Finale MAK'] < -tolerance).sum())} mit negativem Endbestand")
+        st.markdown("**OE-Endbestand am Zielstichtag**")
+        st.dataframe(_mark_zero_mak_rows(final_stock, zero_orgs), use_container_width=True,
+                     hide_index=True, column_order=["Organisation", "Ausgangs-Köpfe", "Finale Köpfe", "Ausgangs-MAK", "Finale MAK"])
+    checks = bridge.get("checks")
+    if isinstance(checks, pd.DataFrame) and not checks.empty:
+        with st.expander("Details der OE-Bestandsüberleitung"):
+            st.dataframe(_mark_zero_mak_rows(checks, zero_orgs), use_container_width=True, hide_index=True)
+    annual = bridge.get("annual")
+    if isinstance(annual, pd.DataFrame) and not annual.empty:
+        with st.expander("Jahresscheiben und Bestandsverlauf"):
+            st.dataframe(_mark_zero_mak_rows(annual, zero_orgs, target_date=metadata.get("target_date")),
+                         use_container_width=True, hide_index=True)
+
+    st.subheader("2. Rücknahmen auswählen")
     st.caption("Eine markierte Zeile bedeutet: Dieser bereits simulierte Abgang soll zurückgenommen werden.")
     candidates = eligible_departures(original)
     selected = []
@@ -177,53 +227,7 @@ def main() -> None:
         except (ValueError, KeyError) as exc:
             st.error(str(exc))
 
-    view = draft if draft_matches else active
-    metadata = view.metadata
-    result_id = hashlib.sha256(view.version.encode("utf-8")).hexdigest()[:12]
-    st.caption(f"Angezeigte Ergebnisversion: {result_id}" + (" · geprüfte Rücknahme" if draft_matches else ""))
-
-    baseline = view.event_context.get("baseline_snapshot")
-    final = view.event_context.get("final_snapshot")
-    if isinstance(baseline, pd.DataFrame) and isinstance(final, pd.DataFrame):
-        start_heads, end_heads = compute_headcount(baseline), compute_headcount(final)
-        start_mak, end_mak = raw_stock_mak(baseline), raw_stock_mak(final)
-        st.markdown("""<style>
-        div[data-testid="stMetric"] { min-height: 8.5rem; width: 100%; }
-        </style>""", unsafe_allow_html=True)
-        columns = st.columns(4)
-        columns[0].metric("Ausgang · Köpfe", f"{start_heads:,}")
-        columns[1].metric("Ziel · Köpfe", f"{end_heads:,}", delta=f"{end_heads - start_heads:+,}")
-        columns[2].metric("Ausgang · MAK", f"{start_mak:,.2f}")
-        columns[3].metric("Ziel · MAK", f"{end_mak:,.2f}", delta=f"{end_mak - start_mak:+,.2f}")
-
-    bridge = view.event_summary.get("stock_reconciliation", {})
-    status = bridge.get("status", "Nicht verfügbar")
-    st.subheader("Bestandsprüfung")
-    st.write(f"OE-Bestandsüberleitung: **{status}**")
-    if bridge.get("reason"):
-        st.caption(str(bridge["reason"]))
-    final_stock = _oe_final_stock(baseline, final) if isinstance(baseline, pd.DataFrame) and isinstance(final, pd.DataFrame) else pd.DataFrame()
-    tolerance = bridge.get("mak_tolerance", 1e-6)
-    zero_orgs = _new_zero_mak_orgs(final_stock, tolerance) if not final_stock.empty else set()
-    if zero_orgs:
-        st.warning("OE fällt bis zum Zielstichtag auf 0 MAK: " + ", ".join(sorted(zero_orgs)))
-    if not final_stock.empty:
-        st.caption(f"{len(final_stock)} OEs geprüft · {len(zero_orgs)} fallen auf 0 MAK · "
-                   f"{int((final_stock['Finale MAK'] < -tolerance).sum())} mit negativem Endbestand")
-        st.markdown("**OE-Endbestand am Zielstichtag**")
-        st.dataframe(_mark_zero_mak_rows(final_stock, zero_orgs), use_container_width=True,
-                     hide_index=True, column_order=["Organisation", "Ausgangs-Köpfe", "Finale Köpfe", "Ausgangs-MAK", "Finale MAK"])
-    checks = bridge.get("checks")
-    if isinstance(checks, pd.DataFrame) and not checks.empty:
-        with st.expander("Details der OE-Bestandsüberleitung"):
-            st.dataframe(_mark_zero_mak_rows(checks, zero_orgs), use_container_width=True, hide_index=True)
-    annual = bridge.get("annual")
-    if isinstance(annual, pd.DataFrame) and not annual.empty:
-        with st.expander("Jahresscheiben und Bestandsverlauf"):
-            st.dataframe(_mark_zero_mak_rows(annual, zero_orgs, target_date=metadata.get("target_date")),
-                         use_container_width=True, hide_index=True)
-
-    st.subheader("2. Wirkung der Rücknahme prüfen")
+    st.subheader("3. Wirkung der Rücknahme prüfen")
     if draft_matches:
         st.success(f"Geprüfte Rücknahme in {selected_org}: {len(selected)} Abgänge · Personalnummern {', '.join(sorted(selected))}")
         comparison = _annual_comparison(original, draft)
@@ -258,11 +262,12 @@ def main() -> None:
     else:
         st.caption("Keine Rücknahme ausgewählt. Der Originallauf kann unverändert freigegeben werden.")
 
-    st.subheader("3. Ergebnisstand freigeben")
+    st.subheader("4. Ergebnisstand freigeben")
     st.caption("Der blaue Knopf gibt ausschließlich die oben geprüfte Auswahl frei. Der helle Knopf gibt den Originallauf ohne Rücknahmen frei.")
-    if status == "Abweichung":
+    review_status = draft.event_summary.get("stock_reconciliation", {}).get("status") if draft_matches else status
+    if review_status == "Abweichung":
         st.error("Die OE-Bestandsüberleitung ist nicht abgestimmt. Dieser Ergebnisstand kann noch nicht freigegeben werden.")
-    if status == "Nicht verfügbar":
+    if review_status == "Nicht verfügbar":
         st.warning("Eine vollständige OE-Bestandsüberleitung ist für den Originallauf nicht verfügbar. Ausgewählte Rücknahmen werden vor ihrer Freigabe gesondert geprüft.")
     original_status = original.event_summary.get("stock_reconciliation", {}).get("status")
     original_col, adjusted_col = st.columns(2)
@@ -274,7 +279,7 @@ def main() -> None:
     with adjusted_col:
         approve_adjustment_clicked = st.button(
             "Lauf mit Änderungen freigeben", type="primary", use_container_width=True,
-            disabled=not draft_matches or status != "Abgestimmt" or
+            disabled=not draft_matches or review_status != "Abgestimmt" or
                      (active.approved and active.version == draft.version),
         )
     if approve_adjustment_clicked:
