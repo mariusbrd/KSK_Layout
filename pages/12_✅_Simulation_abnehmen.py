@@ -11,7 +11,10 @@ import streamlit as st
 
 from components.ui_shell import render_context_box, render_page_header
 from dataloader.kpi_engine import compute_headcount
-from utils.simulation_adjustments import derive_retained_departures, eligible_departures
+from utils.simulation_adjustments import (
+    derive_retained_departures, derive_shifted_departure,
+    eligible_departures, eligible_timing_shifts,
+)
 from utils.org_simulation_reconciliation import raw_stock_mak
 from utils.simulation_validation import (
     DRAFT_KEY, HISTORY_KEY, approve_adjustment, approve_original, clear_adjustment,
@@ -190,22 +193,51 @@ def main() -> None:
             st.dataframe(_mark_zero_mak_rows(annual, zero_orgs, target_date=metadata.get("target_date")),
                          use_container_width=True, hide_index=True)
 
-    st.subheader("2. Rücknahmen auswählen")
-    st.caption("Häkchen setzen und anschließend die Auswahl prüfen. Während des Setzens wird die Seite nicht neu geladen.")
-    candidates = eligible_departures(original)
+    st.subheader("2. Änderung auswählen")
+    mode = st.radio("Art der Änderung", ("Abgang zurücknehmen", "Kündigung später ansetzen"),
+                    horizontal=True, key=f"approval_mode_{original.instance}_{run_id}")
+    shifting = mode == "Kündigung später ansetzen"
+    st.caption("Änderungen im Formular werden erst mit 'Änderung prüfen' verarbeitet.")
+    candidates = eligible_timing_shifts(original) if shifting else eligible_departures(original)
     selected_org = None
+    selected_person = None
+    shift_years = []
     if not candidates.empty:
         selected_org = st.selectbox("Organisationseinheit", sorted(candidates["Organisationseinheit"].unique()),
-                                    key=f"approval_org_{original.instance}_{run_id}")
-    with st.form(key=f"approval_changes_{original.instance}_{run_id}_{selected_org}",
+                                    key=f"approval_org_{mode}_{original.instance}_{run_id}")
+        if shifting:
+            scoped_shifts = candidates.loc[candidates["Organisationseinheit"].eq(selected_org)]
+            names = scoped_shifts.set_index("PersNr")
+            selected_person = st.selectbox(
+                "Simulierte Kündigung", names.index.tolist(),
+                format_func=lambda pid: f"{pid} · {pd.Timestamp(names.loc[pid, 'Ereignisdatum']):%d.%m.%Y} · "
+                                        f"{abs(float(names.loc[pid, 'MAK'])):,.2f} MAK",
+                key=f"approval_shift_person_{original.instance}_{run_id}_{selected_org}",
+            )
+            shift_years = list(names.loc[selected_person, "Zulässige Jahre"])
+    with st.form(key=f"approval_changes_{mode}_{original.instance}_{run_id}_{selected_org}",
                  border=False, enter_to_submit=False):
         selected = []
+        new_year = None
+        shift_reason = ""
         if candidates.empty:
             zugaenge = original.event_context.get("accession_events")
-            if isinstance(zugaenge, pd.DataFrame) and not zugaenge.empty:
-                st.info("Rücknahmen sind für Läufe mit Zugängen noch nicht verfügbar. Der Originallauf kann freigegeben werden.")
+            if shifting and original.event_summary.get("stock_reconciliation", {}).get("status") != "Abgestimmt":
+                st.info("Terminverschiebungen sind nur bei abgestimmter OE-Bestandsüberleitung verfügbar.")
+            elif isinstance(zugaenge, pd.DataFrame) and not zugaenge.empty:
+                st.info("Diese Änderung ist für Läufe mit Zugängen noch nicht verfügbar. Der Originallauf kann freigegeben werden.")
             else:
-                st.info("Für diesen Lauf gibt es keine eindeutig geeigneten Abgänge zur Rücknahme.")
+                st.info("Für diesen Lauf gibt es keine eindeutig geeigneten Abgänge für diese Änderung.")
+        elif shifting:
+            selected = [selected_person]
+            new_year = st.selectbox("Neues Abgangsjahr", shift_years,
+                                    key=f"approval_shift_year_{original.instance}_{run_id}_{selected_org}_{selected_person}")
+            old_date = pd.Timestamp(names.loc[selected_person, "Ereignisdatum"])
+            st.caption(f"Der Abgang wird vom {old_date:%d.%m.%Y} auf das Periodenende "
+                       f"{pd.Period(year=new_year, month=old_date.month, freq='M').end_time:%d.%m.%Y} verschoben. "
+                       f"Die Person trägt {names.loc[selected_person, 'Personen-MAK in OE']:,.2f} MAK in {selected_org}.")
+            shift_reason = st.text_input("Begründung der Terminverschiebung",
+                                         key=f"approval_shift_reason_{original.instance}_{run_id}_{selected_org}_{selected_person}")
         else:
             scoped = candidates.loc[candidates["Organisationseinheit"].eq(selected_org)].reset_index(drop=True)
             editor = scoped.assign(Zurücknehmen=False)
@@ -218,28 +250,44 @@ def main() -> None:
             selected = edited.loc[edited["Zurücknehmen"].fillna(False), "PersNr"].astype(str).tolist()
             st.caption(f"{len(selected)} von {len(scoped)} Abgängen zur Rücknahme markiert.")
 
-        draft_ids = set(draft.metadata.get("adjustment", {}).get("persons", ())) if draft is not None else set()
-        draft_matches = draft is not None and bool(selected) and set(selected) == draft_ids
+        draft_rule = draft.metadata.get("adjustment", {}) if draft is not None else {}
+        draft_ids = set(draft_rule.get("persons", ()))
+        draft_matches = bool(draft is not None and selected and set(selected) == draft_ids and (
+            draft_rule.get("kind") == "shift_departure" and shifting
+            and pd.Timestamp(draft_rule["new_date"]).year == new_year
+            and draft_rule.get("reason", "") == shift_reason.strip()
+            or draft_rule.get("kind") == "retain_departure" and not shifting
+        ))
         if draft is not None and not draft_matches:
             st.warning("Die Auswahl hat sich seit der letzten Prüfung geändert. Bitte die aktuelle Auswahl erneut prüfen.")
             if st.form_submit_button("Vorherigen Entwurf verwerfen"):
                 clear_adjustment(st.session_state)
                 st.rerun()
-        if st.form_submit_button("Ausgewählte Rücknahmen prüfen"):
+        if st.form_submit_button("Änderung prüfen"):
             if not selected:
-                st.warning("Bitte zuerst mindestens einen Abgang anhaken.")
+                st.warning("Bitte zuerst mindestens einen Abgang auswählen.")
+            elif shifting and len(shift_reason.strip()) < 5:
+                st.warning("Bitte eine kurze Begründung für die Terminverschiebung eingeben.")
             elif not draft_matches:
                 try:
                     with st.spinner("Korrigierten Ergebnisstand und Bestandsprüfungen erstellen ..."):
-                        result = derive_retained_departures(original, selected)
+                        result = (derive_shifted_departure(original, selected_person, int(new_year), shift_reason) if shifting
+                                  else derive_retained_departures(original, selected))
                     stage_adjustment(st.session_state, result)
                     st.rerun()
                 except (ValueError, KeyError) as exc:
                     st.error(str(exc))
 
-        st.subheader("3. Wirkung der Rücknahme prüfen")
+        st.subheader("3. Wirkung der Änderung prüfen")
         if draft_matches:
-            st.success(f"Geprüfte Rücknahme in {selected_org}: {len(selected)} Abgänge · Personalnummern {', '.join(sorted(selected))}")
+            if shifting:
+                st.success(f"Geprüfte Terminverschiebung in {selected_org}: {selected_person} · "
+                           f"{pd.Timestamp(draft_rule['old_date']):%d.%m.%Y} → "
+                           f"{pd.Timestamp(draft_rule['new_date']):%d.%m.%Y}")
+                st.caption(f"Begründung: {draft_rule['reason']}")
+                st.caption("Der Zielbestand bleibt unverändert. Kosten der zusätzlichen Beschäftigungszeit sind in den Jahresscheiben nicht neu berechnet.")
+            else:
+                st.success(f"Geprüfte Rücknahme in {selected_org}: {len(selected)} Abgänge · Personalnummern {', '.join(sorted(selected))}")
             comparison = _annual_comparison(original, draft)
             if not comparison.empty:
                 st.markdown(f"**Jahresscheiben für {selected_org}: Original und korrigierter Bestand**")
@@ -268,7 +316,7 @@ def main() -> None:
                 clear_adjustment(st.session_state)
                 st.rerun()
         elif selected:
-            st.info("Die aktuelle Auswahl ist noch nicht geprüft. Bitte zuerst 'Ausgewählte Rücknahmen prüfen' klicken.")
+            st.info("Die aktuelle Auswahl ist noch nicht geprüft. Bitte zuerst 'Änderung prüfen' klicken.")
         else:
             st.caption("Keine Rücknahme ausgewählt. Der Originallauf kann unverändert freigegeben werden.")
 
@@ -317,8 +365,12 @@ def main() -> None:
         with st.expander("Freigabehistorie"):
             st.dataframe(pd.DataFrame([
                 {"Freigabezeit": entry["approved_at"],
-                 "Art": "Justierung" if entry["kind"] == "adjusted" else "Original",
-                 "Betroffene Personen": ", ".join(entry.get("adjustment", {}).get("persons", [])) if entry.get("adjustment") else "–"}
+                 "Art": ("Terminverschiebung" if entry.get("adjustment", {}).get("kind") == "shift_departure"
+                         else "Rücknahme" if entry["kind"] == "adjusted" else "Original"),
+                 "Betroffene Personen": ", ".join(entry.get("adjustment", {}).get("persons", [])) if entry.get("adjustment") else "–",
+                 "Alter Termin": entry.get("adjustment", {}).get("old_date", "–"),
+                 "Neuer Termin": entry.get("adjustment", {}).get("new_date", "–"),
+                 "Begründung": entry.get("adjustment", {}).get("reason", "–")}
                 for entry in history
             ]), use_container_width=True, hide_index=True)
 

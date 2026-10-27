@@ -8,11 +8,13 @@ from __future__ import annotations
 from copy import deepcopy
 import hashlib
 import json
+import math
 
 import pandas as pd
 import streamlit as st
 
 from abgaenge.schemas import normalize_persnr
+from abgaenge.params import get_retirement_ages
 from dataloader.cluster_resolver import ActiveClusterSource, ClusterMappingBundle
 from dataloader.compact_simulation_engine import (
     _apply_salary_automation_to_employee_state,
@@ -23,6 +25,7 @@ from dataloader.compact_simulation_engine import (
 )
 from utils.compact_page_loader import load_compact_page_module
 from utils.org_simulation_events import build_simulation_event_summary
+from utils.org_simulation_reconciliation import raw_stock_mak
 from utils.simulation_validation import SimulationView, value_fingerprint
 from utils.settings_loader import get_setting
 
@@ -215,4 +218,170 @@ def derive_retained_departures(view: SimulationView, person_ids: list[str]) -> S
         audit_tables=audits, event_context=event_context,
         event_summary=summary, export_context=deepcopy(view.export_context),
         version=version, approved=False,
+    )
+
+
+def _shifted_period(original_date: pd.Timestamp, year: int) -> pd.Period:
+    """Keep the original event's month in the new year (monthly forecast)."""
+    return pd.Period(year=year, month=original_date.month, freq="M")
+
+
+def eligible_timing_shifts(view: SimulationView) -> pd.DataFrame:
+    """Only saved, single-OE quits whose MAK matches the occupied OE stock."""
+    if view.event_summary.get("stock_reconciliation", {}).get("status") != "Abgestimmt":
+        return pd.DataFrame()
+    candidates = eligible_departures(view)
+    if candidates.empty:
+        return candidates
+    source = view.event_context.get("baseline_snapshot")
+    events = view.event_context.get("departure_events")
+    if not isinstance(source, pd.DataFrame) or not isinstance(events, pd.DataFrame):
+        return pd.DataFrame()
+    target = pd.Timestamp(view.metadata["target_date"]).normalize()
+    base = pd.Timestamp(view.metadata["base_date"]).normalize()
+    source_ids = _person_ids(source, "PersNr")
+    rows = []
+    for _, candidate in candidates.loc[candidates["Ereignisart"].eq("QUIT")].iterrows():
+        pid = candidate["PersNr"]
+        old = pd.Timestamp(candidate["Ereignisdatum"])
+        if pd.isna(old) or old.normalize() < base or old.normalize() > target:
+            continue
+        if old != old.to_period("M").end_time:
+            continue
+        years = [year for year in range(old.year + 1, target.year + 1)
+                 if _shifted_period(old, year).end_time.normalize() <= target]
+        if not years:
+            continue
+        person = source.loc[source_ids.eq(pid).fillna(False)]
+        if "Austritt" in person:
+            contract_ends = pd.to_datetime(person["Austritt"], errors="coerce").dropna()
+            if not contract_ends.empty:
+                years = [year for year in years if _shifted_period(old, year).end_time.normalize()
+                         <= contract_ends.min().normalize()]
+        params = view.event_context.get("abgaenge_params", {})
+        if params.get("components", {}).get("retirement", True):
+            retirement = params.get("retirement", {})
+            try:
+                regular_age, early_age = get_retirement_ages(retirement)
+                early_rate = float(retirement.get("rent_rate_60_65", 0.1))
+                regular_rate = float(retirement.get("rent_rate_65", 0.9))
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(early_rate) or not math.isfinite(regular_rate):
+                continue
+            if "GebDatum" not in person:
+                continue
+            births = pd.to_datetime(person["GebDatum"], errors="coerce").dropna().unique()
+            if len(births) != 1:
+                continue
+            threshold = early_age if early_rate > 0 else regular_age
+            if regular_rate <= 0 and early_rate <= 0:
+                threshold = 121
+            eligible_until = pd.Timestamp(births[0]) + pd.DateOffset(years=threshold)
+            years = [year for year in years if _shifted_period(old, year).end_time < eligible_until]
+        if not years:
+            continue
+        org = candidate["Organisationseinheit"]
+        oe = source.loc[source["Organisationseinheit"].astype(str).str.strip().eq(org)]
+        person_mak, oe_mak = raw_stock_mak(person), raw_stock_mak(oe)
+        event_mak = -float(candidate["MAK"])
+        if (not all(math.isfinite(value) for value in (person_mak, oe_mak, event_mak))
+                or person_mak <= 1e-6 or event_mak <= 1e-6
+                or abs(event_mak - person_mak) > 1e-6
+                or event_mak > oe_mak + 1e-6):
+            continue
+        rows.append({**candidate.to_dict(), "Personen-MAK in OE": person_mak,
+                     "OE-Ausgangs-MAK": oe_mak, "Zulässige Jahre": tuple(years)})
+    return pd.DataFrame(rows)
+
+
+def derive_shifted_departure(view: SimulationView, person_id: str, new_year: int,
+                             reason: str = "") -> SimulationView:
+    """Shift a saved quit event; preserve the original target snapshot exactly."""
+    candidates = eligible_timing_shifts(view)
+    selected = candidates.loc[candidates.get("PersNr", pd.Series(dtype=str)).eq(str(person_id))]
+    if len(selected) != 1:
+        raise ValueError("Dieser Kündigungsabgang ist für eine Terminverschiebung nicht eindeutig geeignet.")
+    candidate = selected.iloc[0]
+    if new_year not in candidate["Zulässige Jahre"]:
+        raise ValueError("Das neue Jahr liegt außerhalb der zulässigen späteren Perioden.")
+    old = pd.Timestamp(candidate["Ereignisdatum"])
+    period = _shifted_period(old, new_year)
+    context = view.event_context
+    event_context = context.copy()
+    departures = context["departure_events"].copy(deep=True)
+    mask = _person_ids(departures, "persnr").eq(str(person_id)).fillna(False)
+    if int(mask.sum()) != 1:
+        raise ValueError("Der gespeicherte Abgang ist nicht eindeutig.")
+    index = departures.index[mask][0]
+    departures.at[index, "event_date"] = period.end_time
+    for column, value in (("period_start", period.start_time), ("period_end", period.end_time),
+                          ("period_label", period.strftime("%Y-%m"))):
+        if column in departures:
+            departures.at[index, column] = value
+    event_context["departure_events"] = departures
+    rule = {"kind": "shift_departure", "persons": (str(person_id),),
+            "organization": candidate["Organisationseinheit"], "jobfamily": candidate["Jobfamily"],
+            "old_date": old.isoformat(), "new_date": period.end_time.isoformat(),
+            "heads": float(candidate["Köpfe"]), "mak": float(candidate["MAK"]),
+            "reason": reason.strip()}
+    digest = hashlib.sha256(json.dumps(rule, sort_keys=True).encode()).hexdigest()[:12]
+    version = f"{view.signature}::{view.instance}::adjusted::{digest}"
+    event_context["run_signature"] = version
+    metadata = deepcopy(view.metadata)
+    metadata["adjustment"] = rule
+    metadata["base_run_signature"] = view.signature
+    metadata["selection_audit_provenance"] = "Originaler Zufalls- und Auswahlverlauf; ein Kündigungsdatum wurde nachträglich verschoben"
+    metadata["annual_costs_not_recomputed"] = True
+    event_context["metadata"] = metadata
+    summary = build_simulation_event_summary(event_context, expected_run_signature=version)
+    summary["adjustment"] = rule
+    bridge = summary.get("stock_reconciliation", {})
+    if bridge.get("status") != "Abgestimmt":
+        raise ValueError("Die OE-Bestandsüberleitung ist nach der Verschiebung nicht abgestimmt: "
+                         + str(bridge.get("reason") or bridge.get("status")))
+    from components.jobfamily_simulation_yearly import build_jobfamily_yearly_view
+    for dimension in ("Jobfamily", "JF-Cluster"):
+        yearly = build_jobfamily_yearly_view(event_context, summary, dimension=dimension)
+        checks = yearly.get("stock_checks")
+        if yearly.get("stock_reason") or not isinstance(checks, pd.DataFrame) or checks.empty or not checks["Abgestimmt"].all():
+            raise ValueError(f"Die Jobgruppen-Bestandsüberleitung ({dimension}) ist nicht abgestimmt: {yearly.get('stock_reason', '')}")
+    original_annual = view.event_summary.get("stock_reconciliation", {}).get("annual")
+    shifted_annual = bridge.get("annual")
+    if not isinstance(original_annual, pd.DataFrame) or not isinstance(shifted_annual, pd.DataFrame):
+        raise ValueError("Die Jahresscheiben des Originallaufs fehlen.")
+    def stock_by_year(frame):
+        scoped = frame.loc[frame["Ebene"].eq("Organisationseinheit")
+                           & frame["Organisation"].eq(candidate["Organisationseinheit"])
+                           & frame["Art"].eq("Jahresstichtag")]
+        return scoped.set_index("Jahr")[["Bestand-Köpfe", "Bestand-MAK"]]
+    before, after = stock_by_year(original_annual), stock_by_year(shifted_annual)
+    if not before.index.equals(after.index):
+        raise ValueError("Die Verschiebung hat die Jahresscheiben verändert.")
+    expected_heads, expected_mak = -float(candidate["Köpfe"]), -float(candidate["MAK"])
+    for year in before.index:
+        affected = old.year <= year < new_year
+        head_diff = float(after.loc[year, "Bestand-Köpfe"] - before.loc[year, "Bestand-Köpfe"])
+        mak_diff = float(after.loc[year, "Bestand-MAK"] - before.loc[year, "Bestand-MAK"])
+        if abs(head_diff - (expected_heads if affected else 0.0)) > 1e-6 or abs(mak_diff - (expected_mak if affected else 0.0)) > 1e-6:
+            raise ValueError("Die Jahreswirkung des verschobenen Abgangs ist nicht eindeutig.")
+    raw_final = context.get("raw_final_snapshot")
+    employee_state = context.get("future_employee_state")
+    source = context.get("source_snapshot")
+    if not all(isinstance(frame, pd.DataFrame) for frame in (raw_final, employee_state, source)):
+        raise ValueError("Gespeicherter Ziel- oder Ausgangsbestand für den Export fehlt.")
+    audits = _build_simulation_audit_tables(
+        future_snapshot_df=raw_final, final_employee_df=employee_state,
+        zugaenge_result={"events": pd.DataFrame(), "final_state": employee_state},
+        target_date=pd.Timestamp(view.metadata["target_date"]),
+        abgaenge_params=context.get("abgaenge_params", {}),
+        lineage_stages={"01_rohdaten_ausgangsbestand": source, "07_final_future_snapshot": raw_final},
+        base_snapshot_df=source,
+        abgaenge_result={"events_person_level": departures, "tables": {}},
+    )
+    return SimulationView(
+        signature=view.signature, instance=view.instance, prepared_df=view.prepared_df,
+        status_quo_df=view.status_quo_df, metadata=metadata, audit_tables=audits,
+        event_context=event_context, event_summary=summary,
+        export_context=deepcopy(view.export_context), version=version, approved=False,
     )
