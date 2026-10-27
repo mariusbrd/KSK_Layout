@@ -17,6 +17,44 @@ from utils.simulation_validation import (
 )
 
 
+def _zero_mak_orgs(checks: pd.DataFrame, tolerance: float) -> set[str]:
+    """Use the actual final stock, not a projected annual intermediate value."""
+    if not {"Ebene", "Organisation", "Finale MAK"}.issubset(checks.columns):
+        return set()
+    final_mak = pd.to_numeric(checks["Finale MAK"], errors="coerce")
+    mask = checks["Ebene"].eq("Organisationseinheit") & final_mak.notna() & final_mak.abs().le(tolerance)
+    return set(checks.loc[mask, "Organisation"].astype(str))
+
+
+def _oe_final_stock(baseline: pd.DataFrame, final: pd.DataFrame) -> pd.DataFrame:
+    """Include OEs that existed at the start even if no final row remains."""
+    if "Organisationseinheit" not in baseline or "Organisationseinheit" not in final:
+        return pd.DataFrame()
+    names = sorted(set(baseline["Organisationseinheit"].dropna().astype(str))
+                   | set(final["Organisationseinheit"].dropna().astype(str)))
+    rows = []
+    for name in names:
+        before = baseline.loc[baseline["Organisationseinheit"].astype(str).eq(name)]
+        after = final.loc[final["Organisationseinheit"].astype(str).eq(name)]
+        rows.append({"Ebene": "Organisationseinheit", "Organisation": name,
+                     "Ausgangs-MAK": raw_stock_mak(before), "Finale MAK": raw_stock_mak(after),
+                     "Finale Köpfe": compute_headcount(after)})
+    return pd.DataFrame(rows)
+
+
+def _mark_zero_mak_rows(frame: pd.DataFrame, orgs: set[str], *, target_date=None):
+    """Color only the affected OE's final row in the displayed table."""
+    def row_style(row):
+        affected = row["Ebene"] == "Organisationseinheit" and str(row["Organisation"]) in orgs
+        if "Art" in row.index:
+            affected = (affected and target_date is not None and row["Art"] == "Jahresstichtag"
+                        and pd.Timestamp(row["Stichtag"]) == pd.Timestamp(target_date))
+        color = "background-color: #f8d7da; color: #842029" if affected else ""
+        return [color] * len(row)
+
+    return frame.style.apply(row_style, axis=1)
+
+
 def _annual_comparison(original, adjusted) -> pd.DataFrame:
     parts = []
     persons = set(adjusted.metadata.get("adjustment", {}).get("persons", []))
@@ -91,13 +129,21 @@ def main() -> None:
     st.write(f"OE-Bestandsüberleitung: **{status}**")
     if bridge.get("reason"):
         st.caption(str(bridge["reason"]))
+    final_stock = _oe_final_stock(baseline, final) if isinstance(baseline, pd.DataFrame) and isinstance(final, pd.DataFrame) else pd.DataFrame()
+    zero_orgs = _zero_mak_orgs(final_stock, bridge.get("mak_tolerance", 1e-6)) if not final_stock.empty else set()
+    if zero_orgs:
+        st.warning("OE mit 0 MAK am Zielstichtag: " + ", ".join(sorted(zero_orgs)))
+    if not final_stock.empty:
+        st.markdown("**OE-Endbestand am Zielstichtag**")
+        st.dataframe(_mark_zero_mak_rows(final_stock, zero_orgs), use_container_width=True, hide_index=True)
     checks = bridge.get("checks")
     if isinstance(checks, pd.DataFrame) and not checks.empty:
-        st.dataframe(checks, use_container_width=True, hide_index=True)
+        st.dataframe(_mark_zero_mak_rows(checks, zero_orgs), use_container_width=True, hide_index=True)
     annual = bridge.get("annual")
     if isinstance(annual, pd.DataFrame) and not annual.empty:
         with st.expander("Jahresscheiben und Bestandsverlauf"):
-            st.dataframe(annual, use_container_width=True, hide_index=True)
+            st.dataframe(_mark_zero_mak_rows(annual, zero_orgs, target_date=metadata.get("target_date")),
+                         use_container_width=True, hide_index=True)
 
     st.subheader("Justierung")
     st.caption("Aktuell unterstützt: einzelne Kündigungs- oder Rentenabgänge aus einer eindeutig zugeordneten OE zurücknehmen. Andere Fälle bleiben zur fachlichen Prüfung gesperrt.")
