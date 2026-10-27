@@ -728,10 +728,10 @@ def main():
                 )
             if validated_view and validated_view.approved:
                 label = "justierte" if validated_view.version != f"{validated_view.signature}::{validated_view.instance}::original" else "unveränderte"
-                st.success(f"Der {label} Ergebnisstand wurde auf 'Simulation validieren' freigegeben.")
+                st.success(f"Der {label} Ergebnisstand wurde auf der Seite 'Simulation abnehmen' freigegeben.")
             else:
-                st.info("Vorläufiger Ergebnisstand. Für OE- und Jobgruppen-Analyse bitte auf 'Simulation validieren' freigeben.")
-                st.page_link("pages/12_Simulation_validieren.py", label="Simulation validieren")
+                st.info("Vorläufiger Ergebnisstand. Für OE- und Jobgruppen-Analyse bitte auf der Seite 'Simulation abnehmen' freigeben.")
+                st.page_link("pages/12_✅_Simulation_abnehmen.py", label="Simulation abnehmen")
 
         _render_summary_cards(
             base_date=base_date,

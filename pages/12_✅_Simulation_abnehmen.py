@@ -41,7 +41,7 @@ def _annual_comparison(original, adjusted) -> pd.DataFrame:
 
 def main() -> None:
     render_page_header(
-        "Simulation validieren",
+        "Simulation abnehmen",
         "Berechneten Lauf prüfen und als gemeinsamen Ergebnisstand freigeben.",
     )
     original = current_view(st.session_state, use_approved=False)

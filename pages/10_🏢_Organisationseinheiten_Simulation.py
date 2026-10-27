@@ -95,10 +95,10 @@ def main() -> None:
         render_context_box(
             "Keine freigegebene Simulation verfügbar",
             "Bitte zuerst eine Simulation auf 'Kompakt plus Simulation' berechnen und "
-            "anschließend auf 'Simulation validieren' freigeben.",
+            "anschließend auf der Seite 'Simulation abnehmen' freigeben.",
             tone="warning",
         )
-        st.page_link("pages/12_Simulation_validieren.py", label="Zur Simulation validieren")
+        st.page_link("pages/12_✅_Simulation_abnehmen.py", label="Zur Simulationsabnahme")
         return
     prepared_df = view.prepared_df
     status_quo_df = view.status_quo_df
