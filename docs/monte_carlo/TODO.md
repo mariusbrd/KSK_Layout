@@ -135,6 +135,14 @@ Diese Datei ist der dauerhafte Arbeitsstand des Projekts. Nach **jeder Phase** w
 - Die OE-Zusammenfassung rechnet die Bestandsüberleitung nur bei deaktivierten Zugangsbausteinen. Bei aktiven Zugängen bleibt sie im aktuellen Ablauf ausdrücklich nicht verfügbar. Eine Monte-Carlo-Anzeige von Jahresbestandsbändern über Zugänge braucht deshalb einen neuen fachlichen Ergebnisvertrag; das darf den Einzellaufpfad nicht stillschweigend verändern.
 - Nächster Schritt: produktiven Golden Master inklusive der heutigen sechs OE-Abweichungen sichern; dann einen isolierten Voraggregationsprototyp mit vollständigem Hashvergleich bauen und getrennt messen. Für Zusatzläufe zuerst den benötigten Kennzahlenscope definieren.
 
+### 30.10.2026 – Phase 0: produktiver Jahres-Golden-Master gesichert
+
+- `tests/test_monte_carlo_production_yearly_reference.py` und die zugehörige JSON-Referenz aus dem unveränderten lokalen CompactPlus-Pfad erzeugt. Zwei Szenarien mit identischen eingefrorenen Eingaben und Parametern wie der Vollpfad-Benchmark: ohne Zugänge und 20 Neueinstellungen/Jahr. Die Referenz speichert ausschließlich Eingabe-/Tabellen-Hashes, Schema, Zeilenzahl, Datentypen, Einstellungen sowie fachliche Status- und Begründungstexte; keine personenbezogenen Zeilen.
+- Je Szenario eingefroren: finaler Snapshot, Roh- und normalisierte Ereignisse, OE-/OE-Cluster-Jahresereignisse, OE-Bestandsjahre und Endwertprüfungen samt Personendiagnose sowie JF-/JF-Cluster-Jahresereignisse, Jahresbestände und Prüfungen. Der Tabellenhash umfasst Spalten, Datentypen, Index, Zeilenreihenfolge und exakte Werte.
+- Ohne Zugänge: 534 OE-Bestandsjahreszeilen; OE-Status **„Abweichung“** mit den bestehenden sechs fehlgeschlagenen Endwertprüfungen; 17 Zeilen je JF-Jahresereignistabelle. Mit Zugängen: OE-Bestandsjahre leer und Status **„Nicht verfügbar“**; 23 Zeilen je JF-Jahresereignistabelle. Die JF-Bestandsgründe sind ebenfalls eingefroren.
+- Zweiter, unabhängiger Durchlauf: `py -m pytest -q tests/test_monte_carlo_production_yearly_reference.py` → **1 bestanden in 18,42 s**. Der Test scheitert auch bei geänderten lokalen Eingangsdaten, damit ein veralteter produktiver Golden Master nicht stillschweigend als Code-Regression ausgelegt wird. Er ist an die dokumentierte Python-/Pandas-Umgebung und lokalen Daten gebunden.
+- Nächster Schritt: isolierten Voraggregationsprototyp nur hinter einem Test-/Benchmarkpfad erproben und gegen alle produktiven und synthetischen Jahresreferenzen prüfen; vor produktiver Änderung weitere Spezialfälle/mehrjährige Horizonte ergänzen.
+
 ### Vorlage für spätere Einträge
 
 `Datum – Phase – Änderung/Erkenntnis – Messumgebung und Messwerte – Paritätsnachweis – Entscheidung – offene Risiken – nächster Schritt`
