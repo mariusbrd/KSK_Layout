@@ -16,6 +16,8 @@ Ein kompakter Kennzahlschlüssel lautet `(Jahr/Stichtag, Ebene, Gruppe, Ereignis
 
 Die JF-Ausgangszuordnungen und Verteilgewichte für Mehrfachplanstellen können mit `prepare_jobfamily_baseline` einmal pro unveränderter Ausgangsbasis vorbereitet und an spätere Seed-Läufe übergeben werden. Finale Personen-/JF-Zuordnungen bleiben laufabhängig und werden weiterhin je Lauf ermittelt. Die vorbereitete Basis darf nur mit demselben Eingabefingerabdruck und derselben Zuordnungs-/Clusterkonfiguration wiederverwendet werden; ein solcher Cache-Schlüssel ist vor Produktintegration noch festzulegen.
 
+Die Engine besitzt für Prototypen den optionalen Parameter `include_audits=False`. Damit entfallen nur Anzeige-Audits und deren Zwischenkopien; finale Zustände und Ereignisse müssen für denselben Seed exakt bleiben. Das macht einen Zusatzlauf messbar günstiger, erzeugt aber noch keinen schnellen Mehrseed-Rechenkern. Der vollständige Referenzlauf und alle bisherigen App-Aufrufe verwenden weiter den Standard `True`.
+
 ## 2. Vorläufiger Kennzahlenvertrag
 
 | Bereich | Wert pro Durchgang | Quelle im vollständigen Lauf | Ensemble-Anzeige |

@@ -33,7 +33,7 @@ STAGES = ("_prepare_employee_forecast_base", "run_forecast_abgaenge",
           "_build_simulation_audit_tables")
 
 
-def _measure_run(snapshot, atz, source, bundle, source_signature, abg, zug):
+def _measure_run(snapshot, atz, source, bundle, source_signature, abg, zug, *, include_audits=True):
     stages = {}
     with ExitStack() as stack:
         for name in STAGES:
@@ -52,7 +52,8 @@ def _measure_run(snapshot, atz, source, bundle, source_signature, abg, zug):
             snapshot_df=snapshot, df_atz=atz, target_date=pd.Timestamp("2026-12-31"),
             base_date=FROZEN_STICHTAG, abgaenge_params=deepcopy(abg),
             zugaenge_params=deepcopy(zug), active_cluster_source=source,
-            cluster_mapping_bundle=bundle, cluster_source_signature=source_signature)
+            cluster_mapping_bundle=bundle, cluster_source_signature=source_signature,
+            include_audits=include_audits)
         elapsed = time.perf_counter() - start
     return result, round(elapsed, 4), {key: {"seconds": round(value["seconds"], 4),
                                        "calls": value["calls"]} for key, value in stages.items()}

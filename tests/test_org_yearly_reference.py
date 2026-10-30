@@ -28,7 +28,7 @@ REFERENCE = ROOT / "tests" / "fixtures" / "org_yearly_reference.json"
 SCENARIOS = ("identity", "no_events", "departures", "entries", "atz_ruhend", "azubi_transfer", "combined")
 
 
-def _run(name, *, seed=42):
+def _run(name, *, seed=42, include_audits=True):
     rows = []
     for i, age in enumerate((66, 58, 42, 25, 38, 21), 1):
         row = _base_snapshot(age).iloc[0].to_dict()
@@ -75,7 +75,8 @@ def _run(name, *, seed=42):
             snapshot, atz, pd.Timestamp("2025-12-31" if name == "identity" else "2027-12-31"),
             base_date=pd.Timestamp("2025-12-31"), abgaenge_params=deepcopy(abg),
             zugaenge_params=deepcopy(zug), active_cluster_source=source,
-            cluster_mapping_bundle=bundle, cluster_source_signature=source.source_signature)
+            cluster_mapping_bundle=bundle, cluster_source_signature=source.source_signature,
+            include_audits=include_audits)
     pd.testing.assert_frame_equal(snapshot, before, check_exact=True)
     return result
 

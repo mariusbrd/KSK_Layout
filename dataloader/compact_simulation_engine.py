@@ -1112,6 +1112,7 @@ def simulate_compact_snapshot(
     cluster_mapping_bundle: Optional[ClusterMappingBundle] = None,
     cluster_source_signature: Optional[str] = None,
     progress_callback: Any = None,
+    include_audits: bool = True,
 ) -> CompactSimulationResult:
     """
     Projects the current snapshot to a future target date for use on the
@@ -1176,7 +1177,7 @@ def simulate_compact_snapshot(
             },
             base_snapshot_df=current_snapshot,
             abgaenge_result=empty_abg,
-        )
+        ) if include_audits else {}
         return CompactSimulationResult(future_snapshot, future_employees, empty_abg, empty_zug, metadata, audit_tables)
 
     _report("start", "Schritt 1/9: Simulation wird vorbereitet ...", 0.05)
@@ -1241,14 +1242,14 @@ def simulate_compact_snapshot(
         target_date=target_date,
         atz_status_df=atz_status_df,
     )
-    snapshot_after_update_existing = future_snapshot.copy()
+    snapshot_after_update_existing = future_snapshot.copy() if include_audits else None
     future_snapshot = _append_new_people_rows(
         future_df=future_snapshot,
         base_snapshot_df=current_snapshot,
         final_employee_df=final_employee_df,
         zugaenge_result=zugaenge_result,
     )
-    snapshot_after_append = future_snapshot.copy()
+    snapshot_after_append = future_snapshot.copy() if include_audits else None
     _report("finalize_snapshot", "Schritt 7/9: Future Snapshot wird finalisiert ...", 0.65)
     future_snapshot = _finalize_future_snapshot(
         future_snapshot,
@@ -1266,25 +1267,28 @@ def simulate_compact_snapshot(
         "zugaenge_events": len(zugaenge_result.get("events", pd.DataFrame())),
         "cluster_source_signature": cluster_source_signature,
     }
-    _report("audits", "Schritt 8/9: Audit-Tabellen werden erstellt ...", 0.90)
-    audit_tables = _build_simulation_audit_tables(
-        future_snapshot_df=future_snapshot,
-        final_employee_df=final_employee_df,
-        zugaenge_result=zugaenge_result,
-        target_date=target_date,
-        abgaenge_params=abgaenge_params,
-        lineage_stages={
-            "01_rohdaten_ausgangsbestand": current_snapshot,
-            "02_forecast_base": employee_base,
-            "03_nach_abgaenge": employee_after_abg,
-            "04_nach_zugaenge": final_employee_df,
-            "05_nach_update_existing_rows": snapshot_after_update_existing,
-            "06_nach_append_new_people_rows": snapshot_after_append,
-            "07_final_future_snapshot": future_snapshot,
-        },
-        base_snapshot_df=current_snapshot,
-        abgaenge_result=abgaenge_result,
-    )
+    if include_audits:
+        _report("audits", "Schritt 8/9: Audit-Tabellen werden erstellt ...", 0.90)
+        audit_tables = _build_simulation_audit_tables(
+            future_snapshot_df=future_snapshot,
+            final_employee_df=final_employee_df,
+            zugaenge_result=zugaenge_result,
+            target_date=target_date,
+            abgaenge_params=abgaenge_params,
+            lineage_stages={
+                "01_rohdaten_ausgangsbestand": current_snapshot,
+                "02_forecast_base": employee_base,
+                "03_nach_abgaenge": employee_after_abg,
+                "04_nach_zugaenge": final_employee_df,
+                "05_nach_update_existing_rows": snapshot_after_update_existing,
+                "06_nach_append_new_people_rows": snapshot_after_append,
+                "07_final_future_snapshot": future_snapshot,
+            },
+            base_snapshot_df=current_snapshot,
+            abgaenge_result=abgaenge_result,
+        )
+    else:
+        audit_tables = {}
 
     return CompactSimulationResult(
         future_snapshot_df=future_snapshot,
