@@ -6,7 +6,7 @@ stream and the same number of draws per period as the reference forecast.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 import numpy as np
 import pandas as pd
@@ -94,13 +94,16 @@ def prepare_quit_batch(df_ma: pd.DataFrame, df_atz: pd.DataFrame,
                              tuple(ages), tuple(annual_probs))
 
 
-def run_quit_batch(prepared: PreparedQuitBatch, seeds: Iterable[int]) -> dict[int, QuitSeedResult]:
-    """Run seeds independently over the shared prepared arrays; preserve seed order."""
-    results: dict[int, QuitSeedResult] = {}
+def iter_quit_seed_records(
+    prepared: PreparedQuitBatch, seeds: Iterable[int],
+) -> Iterator[tuple[int, list[dict[str, Any]], np.ndarray, np.ndarray]]:
+    """Yield one seed at a time, without creating or retaining event DataFrames."""
+    seen: set[int] = set()
     for seed in seeds:
         seed = int(seed)
-        if seed in results:
+        if seed in seen:
             raise ValueError(f"duplicate seed: {seed}")
+        seen.add(seed)
         rng = np.random.default_rng(np.random.SeedSequence(seed).spawn(5)[2])
         active = np.ones(len(prepared.ids), dtype=bool)
         mak = prepared.mak.copy()
@@ -131,8 +134,36 @@ def run_quit_batch(prepared: PreparedQuitBatch, seeds: Iterable[int]) -> dict[in
                 })
                 active[pos] = False
                 mak[pos] = 0.0
+        yield seed, events, active, mak
+
+
+def run_quit_batch(prepared: PreparedQuitBatch, seeds: Iterable[int]) -> dict[int, QuitSeedResult]:
+    """Materialize small batches for exact comparison with the reference."""
+    results: dict[int, QuitSeedResult] = {}
+    for seed, events, active, mak in iter_quit_seed_records(prepared, seeds):
         results[seed] = QuitSeedResult(
             pd.DataFrame(events) if events else pd.DataFrame(columns=EMPTY_EVENT_COLUMNS),
             active, mak,
         )
     return results
+
+
+def quit_annual_event_values(records: list[dict[str, Any]]) -> dict[tuple[int, str, str], tuple[int, float]]:
+    """Aggregate one seed's OE/JF annual event values without a DataFrame."""
+    grouped: dict[tuple[int, str, str], list[float]] = {}
+    for event in records:
+        year = event["event_date"].year
+        for dimension in ("Organisationseinheit", "Jobfamily"):
+            key = (year, dimension, event[dimension])
+            grouped.setdefault(key, []).append(event["mak_change"])
+    def compensated_sum(values: list[float]) -> float:
+        total = 0.0
+        correction = 0.0
+        for value in values:
+            adjusted = value - correction
+            updated = total + adjusted
+            correction = (updated - total) - adjusted
+            total = updated
+        return total
+
+    return {key: (-len(values), compensated_sum(values)) for key, values in grouped.items()}

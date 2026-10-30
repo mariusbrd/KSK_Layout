@@ -5,7 +5,8 @@ import pandas as pd
 import pytest
 
 from abgaenge.forecast import run_forecast_abgaenge
-from abgaenge.quit_batch_probe import prepare_quit_batch, run_quit_batch
+from abgaenge.quit_batch_probe import (iter_quit_seed_records, prepare_quit_batch,
+                                       quit_annual_event_values, run_quit_batch)
 from test_kuendigung_forecast import _atz_df, _make_employee, _params_only_quit, EMPTY_ATZ
 
 
@@ -31,12 +32,24 @@ def test_quit_batch_matches_reference_event_order_and_final_state(matrix: bool, 
     start, end = pd.Timestamp("2026-01-01"), pd.Timestamp("2027-12-31")
     prepared = prepare_quit_batch(people, atz, start, end, params, freq=freq)
     batch = run_quit_batch(prepared, (7, 42, 123, 999))
+    streamed = list(iter_quit_seed_records(prepared, (7, 42, 123, 999)))
+    assert [seed for seed, _, _, _ in streamed] == [7, 42, 123, 999]
     for seed, result in batch.items():
         reference = run_forecast_abgaenge(
             people, atz, start, end, freq,
             {**params, "random_seed": seed}, include_diagnostics=False,
         )["events_person_level"]
         pd.testing.assert_frame_equal(result.events, reference, check_exact=True)
+        records = next(records for current_seed, records, _, _ in streamed if current_seed == seed)
+        pd.testing.assert_frame_equal(pd.DataFrame(records), reference, check_exact=True)
+        expected_annual = {}
+        for dimension in ("Organisationseinheit", "Jobfamily"):
+            yearly = reference.assign(year=reference["event_date"].dt.year)
+            for (year, group), row in yearly.groupby(["year", dimension], sort=True)[
+                    ["headcount_change", "mak_change"]].sum().iterrows():
+                expected_annual[(year, dimension, group)] = (
+                    int(row["headcount_change"]), float(row["mak_change"]))
+        assert quit_annual_event_values(records) == expected_annual
         departed = set(reference["persnr"])
         expected_active = [person not in departed for person in prepared.ids]
         assert result.active.tolist() == expected_active

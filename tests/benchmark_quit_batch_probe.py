@@ -20,7 +20,8 @@ from dataloader import loader
 from dataloader.compact_simulation_engine import _prepare_employee_forecast_base
 from abgaenge.forecast import run_forecast_abgaenge
 from abgaenge.params import default_params
-from abgaenge.quit_batch_probe import prepare_quit_batch, run_quit_batch
+from abgaenge.quit_batch_probe import (iter_quit_seed_records, prepare_quit_batch,
+                                       quit_annual_event_values, run_quit_batch)
 from test_monte_carlo_yearly_reference import _frame_signature
 
 
@@ -60,6 +61,16 @@ def main() -> None:
         )["events_person_level"]
         assert _frame_signature(batch[seed].events) == _frame_signature(reference), seed
         assert _year_slices(batch[seed].events) == _year_slices(reference), seed
+        stream = next(records for current_seed, records, _, _ in
+                      iter_quit_seed_records(prepared, [seed]) if current_seed == seed)
+        assert _frame_signature(pd.DataFrame(stream)) == _frame_signature(reference), seed
+        annual = quit_annual_event_values(stream)
+        for dimension in ("Organisationseinheit", "Jobfamily"):
+            grouped = reference.assign(year=reference["event_date"].dt.year).groupby(
+                ["year", dimension], sort=True)[["headcount_change", "mak_change"]].sum()
+            for (year, group), row in grouped.iterrows():
+                assert annual[(year, dimension, group)] == (
+                    int(row["headcount_change"]), float(row["mak_change"])), seed
         departed = set(reference["persnr"]) if not reference.empty else set()
         expected_active = [person not in departed for person in prepared.ids]
         assert batch[seed].active.tolist() == expected_active, seed
@@ -74,6 +85,11 @@ def main() -> None:
         stress = run_quit_batch(prepared, range(1000))
         print(f"stress_seeds={len(stress)}; batch_seconds={perf_counter() - start:.4f}s; "
               "scope=quit events and final active/MAK only")
+        start = perf_counter()
+        stream_count = sum(len(quit_annual_event_values(records)) for _, records, _, _ in
+                           iter_quit_seed_records(prepared, range(1000)))
+        print(f"stream_seeds=1000; annual_keys={stream_count}; "
+              f"stream_seconds={perf_counter() - start:.4f}s; no per-seed DataFrames retained")
 
 
 if __name__ == "__main__":
