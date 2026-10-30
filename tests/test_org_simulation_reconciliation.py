@@ -96,7 +96,7 @@ def test_atz_reference_now_reconciles_per_org_without_balancing_adjustments():
         assert abs(compute_fte_effektiv(initial) + changes["MAK-Veränderung"].sum() - compute_fte_effektiv(final)) < 1e-9
 
 
-def _bridge_context(scenario="atz_ruhend"):
+def _bridge_context(scenario="atz_ruhend", *, seed=42):
     stored = json.loads(REFERENCE.read_text(encoding="utf-8"))["scenarios"]["identity"]["future_snapshot"]["data"]
     from utils.status_quo_baseline import build_status_quo_snapshot
     baseline = build_status_quo_snapshot(pd.DataFrame(stored["data"], columns=stored["columns"]), "2025-12-31")
@@ -108,7 +108,7 @@ def _bridge_context(scenario="atz_ruhend"):
             active_cluster_source=ActiveClusterSource(mode="synthetic", subtype="synthetic.default_fallback", source_signature="identity"),
             cluster_mapping_bundle=ClusterMappingBundle(oe_map={"OE1": "A", "OE2": "B"}, source_signature="identity"))
     else:
-        result = _run(scenario)
+        result = _run(scenario, seed=seed)
     return {"run_signature": "a", "metadata": result.metadata,
             "baseline_snapshot": baseline, "final_snapshot": result.future_snapshot_df,
             "zugaenge_params": {k: {"active": False} for k in ("azubi", "trainee", "new_hires")},

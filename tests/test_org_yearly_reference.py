@@ -28,7 +28,7 @@ REFERENCE = ROOT / "tests" / "fixtures" / "org_yearly_reference.json"
 SCENARIOS = ("identity", "no_events", "departures", "entries", "atz_ruhend", "azubi_transfer", "combined")
 
 
-def _run(name):
+def _run(name, *, seed=42):
     rows = []
     for i, age in enumerate((66, 58, 42, 25, 38, 21), 1):
         row = _base_snapshot(age).iloc[0].to_dict()
@@ -41,6 +41,8 @@ def _run(name):
     snapshot = pd.DataFrame(rows)
     before = snapshot.copy(deep=True)
     abg, zug = attrition_defaults(), accession_defaults()
+    abg["random_seed"] = seed
+    zug["random_seed"] = seed
     abg["components"] = dict.fromkeys(("atz", "retirement", "quit", "ruhend"), False)
     for section in ("azubi", "trainee", "new_hires"):
         zug[section]["active"] = False
