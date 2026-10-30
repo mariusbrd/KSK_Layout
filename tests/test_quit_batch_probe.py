@@ -7,7 +7,8 @@ import pytest
 from abgaenge.forecast import run_forecast_abgaenge
 from abgaenge.quit_batch_probe import (iter_quit_seed_records, prepare_quit_batch,
                                        prepare_quit_yearly,
-                                       quit_annual_event_values, run_quit_batch)
+                                       quit_annual_event_values, departure_annual_event_values,
+                                       run_quit_batch)
 from test_kuendigung_forecast import _atz_df, _make_employee, _params_only_quit, EMPTY_ATZ
 
 
@@ -117,3 +118,51 @@ def test_quit_batch_four_annual_levels_match_reference_views() -> None:
                 expected[(int(row["Jahr"]), dimension, str(row[dimension]))] = (
                     int(row["Köpfe-Veränderung"]), float(row["MAK-Veränderung"]))
         assert actual == expected, seed
+
+
+@pytest.mark.parametrize("with_quit", [False, True])
+@pytest.mark.parametrize("freq", ["M", "Q"])
+def test_retirement_stream_matches_reference_and_four_yearly_levels(
+    with_quit: bool, freq: str,
+) -> None:
+    from components.jobfamily_simulation_yearly import build_jobfamily_yearly_view
+    from dataloader.compact_simulation_engine import _prepare_employee_forecast_base
+    from test_org_simulation_reconciliation import _bridge_context
+    from utils.org_simulation_events import aggregate_simulation_events, normalize_simulation_events
+
+    context = _bridge_context("identity")
+    baseline = context["baseline_snapshot"]
+    start, end = pd.Timestamp("2025-12-31"), pd.Timestamp("2027-12-31")
+    context["metadata"] = {"base_date": start, "target_date": end}
+    people = _prepare_employee_forecast_base(baseline, EMPTY_ATZ, start)
+    params = _params_only_quit(rate_base=0.45)
+    params["components"].update(retirement=True, quit=with_quit)
+    params["retirement"] = {"retirement_age": 65, "early_retirement_age": 60,
+                            "rent_rate_65": 0.8, "rent_rate_60_65": 0.3}
+    prepared = prepare_quit_batch(people, EMPTY_ATZ, start, end, params, freq=freq)
+    yearly = prepare_quit_yearly(baseline, context["cluster_mapping"]["oe_map"])
+    for seed, records, active, mak in iter_quit_seed_records(prepared, (7, 42, 123)):
+        reference = run_forecast_abgaenge(
+            people, EMPTY_ATZ, start, end, freq, {**params, "random_seed": seed},
+            include_diagnostics=False)["events_person_level"]
+        actual_events = pd.DataFrame(records) if records else pd.DataFrame(columns=reference.columns)
+        pd.testing.assert_frame_equal(actual_events, reference, check_exact=True)
+        departed = set(reference["persnr"]) if not reference.empty else set()
+        expected_active = [person not in departed for person in prepared.ids]
+        assert active.tolist() == expected_active
+        assert mak.tolist() == [float(value) if still_active else 0.0
+                                for value, still_active in zip(prepared.mak, expected_active)]
+        context["departure_events"] = reference
+        normalized = normalize_simulation_events(context, expected_run_signature="a")
+        summary = {"run_signature": "a", "events": normalized, "metadata": context["metadata"]}
+        expected = {}
+        for dimension in ("Organisationseinheit", "OE-Cluster", "Jobfamily", "JF-Cluster"):
+            table = (aggregate_simulation_events(normalized, dimension=dimension)
+                     if dimension in ("Organisationseinheit", "OE-Cluster")
+                     else build_jobfamily_yearly_view(
+                         context, summary, dimension=dimension, include_stock=False)["annual"])
+            for _, row in table.iterrows():
+                expected[(int(row["Jahr"]), dimension, str(row[dimension]),
+                          str(row["Ereignisart"]))] = (
+                    int(row["Köpfe-Veränderung"]), float(row["MAK-Veränderung"]))
+        assert departure_annual_event_values(records, yearly) == expected

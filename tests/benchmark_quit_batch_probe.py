@@ -22,7 +22,8 @@ from abgaenge.forecast import run_forecast_abgaenge
 from abgaenge.params import default_params
 from abgaenge.quit_batch_probe import (iter_quit_seed_records, prepare_quit_batch,
                                        prepare_quit_yearly,
-                                       quit_annual_event_values, run_quit_batch)
+                                       quit_annual_event_values, departure_annual_event_values,
+                                       run_quit_batch)
 from test_monte_carlo_yearly_reference import _frame_signature
 from components.jobfamily_simulation_yearly import build_jobfamily_yearly_view
 from utils.org_simulation_events import aggregate_simulation_events, normalize_simulation_events
@@ -49,7 +50,12 @@ def main() -> None:
     _, bundle, _ = page._get_simulation_cluster_context(source_summary)
     base = _prepare_employee_forecast_base(snapshot, atz, FROZEN_STICHTAG)
     params = default_params()
-    params["components"] = {"atz": False, "retirement": False, "quit": True, "ruhend": False}
+    with_retirement = "--retirement" in sys.argv
+    params["components"] = {"atz": False, "retirement": with_retirement,
+                            "quit": True, "ruhend": False}
+    def annual_values(records):
+        return (departure_annual_event_values(records, yearly) if with_retirement
+                else quit_annual_event_values(records, yearly))
     target = pd.Timestamp("2026-12-31")
     seeds = (42, 7, 123, 999)
     start = perf_counter()
@@ -70,7 +76,7 @@ def main() -> None:
         stream = next(records for current_seed, records, _, _ in
                       iter_quit_seed_records(prepared, [seed]) if current_seed == seed)
         assert _frame_signature(pd.DataFrame(stream)) == _frame_signature(reference), seed
-        annual = quit_annual_event_values(stream, yearly)
+        annual = annual_values(stream)
         context = {"run_signature": "quit-probe", "baseline_snapshot": snapshot,
                    "final_snapshot": snapshot, "cluster_mapping": {"oe_map": bundle.oe_map},
                    "departure_events": reference, "accession_events": pd.DataFrame(),
@@ -87,7 +93,10 @@ def main() -> None:
                      else build_jobfamily_yearly_view(
                          context, summary, dimension=dimension, include_stock=False)["annual"])
             for _, row in table.iterrows():
-                expected[(int(row["Jahr"]), dimension, str(row[dimension]))] = (
+                key = (int(row["Jahr"]), dimension, str(row[dimension]))
+                if with_retirement:
+                    key = (*key, str(row["Ereignisart"]))
+                expected[key] = (
                     int(row["Köpfe-Veränderung"]), float(row["MAK-Veränderung"]))
         assert annual == expected, seed
         departed = set(reference["persnr"]) if not reference.empty else set()
@@ -96,7 +105,7 @@ def main() -> None:
         assert batch[seed].mak.tolist() == [float(m) if a else 0.0
                                             for m, a in zip(prepared.mak, expected_active)], seed
     reference_seconds = perf_counter() - start
-    print(f"seeds={len(seeds)}; preparation={prepare_seconds:.4f}s; "
+    print(f"retirement={with_retirement}; seeds={len(seeds)}; preparation={prepare_seconds:.4f}s; "
           f"batch={batch_seconds:.4f}s; reference={reference_seconds:.4f}s; "
           "exact event, state, four-level annual-event parity=True")
     if "--stress-1000" in sys.argv:
@@ -105,13 +114,13 @@ def main() -> None:
         print(f"stress_seeds={len(stress)}; batch_seconds={perf_counter() - start:.4f}s; "
               "scope=quit events and final active/MAK only")
         start = perf_counter()
-        stream_count = sum(len(quit_annual_event_values(records, yearly)) for _, records, _, _ in
+        stream_count = sum(len(annual_values(records)) for _, records, _, _ in
                            iter_quit_seed_records(prepared, range(1000)))
         print(f"stream_seeds=1000; annual_keys={stream_count}; "
               f"stream_seconds={perf_counter() - start:.4f}s; no per-seed DataFrames retained")
     if "--stress-10000" in sys.argv:
         start = perf_counter()
-        stream_count = sum(len(quit_annual_event_values(records, yearly)) for _, records, _, _ in
+        stream_count = sum(len(annual_values(records)) for _, records, _, _ in
                            iter_quit_seed_records(prepared, range(10000)))
         print(f"stream_seeds=10000; annual_keys={stream_count}; "
               f"stream_seconds={perf_counter() - start:.4f}s; no per-seed DataFrames retained")
@@ -125,7 +134,7 @@ def main() -> None:
             generation_seconds += perf_counter() - start
             record_count += len(records)
             start = perf_counter()
-            annual_key_count += len(quit_annual_event_values(records, yearly))
+            annual_key_count += len(annual_values(records))
             aggregation_seconds += perf_counter() - start
         print(f"profile_seeds=1000; events={record_count}; annual_keys={annual_key_count}; "
               f"generation_seconds={generation_seconds:.4f}; "
@@ -135,7 +144,7 @@ def main() -> None:
         import pstats
         profiler = cProfile.Profile()
         profiler.enable()
-        count = sum(len(quit_annual_event_values(records, yearly)) for _, records, _, _ in
+        count = sum(len(annual_values(records)) for _, records, _, _ in
                     iter_quit_seed_records(prepared, range(1000)))
         profiler.disable()
         rows = []

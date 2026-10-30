@@ -1,4 +1,4 @@
-"""Isolated, quit-only multi-seed probe; never called by the dashboard.
+"""Isolated retirement/quit multi-seed probe; never called by the dashboard.
 
 The input is prepared once. Each seed still consumes the same component RNG
 stream and the same number of draws per period as the reference forecast.
@@ -11,10 +11,12 @@ from typing import Any, Iterable, Iterator
 import numpy as np
 import pandas as pd
 
-from .forecast import _annual_to_period_rates, _calc_age, _periods, _select_quit_probs_frame
+from .forecast import (_annual_to_period_rate, _annual_to_period_rates, _calc_age,
+                       _periods, _select_quit_probs_frame)
+from .params import get_retirement_ages
 from .schemas import (COL_ATZ_BEGINN, COL_ATZ_ENDE, COL_ATZ_PHASE,
                       COL_BSGRD, COL_GEB, COL_PERSNR, COL_SOLL, COL_STATUS,
-                      REASON_LABELS, REASON_QUIT)
+                      REASON_LABELS, REASON_QUIT, REASON_RETIREMENT)
 from dataloader.jobfamily_service import normalize_jobfamily_value
 
 EMPTY_EVENT_COLUMNS = [
@@ -35,6 +37,9 @@ class PreparedQuitBatch:
     eligible_positions: np.ndarray
     ages: tuple[np.ndarray, ...]
     period_probs: tuple[np.ndarray, ...]
+    retirement_probs: tuple[np.ndarray, ...]
+    include_quit: bool
+    include_retirement: bool
 
 
 @dataclass(frozen=True)
@@ -75,10 +80,12 @@ def prepare_quit_yearly(baseline: pd.DataFrame, oe_map: dict[str, str]) -> Prepa
 def prepare_quit_batch(df_ma: pd.DataFrame, df_atz: pd.DataFrame,
                        start_date: pd.Timestamp, end_date: pd.Timestamp,
                        params: dict[str, Any], freq: str = "M") -> PreparedQuitBatch:
-    """Prepare immutable person/period data for an isolated quit-only scenario."""
+    """Prepare immutable person/period data for retirement and/or quits."""
     components = params.get("components", {})
-    if components != {"atz": False, "retirement": False, "quit": True, "ruhend": False}:
-        raise ValueError("The probe supports only explicitly quit-only components")
+    if (components.get("atz") is not False or components.get("ruhend") is not False
+            or not (components.get("retirement") is True or components.get("quit") is True)
+            or set(components) != {"atz", "retirement", "quit", "ruhend"}):
+        raise ValueError("The probe supports only explicitly quit-only or retirement/quit components")
     start_date, end_date = pd.Timestamp(start_date), pd.Timestamp(end_date)
     if end_date <= start_date:
         raise ValueError("end_date must be after start_date")
@@ -111,18 +118,35 @@ def prepare_quit_batch(df_ma: pd.DataFrame, df_atz: pd.DataFrame,
         fr_ids = set(fr_active[COL_PERSNR].dropna().astype(str).str.split(".").str[0].str.zfill(6))
         mak[state.index.isin(fr_ids)] = 0.0
     periods = tuple(_periods(start_date, end_date, freq))
-    ages, period_probs = [], []
+    ages, period_probs, retirement_probs = [], [], []
     eligible = state.iloc[eligible_positions].copy()
+    if components["retirement"]:
+        retirement_age, early_retirement_age = get_retirement_ages(params.get("retirement", {}))
     for period in periods:
         age = _calc_age(state[COL_GEB], period.start).to_numpy()
         eligible["age"] = age[eligible_positions]
         ages.append(age)
-        annual = _select_quit_probs_frame(eligible, params, period.start.year)
-        days = max(1, (period.end - period.start).days) + 1
-        period_probs.append(_annual_to_period_rates(annual, days))
+        if components["quit"]:
+            annual = _select_quit_probs_frame(eligible, params, period.start.year)
+            days = max(1, (period.end - period.start).days) + 1
+            period_probs.append(_annual_to_period_rates(annual, days))
+        else:
+            period_probs.append(np.zeros(len(eligible_positions), dtype=float))
+        if components["retirement"]:
+            period_days = max(1, (period.end - period.start).days)
+            p65 = _annual_to_period_rate(params.get("retirement", {}).get("rent_rate_65", 0.9), period_days)
+            p60 = _annual_to_period_rate(params.get("retirement", {}).get("rent_rate_60_65", 0.1), period_days)
+            eligible_ages = age[eligible_positions]
+            retirement_probs.append(np.where(
+                eligible_ages >= retirement_age, p65,
+                np.where((eligible_ages >= early_retirement_age) &
+                         (eligible_ages < retirement_age), p60, 0.0)))
+        else:
+            retirement_probs.append(np.zeros(len(eligible_positions), dtype=float))
     return PreparedQuitBatch(ids, mak, state["Organisationseinheit"].to_numpy(),
                              state["Jobfamily"].to_numpy(), periods, eligible_positions,
-                             tuple(ages), tuple(period_probs))
+                             tuple(ages), tuple(period_probs), tuple(retirement_probs),
+                             bool(components["quit"]), bool(components["retirement"]))
 
 
 def iter_quit_seed_records(
@@ -135,34 +159,62 @@ def iter_quit_seed_records(
         if seed in seen:
             raise ValueError(f"duplicate seed: {seed}")
         seen.add(seed)
-        rng = np.random.default_rng(np.random.SeedSequence(seed).spawn(5)[2])
+        component_seeds = np.random.SeedSequence(seed).spawn(5)
+        rng_ret = np.random.default_rng(component_seeds[1])
+        rng = np.random.default_rng(component_seeds[2])
         active = np.ones(len(prepared.ids), dtype=bool)
         mak = prepared.mak.copy()
         events = []
-        for period, ages, all_probs in zip(prepared.periods, prepared.ages, prepared.period_probs):
+        for period, ages, all_probs, ret_probs in zip(
+            prepared.periods, prepared.ages, prepared.period_probs, prepared.retirement_probs,
+        ):
             eligible_positions = prepared.eligible_positions
-            eligible = eligible_positions[active[eligible_positions]]
-            if len(eligible) == 0:
-                continue
-            probs = all_probs[active[eligible_positions]]
-            selected = eligible[rng.random(len(eligible)) < probs]
-            for pos in selected:
-                events.append({
-                    "period_label": period.label,
-                    "period_start": period.start,
-                    "period_end": period.end,
-                    "event_date": period.end,
-                    "persnr": prepared.ids[pos],
-                    "reason_code": REASON_QUIT,
-                    "reason_label": REASON_LABELS[REASON_QUIT],
-                    "Organisationseinheit": str(prepared.org[pos]),
-                    "Jobfamily": str(prepared.jobfamily[pos]),
-                    "headcount_change": -1,
-                    "mak_change": -float(mak[pos]),
-                    "age": float(ages[pos]),
-                })
-                active[pos] = False
-                mak[pos] = 0.0
+            if prepared.include_retirement:
+                eligible_mask = active[eligible_positions]
+                eligible = eligible_positions[eligible_mask]
+                if len(eligible):
+                    selected = eligible[rng_ret.random(len(eligible)) < ret_probs[eligible_mask]]
+                    for pos in selected:
+                        events.append({
+                            "period_label": period.label,
+                            "period_start": period.start,
+                            "period_end": period.end,
+                            "event_date": period.end,
+                            "persnr": prepared.ids[pos],
+                            "reason_code": REASON_RETIREMENT,
+                            "reason_label": REASON_LABELS[REASON_RETIREMENT],
+                            "Organisationseinheit": str(prepared.org[pos]),
+                            "Jobfamily": str(prepared.jobfamily[pos]),
+                            "headcount_change": -1,
+                            "mak_change": -float(mak[pos]),
+                            "age": float(ages[pos]),
+                        })
+                        active[pos] = False
+                        mak[pos] = 0.0
+            if prepared.include_quit:
+                eligible_mask = active[eligible_positions]
+                eligible = eligible_positions[eligible_mask]
+                if len(eligible) == 0:
+                    continue
+                probs = all_probs[eligible_mask]
+                selected = eligible[rng.random(len(eligible)) < probs]
+                for pos in selected:
+                    events.append({
+                        "period_label": period.label,
+                        "period_start": period.start,
+                        "period_end": period.end,
+                        "event_date": period.end,
+                        "persnr": prepared.ids[pos],
+                        "reason_code": REASON_QUIT,
+                        "reason_label": REASON_LABELS[REASON_QUIT],
+                        "Organisationseinheit": str(prepared.org[pos]),
+                        "Jobfamily": str(prepared.jobfamily[pos]),
+                        "headcount_change": -1,
+                        "mak_change": -float(mak[pos]),
+                        "age": float(ages[pos]),
+                    })
+                    active[pos] = False
+                    mak[pos] = 0.0
         yield seed, events, active, mak
 
 
@@ -220,3 +272,15 @@ def quit_annual_event_values(
         return total
 
     return {key: (-len(values), compensated_sum(values)) for key, values in grouped.items()}
+
+
+def departure_annual_event_values(
+    records: list[dict[str, Any]], yearly: PreparedQuitYearly,
+) -> dict[tuple[int, str, str, str], tuple[int, float]]:
+    """Keep retirement and quit annual groups separate like the reference views."""
+    values = {}
+    for reason in (REASON_RETIREMENT, REASON_QUIT):
+        selected = [record for record in records if record["reason_code"] == reason]
+        values.update({(*key, reason): value
+                       for key, value in quit_annual_event_values(selected, yearly).items()})
+    return values
