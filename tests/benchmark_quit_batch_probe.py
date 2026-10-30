@@ -115,6 +115,38 @@ def main() -> None:
                            iter_quit_seed_records(prepared, range(10000)))
         print(f"stream_seeds=10000; annual_keys={stream_count}; "
               f"stream_seconds={perf_counter() - start:.4f}s; no per-seed DataFrames retained")
+    if "--profile-1000" in sys.argv:
+        stream = iter_quit_seed_records(prepared, range(1000))
+        generation_seconds = aggregation_seconds = 0.0
+        record_count = annual_key_count = 0
+        for _ in range(1000):
+            start = perf_counter()
+            _, records, _, _ = next(stream)
+            generation_seconds += perf_counter() - start
+            record_count += len(records)
+            start = perf_counter()
+            annual_key_count += len(quit_annual_event_values(records, yearly))
+            aggregation_seconds += perf_counter() - start
+        print(f"profile_seeds=1000; events={record_count}; annual_keys={annual_key_count}; "
+              f"generation_seconds={generation_seconds:.4f}; "
+              f"aggregation_seconds={aggregation_seconds:.4f}")
+    if "--cprofile-1000" in sys.argv:
+        import cProfile
+        import pstats
+        profiler = cProfile.Profile()
+        profiler.enable()
+        count = sum(len(quit_annual_event_values(records, yearly)) for _, records, _, _ in
+                    iter_quit_seed_records(prepared, range(1000)))
+        profiler.disable()
+        rows = []
+        for (filename, line, name), (_, calls, own, cumulative, _) in pstats.Stats(profiler).stats.items():
+            if ROOT not in Path(filename).parents:
+                continue
+            rows.append((cumulative, own, calls, Path(filename).name, line, name))
+        for cumulative, own, calls, filename, line, name in sorted(rows, reverse=True)[:12]:
+            print(f"cprofile cumulative={cumulative:.4f}s own={own:.4f}s "
+                  f"calls={calls} {filename}:{line} {name}")
+        print(f"cprofile_annual_keys={count}; times are instrumented")
 
 
 if __name__ == "__main__":

@@ -34,7 +34,7 @@ class PreparedQuitBatch:
     periods: tuple
     eligible_positions: np.ndarray
     ages: tuple[np.ndarray, ...]
-    annual_probs: tuple[np.ndarray, ...]
+    period_probs: tuple[np.ndarray, ...]
 
 
 @dataclass(frozen=True)
@@ -111,16 +111,18 @@ def prepare_quit_batch(df_ma: pd.DataFrame, df_atz: pd.DataFrame,
         fr_ids = set(fr_active[COL_PERSNR].dropna().astype(str).str.split(".").str[0].str.zfill(6))
         mak[state.index.isin(fr_ids)] = 0.0
     periods = tuple(_periods(start_date, end_date, freq))
-    ages, annual_probs = [], []
+    ages, period_probs = [], []
     eligible = state.iloc[eligible_positions].copy()
     for period in periods:
         age = _calc_age(state[COL_GEB], period.start).to_numpy()
         eligible["age"] = age[eligible_positions]
         ages.append(age)
-        annual_probs.append(_select_quit_probs_frame(eligible, params, period.start.year))
+        annual = _select_quit_probs_frame(eligible, params, period.start.year)
+        days = max(1, (period.end - period.start).days) + 1
+        period_probs.append(_annual_to_period_rates(annual, days))
     return PreparedQuitBatch(ids, mak, state["Organisationseinheit"].to_numpy(),
                              state["Jobfamily"].to_numpy(), periods, eligible_positions,
-                             tuple(ages), tuple(annual_probs))
+                             tuple(ages), tuple(period_probs))
 
 
 def iter_quit_seed_records(
@@ -137,14 +139,12 @@ def iter_quit_seed_records(
         active = np.ones(len(prepared.ids), dtype=bool)
         mak = prepared.mak.copy()
         events = []
-        for period, ages, annual in zip(prepared.periods, prepared.ages, prepared.annual_probs):
+        for period, ages, all_probs in zip(prepared.periods, prepared.ages, prepared.period_probs):
             eligible_positions = prepared.eligible_positions
             eligible = eligible_positions[active[eligible_positions]]
             if len(eligible) == 0:
                 continue
-            annual_active = annual[active[eligible_positions]]
-            days = max(1, (period.end - period.start).days) + 1
-            probs = _annual_to_period_rates(annual_active, days)
+            probs = all_probs[active[eligible_positions]]
             selected = eligible[rng.random(len(eligible)) < probs]
             for pos in selected:
                 events.append({
