@@ -127,6 +127,14 @@ Diese Datei ist der dauerhafte Arbeitsstand des Projekts. Nach **jeder Phase** w
 - Folgerung: Der bisherige 7,47-s-Triggerwert unterschätzt den Aufwand für den gesamten Ergebnisaufbau. Zusatzläufe dürfen die teure OE-/JF-Aufbereitung nur vermeiden, wenn ihre je Lauf benötigten Jahreskennzahlen nachweislich exakt gleich entstehen. Für 10.000 Läufe in 20 s wären im Mittel höchstens 2 ms je Lauf einschließlich Aggregation verfügbar; mit dem heutigen vollständigen Lauf ist das Ziel nicht erreichbar.
 - Nächster Schritt: OE-Zusammenfassung auf Funktionsebene profilieren, Jahresscheiben und Status im produktiven Datensatz als Golden Master sichern, Cold-/Warm-Cache-Messungen wiederholen und erst danach einen schlanken Zusatzlauf entwerfen.
 
+### 30.10.2026 – Phase 0: OE-Kosten auf Funktionsebene eingegrenzt
+
+- Den bestehenden Benchmark um optionales `MC_PROFILE_SUMMARY=1` ergänzt. `cProfile` instrumentiert dann nur die OE-Ereigniszusammenfassung des Szenarios ohne Zugänge; die normale Messung bleibt unverändert. Im instrumentierten Lauf dauerte diese Funktion 31,79 s statt etwa 10,45 s ohne Profiler. Diese Profiler-Sekunden sind **keine** reale Laufzeit.
+- Im OE-Bestandsabgleich wurden `get_unique_employees` **1.069-mal**, `compute_headcount` **534-mal** und `raw_stock_mak` **534-mal** aufgerufen. Ihre kumulierten Profilerzeiten betrugen 28,61 s, 19,63 s und 13,44 s; die Werte überlappen wegen verschachtelter Aufrufe und dürfen nicht addiert werden. Der Code ruft die Bestandskennzahlen je Gesamt-/OE-/Clustergruppe wiederholt auf und baut dafür jeweils personenbezogene Pandas-Tabellen auf.
+- Primärer Kandidat für eine spätere, eng begrenzte Beschleunigung ist die **einmalige Voraggregation der unveränderten Ausgangs-, Projektions- und Endbestände je Ebene**. Ein naiver Ersatz durch globale `groupby`-Summen ist fachlich riskant: `get_unique_employees` behandelt Mehrfachplanstellen, `compute_headcount` zählt Personen je Gruppe, und die bestehende Gleitkomma-Additionsreihenfolge kann MAK-Endwerte beeinflussen. Erst mit produktivem Golden Master für `annual`, `checks`, Diagnose und beide JF-Jahresscheiben optimieren.
+- Die OE-Zusammenfassung rechnet die Bestandsüberleitung nur bei deaktivierten Zugangsbausteinen. Bei aktiven Zugängen bleibt sie im aktuellen Ablauf ausdrücklich nicht verfügbar. Eine Monte-Carlo-Anzeige von Jahresbestandsbändern über Zugänge braucht deshalb einen neuen fachlichen Ergebnisvertrag; das darf den Einzellaufpfad nicht stillschweigend verändern.
+- Nächster Schritt: produktiven Golden Master inklusive der heutigen sechs OE-Abweichungen sichern; dann einen isolierten Voraggregationsprototyp mit vollständigem Hashvergleich bauen und getrennt messen. Für Zusatzläufe zuerst den benötigten Kennzahlenscope definieren.
+
 ### Vorlage für spätere Einträge
 
 `Datum – Phase – Änderung/Erkenntnis – Messumgebung und Messwerte – Paritätsnachweis – Entscheidung – offene Risiken – nächster Schritt`

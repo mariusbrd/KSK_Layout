@@ -7,10 +7,14 @@ This script reports timings and process memory, never employee records.
 from __future__ import annotations
 
 from copy import deepcopy
+import cProfile
 import ctypes
+import io
 import json
 import logging
+import os
 from pathlib import Path
+import pstats
 import sys
 import threading
 import time
@@ -113,8 +117,17 @@ def main() -> None:
             df_atz=atz, run_settings={"exclusions": deepcopy(FROZEN_SETTINGS["exclusions"])},
             source_snapshot=snapshot,
         ))
-        summary, summary_prep = _measure(lambda: build_simulation_event_summary(
-            context, expected_run_signature=f"phase0::{label}"))
+        profiler = cProfile.Profile() if os.environ.get("MC_PROFILE_SUMMARY") == "1" and label == "no_entries" else None
+        def make_summary():
+            if profiler is None:
+                return build_simulation_event_summary(context, expected_run_signature=f"phase0::{label}")
+            return profiler.runcall(build_simulation_event_summary, context,
+                                     expected_run_signature=f"phase0::{label}")
+        summary, summary_prep = _measure(make_summary)
+        if profiler is not None:
+            report = io.StringIO()
+            pstats.Stats(profiler, stream=report).sort_stats("cumtime").print_stats(35)
+            print(report.getvalue(), file=sys.stderr)
         yearly = {}
         for dimension in ("Jobfamily", "JF-Cluster"):
             _, yearly[dimension] = _measure(lambda dimension=dimension: build_jobfamily_yearly_view(
