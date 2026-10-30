@@ -1191,6 +1191,7 @@ def simulate_compact_snapshot(
         end_date=target_date,
         freq="M",
         params=abgaenge_params,
+        include_diagnostics=include_audits,
     )
     employee_after_abg = _apply_attrition_events_to_employee_state(
         employee_base,

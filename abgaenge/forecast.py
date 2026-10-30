@@ -592,12 +592,16 @@ def run_forecast_abgaenge(
     end_date: pd.Timestamp,
     freq: str = "M",
     params: Dict[str, Any] = None,
+    include_diagnostics: bool = True,
 ) -> Dict[str, Any]:
     """
     Run Abgaenge forecast.
 
     Returns:
         dict with keys: forecast_kpis, events_person_level, assumptions, tables
+
+    ``include_diagnostics=False`` skips display-only ATZ and quit diagnostics.
+    It does not change the stochastic draws or forecast event calculations.
     """
     if params is None:
         params = {}
@@ -737,7 +741,10 @@ def run_forecast_abgaenge(
         # A. ATZ Scheduling (uses rng_atz)
         if params.get("components", {}).get("atz", True):
             # Sort for deterministic selection? _schedule_new_atz_cases should sort its mask.
-            atz_pivot = _schedule_new_atz_cases(df_state, atz_pivot, params, period, rng_atz, atz_audit_rows)
+            atz_pivot = _schedule_new_atz_cases(
+                df_state, atz_pivot, params, period, rng_atz,
+                atz_audit_rows if include_diagnostics else None,
+            )
             df_state["in_atz"] = df_state.index.isin(atz_pivot[COL_PERSNR].unique())
 
         # B. ATZ Status Change (Deterministic based on pivot)
@@ -839,17 +846,18 @@ def run_forecast_abgaenge(
                 probs = _annual_to_period_rates(annual_probs, quit_period_days)
                 draws = rng_quit.random(len(eligible))
                 quit_ids = eligible.index[draws < probs].tolist()
-                quit_audit_rows.extend({
-                    "Jahr": period_year,
-                    "Organisationseinheit": str(org),
-                    "exposures": int(mask.sum()),
-                    "expected": float(probs[mask].sum()),
-                    "variance": float((probs[mask] * (1 - probs[mask])).sum()),
-                    "annual_rate_exposure": float(annual_probs[mask].sum() * quit_period_days / 365.25),
-                    "person_years": float(mask.sum() * quit_period_days / 365.25),
-                    "observed": int((draws[mask] < probs[mask]).sum()),
-                } for org in eligible["Organisationseinheit"].dropna().unique()
-                  for mask in [eligible["Organisationseinheit"].eq(org).to_numpy()])
+                if include_diagnostics:
+                    quit_audit_rows.extend({
+                        "Jahr": period_year,
+                        "Organisationseinheit": str(org),
+                        "exposures": int(mask.sum()),
+                        "expected": float(probs[mask].sum()),
+                        "variance": float((probs[mask] * (1 - probs[mask])).sum()),
+                        "annual_rate_exposure": float(annual_probs[mask].sum() * quit_period_days / 365.25),
+                        "person_years": float(mask.sum() * quit_period_days / 365.25),
+                        "observed": int((draws[mask] < probs[mask]).sum()),
+                    } for org in eligible["Organisationseinheit"].dropna().unique()
+                      for mask in [eligible["Organisationseinheit"].eq(org).to_numpy()])
 
                 for persnr in quit_ids:
                     mak_change = -float(df_state.at[persnr, "mak"])
@@ -951,7 +959,7 @@ def run_forecast_abgaenge(
     
     tables = {
         "atz_pivot": atz_pivot[[COL_PERSNR, "ar_begin", "ar_end", "fr_begin", "fr_end", "contract_end"]].copy(),
-        "atz_schedule_audit": atz_pivot.copy(),
+        "atz_schedule_audit": atz_pivot.copy() if include_diagnostics else pd.DataFrame(),
         "atz_entry_audit": pd.DataFrame(atz_audit_rows),
         "quit_probability_audit": pd.DataFrame(quit_audit_rows),
         "atz": events_df[events_df["reason_code"].isin([REASON_ATZ_AR_TO_FR, REASON_ATZ_END])] if not events_df.empty else pd.DataFrame(),

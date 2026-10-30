@@ -23,6 +23,10 @@ def test_audit_free_run_matches_full_state_and_events(scenario: str, seed: int) 
         compact = _run(scenario, seed=seed, include_audits=False)
     assert full.audit_tables
     assert compact.audit_tables == {}
+    if scenario != "identity":
+        for key in ("atz_schedule_audit", "atz_entry_audit", "quit_probability_audit"):
+            assert full.abgaenge_result["tables"][key] is not None
+            assert compact.abgaenge_result["tables"][key].empty
     assert compact.metadata == full.metadata
     for field in ("future_snapshot_df", "future_employee_df"):
         assert _frame_signature(getattr(compact, field)) == _frame_signature(getattr(full, field)), field
