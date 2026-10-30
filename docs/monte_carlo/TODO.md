@@ -307,6 +307,13 @@ Arbeitsentwurf: [Kennzahlenkonzept](KENNZAHLENKONZEPT.md). Er dokumentiert die Q
 
 ### Vorlage für spätere Einträge
 
+### 30.10.2026 – Phase 2: ATZ-Terminberechnung aus dem Seed-Lauf verlagert
+
+- Das Profil des produktiven isolierten Streams mit neuen ATZ-Fällen, Ruhestand, Kündigung und Ruhend zeigte für 1.000 Seeds **4,550 s Ereigniserzeugung** und **0,336 s vierstufige Jahresaggregation**; die wiederholte Monats- und Datumskalkulation war damit der naheliegende nächste Ansatzpunkt.
+- `prepare_quit_batch` berechnet für jeden möglichen ATZ-Starttag einer Periode einmal die Zielperioden für FR-Beginn und Vertragsende. Im Seed-Lauf wird weiterhin genau derselbe Zufallsoffset gezogen und in derselben Auswahlreihenfolge verarbeitet; lediglich die deterministische Datumstransformation wird nachgeschlagen. Für neue und bestehende ATZ-Fälle, Matrix-/Basisquote und kombinierte Komponenten bleiben **22 gezielte Paritätstests grün**. Produktive Seeds 42/7/123/999 stimmen bei Ereignis-Hashes, Endzuständen und vier OE-/JF-Jahresereignisebenen exakt überein.
+- Nach der Änderung: 1.000 Seeds **2,412 s Ereigniserzeugung** und **0,464 s Jahresaggregation** (separater lokaler Messlauf; Messrauschen beachten). Direkter 10.000-Seed-Stream **22,463 s** bei 1.596.982 Jahresgruppenschlüsseln; Vorbereitung **0,191 s** und vier Referenzvergleiche **1,542 s** außerhalb der Stresszeit. Keine stabile SLA.
+- Das **20-s-Ziel ist selbst für diesen isolierten Abgangs-/Jahresereignisteilkern noch um rund 2,5 s verfehlt**; Zugänge, finale Snapshots/Kosten, vollständige OE-/JF-Bestandsjahre und Ensemble-Statistik kommen erst hinzu. Nächster Schritt: verbleibende Seed-Kosten genauer auf ATZ-Auswahl, Zustandswechsel und Eventmaterialisierung aufteilen. Danach Zugangsrechnung in einen ebenfalls paritätsgeprüften kompakten Pfad überführen. Die Dashboard-Integration bleibt bis zum Nachweis vollständiger Jahresscheiben ausgesetzt.
+
 ### 30.10.2026 – Phase 2: bestehende und neue ATZ-Fälle im isolierten Mehrseed-Kern
 
 - Der isolierte Abgangskern verarbeitet nun bestehende ATZ-Verträge und neu ausgeloste ATZ-Fälle. Die periodische Reihenfolge entspricht dem Referenzforecast: ATZ-Auslosung, AR/FR-Wechsel und Vertragsende, Ruhestand, Kündigung, Ruhend-Rückkehr und neue Ruhend-Fälle. Der ATZ-Zufallsstrom bleibt `SeedSequence(seed).spawn(5)[0]`; Poisson-Ziehung, gewichtete Auswahl und Startdatum-Ziehungen erfolgen in derselben Reihenfolge. Neue ATZ-Fälle verlassen ab Vergabe die Kandidatenmengen der nachfolgenden Komponenten.

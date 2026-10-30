@@ -64,6 +64,7 @@ class PreparedQuitBatch:
     atz_oe_eligible: np.ndarray
     atz_ar_months: int
     atz_fr_months: int
+    atz_transition_lookup: tuple[tuple[tuple[int, int], ...], ...]
 
 
 @dataclass(frozen=True)
@@ -228,6 +229,24 @@ def prepare_quit_batch(df_ma: pd.DataFrame, df_atz: pd.DataFrame,
             ))
     else:
         atz_transitions = [(np.empty(0, dtype=int), np.empty(0, dtype=int)) for _ in periods]
+    ar_months = int(round(float(atz_params.get("atz_duration_ar_years", 2.5)) * 12))
+    fr_months = int(round(float(atz_params.get("atz_duration_fr_years", 2.5)) * 12))
+    atz_transition_lookup = []
+    if components["atz"]:
+        for period in periods:
+            offsets = []
+            for day_offset in range(max(1, (period.end - period.start).days + 1)):
+                ar_start = period.start + pd.Timedelta(days=day_offset)
+                fr_start = ar_start + pd.DateOffset(months=ar_months) + pd.Timedelta(days=1)
+                contract_end = fr_start + pd.DateOffset(months=fr_months)
+                fr_index = next((i for i, future in enumerate(periods)
+                                 if future.start <= fr_start <= future.end), -1)
+                end_index = next((i for i, future in enumerate(periods)
+                                  if future.start <= contract_end <= future.end), -1)
+                offsets.append((fr_index, end_index))
+            atz_transition_lookup.append(tuple(offsets))
+    else:
+        atz_transition_lookup = [tuple() for _ in periods]
     return PreparedQuitBatch(ids, mak, state["Organisationseinheit"].to_numpy(),
                              state["Jobfamily"].to_numpy(), periods, eligible_positions,
                              tuple(ages), tuple(period_probs), tuple(retirement_probs),
@@ -239,8 +258,7 @@ def prepare_quit_batch(df_ma: pd.DataFrame, df_atz: pd.DataFrame,
                              state.index.isin(fr_ids), tuple(tenures), bool(components["atz"]),
                              state.index.isin(atz_ids), tuple(atz_probabilities),
                              tuple(atz_age_eligible), atz_oe_eligible,
-                             int(round(float(atz_params.get("atz_duration_ar_years", 2.5)) * 12)),
-                             int(round(float(atz_params.get("atz_duration_fr_years", 2.5)) * 12)))
+                             ar_months, fr_months, tuple(atz_transition_lookup))
 
 
 def _iter_departure_seed_states(
@@ -294,18 +312,13 @@ def _iter_departure_seed_states(
                             for pos in candidates[chosen]:
                                 offset_days = rng_atz.integers(
                                     0, max(1, (period.end - period.start).days + 1))
-                                ar_start = period.start + pd.Timedelta(days=int(offset_days))
-                                fr_start = (ar_start + pd.DateOffset(
-                                    months=prepared.atz_ar_months) + pd.Timedelta(days=1))
-                                contract_end = fr_start + pd.DateOffset(
-                                    months=prepared.atz_fr_months)
                                 in_atz[pos] = True
-                                for future_index in range(period_index, len(prepared.periods)):
-                                    future = prepared.periods[future_index]
-                                    if future.start <= fr_start <= future.end:
-                                        atz_plans[future_index][0].append(int(pos))
-                                    if future.start <= contract_end <= future.end:
-                                        atz_plans[future_index][1].append(int(pos))
+                                fr_index, end_index = prepared.atz_transition_lookup[
+                                    period_index][int(offset_days)]
+                                if fr_index >= 0:
+                                    atz_plans[fr_index][0].append(int(pos))
+                                if end_index >= 0:
+                                    atz_plans[end_index][1].append(int(pos))
                 ar_to_fr, atz_end = atz_plans[period_index]
                 for pos in sorted(set(ar_to_fr)):
                     if active[pos] and not atz_fr_active[pos]:
