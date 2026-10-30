@@ -255,7 +255,8 @@ def reporting_departure_events(projection, events, context):
     return out
 
 
-def build_departure_stock_bridge(context: dict, events: pd.DataFrame, *, expected_run_signature: str) -> dict:
+def build_departure_stock_bridge(context: dict, events: pd.DataFrame, *, expected_run_signature: str,
+                                 stock_metric_provider=None) -> dict:
     """Arithmetic bridge only; never simulate, replay states or balance differences."""
     if context.get("run_signature") != expected_run_signature:
         raise ValueError("Bestandsüberleitung und Simulation gehören nicht zum selben Lauf.")
@@ -303,6 +304,13 @@ def build_departure_stock_bridge(context: dict, events: pd.DataFrame, *, expecte
         return work
     initial, final = prepare(initial), prepare(final)
     projection = prepare(reporting_projection_base(context, initial)) if end > start else initial.copy(deep=True)
+    grouped_stock = None
+    if stock_metric_provider is not None:
+        grouped_stock = {
+            key: {dimension: stock_metric_provider(frame, dimension)
+                  for dimension in ("Organisationseinheit", "OE-Cluster")}
+            for key, frame in (("initial", initial), ("projection", projection), ("final", final))
+        }
     raw_events = events
     events = reporting_departure_events(projection, events, context)
     atz_effects = documented_atz_capacity_effects(context, projection, final, raw_events)
@@ -321,9 +329,16 @@ def build_departure_stock_bridge(context: dict, events: pd.DataFrame, *, expecte
                        _scope_departure_changes(projection, events, dimension, name, allocations)) for name in sorted(names))
     annual, checks, basis_effects = [], [], []
     for level, name, before, after, changes in groups:
-        hc, mak = compute_headcount(before), raw_stock_mak(before)
+        if grouped_stock is None or level == "Gesamt":
+            hc, mak = compute_headcount(before), raw_stock_mak(before)
+        else:
+            hc, mak = grouped_stock["initial"][level][name]
         projected_before = projection if level == "Gesamt" else projection.loc[projection[level].eq(name)]
-        basis_hc, basis_mak = compute_headcount(projected_before) - hc, raw_stock_mak(projected_before) - mak
+        if grouped_stock is None or level == "Gesamt":
+            projection_hc, projection_mak = compute_headcount(projected_before), raw_stock_mak(projected_before)
+        else:
+            projection_hc, projection_mak = grouped_stock["projection"][level].get(name, (0, 0.0))
+        basis_hc, basis_mak = projection_hc - hc, projection_mak - mak
         if basis_hc != 0 or abs(basis_mak) > MAK_TOLERANCE:
             basis_effects.append({"Ebene": level, "Organisation": name, "Köpfe-Effekt": basis_hc,
                                   "MAK-Effekt": basis_mak, "Regel": "Technischer Übergang IST zur Prognosebasis; kein Personalereignis"})
@@ -355,7 +370,10 @@ def build_departure_stock_bridge(context: dict, events: pd.DataFrame, *, expecte
                                "Kumulierte Änderung-Köpfe": cumulative_hc, "Kumulierte Änderung-MAK": cumulative_mak,
                                "Bestand-Köpfe": hc + cumulative_hc, "Bestand-MAK": mak + cumulative_mak})
         projected_hc, projected_mak = hc + cumulative_hc, mak + cumulative_mak
-        final_hc, final_mak = compute_headcount(after), raw_stock_mak(after)
+        if grouped_stock is None or level == "Gesamt":
+            final_hc, final_mak = compute_headcount(after), raw_stock_mak(after)
+        else:
+            final_hc, final_mak = grouped_stock["final"][level].get(name, (0, 0.0))
         effect_mak = 0.0 if atz_effects.empty else float(
             atz_effects["MAK-Effekt"].sum() if level == "Gesamt" else
             atz_effects.loc[atz_effects[level].eq(name), "MAK-Effekt"].sum())

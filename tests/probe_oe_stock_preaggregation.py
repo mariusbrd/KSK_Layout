@@ -17,8 +17,10 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 from test_monte_carlo_production_yearly_reference import _payload
+from test_monte_carlo_yearly_reference import _frame_signature
 from dataloader.kpi_engine import compute_headcount
-from utils.org_simulation_reconciliation import raw_stock_mak, reporting_projection_base
+from utils.org_simulation_events import normalize_simulation_events
+from utils.org_simulation_reconciliation import build_departure_stock_bridge, raw_stock_mak, reporting_projection_base
 
 
 def grouped_metrics(frame: pd.DataFrame, dimension: str) -> dict:
@@ -63,9 +65,29 @@ def main() -> None:
                                 "different_mak": sum(a[1] != b[1] for _, a, b in differences if a and b),
                                 "max_abs_mak_difference": max((abs(a[1] - b[1]) for _, a, b in differences if a and b), default=0.0)})
 
+        events = normalize_simulation_events(context, expected_run_signature=context["run_signature"])
+        start = time.perf_counter()
+        reference = build_departure_stock_bridge(context, events, expected_run_signature=context["run_signature"])
+        reference_seconds = time.perf_counter() - start
+        start = time.perf_counter()
+        candidate = build_departure_stock_bridge(context, events, expected_run_signature=context["run_signature"],
+                                                 stock_metric_provider=grouped_metrics)
+        candidate_seconds = time.perf_counter() - start
+        frame_keys = ("annual", "checks", "person_diagnostics", "basis_effects", "reporting_events", "documented_effects")
+        frame_differences = [key for key in frame_keys
+                             if _frame_signature(reference.get(key, pd.DataFrame())) !=
+                             _frame_signature(candidate.get(key, pd.DataFrame()))]
+        results.append({"frame": "full_oe_bridge", "different_groups": len(frame_differences),
+                        "different_frames": frame_differences,
+                        "status_equal": reference["status"] == candidate["status"],
+                        "reason_equal": reference["reason"] == candidate["reason"],
+                        "reference_seconds": round(reference_seconds, 4),
+                        "candidate_seconds": round(candidate_seconds, 4)})
+
     _payload(probe=probe)
     print(json.dumps(results, ensure_ascii=False, indent=2))
-    if any(item["different_groups"] for item in results):
+    if any(item["different_groups"] or item.get("status_equal") is False or item.get("reason_equal") is False
+           for item in results):
         raise AssertionError("Grouped stock metrics are not exactly equal to the current implementation")
 
 

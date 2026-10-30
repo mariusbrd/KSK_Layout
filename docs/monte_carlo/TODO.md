@@ -152,6 +152,14 @@ Diese Datei ist der dauerhafte Arbeitsstand des Projekts. Nach **jeder Phase** w
 - **Grenze:** Der Prototyp prüft nur Gruppen-Kopf/MAK, noch nicht die gesamte OE-Jahresüberleitung, `checks`, Diagnosen oder JF-Jahresscheiben unter einer optimierten Implementierung. Vor Integration synthetische Mehrfachplanstellen, fehlende Personalnummern, unterschiedliche Eingabereihenfolgen, mehrjährige Horizonte und alle produktiven Hashreferenzen prüfen. Keine Produktivlogik geändert.
 - Nächster Schritt: den Kandidaten als eng begrenzte alternative Bestandskennzahl in einer isolierten Kopie der OE-Überleitung einsetzen und vollständige `annual`-/`checks`-/JF-Hashes sowie Zeit vergleichen. Erst nach voller Parität wäre ein Produktivpatch vertretbar.
 
+### 30.10.2026 – Phase 0: vollständige OE-Überleitung mit Testinjektion verglichen
+
+- Die bestehende `build_departure_stock_bridge` besitzt nun einen **optionalen, standardmäßig nicht gesetzten** `stock_metric_provider`. Der normale Dashboard-/Einzellauf ruft weiterhin exakt den bisherigen `compute_headcount`-/`raw_stock_mak`-Pfad auf. Nur der isolierte Probe-Pfad injiziert die voraggregierten Gruppenkennzahlen; keine Streamlit-Seite verwendet ihn.
+- Im lokalen produktiven Szenario ohne Zugänge waren zwischen Standard- und Probe-Pfad die Hashes für `annual`, `checks`, `person_diagnostics`, `basis_effects`, `reporting_events` und `documented_effects` sowie OE-Status und Begründung **exakt identisch**. Zeit nur für die OE-Bestandsüberleitung im einzelnen Probelauf: **5,64 s Standard, 1,46 s Kandidat**. Der restliche Ergebnisaufbau und die Simulation sind darin nicht enthalten.
+- `tests/test_oe_preaggregation_probe.py` prüft denselben optionalen Pfad in allen sieben synthetischen Jahresreferenzszenarien gegen jeden Schlüssel und jedes Tabellenhash-Ergebnis der Standard-Überleitung. Zusammen mit produktivem Golden Master und bestehenden Jahresreferenzen: **15 Tests bestanden in 27,60 s**.
+- Das ist ein belastbarer lokaler Paritätsnachweis für diese Szenarien, aber noch keine Freigabe zur standardmäßigen Nutzung: Mehrjahresläufe, andere Datenreihenfolgen und Randfälle der Personen-/Planstellen-ID fehlen; JF-Jahresscheiben wurden im Probe-Pfad nur mittelbar über den unveränderten Standard-Golden-Master geprüft. Wiederholte, getrennte Laufzeitmessungen stehen aus.
+- Nächster Schritt: zusätzliche Randfall- und Mehrjahres-Golden-Masters erzeugen, JF-Jahresansichten bei explizitem Probe-Bridge-Ergebnis direkt vergleichen und den 4-s-Effekt in wiederholten Vollpfadmessungen bestätigen. Danach entscheiden, ob die Voraggregation den Standardpfad ersetzen darf.
+
 ### Vorlage für spätere Einträge
 
 `Datum – Phase – Änderung/Erkenntnis – Messumgebung und Messwerte – Paritätsnachweis – Entscheidung – offene Risiken – nächster Schritt`
