@@ -15,14 +15,17 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
-from benchmark_page_rerun_paths import FROZEN_STICHTAG, _freeze_context, _reset_state
+from benchmark_page_rerun_paths import FROZEN_STICHTAG, _freeze_context, _load_page_module, _reset_state
 from dataloader import loader
 from dataloader.compact_simulation_engine import _prepare_employee_forecast_base
 from abgaenge.forecast import run_forecast_abgaenge
 from abgaenge.params import default_params
 from abgaenge.quit_batch_probe import (iter_quit_seed_records, prepare_quit_batch,
+                                       prepare_quit_yearly,
                                        quit_annual_event_values, run_quit_batch)
 from test_monte_carlo_yearly_reference import _frame_signature
+from components.jobfamily_simulation_yearly import build_jobfamily_yearly_view
+from utils.org_simulation_events import aggregate_simulation_events, normalize_simulation_events
 
 
 def _year_slices(events: pd.DataFrame) -> dict[str, dict]:
@@ -40,8 +43,10 @@ def _year_slices(events: pd.DataFrame) -> dict[str, dict]:
 def main() -> None:
     _freeze_context()
     _reset_state()
-    snapshot, _, _, _ = loader.load_and_prepare_data()
+    snapshot, _, _, source_summary = loader.load_and_prepare_data()
     atz = loader.load_atz_data_cached(str(ROOT), None, None, None)
+    page = _load_page_module("*_Kompakt_plus_Simulation.py", "quit_batch_cluster_page")
+    _, bundle, _ = page._get_simulation_cluster_context(source_summary)
     base = _prepare_employee_forecast_base(snapshot, atz, FROZEN_STICHTAG)
     params = default_params()
     params["components"] = {"atz": False, "retirement": False, "quit": True, "ruhend": False}
@@ -49,6 +54,7 @@ def main() -> None:
     seeds = (42, 7, 123, 999)
     start = perf_counter()
     prepared = prepare_quit_batch(base, atz, FROZEN_STICHTAG, target, params)
+    yearly = prepare_quit_yearly(snapshot, bundle.oe_map)
     prepare_seconds = perf_counter() - start
     start = perf_counter()
     batch = run_quit_batch(prepared, seeds)
@@ -64,13 +70,26 @@ def main() -> None:
         stream = next(records for current_seed, records, _, _ in
                       iter_quit_seed_records(prepared, [seed]) if current_seed == seed)
         assert _frame_signature(pd.DataFrame(stream)) == _frame_signature(reference), seed
-        annual = quit_annual_event_values(stream)
-        for dimension in ("Organisationseinheit", "Jobfamily"):
-            grouped = reference.assign(year=reference["event_date"].dt.year).groupby(
-                ["year", dimension], sort=True)[["headcount_change", "mak_change"]].sum()
-            for (year, group), row in grouped.iterrows():
-                assert annual[(year, dimension, group)] == (
-                    int(row["headcount_change"]), float(row["mak_change"])), seed
+        annual = quit_annual_event_values(stream, yearly)
+        context = {"run_signature": "quit-probe", "baseline_snapshot": snapshot,
+                   "final_snapshot": snapshot, "cluster_mapping": {"oe_map": bundle.oe_map},
+                   "departure_events": reference, "accession_events": pd.DataFrame(),
+                   "metadata": {"base_date": FROZEN_STICHTAG, "target_date": target},
+                   "zugaenge_params": {key: {"active": False} for key in
+                                       ("azubi", "trainee", "new_hires")}}
+        normalized = normalize_simulation_events(context, expected_run_signature="quit-probe")
+        summary = {"run_signature": "quit-probe", "events": normalized,
+                   "metadata": context["metadata"]}
+        expected = {}
+        for dimension in ("Organisationseinheit", "OE-Cluster", "Jobfamily", "JF-Cluster"):
+            table = (aggregate_simulation_events(normalized, dimension=dimension)
+                     if dimension in ("Organisationseinheit", "OE-Cluster")
+                     else build_jobfamily_yearly_view(
+                         context, summary, dimension=dimension, include_stock=False)["annual"])
+            for _, row in table.iterrows():
+                expected[(int(row["Jahr"]), dimension, str(row[dimension]))] = (
+                    int(row["Köpfe-Veränderung"]), float(row["MAK-Veränderung"]))
+        assert annual == expected, seed
         departed = set(reference["persnr"]) if not reference.empty else set()
         expected_active = [person not in departed for person in prepared.ids]
         assert batch[seed].active.tolist() == expected_active, seed
@@ -79,16 +98,22 @@ def main() -> None:
     reference_seconds = perf_counter() - start
     print(f"seeds={len(seeds)}; preparation={prepare_seconds:.4f}s; "
           f"batch={batch_seconds:.4f}s; reference={reference_seconds:.4f}s; "
-          "exact event, state, OE/JF annual-event parity=True")
+          "exact event, state, four-level annual-event parity=True")
     if "--stress-1000" in sys.argv:
         start = perf_counter()
         stress = run_quit_batch(prepared, range(1000))
         print(f"stress_seeds={len(stress)}; batch_seconds={perf_counter() - start:.4f}s; "
               "scope=quit events and final active/MAK only")
         start = perf_counter()
-        stream_count = sum(len(quit_annual_event_values(records)) for _, records, _, _ in
+        stream_count = sum(len(quit_annual_event_values(records, yearly)) for _, records, _, _ in
                            iter_quit_seed_records(prepared, range(1000)))
         print(f"stream_seeds=1000; annual_keys={stream_count}; "
+              f"stream_seconds={perf_counter() - start:.4f}s; no per-seed DataFrames retained")
+    if "--stress-10000" in sys.argv:
+        start = perf_counter()
+        stream_count = sum(len(quit_annual_event_values(records, yearly)) for _, records, _, _ in
+                           iter_quit_seed_records(prepared, range(10000)))
+        print(f"stream_seeds=10000; annual_keys={stream_count}; "
               f"stream_seconds={perf_counter() - start:.4f}s; no per-seed DataFrames retained")
 
 

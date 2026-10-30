@@ -6,6 +6,7 @@ import pytest
 
 from abgaenge.forecast import run_forecast_abgaenge
 from abgaenge.quit_batch_probe import (iter_quit_seed_records, prepare_quit_batch,
+                                       prepare_quit_yearly,
                                        quit_annual_event_values, run_quit_batch)
 from test_kuendigung_forecast import _atz_df, _make_employee, _params_only_quit, EMPTY_ATZ
 
@@ -74,3 +75,45 @@ def test_quit_batch_matches_empty_event_schema() -> None:
     expected = run_forecast_abgaenge(people, EMPTY_ATZ, start, end, "M",
                                      {**params, "random_seed": 7})["events_person_level"]
     pd.testing.assert_frame_equal(actual, expected, check_exact=True)
+
+
+def test_quit_batch_four_annual_levels_match_reference_views() -> None:
+    from components.jobfamily_simulation_yearly import build_jobfamily_yearly_view
+    from dataloader.compact_simulation_engine import _prepare_employee_forecast_base
+    from test_org_simulation_reconciliation import _bridge_context
+    from utils.org_simulation_events import aggregate_simulation_events, normalize_simulation_events
+
+    context = _bridge_context("identity")
+    baseline = context["baseline_snapshot"]
+    baseline = pd.concat([baseline, baseline.loc[baseline["PersNr"].eq("000003")].copy()],
+                         ignore_index=True)
+    baseline.loc[len(baseline) - 1, "Jobfamily"] = "Additional JF"
+    baseline.loc[len(baseline) - 1, "JF-Cluster"] = "Additional Cluster"
+    context["baseline_snapshot"] = baseline
+    context["final_snapshot"] = baseline.copy()
+    start, end = pd.Timestamp("2025-12-31"), pd.Timestamp("2027-12-31")
+    context["metadata"] = {"base_date": start, "target_date": end}
+    people = _prepare_employee_forecast_base(baseline, EMPTY_ATZ, start)
+    params = _params_only_quit(rate_base=0.75)
+    prepared = prepare_quit_batch(people, EMPTY_ATZ, start, end, params)
+    yearly = prepare_quit_yearly(baseline, context["cluster_mapping"]["oe_map"])
+    for seed, records, _, _ in iter_quit_seed_records(prepared, (7, 42, 123)):
+        reference = run_forecast_abgaenge(
+            people, EMPTY_ATZ, start, end, "M", {**params, "random_seed": seed},
+            include_diagnostics=False)["events_person_level"]
+        pd.testing.assert_frame_equal(pd.DataFrame(records), reference, check_exact=True)
+        context["departure_events"] = reference
+        normalized = normalize_simulation_events(context, expected_run_signature="a")
+        summary = {"run_signature": "a", "events": normalized, "metadata": context["metadata"]}
+        actual = quit_annual_event_values(records, yearly)
+        expected = {}
+        for dimension in ("Organisationseinheit", "OE-Cluster", "Jobfamily", "JF-Cluster"):
+            if dimension in ("Organisationseinheit", "OE-Cluster"):
+                table = aggregate_simulation_events(normalized, dimension=dimension)
+            else:
+                table = build_jobfamily_yearly_view(
+                    context, summary, dimension=dimension, include_stock=False)["annual"]
+            for _, row in table.iterrows():
+                expected[(int(row["Jahr"]), dimension, str(row[dimension]))] = (
+                    int(row["Köpfe-Veränderung"]), float(row["MAK-Veränderung"]))
+        assert actual == expected, seed
