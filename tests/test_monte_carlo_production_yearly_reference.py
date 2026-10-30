@@ -30,7 +30,7 @@ REFERENCE = ROOT / "tests" / "fixtures" / "monte_carlo_production_yearly_referen
 TARGET = pd.Timestamp("2026-12-31")
 
 
-def _payload() -> dict:
+def _payload(probe=None) -> dict:
     _freeze_context()
     _reset_state()
     compact = _load_page_module("*_Kompakt.py", "reference_compact")
@@ -57,6 +57,8 @@ def _payload() -> dict:
             df_atz=atz, run_settings={"exclusions": deepcopy(FROZEN_SETTINGS["exclusions"])},
             source_snapshot=snapshot,
         )
+        if probe is not None and label == "no_entries":
+            probe(context)
         summary = build_simulation_event_summary(context, expected_run_signature=f"phase0::{label}")
         bridge = summary["stock_reconciliation"]
         frames = {

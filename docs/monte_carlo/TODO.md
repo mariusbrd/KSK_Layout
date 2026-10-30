@@ -143,6 +143,15 @@ Diese Datei ist der dauerhafte Arbeitsstand des Projekts. Nach **jeder Phase** w
 - Zweiter, unabhängiger Durchlauf: `py -m pytest -q tests/test_monte_carlo_production_yearly_reference.py` → **1 bestanden in 18,42 s**. Der Test scheitert auch bei geänderten lokalen Eingangsdaten, damit ein veralteter produktiver Golden Master nicht stillschweigend als Code-Regression ausgelegt wird. Er ist an die dokumentierte Python-/Pandas-Umgebung und lokalen Daten gebunden.
 - Nächster Schritt: isolierten Voraggregationsprototyp nur hinter einem Test-/Benchmarkpfad erproben und gegen alle produktiven und synthetischen Jahresreferenzen prüfen; vor produktiver Änderung weitere Spezialfälle/mehrjährige Horizonte ergänzen.
 
+### 30.10.2026 – Phase 0: isolierter Voraggregationsprototyp
+
+- `tests/probe_oe_stock_preaggregation.py` vergleicht die bisherigen Kopf-/MAK-Bestandskennzahlen je OE und OE-Cluster mit einer einmaligen Personenaggregation; er verändert oder monkeypatcht keine Produktivfunktion. Der produktive Referenztest kann dafür einen lesenden Probe-Callback aufrufen, sein gespeicherter Golden Master bleibt unverändert.
+- Der naheliegende Kandidat aus verschachtelter `groupby`-Summierung war **nicht bitgleich**: bei 20 OE-Gruppen und drei Clustern im Ausgangsbestand MAK-Differenzen bis etwa `7,1e-15`. Er wurde verworfen. Ursache ist die abweichende Additionsreihenfolge; auch der winzige Betrag verletzt die 1:1-Vorgabe.
+- Der korrigierte Kandidat erhält die Reihenfolge des ersten Auftretens jeder Person je Gruppe, summiert zunächst je Person und danach die Personensummen in dieser Reihenfolge; Gruppen ohne besetzte Stelle bleiben mit `(0, 0.0)` enthalten. Im produktiven Datensatz ergaben sich für Ausgangs-, Projektions- und Endbestand über je 153 OEs und 24 Cluster **0 abweichende Gruppen**, einschließlich exakter MAK-Floatwerte.
+- Ein einzelner Probelauf ergab für die OE-Gruppen je Bestand etwa **1,10–1,35 s** im bisherigen Kennzahlpfad gegenüber **0,013–0,019 s** für den Kandidaten; für Cluster etwa **0,17–0,25 s** gegenüber **0,007–0,012 s**. Diese Mikrozeiten sind keine Beschleunigung der ganzen Seite oder Simulation und noch keine statistisch abgesicherte Messung.
+- **Grenze:** Der Prototyp prüft nur Gruppen-Kopf/MAK, noch nicht die gesamte OE-Jahresüberleitung, `checks`, Diagnosen oder JF-Jahresscheiben unter einer optimierten Implementierung. Vor Integration synthetische Mehrfachplanstellen, fehlende Personalnummern, unterschiedliche Eingabereihenfolgen, mehrjährige Horizonte und alle produktiven Hashreferenzen prüfen. Keine Produktivlogik geändert.
+- Nächster Schritt: den Kandidaten als eng begrenzte alternative Bestandskennzahl in einer isolierten Kopie der OE-Überleitung einsetzen und vollständige `annual`-/`checks`-/JF-Hashes sowie Zeit vergleichen. Erst nach voller Parität wäre ein Produktivpatch vertretbar.
+
 ### Vorlage für spätere Einträge
 
 `Datum – Phase – Änderung/Erkenntnis – Messumgebung und Messwerte – Paritätsnachweis – Entscheidung – offene Risiken – nächster Schritt`
