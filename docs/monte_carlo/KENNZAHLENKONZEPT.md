@@ -12,6 +12,8 @@ Ein kompakter Kennzahlschlüssel lautet `(Jahr/Stichtag, Ebene, Gruppe, Ereignis
 
 **Erster ausführbarer Vertragsstand (`PACKET_VERSION=1`):** `utils/monte_carlo_metric_packet.py` serialisiert Zielwerte (`heads`, `mak`, `eur`), Jahresereignisse aller vier Ebenen als Tupel `(Jahr, Ebene, Gruppe, Kategorie, Ereignisart, Kennzahl, Wert)` und den Bestandsstatus je Ebene. Der Adapter liest gegenwärtig vollständige Referenzoutputs und ist **noch keine schnelle Zusatzlaufberechnung**. Vier Seed-Fixtures sichern Schlüssel- und Wertreihenfolge sowie exakte numerische Werte als Hash. Seed-Paar, Eingabefingerabdruck und Ergebnisversion müssen vor Ensemble-Nutzung in eine äußere Laufhülle aufgenommen werden; sie sind noch nicht Teil dieses Wertpakets.
 
+**Erster schlanker Ableitungspfad:** `utils/monte_carlo_event_packet.py` erzeugt dasselbe Wertpaket aus einem bereits vorliegenden Simulationskontext, ohne OE-/JF-Bestandsüberleitung. Zielwerte und alle Jahresereigniswerte müssen bit-/wertgleich zum vollständigen Lauf sein; `stock_status` lautet bewusst auf allen Ebenen „Nicht berechnet“. Dieser Pfad spart Auswertungsarbeit, **nicht** die Simulation oder die Aufbereitung des finalen Snapshots. Die vollständige Bestandszertifizierung bleibt ein eigener, noch offener Vertrag.
+
 ## 2. Vorläufiger Kennzahlenvertrag
 
 | Bereich | Wert pro Durchgang | Quelle im vollständigen Lauf | Ensemble-Anzeige |

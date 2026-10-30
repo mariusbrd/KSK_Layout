@@ -24,8 +24,8 @@ REFERENCE = ROOT / "tests" / "fixtures" / "monte_carlo_metric_packet.json"
 CASES = (("departures", 7), ("departures", 123), ("combined", 7), ("combined", 123))
 
 
-def _packet(scenario: str, seed: int) -> dict:
-    context = _bridge_context(scenario, seed=seed)
+def _packet(scenario: str, seed: int, *, context=None) -> dict:
+    context = _bridge_context(scenario, seed=seed) if context is None else context
     summary = build_simulation_event_summary(context, expected_run_signature="a")
     views = {level: build_jobfamily_yearly_view(context, summary, dimension=level)
              for level in ("Jobfamily", "JF-Cluster")}

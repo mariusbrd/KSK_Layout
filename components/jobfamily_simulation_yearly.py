@@ -96,7 +96,8 @@ def _allocate_original_events_to_groups(
     return pd.DataFrame(output, columns=events.columns).reset_index(drop=True)
 
 
-def build_jobfamily_yearly_view(context: dict, summary: dict, *, dimension: str) -> dict:
+def build_jobfamily_yearly_view(context: dict, summary: dict, *, dimension: str,
+                                include_stock: bool = True) -> dict:
     """Aggregate saved events; certify departure-only stock slices separately."""
     if dimension not in DIMENSIONS:
         raise ValueError("Ungültige Jobgruppenebene.")
@@ -146,11 +147,13 @@ def build_jobfamily_yearly_view(context: dict, summary: dict, *, dimension: str)
     reported = pd.DataFrame()
     stock_reason = "Bestandsverlauf nur bei ausdrücklich deaktivierten Zugängen verfügbar."
     oe_bridge = summary.get("stock_reconciliation", {})
+    if not include_stock:
+        stock_reason = "Bestandsverlauf im Zusatzlauf nicht berechnet."
     params = context.get("zugaenge_params")
     no_entries = isinstance(params, dict) and all(params.get(k, {}).get("active") is False for k in ("azubi", "trainee", "new_hires"))
-    if no_entries and oe_bridge.get("status") == "Nicht verfügbar":
+    if include_stock and no_entries and oe_bridge.get("status") == "Nicht verfügbar":
         stock_reason = "Bestandsverlauf für diesen Lauf nicht verfügbar: " + str(oe_bridge.get("reason") or "OE-Bestandsüberleitung nicht verfügbar")
-    elif no_entries and (events.empty or events["Ereignisquelle"].eq("departure_events").all()):
+    elif include_stock and no_entries and (events.empty or events["Ereignisquelle"].eq("departure_events").all()):
         if not events.empty and events[dimension].eq(UNASSIGNED).any():
             stock_reason = "Ereignisse ohne eindeutige Jobgruppenzuordnung verhindern den Bestandsabgleich."
         else:
