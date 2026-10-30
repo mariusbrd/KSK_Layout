@@ -206,6 +206,13 @@ Arbeitsentwurf: [Kennzahlenkonzept](KENNZAHLENKONZEPT.md). Er dokumentiert die Q
 - Kritischer Filterbefund: Die bestehenden globalen Personenfilter können kombiniert werden. Einzelne OE- oder JF-Randsummen reichen nicht, um deren Schnittmenge je Lauf exakt nachzubilden. Ensemble-Bänder für solche Kombinationen benötigen eine feinere gemeinsame Laufbasis oder exakte Neuberechnung; der erste Prototyp begrenzt die Ensemble-Auswahl deshalb auf ungefilterte Gesamtwerte und explizite Jahresgruppen.
 - Nächster Schritt: anhand des Konzepts ein kleines maschinenprüfbares Zusatzlauf-Kennzahlenpaket definieren, zunächst für einen Seed und die vier Jahresereignisebenen. Vor breiter UI-Integration die offenen Punkte zu Banddefinition, Seed-Plan, Filterumfang und nicht zertifizierten Läufen entscheiden.
 
+### 30.10.2026 – Phase 1: kompaktes Kennzahlenpaket v1 eingefroren
+
+- `utils/monte_carlo_metric_packet.py` definiert einen reinen Wertadapter mit Ziel-Köpfen/MAK/EUR, den vier OE-/JF-Jahresereignisebenen und Bestandsstatus je Ebene. Jede Ereigniszeile wird als `(Jahr, Ebene, Gruppe, Kategorie, Ereignisart, Kennzahl, Wert)` gespeichert; doppelte oder nicht endliche Schlüssel/Werte werden abgelehnt. Das Paket enthält keine Personenzeilen oder Anzeige-DataFrames.
+- Vier vollständige synthetische Referenzläufe (`departures` und `combined`, Seeds 7 und 123) als Hash-Fixture gesichert. Umfang: 32 bis 200 einzelne Jahreskennzahlenwerte je Lauf. Unabhängiger Prüflauf zusammen mit den bisherigen Seed-Golden-Masters: **8 Tests bestanden**.
+- Wichtiger Statusbefund: Schon der synthetische Fall `departures:7` liefert OE-Status „Abweichung“ und keine JF-Bestandskurve; `departures:123` ist abgestimmt und hat JF-Bestand. Die Bestandsband-Verfügbarkeit ist somit **seedabhängig** und darf nicht aus dem Referenzlauf allein abgeleitet werden.
+- Der Adapter liest noch vollständige Lauf- und Ansichtsoutputs. Er beweist die Struktur und exakten Zielwerte, **keine** Beschleunigung. Nächster Schritt: dieselben Paketwerte für Zusatzseeds mit einem schrittweise schlankeren Pfad erzeugen und pro Seed gegen den eingefrorenen vollständigen Referenzlauf vergleichen. Seed-/Metadatenhülle und Filterumfang bleiben offene Vertragsbestandteile.
+
 ### Vorlage für spätere Einträge
 
 `Datum – Phase – Änderung/Erkenntnis – Messumgebung und Messwerte – Paritätsnachweis – Entscheidung – offene Risiken – nächster Schritt`

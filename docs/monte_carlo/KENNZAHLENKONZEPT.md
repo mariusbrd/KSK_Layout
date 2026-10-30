@@ -10,6 +10,8 @@ Pipeline: unveränderliche Eingaben vorbereiten → Referenzlauf vollständig be
 
 Ein kompakter Kennzahlschlüssel lautet `(Jahr/Stichtag, Ebene, Gruppe, Ereigniskategorie, Ereignisart, Kennzahl)`. Nicht benötigte Teile werden ausdrücklich als „Gesamt“ beziehungsweise „Alle“ codiert. Gespeichert werden pro Durchgang Seed-Paar, Ergebnisversion, Laufstatus, ein Wertarray pro definierter Schlüsselmenge und Prüfstatus. Die konkrete Binär-/Tabellenrepräsentation wird nach dem Prototyp gewählt; 10.000 vollständige Snapshots bleiben ausgeschlossen.
 
+**Erster ausführbarer Vertragsstand (`PACKET_VERSION=1`):** `utils/monte_carlo_metric_packet.py` serialisiert Zielwerte (`heads`, `mak`, `eur`), Jahresereignisse aller vier Ebenen als Tupel `(Jahr, Ebene, Gruppe, Kategorie, Ereignisart, Kennzahl, Wert)` und den Bestandsstatus je Ebene. Der Adapter liest gegenwärtig vollständige Referenzoutputs und ist **noch keine schnelle Zusatzlaufberechnung**. Vier Seed-Fixtures sichern Schlüssel- und Wertreihenfolge sowie exakte numerische Werte als Hash. Seed-Paar, Eingabefingerabdruck und Ergebnisversion müssen vor Ensemble-Nutzung in eine äußere Laufhülle aufgenommen werden; sie sind noch nicht Teil dieses Wertpakets.
+
 ## 2. Vorläufiger Kennzahlenvertrag
 
 | Bereich | Wert pro Durchgang | Quelle im vollständigen Lauf | Ensemble-Anzeige |

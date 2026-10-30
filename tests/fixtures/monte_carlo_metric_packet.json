@@ -1,0 +1,66 @@
+{
+  "description": "Compact annual-value packet hashes from complete seeded synthetic runs; no employee rows.",
+  "packet_version": 1,
+  "cases": {
+    "departures:7": {
+      "sha256": "b86374fb1fba593f3e23f92d896d0de473e0708fcc2fd19731349d5877691bfd",
+      "annual_values": 56,
+      "target": {
+        "heads": 1,
+        "mak": 1.0,
+        "eur": 60427.2
+      },
+      "stock_status": {
+        "Organisationseinheit": "Abweichung",
+        "OE-Cluster": "Abweichung",
+        "Jobfamily": "Nicht verfügbar",
+        "JF-Cluster": "Nicht verfügbar"
+      }
+    },
+    "departures:123": {
+      "sha256": "2a8fe6aa8673d04e8dfe406bf1c43a654037fbd865352b9cb6de1d2ebb85ac7e",
+      "annual_values": 32,
+      "target": {
+        "heads": 4,
+        "mak": 3.0,
+        "eur": 219465.59999999998
+      },
+      "stock_status": {
+        "Organisationseinheit": "Abgestimmt",
+        "OE-Cluster": "Abgestimmt",
+        "Jobfamily": "Verfügbar",
+        "JF-Cluster": "Verfügbar"
+      }
+    },
+    "combined:7": {
+      "sha256": "37be8f5ec764a5c07b20fcc42ea4fe2bf0a8850af48487589f8fab173e68b370",
+      "annual_values": 200,
+      "target": {
+        "heads": 11,
+        "mak": 2.0,
+        "eur": 129671.62499999999
+      },
+      "stock_status": {
+        "Organisationseinheit": "Nicht verfügbar",
+        "OE-Cluster": "Nicht verfügbar",
+        "Jobfamily": "Nicht verfügbar",
+        "JF-Cluster": "Nicht verfügbar"
+      }
+    },
+    "combined:123": {
+      "sha256": "bc0e332d5a67e25fda34013c412a3077fbc0f8ad5a25ab20efdf2feafc4ca6a2",
+      "annual_values": 144,
+      "target": {
+        "heads": 13,
+        "mak": 4.0,
+        "eur": 250526.02499999997
+      },
+      "stock_status": {
+        "Organisationseinheit": "Nicht verfügbar",
+        "OE-Cluster": "Nicht verfügbar",
+        "Jobfamily": "Nicht verfügbar",
+        "JF-Cluster": "Nicht verfügbar"
+      }
+    }
+  }
+}
