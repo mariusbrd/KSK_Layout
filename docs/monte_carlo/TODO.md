@@ -167,6 +167,12 @@ Diese Datei ist der dauerhafte Arbeitsstand des Projekts. Nach **jeder Phase** w
 - Ein weiterer einzelner Produktivlauf ergab für die OE-Bridge **9,47 s Standard gegenüber 2,00 s Kandidat**. Die absolute Zeit schwankt deutlich gegenüber dem vorigen Lauf (5,64/1,46 s); das Verhältnis ist ein Hinweis, kein abgesicherter Speedup. Gesamtseitenzeit und wiederholte Kalt-/Warmläufe bleiben offen.
 - Der normale Dashboardpfad verwendet die Voraggregation weiterhin nicht. Vor Umschaltung fehlen insbesondere weitere produktive Parameter-/Seedkombinationen und ein reproduzierbares Vollpfad-Benchmarkprotokoll; die aktuellen Golden Masters müssen unverändert bleiben.
 
+### 30.10.2026 – Phase 0: wiederholte OE-Bridge-Messung
+
+- `tests/benchmark_oe_bridge_repeated.py` lädt und simuliert den eingefrorenen lokalen Datensatz einmal, normalisiert die Ereignisse und misst dann drei Standard-/Voraggregationspaare mit wechselnder Reihenfolge. Jede Bridge-Ausgabe wird über alle Tabellenhashes und Statusfelder sowohl zwischen den Wiederholungen als auch zwischen beiden Pfaden exakt verglichen.
+- Laufzeiten der **isolierten OE-Bestandsüberleitung** in Sekunden: Standard `[10,2109; 7,6487; 7,1526]`, Voraggregation `[3,1097; 2,6873; 2,1600]`; Mediane **7,6487 s** und **2,6873 s** (etwa Faktor 2,85). In jedem Paar volle Ergebnisparität. Beide Reihen zeigen einen Warm-/Systemeffekt; Messung ist lokal und enthält weder Simulation noch JF-Aufbau noch Streamlit-Rendering.
+- Die bisherige Aussage „etwa vier Sekunden Einsparung“ ist für diese Messung plausibel, aber die Gesamtseitenwirkung ist weiter offen. Vor einer Standardpfad-Änderung vollständigen CompactPlus-Ergebnisaufbau mit und ohne Voraggregation messen und zusätzliche produktive Seeds/Parameter prüfen. Das 10.000-in-20-s-Ziel bleibt dadurch unberührt: selbst 2,7 s je Bridge wären für Zusatzläufe viel zu teuer; der Zusatzlauf braucht einen separaten schlanken Kennzahlpfad.
+
 ### Vorlage für spätere Einträge
 
 `Datum – Phase – Änderung/Erkenntnis – Messumgebung und Messwerte – Paritätsnachweis – Entscheidung – offene Risiken – nächster Schritt`
