@@ -221,6 +221,14 @@ Arbeitsentwurf: [Kennzahlenkonzept](KENNZAHLENKONZEPT.md). Er dokumentiert die Q
 - **Leistungsbefund:** Selbst der schlanke Ereignispfad benötigt bei diesem kleinen synthetischen Datensatz noch rund 120–160 ms je Lauf. Bei 10.000 Läufen wären das isoliert ungefähr 20–27 Minuten, weit über dem 20-s-Gesamtziel. Das heutige Pandas-/Personen-Zuordnungsverfahren kann deshalb nicht einfach 10.000-mal wiederholt werden; nachgewiesen werden muss ein gebündelter oder kompakter Rechenkern bei exakt gleichen Jahreswerten.
 - Nächster Schritt: Kosten des Ereignispfads in Normalisierung, OE-Gruppierung, JF-Zuordnung und Paketserialisierung aufteilen; einen vorbereiteten, mehrfach verwendbaren Zuordnungskontext entwerfen. Zusätzlich die eigentliche Abgangs-/Zugangs-Simulation pro Seed weiter profilieren. Der Referenzlauf bleibt unangetastet.
 
+### 30.10.2026 – Phase 2: Ereignispfad zerlegt und JF-Basis vorbereitet
+
+- Stufenmessung an vier synthetischen Zusatzseed-Fällen: Ereignisnormalisierung ca. **8–36 ms**, beide OE-Gruppierungen zusammen ca. **4–12 ms**, JF- und JF-Cluster-Jahresansicht zusammen ca. **45–105 ms**, Paketaufbau ca. **1–3 ms**. Die beiden JF-Zuordnungen sind der größte Auswertungsanteil; absolute Zeiten schwanken zwischen Läufen.
+- `prepare_jobfamily_baseline` berechnet eindeutige ursprüngliche Jobgruppen-Zuordnungen und Mehrfachplanstellen-Gewichte **einmal pro Ausgangsbestand**. Der optionale `baseline_cache` wird nur im Zusatzpfad übergeben; die Standardaufrufe der JF-Ansicht bleiben unverändert. Finale Personen-/JF-Zuordnungen werden weiterhin je Seed berechnet.
+- Für alle vier Seed-Fälle sind vorbereitetes und unvorbereitetes Ereignispaket exakt gleich und beide entsprechen den vollständigen Jahresereignissen. Eine Vorbereitung aus Seed 7 wurde bei Seed 123 wiederverwendet und lieferte dieselben Werte. Einschließlich bestehender JF- und OE-Jahresreferenzen: **24 Tests bestanden**.
+- Einzelmessung nach bereits erfolgter Simulation, Vorbereitungszeit nicht enthalten: unvorbereitet **0,097 / 0,117 / 0,119 / 0,114 s**, vorbereitet **0,067 / 0,087 / 0,097 / 0,091 s** für `departures:7`, `departures:123`, `combined:7`, `combined:123`. Die Ersparnis von etwa 20–30 ms pro Lauf ist relevant, aber selbst der vorbereitete Pfad überschreitet das 2-ms-Gesamtbudget um ein Vielfaches. Weitere Optimierung der JF-Zuordnung und der eigentlichen Simulation ist zwingend.
+- Nächster Schritt: vorbereiteten Kontext mit Eingabe-/Clusterfingerabdruck absichern; JF-Jahresereignisse in einem kompakteren, möglichst gebündelten Mehrseed-Pfad prototypisieren. Vorher die Kosten der Abgangs-/Zugangslogik für wechselnde Seeds getrennt messen, damit sich das Restbudget realistisch verteilt.
+
 ### Vorlage für spätere Einträge
 
 `Datum – Phase – Änderung/Erkenntnis – Messumgebung und Messwerte – Paritätsnachweis – Entscheidung – offene Risiken – nächster Schritt`

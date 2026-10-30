@@ -43,7 +43,7 @@ def _baseline_assignments(baseline: pd.DataFrame, dimension: str) -> dict[str, s
 
 
 def _allocate_original_events_to_groups(
-    events: pd.DataFrame, baseline: pd.DataFrame, dimension: str,
+    events: pd.DataFrame, baseline: pd.DataFrame, dimension: str, *, members=None,
 ) -> pd.DataFrame:
     """Split a person's capacity event across their original position groups.
 
@@ -52,6 +52,29 @@ def _allocate_original_events_to_groups(
     """
     if events.empty or "persnr" not in events:
         return events.copy()
+    members = _original_group_members(baseline, dimension) if members is None else members
+    if not members:
+        return events.copy()
+    output = []
+    persons = normalize_persnr(events["persnr"])
+    for index, event in events.iterrows():
+        person = persons.loc[index]
+        origin = event.get("Ereignisquelle") == "departure_events" or event.get("Ereignisart") == "Azubi_Conversion_Out"
+        groups = members.get(person) if origin else None
+        if not groups:
+            output.append(event.copy())
+            continue
+        for group, ratio in groups:
+            row = event.copy()
+            row[dimension] = group
+            row["MAK-Veränderung"] = float(event["MAK-Veränderung"]) * ratio
+            # One employee disappears from each group they occupied. These
+            # group headcounts must not be summed as company headcounts.
+            output.append(row)
+    return pd.DataFrame(output, columns=events.columns).reset_index(drop=True)
+
+
+def _original_group_members(baseline: pd.DataFrame, dimension: str) -> dict:
     occupied = baseline.loc[
         ~baseline.get("Is_Vacant", pd.Series(False, index=baseline.index)).fillna(False).astype(bool)
     ].copy()
@@ -75,29 +98,18 @@ def _allocate_original_events_to_groups(
             weights = part["rows"].astype(float)
         members[person] = [(str(group), float(value / weights.sum()))
                            for (_, group), value in weights.items()]
-    if not members:
-        return events.copy()
-    output = []
-    persons = normalize_persnr(events["persnr"])
-    for index, event in events.iterrows():
-        person = persons.loc[index]
-        origin = event.get("Ereignisquelle") == "departure_events" or event.get("Ereignisart") == "Azubi_Conversion_Out"
-        groups = members.get(person) if origin else None
-        if not groups:
-            output.append(event.copy())
-            continue
-        for group, ratio in groups:
-            row = event.copy()
-            row[dimension] = group
-            row["MAK-Veränderung"] = float(event["MAK-Veränderung"]) * ratio
-            # One employee disappears from each group they occupied. These
-            # group headcounts must not be summed as company headcounts.
-            output.append(row)
-    return pd.DataFrame(output, columns=events.columns).reset_index(drop=True)
+    return members
+
+
+def prepare_jobfamily_baseline(baseline: pd.DataFrame) -> dict:
+    """Prepare only assignments that cannot change between ensemble seeds."""
+    return {dimension: {"assignments": _baseline_assignments(baseline, dimension),
+                        "members": _original_group_members(baseline, dimension)}
+            for dimension in DIMENSIONS}
 
 
 def build_jobfamily_yearly_view(context: dict, summary: dict, *, dimension: str,
-                                include_stock: bool = True) -> dict:
+                                include_stock: bool = True, baseline_cache: dict | None = None) -> dict:
     """Aggregate saved events; certify departure-only stock slices separately."""
     if dimension not in DIMENSIONS:
         raise ValueError("Ungültige Jobgruppenebene.")
@@ -107,7 +119,9 @@ def build_jobfamily_yearly_view(context: dict, summary: dict, *, dimension: str,
     baseline, final = context.get("baseline_snapshot"), context.get("final_snapshot")
     if baseline is None or final is None:
         raise ValueError("Gespeicherter Ausgangs- oder Zielbestand fehlt.")
-    assignments = _baseline_assignments(baseline, dimension)
+    cached = baseline_cache.get(dimension) if baseline_cache is not None else None
+    assignments = cached["assignments"] if cached is not None else _baseline_assignments(baseline, dimension)
+    members = cached["members"] if cached is not None else None
     final_assignments = _baseline_assignments(final, dimension)
     events = summary["events"].copy(deep=True)
     if not events.empty:
@@ -135,7 +149,7 @@ def build_jobfamily_yearly_view(context: dict, summary: dict, *, dimension: str,
             source = source.where(~missing, events["Jobfamily"].map(name_map).astype("string"))
         events[dimension] = source.fillna(UNASSIGNED).replace("", UNASSIGNED)
         person_events = events.copy(deep=True)
-        events = _allocate_original_events_to_groups(person_events, baseline, dimension)
+        events = _allocate_original_events_to_groups(person_events, baseline, dimension, members=members)
         events["Zuordnung_geklärt"] = events[dimension].ne(UNASSIGNED)
         annual = events.groupby(["Jahr", dimension, "Kategorie", "Ereignisart"], dropna=False)[list(METRICS)].sum().reset_index()
     else:

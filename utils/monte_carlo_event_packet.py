@@ -12,7 +12,8 @@ from utils.monte_carlo_metric_packet import LEVELS, make_metric_packet
 from utils.org_simulation_events import aggregate_simulation_events, normalize_simulation_events
 
 
-def build_event_only_packet(context: dict, *, target_totals: Mapping[str, int | float]) -> dict:
+def build_event_only_packet(context: dict, *, target_totals: Mapping[str, int | float],
+                            baseline_cache: dict | None = None) -> dict:
     signature = context.get("run_signature")
     events = normalize_simulation_events(context, expected_run_signature=signature)
     annual = {
@@ -23,6 +24,7 @@ def build_event_only_packet(context: dict, *, target_totals: Mapping[str, int | 
                        "metadata": context["metadata"]}
     for level in ("Jobfamily", "JF-Cluster"):
         annual[level] = build_jobfamily_yearly_view(
-            context, minimal_summary, dimension=level, include_stock=False)["annual"]
+            context, minimal_summary, dimension=level, include_stock=False,
+            baseline_cache=baseline_cache)["annual"]
     return make_metric_packet(target_totals=target_totals, annual_tables=annual,
                               stock_status={level: "Nicht berechnet" for level in LEVELS})
