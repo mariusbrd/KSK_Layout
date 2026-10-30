@@ -59,12 +59,46 @@ def test_quit_batch_matches_reference_event_order_and_final_state(matrix: bool, 
                                        for m, a in zip(prepared.mak, expected_active)]
 
 
-def test_quit_batch_rejects_other_components() -> None:
+def test_quit_batch_accepts_new_atz_cases() -> None:
     params = _params_only_quit()
     params["components"]["atz"] = True
-    with pytest.raises(ValueError, match="ATZ off"):
-        prepare_quit_batch(pd.DataFrame([_make_employee("101")]), EMPTY_ATZ,
-                           pd.Timestamp("2026-01-01"), pd.Timestamp("2026-12-31"), params)
+    prepare_quit_batch(pd.DataFrame([_make_employee("101")]), EMPTY_ATZ,
+                       pd.Timestamp("2026-01-01"), pd.Timestamp("2026-12-31"), params)
+
+
+@pytest.mark.parametrize("combined", [False, True])
+@pytest.mark.parametrize("matrix", [False, True])
+def test_new_atz_cases_match_reference(combined: bool, matrix: bool) -> None:
+    people = pd.DataFrame([
+        _make_employee(str(101 + i), age_years=55 + i % 7, mak=0.5 + i / 30,
+                       org=f"OE-{i % 3}", jobfamily=f"JF-{i % 2}")
+        for i in range(18)
+    ])
+    params = _params_only_quit(rate_base=0.15)
+    params["components"].update(atz=True, retirement=combined, quit=combined,
+                                 ruhend=combined)
+    params["atz"] = {"new_atz_rate": 3.0, "use_atz_matrix": matrix,
+                     "atz_dimension": "OrgUnit",
+                     "atz_matrix": {"OE-0": 4.0, "OE-1": 0.0, "Default": 2.0},
+                     "atz_eligible_age_min": 55, "atz_eligible_age_max": 60,
+                     "atz_duration_ar_years": 0.25, "atz_duration_fr_years": 0.25}
+    if combined:
+        params["retirement"] = {"retirement_age": 65, "early_retirement_age": 60,
+                                "rent_rate_65": 0.8, "rent_rate_60_65": 0.2}
+        params["ruhend"] = {"ruhend_new_cases_per_year": 3,
+                            "ruhend_return_rate": 1.0,
+                            "ruhend_avg_duration_months": 3}
+    start, end = pd.Timestamp("2026-01-01"), pd.Timestamp("2028-12-31")
+    prepared = prepare_quit_batch(people, EMPTY_ATZ, start, end, params)
+    for seed, records, active, mak in iter_quit_seed_records(prepared, (7, 42, 123)):
+        reference = run_forecast_abgaenge(
+            people, EMPTY_ATZ, start, end, "M", {**params, "random_seed": seed},
+            include_diagnostics=False)["events_person_level"]
+        pd.testing.assert_frame_equal(pd.DataFrame(records), reference, check_exact=True)
+        assert reference["reason_code"].eq("ATZ_AR_TO_FR").any()
+        assert reference["reason_code"].eq("ATZ_END").any()
+        departed = set(reference.loc[reference["headcount_change"].eq(-1), "persnr"])
+        assert active.tolist() == [person not in departed for person in prepared.ids]
 
 
 def test_quit_batch_matches_empty_event_schema() -> None:
@@ -237,6 +271,102 @@ def test_ruhend_stream_four_yearly_levels_match_reference() -> None:
     for seed, records, _, _ in iter_quit_seed_records(prepared, (7, 42, 123)):
         reference = run_forecast_abgaenge(
             people, EMPTY_ATZ, start, end, "M", {**params, "random_seed": seed},
+            include_diagnostics=False)["events_person_level"]
+        pd.testing.assert_frame_equal(pd.DataFrame(records), reference, check_exact=True)
+        context["departure_events"] = reference
+        normalized = normalize_simulation_events(context, expected_run_signature="a")
+        summary = {"run_signature": "a", "events": normalized, "metadata": context["metadata"]}
+        expected = {}
+        for dimension in ("Organisationseinheit", "OE-Cluster", "Jobfamily", "JF-Cluster"):
+            table = (aggregate_simulation_events(normalized, dimension=dimension)
+                     if dimension in ("Organisationseinheit", "OE-Cluster")
+                     else build_jobfamily_yearly_view(
+                         context, summary, dimension=dimension, include_stock=False)["annual"])
+            for _, row in table.iterrows():
+                expected[(int(row["Jahr"]), dimension, str(row[dimension]),
+                          str(row["Ereignisart"]))] = (
+                    int(row["Köpfe-Veränderung"]), float(row["MAK-Veränderung"]))
+        assert departure_annual_event_values(records, yearly) == expected
+
+
+@pytest.mark.parametrize("combined", [False, True])
+def test_existing_atz_schedule_matches_reference(combined: bool) -> None:
+    people = pd.DataFrame([
+        _make_employee("101", age_years=58, mak=0.75),
+        _make_employee("102", age_years=66, mak=0.8),
+        _make_employee("103", age_years=42, mak=0.6),
+        _make_employee("104", age_years=35, mak=0.9,
+                       status="Ruhendes Beschäftigungsverhältnis"),
+    ])
+    atz = pd.DataFrame([
+        {"PersNr": "101", "Phase": "AR", "Beginn": pd.Timestamp("2024-01-01"),
+         "Ende": pd.Timestamp("2026-06-30"),
+         "Ende ATZ Vertrag": pd.Timestamp("2027-07-01")},
+        {"PersNr": "101", "Phase": "FR", "Beginn": pd.Timestamp("2026-07-01"),
+         "Ende": pd.Timestamp("2027-06-30"),
+         "Ende ATZ Vertrag": pd.Timestamp("2027-07-01")},
+    ])
+    params = _params_only_quit(rate_base=0.2)
+    params["components"].update(atz=True, retirement=combined, quit=combined,
+                                 ruhend=combined)
+    params["atz"] = {"new_atz_rate": 0.0, "use_atz_matrix": False,
+                     "atz_duration_ar_years": 2.5, "atz_duration_fr_years": 2.5}
+    if combined:
+        params["retirement"] = {"retirement_age": 65, "early_retirement_age": 60,
+                                "rent_rate_65": 1.0, "rent_rate_60_65": 0.0}
+        params["ruhend"] = {"ruhend_new_cases_per_year": 2,
+                            "ruhend_return_rate": 1.0,
+                            "ruhend_avg_duration_months": 3}
+    start, end = pd.Timestamp("2026-01-01"), pd.Timestamp("2027-12-31")
+    prepared = prepare_quit_batch(people, atz, start, end, params)
+    for seed, records, active, mak in iter_quit_seed_records(prepared, (7, 42, 123)):
+        reference = run_forecast_abgaenge(
+            people, atz, start, end, "M", {**params, "random_seed": seed},
+            include_diagnostics=False)["events_person_level"]
+        pd.testing.assert_frame_equal(pd.DataFrame(records), reference, check_exact=True)
+        assert set(reference.loc[reference["reason_code"].eq("ATZ_AR_TO_FR"), "persnr"]) == {"000101"}
+        assert set(reference.loc[reference["reason_code"].eq("ATZ_END"), "persnr"]) == {"000101"}
+        departed = set(reference.loc[reference["headcount_change"].eq(-1), "persnr"])
+        assert active.tolist() == [person not in departed for person in prepared.ids]
+        expected_mak = prepared.mak.copy()
+        positions = {person: index for index, person in enumerate(prepared.ids)}
+        for event in reference.itertuples():
+            pos = positions[event.persnr]
+            if event.reason_code in ("ATZ_AR_TO_FR", "ATZ_END", "RETIREMENT", "QUIT", "RUHEND_START"):
+                expected_mak[pos] = 0.0
+            elif event.reason_code == "RUHEND_RETURN":
+                expected_mak[pos] = event.mak_change
+        assert mak.tolist() == expected_mak.tolist()
+
+
+def test_existing_atz_four_yearly_levels_match_reference() -> None:
+    from components.jobfamily_simulation_yearly import build_jobfamily_yearly_view
+    from dataloader.compact_simulation_engine import _prepare_employee_forecast_base
+    from test_org_simulation_reconciliation import _bridge_context
+    from utils.org_simulation_events import aggregate_simulation_events, normalize_simulation_events
+
+    context = _bridge_context("identity")
+    baseline = context["baseline_snapshot"]
+    start, end = pd.Timestamp("2025-12-31"), pd.Timestamp("2028-12-31")
+    context["metadata"] = {"base_date": start, "target_date": end}
+    atz = pd.DataFrame([
+        {"PersNr": "000002", "Phase": "AR", "Beginn": pd.Timestamp("2024-01-01"),
+         "Ende": pd.Timestamp("2026-06-30"), "Ende ATZ Vertrag": pd.Timestamp("2027-07-01")},
+        {"PersNr": "000002", "Phase": "FR", "Beginn": pd.Timestamp("2026-07-01"),
+         "Ende": pd.Timestamp("2027-06-30"), "Ende ATZ Vertrag": pd.Timestamp("2027-07-01")},
+    ])
+    people = _prepare_employee_forecast_base(baseline, atz, start)
+    params = _params_only_quit(rate_base=0.1)
+    params["components"].update(atz=True, retirement=True)
+    params["atz"] = {"new_atz_rate": 0.0, "use_atz_matrix": False,
+                     "atz_duration_ar_years": 2.5, "atz_duration_fr_years": 2.5}
+    params["retirement"] = {"retirement_age": 65, "early_retirement_age": 60,
+                            "rent_rate_65": 0.8, "rent_rate_60_65": 0.2}
+    prepared = prepare_quit_batch(people, atz, start, end, params)
+    yearly = prepare_quit_yearly(baseline, context["cluster_mapping"]["oe_map"])
+    for seed, records, _, _ in iter_quit_seed_records(prepared, (7, 42, 123)):
+        reference = run_forecast_abgaenge(
+            people, atz, start, end, "M", {**params, "random_seed": seed},
             include_diagnostics=False)["events_person_level"]
         pd.testing.assert_frame_equal(pd.DataFrame(records), reference, check_exact=True)
         context["departure_events"] = reference

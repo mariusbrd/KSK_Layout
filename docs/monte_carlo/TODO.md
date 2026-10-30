@@ -307,4 +307,12 @@ Arbeitsentwurf: [Kennzahlenkonzept](KENNZAHLENKONZEPT.md). Er dokumentiert die Q
 
 ### Vorlage für spätere Einträge
 
+### 30.10.2026 – Phase 2: bestehende und neue ATZ-Fälle im isolierten Mehrseed-Kern
+
+- Der isolierte Abgangskern verarbeitet nun bestehende ATZ-Verträge und neu ausgeloste ATZ-Fälle. Die periodische Reihenfolge entspricht dem Referenzforecast: ATZ-Auslosung, AR/FR-Wechsel und Vertragsende, Ruhestand, Kündigung, Ruhend-Rückkehr und neue Ruhend-Fälle. Der ATZ-Zufallsstrom bleibt `SeedSequence(seed).spawn(5)[0]`; Poisson-Ziehung, gewichtete Auswahl und Startdatum-Ziehungen erfolgen in derselben Reihenfolge. Neue ATZ-Fälle verlassen ab Vergabe die Kandidatenmengen der nachfolgenden Komponenten.
+- Bestehende ATZ-Termine werden einmal vorbereitet; neue Termine werden nur im Zustand des jeweiligen Seeds ergänzt. Alter, Zugehörigkeit, ATZ-Quoten und die Ausschluss-OE werden vorab berechnet. Der Standardforecast und das Dashboard verwenden diesen Prototyp weiterhin nicht.
+- **22 gezielte Tests bestanden**: bestehende ATZ-Verträge, neue Fälle mit Basisquote oder OE-Matrix (einschließlich Nullquote), jeweils allein und kombiniert mit Ruhestand/Kündigung/Ruhend. Geordnete Ereignis-DataFrames sind inklusive Spalten, Datentypen und Floatwerten exakt gleich. Für bestehende ATZ-Fälle sind zudem Aktiv-/MAK-Endzustand und vier OE-/JF-Jahresereignisebenen gegen die bestehenden Ansichten geprüft.
+- Produktiver Probe-Lauf auf eingefrorenem Datensatz, Seeds 42/7/123/999, neue ATZ-Fälle mit Quote 0,5 sowie Ruhestand/Kündigung/Ruhend: exakte Ereignis-Hashes, Endzustände und vier Jahresereignisebenen. Vorbereitung **0,212 s**, vier Prototyp-Läufe **0,035 s**, vier Referenzläufe samt Vergleichen **2,131 s**. Isolierter 1.000-Seed-Stream mit vierstufigen Jahresereignissen **6,061 s**; Materialisierung derselben 1.000 Seed-Ergebnisse **7,061 s**. Einzelmessung, keine SLA.
+- **Konsequenz:** Bei diesem Lastfall wäre bereits eine lineare Hochrechnung des isolierten Streams auf 10.000 Seeds etwa 61 s. Das 20-s-Ziel für die vollständige Simulation ist damit noch nicht erfüllt. Der nächste Schritt ist Profiling und Reduktion der ATZ-Termin- und Jahresaggregationskosten, anschließend Zugänge und die vollständigen OE-/JF-Bestandsjahre samt Prüfstatus. Eine Dashboard-Integration darf erst nach deren Paritätsnachweis erfolgen.
+
 `Datum – Phase – Änderung/Erkenntnis – Messumgebung und Messwerte – Paritätsnachweis – Entscheidung – offene Risiken – nächster Schritt`

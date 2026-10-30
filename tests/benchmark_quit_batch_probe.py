@@ -52,14 +52,19 @@ def main() -> None:
     params = default_params()
     with_retirement = "--retirement" in sys.argv
     with_ruhend = "--ruhend" in sys.argv
-    params["components"] = {"atz": False, "retirement": with_retirement,
+    with_atz_new = "--atz-new" in sys.argv
+    with_atz = "--atz-existing" in sys.argv or with_atz_new
+    params["components"] = {"atz": with_atz, "retirement": with_retirement,
                             "quit": True, "ruhend": with_ruhend}
+    if with_atz:
+        params["atz"].update(new_atz_rate=0.5 if with_atz_new else 0.0,
+                             use_atz_matrix=False)
     if with_ruhend:
         params["ruhend"].update(ruhend_new_cases_per_year=8,
                                 ruhend_return_rate=0.95,
                                 ruhend_avg_duration_months=3)
     def annual_values(records):
-        return (departure_annual_event_values(records, yearly) if with_retirement or with_ruhend
+        return (departure_annual_event_values(records, yearly) if with_retirement or with_ruhend or with_atz
                 else quit_annual_event_values(records, yearly))
     target = pd.Timestamp("2026-12-31")
     seeds = (42, 7, 123, 999)
@@ -99,7 +104,7 @@ def main() -> None:
                          context, summary, dimension=dimension, include_stock=False)["annual"])
             for _, row in table.iterrows():
                 key = (int(row["Jahr"]), dimension, str(row[dimension]))
-                if with_retirement or with_ruhend:
+                if with_retirement or with_ruhend or with_atz:
                     key = (*key, str(row["Ereignisart"]))
                 expected[key] = (
                     int(row["Köpfe-Veränderung"]), float(row["MAK-Veränderung"]))
@@ -111,7 +116,7 @@ def main() -> None:
         person_positions = {person: index for index, person in enumerate(prepared.ids)}
         for event in reference.itertuples():
             position = person_positions[event.persnr]
-            if event.reason_code in ("RETIREMENT", "QUIT", "RUHEND_START"):
+            if event.reason_code in ("ATZ_AR_TO_FR", "ATZ_END", "RETIREMENT", "QUIT", "RUHEND_START"):
                 expected_mak[position] = 0.0
             elif event.reason_code == "RUHEND_RETURN":
                 expected_mak[position] = event.mak_change
@@ -125,7 +130,8 @@ def main() -> None:
                 expected_status[position] = False
         assert batch[seed].status_ruhend.tolist() == expected_status.tolist(), seed
     reference_seconds = perf_counter() - start
-    print(f"retirement={with_retirement}; ruhend={with_ruhend}; seeds={len(seeds)}; "
+    print(f"atz_existing={with_atz}; atz_new={with_atz_new}; retirement={with_retirement}; ruhend={with_ruhend}; "
+          f"seeds={len(seeds)}; "
           f"preparation={prepare_seconds:.4f}s; "
           f"batch={batch_seconds:.4f}s; reference={reference_seconds:.4f}s; "
           "exact event, state, four-level annual-event parity=True")
