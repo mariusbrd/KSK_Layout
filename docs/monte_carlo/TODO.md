@@ -160,6 +160,13 @@ Diese Datei ist der dauerhafte Arbeitsstand des Projekts. Nach **jeder Phase** w
 - Das ist ein belastbarer lokaler Paritätsnachweis für diese Szenarien, aber noch keine Freigabe zur standardmäßigen Nutzung: Mehrjahresläufe, andere Datenreihenfolgen und Randfälle der Personen-/Planstellen-ID fehlen; JF-Jahresscheiben wurden im Probe-Pfad nur mittelbar über den unveränderten Standard-Golden-Master geprüft. Wiederholte, getrennte Laufzeitmessungen stehen aus.
 - Nächster Schritt: zusätzliche Randfall- und Mehrjahres-Golden-Masters erzeugen, JF-Jahresansichten bei explizitem Probe-Bridge-Ergebnis direkt vergleichen und den 4-s-Effekt in wiederholten Vollpfadmessungen bestätigen. Danach entscheiden, ob die Voraggregation den Standardpfad ersetzen darf.
 
+### 30.10.2026 – Phase 0: JF-Direktvergleich und Mehrjahresprüfung
+
+- Das optionale OE-Bridge-Ergebnis wird nun ausdrücklich in die **Jobfamily- und JF-Cluster-Jahresansicht** eingespeist und Feld für Feld mit den Ansichten des Standard-Bridge-Ergebnisses verglichen. Im lokalen Produktivlauf: **0 unterschiedliche Felder** in beiden Ansichten; OE-Bridge-Tabellen, Status und Begründung ebenfalls weiterhin hashgleich.
+- Die sieben vorhandenen synthetischen Referenzszenarien enthalten außer dem Nullhorizont bereits den Zeitraum **31.12.2025–31.12.2027**. Die direkte JF-Prüfung läuft für alle sieben. Zusammen mit den unveränderten Jahresreferenzen: **14 Tests bestanden**; zusätzlich drei gezielte Varianten mit Mehrfachplanstelle, fehlender Personalnummer, ausschließlich vakanten Gruppen und unterschiedlicher Eingabereihenfolge: **10 Probe-Tests bestanden**.
+- Ein weiterer einzelner Produktivlauf ergab für die OE-Bridge **9,47 s Standard gegenüber 2,00 s Kandidat**. Die absolute Zeit schwankt deutlich gegenüber dem vorigen Lauf (5,64/1,46 s); das Verhältnis ist ein Hinweis, kein abgesicherter Speedup. Gesamtseitenzeit und wiederholte Kalt-/Warmläufe bleiben offen.
+- Der normale Dashboardpfad verwendet die Voraggregation weiterhin nicht. Vor Umschaltung fehlen insbesondere weitere produktive Parameter-/Seedkombinationen und ein reproduzierbares Vollpfad-Benchmarkprotokoll; die aktuellen Golden Masters müssen unverändert bleiben.
+
 ### Vorlage für spätere Einträge
 
 `Datum – Phase – Änderung/Erkenntnis – Messumgebung und Messwerte – Paritätsnachweis – Entscheidung – offene Risiken – nächster Schritt`

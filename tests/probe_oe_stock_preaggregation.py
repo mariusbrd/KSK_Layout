@@ -18,8 +18,9 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 from test_monte_carlo_production_yearly_reference import _payload
 from test_monte_carlo_yearly_reference import _frame_signature
+from components.jobfamily_simulation_yearly import build_jobfamily_yearly_view
 from dataloader.kpi_engine import compute_headcount
-from utils.org_simulation_events import normalize_simulation_events
+from utils.org_simulation_events import build_simulation_event_summary, normalize_simulation_events
 from utils.org_simulation_reconciliation import build_departure_stock_bridge, raw_stock_mak, reporting_projection_base
 
 
@@ -83,6 +84,16 @@ def main() -> None:
                         "reason_equal": reference["reason"] == candidate["reason"],
                         "reference_seconds": round(reference_seconds, 4),
                         "candidate_seconds": round(candidate_seconds, 4)})
+        summary = build_simulation_event_summary(context, expected_run_signature=context["run_signature"])
+        candidate_summary = {**summary, "stock_reconciliation": candidate}
+        for dimension in ("Jobfamily", "JF-Cluster"):
+            original_view = build_jobfamily_yearly_view(context, summary, dimension=dimension)
+            candidate_view = build_jobfamily_yearly_view(context, candidate_summary, dimension=dimension)
+            differences = [key for key, left in original_view.items()
+                           if (_frame_signature(left) != _frame_signature(candidate_view[key])
+                               if isinstance(left, pd.DataFrame) else left != candidate_view[key])]
+            results.append({"frame": f"{dimension}_yearly_view", "different_groups": len(differences),
+                            "different_fields": differences})
 
     _payload(probe=probe)
     print(json.dumps(results, ensure_ascii=False, indent=2))
