@@ -46,6 +46,8 @@ Diese Datei ist der dauerhafte Arbeitsstand des Projekts. Nach **jeder Phase** w
 
 ## Phase 1 – Ergebnis- und Statistikvertrag
 
+Arbeitsentwurf: [Kennzahlenkonzept](KENNZAHLENKONZEPT.md). Er dokumentiert die Quellen im aktuellen Code, den ersten Implementierungsumfang, Verfügbarkeitsregeln und die noch offenen fachlichen Entscheidungen.
+
 - [ ] Kennzahlenkatalog für CompactPlus, OE und Jobgruppen erstellen: additive Bestände/Flüsse, Quoten, Kosten, Ranglisten, Ereignisarten, Filterebenen und Zeitpunkte. Pro Kennzahl angeben, ob Mittelwert/Band sinnvoll ist.
 - [ ] Pro Kennzahl festlegen, ob sie im Zusatzlauf entsteht, erst nach allen Läufen aggregiert oder ausschließlich aus dem konkreten Referenzlauf angezeigt wird. Benötigte Schlüssel `(Lauf, Jahr, Dimension, Gruppe, Kennzahl)` und die Behandlung fehlender Gruppen verbindlich definieren.
 - [ ] Bandniveau und Berechnung festlegen (z. B. P10–P90, optional P5–P95); Stichprobenquantile, Rundung und Darstellung von null oder seltenen Ereignissen spezifizieren.
@@ -197,6 +199,12 @@ Diese Datei ist der dauerhafte Arbeitsstand des Projekts. Nach **jeder Phase** w
 - Den Ansatz „vollständiger Referenzlauf + fachlich gleiche schlanke Zusatzläufe + einmalige Ensemble-Auswertung/Darstellung“ als verbindlichen Architekturvertrag aufgenommen. Damit wird die teure OE-/JF-Aufbereitung nicht 10.000-mal ausgeführt; Jahreskennzahlen und Mehrfachzuordnungen bleiben trotzdem pro Lauf prüfpflichtig.
 - Effekt auf die Planung: Phase 1 muss einen konkreten Kennzahlen- und Schlüsselvertrag liefern, bevor Phase 2 einen Zusatzlauf implementiert. Phase 2 misst künftig getrennt Vorbereitung, Referenz, Zusatzläufe, Statistik und Ergebnisaufbau. Die 20-s-Grenze gilt weiter für die vereinbarte Gesamtberechnung, nicht bloß für einen isolierten Rechenkern.
 - Nächster Schritt: Kennzahleninventar aus den tatsächlichen CompactPlus-, OE- und JF-Seiten erstellen und pro Kennzahl festlegen, welche Laufdaten sie braucht. Danach einen minimalen Zusatzlauf für ein enges, exakt vergleichbares Szenario prototypisieren.
+
+### 30.10.2026 – Phase 1: Kennzahlenkonzept als Arbeitsentwurf
+
+- `KENNZAHLENKONZEPT.md` aus den tatsächlichen CompactPlus-, OE-/OE-Cluster- und Jobfamily-/JF-Cluster-Pfaden abgeleitet. Erster Umfang: Zielbestand/Ereigniszahlen und vier Ebenen der Jahresereignisse. Jahresbestandsbänder und Analyse-KPI-Karten bleiben an eigene Zertifizierungs-/Filtergates gebunden.
+- Kritischer Filterbefund: Die bestehenden globalen Personenfilter können kombiniert werden. Einzelne OE- oder JF-Randsummen reichen nicht, um deren Schnittmenge je Lauf exakt nachzubilden. Ensemble-Bänder für solche Kombinationen benötigen eine feinere gemeinsame Laufbasis oder exakte Neuberechnung; der erste Prototyp begrenzt die Ensemble-Auswahl deshalb auf ungefilterte Gesamtwerte und explizite Jahresgruppen.
+- Nächster Schritt: anhand des Konzepts ein kleines maschinenprüfbares Zusatzlauf-Kennzahlenpaket definieren, zunächst für einen Seed und die vier Jahresereignisebenen. Vor breiter UI-Integration die offenen Punkte zu Banddefinition, Seed-Plan, Filterumfang und nicht zertifizierten Läufen entscheiden.
 
 ### Vorlage für spätere Einträge
 
