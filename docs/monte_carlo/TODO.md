@@ -15,6 +15,14 @@ Diese Datei ist der dauerhafte Arbeitsstand des Projekts. Nach **jeder Phase** w
 - [ ] **Nachvollziehbarkeit:** Daten-/Parameterfingerabdruck, Code-/Umgebungsversion, Seed-Ableitung, Zahl angeforderter/erfolgreicher/verworfener Läufe, Laufzeiten und Banddefinition speichern. Ein fehlgeschlagener Lauf darf nicht stillschweigend aus dem Ensemble verschwinden.
 - [ ] **Keine Vermischung:** Einzellauf- und Ensemble-Ergebnisse, Freigaben, Cache-Einträge und Exporte eindeutig versionieren. Die heutige Abnahme und Justierung des Originallaufs darf nicht unbemerkt auf das Ensemble übertragen werden.
 
+## Architekturentscheidung: Rechnung, Kennzahlen und Darstellung trennen
+
+- **Durchgang 0 ist der Referenzlauf.** Bei `N=1` bleibt der vollständige heutige Pfad einschließlich Personenbestand, Audits, OE-/JF-Jahresscheiben, Freigabe und Export maßgeblich. Bei `N>1` bleibt dieser Lauf als konkret nachvollziehbares Ergebnis erhalten; die Zahl der Zusatzläufe darf seine Seeds oder Ergebnisse nicht ändern.
+- **Zusatzläufe berechnen dieselben fachlichen Entscheidungen**, erzeugen aber nur die für das vereinbarte Ensemble benötigten Kennzahlen je Lauf, Jahr und Dimension. Jeder Kennzahlenwert muss gegen den vollständigen Lauf desselben Seeds beweisbar identisch sein. Einsparungen durch das Weglassen einer fachlichen Regel oder einer notwendigen Prüfung sind unzulässig.
+- **Aggregation erfolgt nach der Rechnung je Lauf:** Mittelwerte und empirische Bänder werden aus den einzelnen, vollständig definierten Kennzahlen gebildet. Quoten, Mehrfachzuordnungen und Jahresbestände müssen zuvor je Lauf korrekt berechnet sein. Die App baut Diagramme, Tabellen und Exporte aus Referenzlauf und Ensemble-Ergebnis einmalig für die gewählte Ansicht; sie simuliert dafür nicht erneut.
+- **Leistungsbudget separat ausweisen:** Vorbereitung, Referenzlauf, Zusatzläufe, Ensemble-Aggregation und Ergebnisaufbau einzeln messen; die vereinbarte 20-s-Grenze über die gesamte Berechnung samt Aggregation prüfen. Rendering und Export separat ausweisen. Falls schon der obligatorische Referenzlauf das Gesamtbudget überschreitet, ist das Ziel ohne weitere Beschleunigung des Referenzpfads rechnerisch nicht erreichbar.
+- **Speichergrenze:** 10.000 vollständige Personen- und Jahres-DataFrames werden nicht gehalten. Nur Referenzlauf, ausdrücklich gewählte Prüfläufe und die für Quantile nötigen kompakten Kennzahlarrays beziehungsweise inkrementelle Aggregationen bleiben im Speicher.
+
 ## Gesicherte Ausgangslage
 
 - Nutzerbeobachtung: derzeit ungefähr **7 Sekunden** für einen Dashboard-Durchlauf. Messumgebung und aktives Szenario müssen noch dokumentiert werden.
@@ -39,6 +47,7 @@ Diese Datei ist der dauerhafte Arbeitsstand des Projekts. Nach **jeder Phase** w
 ## Phase 1 – Ergebnis- und Statistikvertrag
 
 - [ ] Kennzahlenkatalog für CompactPlus, OE und Jobgruppen erstellen: additive Bestände/Flüsse, Quoten, Kosten, Ranglisten, Ereignisarten, Filterebenen und Zeitpunkte. Pro Kennzahl angeben, ob Mittelwert/Band sinnvoll ist.
+- [ ] Pro Kennzahl festlegen, ob sie im Zusatzlauf entsteht, erst nach allen Läufen aggregiert oder ausschließlich aus dem konkreten Referenzlauf angezeigt wird. Benötigte Schlüssel `(Lauf, Jahr, Dimension, Gruppe, Kennzahl)` und die Behandlung fehlender Gruppen verbindlich definieren.
 - [ ] Bandniveau und Berechnung festlegen (z. B. P10–P90, optional P5–P95); Stichprobenquantile, Rundung und Darstellung von null oder seltenen Ereignissen spezifizieren.
 - [ ] Pro Durchgang zuerst fachlich vollständige Kennzahlen je gewählter Dimension berechnen. Quoten und Kosten pro Kopf/MAK je Durchgang bilden; Quantile niemals aus bereits aggregierten Gruppen oder addierten Quantilgrenzen ableiten.
 - [ ] Stabile Gruppenmenge über alle Läufe definieren, einschließlich Gruppen ohne Ereignis/Bestand in einzelnen Läufen; deren Wert je nach Kennzahl explizit als 0 oder nicht definiert behandeln.
@@ -49,10 +58,12 @@ Diese Datei ist der dauerhafte Arbeitsstand des Projekts. Nach **jeder Phase** w
 ## Phase 2 – Schlanker Zusatzlauf bei unverändertem Einzellauf
 
 - [ ] Unveränderliche Eingaben einmal pro Ensemble vorbereiten; Reihenfolge, Datentypen und Kopiersemantik des Referenzlaufs dokumentieren.
+- [ ] Die Pipeline explizit in einmalige Vorbereitung, vollständigen Referenzlauf, kompakte Zusatzläufe, Ensemble-Statistik und einmaligen Ergebnisaufbau zerlegen. Zeit und Speicher je Abschnitt messen, damit Rechenkernkosten nicht mit OE-/JF-Aufbereitung oder Streamlit-Rendering vermischt werden.
 - [ ] Zusatzläufe ohne vollständige Anzeige-Audits, Lineage-Tabellen und Excel-Artefakte prototypisieren. Nur für die Bandberechnung erforderliche, prüfbare End- und Jahreskennzahlen behalten.
 - [ ] Für jeden Zusatzlauf fachliche Gleichheit mit einem vollständigen Referenzlauf desselben Seeds nachweisen; erforderliche Prüfungen dürfen nicht entfallen, nur anders/kompakter ermittelt werden.
 - [ ] Seed-Plan definieren: Durchgang 0 verwendet unverändert die heutigen Abgangs- und Zugangsseeds; weitere Durchgänge erhalten stabile, dokumentierte Seeds ohne Kollision. Die Zahl der Durchgänge darf Durchgang 0 nicht beeinflussen.
 - [ ] 1, 10, 100 und 1.000 Durchgänge messen: Zeit je Stufe, Speicher, Cache-Verhalten, Ergebnisgleichheit. Größte verbleibende Kosten quantifizieren.
+- [ ] Früh einen unteren Zeitbedarf für 10.000 Läufe extrapolieren: Referenzlauf plus 9.999 fachlich identische Zusatzläufe plus Aggregation. Liegt dieser selbst ohne UI über 20 s, gezielt den verbleibenden Rechenkern optimieren und keine Zielerreichung allein durch Auslagerung der Darstellung behaupten.
 - **Gate:** Einzellauf vollständig identisch; Zusatzläufe ergebnisgleich; gemessener Speedup und verbleibender Abstand zum 20-s-Ziel dokumentiert.
 
 ## Phase 3 – Hochleistungs-Rechenkern nur bei belegtem Bedarf
@@ -84,6 +95,7 @@ Diese Datei ist der dauerhafte Arbeitsstand des Projekts. Nach **jeder Phase** w
 | 30.10.2026 | Offen | Freigabe | Ensemble-Freigabe und Behandlung manueller Korrekturen spezifizieren. |
 | 30.10.2026 | Offen | Zugänge | Zertifizierte Jahresbestände mit Zugängen sind derzeit nicht verfügbar. |
 | 30.10.2026 | Offen | Betrieb | Wo 10.000 Läufe gerechnet werden sollen und welche gleichzeitige Nutzerzahl zu unterstützen ist. |
+| 30.10.2026 | Festgelegt | Architektur | Vollständiger Referenzlauf und schlanke, je Seed exakt geprüfte Zusatzläufe; Kennzahlen je Lauf vor Ensemble-Statistik, Darstellung nach der Berechnung. Der `N=1`-Pfad bleibt fachlich identisch. |
 
 ## Laufendes Arbeitsprotokoll
 
@@ -179,6 +191,12 @@ Diese Datei ist der dauerhafte Arbeitsstand des Projekts. Nach **jeder Phase** w
 - Gemessene OE-Zusammenfassung in Sekunden: Standard `[22,3328; 17,1758; 16,7057]`, Probe `[6,0724; 5,5378; 3,9298]`; Mediane **17,1758 s** und **5,5378 s**. Vollständiger OE-/JF-Ergebnisaufbau: Standard `[31,2692; 24,2209; 24,3178]`, Probe `[14,3348; 13,5969; 13,5912]`; Mediane **24,3178 s** und **13,5969 s**.
 - Die absoluten Zeiten lagen deutlich über den früheren Einzelmessungen und drifteten innerhalb der Reihe. Das weist auf erhebliche System-/Cache-/Messumgebungseinflüsse hin; die Zahlen beschreiben diesen lokalen Messlauf, keine verlässliche Produktions-SLA. Das Ergebnis belegt jedoch für denselben Input einen großen Kostenteil in der OE-Überleitung. Laden, Simulation, Streamlit-Rendering und Export sind **nicht** enthalten.
 - Auch nach Voraggregation kostet der Ergebnisaufbau hier mehr als die gewünschten 20 s für 10.000 Durchgänge. Für Monte Carlo muss der Referenzlauf exakt bleiben und Zusatzläufe dürfen nur ihre fachlich benötigten, pro Lauf geprüften Kennzahlen aufbauen. Nächster Schritt: weiteren OE-/JF-Aufwand und den Ergebnisumfang pro Zusatzlauf festlegen; die Voraggregation erst nach zusätzlichen produktiven Seeds und stabilerer Messumgebung als Standardpfad erwägen.
+
+### 30.10.2026 – Architekturentscheidung für die nächste Projektphase
+
+- Den Ansatz „vollständiger Referenzlauf + fachlich gleiche schlanke Zusatzläufe + einmalige Ensemble-Auswertung/Darstellung“ als verbindlichen Architekturvertrag aufgenommen. Damit wird die teure OE-/JF-Aufbereitung nicht 10.000-mal ausgeführt; Jahreskennzahlen und Mehrfachzuordnungen bleiben trotzdem pro Lauf prüfpflichtig.
+- Effekt auf die Planung: Phase 1 muss einen konkreten Kennzahlen- und Schlüsselvertrag liefern, bevor Phase 2 einen Zusatzlauf implementiert. Phase 2 misst künftig getrennt Vorbereitung, Referenz, Zusatzläufe, Statistik und Ergebnisaufbau. Die 20-s-Grenze gilt weiter für die vereinbarte Gesamtberechnung, nicht bloß für einen isolierten Rechenkern.
+- Nächster Schritt: Kennzahleninventar aus den tatsächlichen CompactPlus-, OE- und JF-Seiten erstellen und pro Kennzahl festlegen, welche Laufdaten sie braucht. Danach einen minimalen Zusatzlauf für ein enges, exakt vergleichbares Szenario prototypisieren.
 
 ### Vorlage für spätere Einträge
 
