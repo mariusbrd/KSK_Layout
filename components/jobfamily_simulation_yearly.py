@@ -42,6 +42,60 @@ def _baseline_assignments(baseline: pd.DataFrame, dimension: str) -> dict[str, s
     return {person: next(iter(values)) for person, values in groups.items() if len(values) == 1}
 
 
+def _allocate_original_events_to_groups(
+    events: pd.DataFrame, baseline: pd.DataFrame, dimension: str,
+) -> pd.DataFrame:
+    """Split a person's capacity event across their original position groups.
+
+    Group headcounts are intentionally not additive when one person occupies
+    positions in more than one group. The company event remains unchanged.
+    """
+    if events.empty or "persnr" not in events:
+        return events.copy()
+    occupied = baseline.loc[
+        ~baseline.get("Is_Vacant", pd.Series(False, index=baseline.index)).fillna(False).astype(bool)
+    ].copy()
+    occupied["_person"] = normalize_persnr(occupied["PersNr"])
+    occupied["_group"] = _dimension_values(occupied, dimension)
+    capacity_col = next((c for c in ("MAK_Reporting", "MAK_Calculated", "mak", "MAK") if c in occupied), None)
+    occupied["_capacity"] = pd.to_numeric(occupied[capacity_col], errors="coerce").fillna(0.0) if capacity_col else 0.0
+    weight_col = next((c for c in ("Allocation_Weight", "Soll_FTE") if c in occupied), None)
+    occupied["_weight"] = pd.to_numeric(occupied[weight_col], errors="coerce").fillna(0.0) if weight_col else 1.0
+    grouped = occupied.groupby(["_person", "_group"], dropna=False).agg(
+        capacity=("_capacity", "sum"), weight=("_weight", "sum"), rows=("_person", "size")
+    )
+    members: dict[str, list[tuple[str, float]]] = {}
+    for person, part in grouped.groupby(level=0):
+        if len(part) <= 1:
+            continue
+        weights = part["capacity"]
+        if float(weights.sum()) <= 1e-12:
+            weights = part["weight"]
+        if float(weights.sum()) <= 1e-12:
+            weights = part["rows"].astype(float)
+        members[person] = [(str(group), float(value / weights.sum()))
+                           for (_, group), value in weights.items()]
+    if not members:
+        return events.copy()
+    output = []
+    persons = normalize_persnr(events["persnr"])
+    for index, event in events.iterrows():
+        person = persons.loc[index]
+        origin = event.get("Ereignisquelle") == "departure_events" or event.get("Ereignisart") == "Azubi_Conversion_Out"
+        groups = members.get(person) if origin else None
+        if not groups:
+            output.append(event.copy())
+            continue
+        for group, ratio in groups:
+            row = event.copy()
+            row[dimension] = group
+            row["MAK-Veränderung"] = float(event["MAK-Veränderung"]) * ratio
+            # One employee disappears from each group they occupied. These
+            # group headcounts must not be summed as company headcounts.
+            output.append(row)
+    return pd.DataFrame(output, columns=events.columns).reset_index(drop=True)
+
+
 def build_jobfamily_yearly_view(context: dict, summary: dict, *, dimension: str) -> dict:
     """Aggregate saved events; certify departure-only stock slices separately."""
     if dimension not in DIMENSIONS:
@@ -79,6 +133,8 @@ def build_jobfamily_yearly_view(context: dict, summary: dict, *, dimension: str)
             missing = source.isna() | source.eq("") | source.eq(UNASSIGNED)
             source = source.where(~missing, events["Jobfamily"].map(name_map).astype("string"))
         events[dimension] = source.fillna(UNASSIGNED).replace("", UNASSIGNED)
+        person_events = events.copy(deep=True)
+        events = _allocate_original_events_to_groups(person_events, baseline, dimension)
         events["Zuordnung_geklärt"] = events[dimension].ne(UNASSIGNED)
         annual = events.groupby(["Jahr", dimension, "Kategorie", "Ereignisart"], dropna=False)[list(METRICS)].sum().reset_index()
     else:
@@ -99,7 +155,8 @@ def build_jobfamily_yearly_view(context: dict, summary: dict, *, dimension: str)
             stock_reason = "Ereignisse ohne eindeutige Jobgruppenzuordnung verhindern den Bestandsabgleich."
         else:
             projection = reporting_projection_base(context, baseline) if pd.Timestamp(summary["metadata"]["target_date"]) > pd.Timestamp(summary["metadata"]["base_date"]) else baseline.copy(deep=True)
-            reported = reporting_departure_events(projection, events, context)
+            reported = reporting_departure_events(projection, person_events if not events.empty else events, context)
+            reported = _allocate_original_events_to_groups(reported, baseline, dimension)
             stock, stock_reason, stock_checks = _build_certified_stock(baseline, projection, final, reported, dimension, summary["metadata"])
     return {"run_signature": signature, "dimension": dimension, "events": events,
             "annual": annual, "stock": stock, "stock_reason": stock_reason, "stock_checks": stock_checks,
@@ -255,6 +312,7 @@ def render_jobfamily_simulation_yearly(context: dict | None, summary: dict | Non
         st.warning("Alle Daten dieses Laufs sind 'Sonstiges' zugeordnet. Bitte die aktive Jobgruppen-Clusterdatei prüfen; ein Vergleich einzelner Jobgruppen ist so nicht aussagekräftig.")
     groups = st.multiselect("Jobgruppen", options, default=options, key=f"jf_yearly_groups_{dimension}")
     st.caption("Die Ereignisauswahl filtert nur Veränderungen. Der verbleibende Bestand umfasst stets den vollständigen Simulationslauf und ist unabhängig von den Filtern der Bestandsansicht.")
+    st.caption("Personen mit Planstellen in mehreren Jobgruppen zaehlen in jeder betroffenen Jobgruppe als Kopf. Gruppenkopfzahlen sind daher nicht zur Unternehmenssumme addierbar; MAK werden nach Planstellenanteilen verteilt.")
     st.markdown("#### Verbleibender Bestand")
     stock = view["stock"]
     if stock.empty:

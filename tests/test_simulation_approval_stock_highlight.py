@@ -1,6 +1,7 @@
 """Zero-MAK warning follows the actual final OE stock."""
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -48,6 +49,28 @@ def test_zero_mak_warning_excludes_orgs_already_empty_at_baseline():
     assert page._new_zero_mak_orgs(stock, 1e-6) == {"Treasury"}
 
 
+def test_oe_stock_aggregation_matches_existing_kpis_for_split_positions():
+    page = _page()
+    from dataloader.kpi_engine import compute_headcount
+    from utils.org_simulation_reconciliation import raw_stock_mak
+
+    baseline = pd.DataFrame({
+        "Organisationseinheit": ["Treasury", "Treasury", "Treasury", "Markt", "Markt", "Leer"],
+        "PersNr": ["1", "1", "2", "3", None, "4"],
+        "Is_Vacant": [False, False, True, False, False, False],
+        "MAK_Reporting": [0.4, 0.6, 0.0, 0.8, 1.0, 0.0],
+    })
+    final = baseline.loc[baseline["Organisationseinheit"].ne("Leer")].copy()
+    table = page._oe_final_stock(baseline, final).set_index("Organisation")
+    for name in ("Treasury", "Markt", "Leer"):
+        before = baseline.loc[baseline["Organisationseinheit"].eq(name)]
+        after = final.loc[final["Organisationseinheit"].eq(name)]
+        assert table.at[name, "Ausgangs-Köpfe"] == compute_headcount(before)
+        assert table.at[name, "Ausgangs-MAK"] == raw_stock_mak(before)
+        assert table.at[name, "Finale Köpfe"] == compute_headcount(after)
+        assert table.at[name, "Finale MAK"] == raw_stock_mak(after)
+
+
 def test_yearly_chart_shows_original_and_corrected_heads_and_mak(monkeypatch):
     page = _page()
     captured = {}
@@ -64,3 +87,23 @@ def test_yearly_chart_shows_original_and_corrected_heads_and_mak(monkeypatch):
     assert len(traces) == 4
     assert list(traces[1].y) == [2, 1]
     assert list(traces[3].y) == [1.5, 0.8]
+
+
+def test_selection_basket_keeps_other_change_type_and_checks_combined_draft():
+    page = _page()
+    candidates = pd.DataFrame({"PersNr": ["1", "2", "3"],
+                               "Organisationseinheit": ["Treasury", "Treasury", "Markt"]})
+    basket = {"run": ("run", 1), "retained": (), "shifts": {}, "reason": ""}
+    basket = page._with_scope_selection(basket, candidates, "Treasury", False, ["1"], {}, "")
+    basket = page._with_scope_selection(basket, candidates, "Treasury", True, ["2"], {"2": 2027}, "Späterer Austritt")
+    basket = page._with_scope_selection(basket, candidates, "Markt", False, ["3"], {}, "")
+    basket = page._with_scope_selection(basket, candidates, "Markt", False, [], {}, "")
+    assert basket["retained"] == ("1",)
+    assert basket["shifts"] == {"2": 2027}
+    draft = SimpleNamespace(metadata={"adjustment": {
+        "kind": "combined_departures", "retained": ("1",),
+        "shifts": [{"person": "2", "new_date": "2027-12-31T00:00:00"}],
+        "reason": "Späterer Austritt",
+    }})
+    assert page._basket_matches_draft(basket, draft)
+    assert not page._basket_matches_draft({**basket, "shifts": {"2": 2028}}, draft)

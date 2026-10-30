@@ -716,6 +716,9 @@ def _update_existing_rows(
 
     occupied_mask = future_df["PersNr_norm"].ne("")
     existing_ids = set(future_df.loc[occupied_mask, "PersNr_norm"])
+    multi_position_mask = future_df["PersNr_norm"].map(
+        future_df.loc[occupied_mask, "PersNr_norm"].value_counts()
+    ).fillna(0).gt(1)
     active_ids = set(final_df[final_df.get("active", False) == True].index)
     inactive_existing_ids = existing_ids - active_ids
 
@@ -765,13 +768,19 @@ def _update_existing_rows(
         "bsgrd_lineage_flag",
     ]
     if active_existing_mask.any():
-        active_target_ids = future_df.loc[active_existing_mask, "PersNr_norm"]
+        position_fields = {"Organisationseinheit", "Jobfamily", "KÃ¼rzel OrgEinheit", "OE-Cluster", "JF-Cluster"}
         for col in sync_cols:
             if col in future_df.columns and col in final_df.columns:
+                # The person-level forecast has only the first assignment.
+                # Keep every original assignment for employees on multiple positions.
+                write_mask = active_existing_mask & ~multi_position_mask if col in position_fields else active_existing_mask
+                if not write_mask.any():
+                    continue
+                active_target_ids = future_df.loc[write_mask, "PersNr_norm"]
                 sync_values = active_target_ids.map(final_df[col])
                 if pd.api.types.is_datetime64_any_dtype(future_df[col]):
                     sync_values = pd.to_datetime(sync_values, errors="coerce")
-                future_df.loc[active_existing_mask, col] = sync_values
+                future_df.loc[write_mask, col] = sync_values
 
     for pid in sorted(active_existing_ids):
         row_mask = future_df["PersNr_norm"] == pid

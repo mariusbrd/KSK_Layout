@@ -6,6 +6,7 @@ retirement of an original employee. Ambiguous cases fail closed.
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 import hashlib
 import json
 import math
@@ -297,41 +298,62 @@ def eligible_timing_shifts(view: SimulationView) -> pd.DataFrame:
 
 def derive_shifted_departure(view: SimulationView, person_id: str, new_year: int,
                              reason: str = "") -> SimulationView:
-    """Shift a saved quit event; preserve the original target snapshot exactly."""
+    """Compatibility entry point for one delayed departure."""
+    return derive_shifted_departures(view, {str(person_id): new_year}, reason)
+
+
+def derive_shifted_departures(view: SimulationView, shifts: dict[str, int],
+                              reason: str = "") -> SimulationView:
+    """Shift several saved quits together while preserving the final snapshot."""
+    if not shifts:
+        raise ValueError("Bitte mindestens ein neues Abgangsjahr eingeben.")
     candidates = eligible_timing_shifts(view)
-    selected = candidates.loc[candidates.get("PersNr", pd.Series(dtype=str)).eq(str(person_id))]
-    if len(selected) != 1:
-        raise ValueError("Dieser Kündigungsabgang ist für eine Terminverschiebung nicht eindeutig geeignet.")
-    candidate = selected.iloc[0]
-    if new_year not in candidate["Zulässige Jahre"]:
-        raise ValueError("Das neue Jahr liegt außerhalb der zulässigen späteren Perioden.")
-    old = pd.Timestamp(candidate["Ereignisdatum"])
-    period = _shifted_period(old, new_year)
     context = view.event_context
     event_context = context.copy()
     departures = context["departure_events"].copy(deep=True)
-    mask = _person_ids(departures, "persnr").eq(str(person_id)).fillna(False)
-    if int(mask.sum()) != 1:
-        raise ValueError("Der gespeicherte Abgang ist nicht eindeutig.")
-    index = departures.index[mask][0]
-    departures.at[index, "event_date"] = period.end_time
-    for column, value in (("period_start", period.start_time), ("period_end", period.end_time),
-                          ("period_label", period.strftime("%Y-%m"))):
-        if column in departures:
-            departures.at[index, column] = value
+    event_ids = _person_ids(departures, "persnr")
+    items = []
+    for person_id, requested_year in sorted(shifts.items()):
+        selected = candidates.loc[candidates.get("PersNr", pd.Series(dtype=str)).eq(str(person_id))]
+        if len(selected) != 1:
+            raise ValueError(f"Der Kündigungsabgang von {person_id} ist nicht eindeutig geeignet.")
+        candidate = selected.iloc[0]
+        try:
+            numeric_year = float(requested_year)
+        except (TypeError, ValueError):
+            numeric_year = float("nan")
+        if isinstance(requested_year, bool) or not math.isfinite(numeric_year) or not numeric_year.is_integer():
+            raise ValueError(f"Für {person_id} bitte ein gültiges Abgangsjahr eingeben.")
+        new_year = int(numeric_year)
+        if new_year not in candidate["Zulässige Jahre"]:
+            raise ValueError(f"Das neue Jahr für {person_id} liegt außerhalb der zulässigen Perioden.")
+        old = pd.Timestamp(candidate["Ereignisdatum"])
+        period = _shifted_period(old, new_year)
+        mask = event_ids.eq(str(person_id)).fillna(False)
+        if int(mask.sum()) != 1:
+            raise ValueError(f"Der gespeicherte Abgang von {person_id} ist nicht eindeutig.")
+        index = departures.index[mask][0]
+        departures.at[index, "event_date"] = period.end_time
+        for column, value in (("period_start", period.start_time), ("period_end", period.end_time),
+                              ("period_label", period.strftime("%Y-%m"))):
+            if column in departures:
+                departures.at[index, column] = value
+        items.append({"person": str(person_id), "organization": candidate["Organisationseinheit"],
+                      "jobfamily": candidate["Jobfamily"], "old_date": old.isoformat(),
+                      "new_date": period.end_time.isoformat(), "heads": float(candidate["Köpfe"]),
+                      "mak": float(candidate["MAK"])})
     event_context["departure_events"] = departures
-    rule = {"kind": "shift_departure", "persons": (str(person_id),),
-            "organization": candidate["Organisationseinheit"], "jobfamily": candidate["Jobfamily"],
-            "old_date": old.isoformat(), "new_date": period.end_time.isoformat(),
-            "heads": float(candidate["Köpfe"]), "mak": float(candidate["MAK"]),
-            "reason": reason.strip()}
+    rule = {"kind": "shift_departure", "persons": tuple(item["person"] for item in items),
+            "shifts": items, "reason": reason.strip()}
+    if len(items) == 1:
+        rule.update({key: items[0][key] for key in ("organization", "jobfamily", "old_date", "new_date", "heads", "mak")})
     digest = hashlib.sha256(json.dumps(rule, sort_keys=True).encode()).hexdigest()[:12]
     version = f"{view.signature}::{view.instance}::adjusted::{digest}"
     event_context["run_signature"] = version
     metadata = deepcopy(view.metadata)
     metadata["adjustment"] = rule
     metadata["base_run_signature"] = view.signature
-    metadata["selection_audit_provenance"] = "Originaler Zufalls- und Auswahlverlauf; ein Kündigungsdatum wurde nachträglich verschoben"
+    metadata["selection_audit_provenance"] = "Originaler Zufalls- und Auswahlverlauf; Kündigungsdaten wurden nachträglich verschoben"
     metadata["annual_costs_not_recomputed"] = True
     event_context["metadata"] = metadata
     summary = build_simulation_event_summary(event_context, expected_run_signature=version)
@@ -350,20 +372,23 @@ def derive_shifted_departure(view: SimulationView, person_id: str, new_year: int
     shifted_annual = bridge.get("annual")
     if not isinstance(original_annual, pd.DataFrame) or not isinstance(shifted_annual, pd.DataFrame):
         raise ValueError("Die Jahresscheiben des Originallaufs fehlen.")
+    organizations = {item["organization"] for item in items}
     def stock_by_year(frame):
         scoped = frame.loc[frame["Ebene"].eq("Organisationseinheit")
-                           & frame["Organisation"].eq(candidate["Organisationseinheit"])
+                           & frame["Organisation"].isin(organizations)
                            & frame["Art"].eq("Jahresstichtag")]
-        return scoped.set_index("Jahr")[["Bestand-Köpfe", "Bestand-MAK"]]
+        return scoped.set_index(["Organisation", "Jahr"])[["Bestand-Köpfe", "Bestand-MAK"]].sort_index()
     before, after = stock_by_year(original_annual), stock_by_year(shifted_annual)
     if not before.index.equals(after.index):
         raise ValueError("Die Verschiebung hat die Jahresscheiben verändert.")
-    expected_heads, expected_mak = -float(candidate["Köpfe"]), -float(candidate["MAK"])
-    for year in before.index:
-        affected = old.year <= year < new_year
-        head_diff = float(after.loc[year, "Bestand-Köpfe"] - before.loc[year, "Bestand-Köpfe"])
-        mak_diff = float(after.loc[year, "Bestand-MAK"] - before.loc[year, "Bestand-MAK"])
-        if abs(head_diff - (expected_heads if affected else 0.0)) > 1e-6 or abs(mak_diff - (expected_mak if affected else 0.0)) > 1e-6:
+    for organization, year in before.index:
+        relevant = [item for item in items if item["organization"] == organization
+                    and pd.Timestamp(item["old_date"]).year <= year < pd.Timestamp(item["new_date"]).year]
+        expected_heads = -sum(item["heads"] for item in relevant)
+        expected_mak = -sum(item["mak"] for item in relevant)
+        head_diff = float(after.loc[(organization, year), "Bestand-Köpfe"] - before.loc[(organization, year), "Bestand-Köpfe"])
+        mak_diff = float(after.loc[(organization, year), "Bestand-MAK"] - before.loc[(organization, year), "Bestand-MAK"])
+        if abs(head_diff - expected_heads) > 1e-6 or abs(mak_diff - expected_mak) > 1e-6:
             raise ValueError("Die Jahreswirkung des verschobenen Abgangs ist nicht eindeutig.")
     raw_final = context.get("raw_final_snapshot")
     employee_state = context.get("future_employee_state")
@@ -385,3 +410,35 @@ def derive_shifted_departure(view: SimulationView, person_id: str, new_year: int
         event_context=event_context, event_summary=summary,
         export_context=deepcopy(view.export_context), version=version, approved=False,
     )
+
+
+def derive_combined_adjustment(view: SimulationView, retained: list[str], shifts: dict[str, int],
+                               reason: str = "") -> SimulationView:
+    """Validate a basket of reversals and timing shifts as one result version."""
+    retained_ids = tuple(sorted(set(map(str, retained))))
+    shift_ids = set(map(str, shifts))
+    if set(retained_ids) & shift_ids:
+        raise ValueError("Eine Person kann nicht zugleich zurückgenommen und verschoben werden.")
+    if shifts and len(reason.strip()) < 5:
+        raise ValueError("Bitte eine kurze Begründung für die Terminverschiebung eingeben.")
+    if not retained_ids and not shifts:
+        raise ValueError("Bitte zuerst mindestens eine Änderung auswählen.")
+    if not retained_ids:
+        return derive_shifted_departures(view, shifts, reason)
+    if not shifts:
+        return derive_retained_departures(view, list(retained_ids))
+
+    retained_view = derive_retained_departures(view, list(retained_ids))
+    combined = derive_shifted_departures(retained_view, shifts, reason)
+    shift_items = combined.metadata["adjustment"]["shifts"]
+    rule = {"kind": "combined_departures", "persons": tuple(sorted(set(retained_ids) | shift_ids)),
+            "retained": retained_ids, "shifts": shift_items, "reason": reason.strip()}
+    digest = hashlib.sha256(json.dumps(rule, sort_keys=True).encode()).hexdigest()[:12]
+    version = f"{view.signature}::{view.instance}::adjusted::{digest}"
+    metadata = {**combined.metadata, "adjustment": rule,
+                "selection_audit_provenance": "Originaler Zufalls- und Auswahlverlauf; Abgänge zurückgenommen und Kündigungsdaten verschoben"}
+    context = {**combined.event_context, "run_signature": version, "metadata": metadata}
+    summary = {**combined.event_summary, "run_signature": version,
+               "adjustment": rule, "metadata": deepcopy(metadata)}
+    return replace(combined, metadata=metadata, event_context=context,
+                   event_summary=summary, version=version)

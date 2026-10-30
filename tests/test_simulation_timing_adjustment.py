@@ -14,16 +14,23 @@ from utils.compact_simulation_export import build_compact_simulation_export_byte
 from utils.org_simulation_events import build_simulation_event_summary
 from utils.settings_loader import get_setting
 from utils.status_quo_baseline import build_status_quo_snapshot
-from utils.simulation_adjustments import derive_shifted_departure, eligible_timing_shifts
+from utils.simulation_adjustments import (
+    derive_combined_adjustment, derive_shifted_departure, derive_shifted_departures, eligible_timing_shifts,
+)
 from utils.simulation_validation import (
     approve_adjustment, current_view, register_new_run, stage_adjustment, value_fingerprint,
 )
 
 
 @pytest.fixture
-def saved_quit_run():
+def saved_quit_run(request):
     st.session_state["tvoed_lookup"] = {}
     source = _base_snapshot()
+    if getattr(request, "param", False):
+        additional = source.loc[source["PersNr"].eq("000002")].copy()
+        additional["PersNr"] = "000003"
+        additional["Personalnummer"] = "000003"
+        source = pd.concat([source, additional], ignore_index=True)
     source["Jobfamily"] = "Sonstiges"
     source["JF-Cluster"] = "Sonstiges"
     target = pd.Timestamp("2027-12-31")
@@ -123,6 +130,71 @@ def test_shift_rejects_mak_larger_than_oe_stock_and_invalid_year(saved_quit_run)
         original.event_context["departure_events"]["persnr"].eq("000002"), "mak_change"
     ] = -1.0
     assert "000002" not in set(eligible_timing_shifts(original)["PersNr"])
+
+
+@pytest.mark.parametrize("saved_quit_run", [True], indirect=True)
+def test_two_shifts_are_approved_together_and_annual_effects_add(saved_quit_run):
+    original = saved_quit_run
+    candidates = eligible_timing_shifts(original).set_index("PersNr")
+    assert {"000002", "000003"}.issubset(candidates.index)
+    adjusted = derive_shifted_departures(original, {"000002": 2026, "000003": 2027}, "Beide Kündigungen später")
+    assert adjusted.prepared_df is original.prepared_df
+    assert adjusted.event_context["final_snapshot"] is original.event_context["final_snapshot"]
+    assert adjusted.event_summary["stock_reconciliation"]["status"] == "Abgestimmt"
+    assert len(adjusted.metadata["adjustment"]["shifts"]) == 2
+    annual_before = original.event_summary["stock_reconciliation"]["annual"]
+    annual_after = adjusted.event_summary["stock_reconciliation"]["annual"]
+    def oe_mak(frame, year):
+        return frame.loc[(frame["Ebene"] == "Organisationseinheit")
+                         & frame["Organisation"].eq("Marktfolge")
+                         & frame["Art"].eq("Jahresstichtag")
+                         & frame["Jahr"].eq(year), "Bestand-MAK"].iloc[0]
+    assert oe_mak(annual_after, 2025) - oe_mak(annual_before, 2025) == pytest.approx(1.6)
+    assert oe_mak(annual_after, 2026) - oe_mak(annual_before, 2026) == pytest.approx(0.8)
+    assert oe_mak(annual_after, 2027) == pytest.approx(oe_mak(annual_before, 2027))
+    original_jf = build_jobfamily_yearly_view(original.event_context, original.event_summary, dimension="Jobfamily")
+    adjusted_jf = build_jobfamily_yearly_view(adjusted.event_context, adjusted.event_summary, dimension="Jobfamily")
+    def jf_mak(view, year):
+        stock = view["stock"]
+        return stock.loc[(stock["Stichtag"].dt.year == year) & stock["Art"].eq("Jahresstichtag")
+                         & stock["Kennzahl"].eq("MAK") & stock["Jobfamily"].eq("Sonstiges"), "Bestand"].iloc[0]
+    assert jf_mak(adjusted_jf, 2026) - jf_mak(original_jf, 2026) == pytest.approx(0.8)
+    for person, year in (("000002", 2026), ("000003", 2027)):
+        event = adjusted.audit_tables["Abgaenge_Events_Raw"]
+        assert event.loc[event["persnr"].eq(person), "event_date"].iloc[0].year == year
+    with pytest.raises(ValueError):
+        derive_shifted_departures(original, {"000002": 2026, "000003": 2028})
+
+
+@pytest.mark.parametrize("saved_quit_run", [True], indirect=True)
+def test_retained_and_shifted_departure_share_one_approved_version(saved_quit_run):
+    original = saved_quit_run
+    adjusted = derive_combined_adjustment(
+        original, ["000002"], {"000003": 2027}, "Kündigung später")
+    rule = adjusted.metadata["adjustment"]
+    assert rule["kind"] == "combined_departures"
+    assert rule["retained"] == ("000002",)
+    assert rule["shifts"][0]["person"] == "000003"
+    assert adjusted.event_summary["run_signature"] == adjusted.version
+    assert adjusted.event_context["run_signature"] == adjusted.version
+    assert adjusted.event_summary["stock_reconciliation"]["status"] == "Abgestimmt"
+    final = adjusted.event_context["final_snapshot"]
+    assert not final.loc[final["PersNr"].eq("000002"), "Is_Vacant"].any()
+    assert adjusted.event_context["departure_events"].loc[
+        adjusted.event_context["departure_events"]["persnr"].eq("000003"), "event_date"].iloc[0].year == 2027
+    state = {"compact_sim_signature": original.signature,
+             "compact_sim_prepared_df": original.prepared_df,
+             "compact_sim_status_quo_df": original.status_quo_df,
+             "compact_sim_metadata": original.metadata,
+             "compact_sim_audit_tables": original.audit_tables,
+             "compact_sim_event_context": original.event_context,
+             "compact_sim_event_summary": original.event_summary,
+             "simulation_validation_instance": original.instance}
+    stage_adjustment(state, adjusted)
+    approve_adjustment(state, approved_at="2026-10-27T00:00:00+00:00")
+    assert current_view(state, require_approval=True).version == adjusted.version
+    with pytest.raises(ValueError, match="zugleich"):
+        derive_combined_adjustment(original, ["000002"], {"000002": 2027}, "Konflikt")
 
 
 def test_shift_rejects_a_year_after_a_known_contract_end(saved_quit_run):

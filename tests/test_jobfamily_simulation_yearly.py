@@ -12,6 +12,40 @@ from test_org_simulation_reconciliation import _bridge_context
 from utils.org_simulation_events import METRICS, build_simulation_event_summary
 
 
+def test_departure_is_reported_in_both_original_jobfamilies():
+    baseline = pd.DataFrame([
+        {"PersNr": "000001", "Is_Vacant": False, "Organisationseinheit": "OE",
+         "Jobfamily": "Führung Vertrieb", "JF-Cluster": "Führung Vertrieb",
+         "MAK_Reporting": 0.4, "Allocation_Weight": 0.4},
+        {"PersNr": "000001", "Is_Vacant": False, "Organisationseinheit": "OE",
+         "Jobfamily": "Qualitative Beratung", "JF-Cluster": "Qualitative Beratung",
+         "MAK_Reporting": 0.6, "Allocation_Weight": 0.6},
+    ])
+    final = baseline.copy()
+    final["Is_Vacant"] = True
+    final["MAK_Reporting"] = 0.0
+    event = pd.DataFrame([{"persnr": "000001", "event_date": pd.Timestamp("2026-12-01"),
+                           "reason_code": "QUIT", "headcount_change": -1, "mak_change": -1.0,
+                           "Organisationseinheit": "OE", "Jobfamily": "Führung Vertrieb"}])
+    context = {"run_signature": "dual", "metadata": {"base_date": pd.Timestamp("2026-09-01"),
+                   "target_date": pd.Timestamp("2026-12-31")},
+               "baseline_snapshot": baseline, "final_snapshot": final,
+               "zugaenge_params": {k: {"active": False} for k in ("azubi", "trainee", "new_hires")},
+               "cluster_mapping": {"oe_map": {"OE": "Cluster"}},
+               "departure_events": event, "accession_events": pd.DataFrame()}
+    summary = build_simulation_event_summary(context, expected_run_signature="dual")
+    view = build_jobfamily_yearly_view(context, summary, dimension="Jobfamily")
+    quits = view["annual"].loc[view["annual"].Ereignisart.eq("QUIT")].set_index("Jobfamily")
+    assert quits.loc["Führung Vertrieb", "MAK-Veränderung"] == -0.4
+    assert quits.loc["Qualitative Beratung", "MAK-Veränderung"] == -0.6
+    assert quits["MAK-Veränderung"].sum() == -1.0
+    assert quits["Köpfe-Veränderung"].to_dict() == {
+        "Führung Vertrieb": -1, "Qualitative Beratung": -1,
+    }
+    assert view["stock_checks"]["Abgestimmt"].all()
+    assert summary["events"]["Abgänge"].sum() == 1
+
+
 def test_jobfamily_view_preserves_saved_oe_outputs_and_event_totals():
     context = _bridge_context("departures")
     summary = build_simulation_event_summary(context, expected_run_signature="a")
