@@ -1,0 +1,1793 @@
+{
+  "description": "Exact annual table signatures from the unoptimized CompactPlus code; synthetic seeds and input from existing yearly reference cases.",
+  "source_commit": "b848d6b",
+  "python": "3.13.5",
+  "pandas": "2.3.3",
+  "scenarios": {
+    "identity": {
+      "oe_stock_status": "Abgestimmt",
+      "frames": {
+        "events": {
+          "rows": 0,
+          "columns": [
+            "event_date",
+            "Jahr",
+            "Organisationseinheit",
+            "OE-Cluster",
+            "Ereignisart",
+            "Kategorie",
+            "Ereignisquelle",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object"
+          ],
+          "sha256": "f37c4a5ce2d1c2d09c65e3ae5991fe63467db48c7332c19c766faa705de0a1ff"
+        },
+        "oe_annual": {
+          "rows": 0,
+          "columns": [
+            "Jahr",
+            "Organisationseinheit",
+            "Kategorie",
+            "Ereignisart",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object"
+          ],
+          "sha256": "e5dad525f0979f47a513b95451e74f853873119796caeb2a01299ec3d6546bf5"
+        },
+        "oe_cluster_annual": {
+          "rows": 0,
+          "columns": [
+            "Jahr",
+            "OE-Cluster",
+            "Kategorie",
+            "Ereignisart",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object"
+          ],
+          "sha256": "49288ef6ba68be6cd85031a7033805801b493cb62bb4eaf14efb36ec1c3c6439"
+        },
+        "oe_stock_annual": {
+          "rows": 5,
+          "columns": [
+            "Ebene",
+            "Organisation",
+            "Stichtag",
+            "Jahr",
+            "Art",
+            "Ausgangs-Köpfe",
+            "Ausgangs-MAK",
+            "Jahresänderung-Köpfe",
+            "Jahresänderung-MAK",
+            "Technischer Effekt-Köpfe",
+            "Technischer Effekt-MAK",
+            "Kumulierte Änderung-Köpfe",
+            "Kumulierte Änderung-MAK",
+            "Bestand-Köpfe",
+            "Bestand-MAK"
+          ],
+          "dtypes": [
+            "object",
+            "object",
+            "datetime64[ns]",
+            "int64",
+            "object",
+            "int64",
+            "float64",
+            "float64",
+            "float64",
+            "float64",
+            "float64",
+            "float64",
+            "float64",
+            "int64",
+            "float64"
+          ],
+          "sha256": "433fcbe053db66adfd2c6dc8528a1bc32efcc0854e0f83e905dfe674c676af16"
+        },
+        "oe_stock_checks": {
+          "rows": 5,
+          "columns": [
+            "Ebene",
+            "Organisation",
+            "Berechnete Köpfe",
+            "Finale Köpfe",
+            "Differenz Köpfe",
+            "Berechnete MAK",
+            "Finale MAK",
+            "Differenz MAK",
+            "Abgestimmt"
+          ],
+          "dtypes": [
+            "object",
+            "object",
+            "float64",
+            "int64",
+            "float64",
+            "float64",
+            "float64",
+            "float64",
+            "bool"
+          ],
+          "sha256": "6f591ae24a0cb3b3fa4555829eee15f62a985dba6cd0f647c5cfd78ccdaf3616"
+        },
+        "jf_annual": {
+          "rows": 0,
+          "columns": [
+            "Jahr",
+            "Jobfamily",
+            "Kategorie",
+            "Ereignisart",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object"
+          ],
+          "sha256": "54958f0819647f877eb78187e259fc1f0f7203ba9f3c06debdda45f31ad07fd9"
+        },
+        "jf_stock": {
+          "rows": 4,
+          "columns": [
+            "Jobfamily",
+            "Stichtag",
+            "Art",
+            "Kennzahl",
+            "Bestand"
+          ],
+          "dtypes": [
+            "object",
+            "datetime64[ns]",
+            "object",
+            "object",
+            "float64"
+          ],
+          "sha256": "ceb2cd0dca5444cbb28e811d6526f0bbd25248919ef5fa47dd8205c0dd60c604"
+        },
+        "jf_stock_checks": {
+          "rows": 4,
+          "columns": [
+            "Jobfamily",
+            "Kennzahl",
+            "Prüfung",
+            "Berechnet",
+            "Zielbestand",
+            "Differenz",
+            "Abgestimmt"
+          ],
+          "dtypes": [
+            "object",
+            "object",
+            "object",
+            "float64",
+            "float64",
+            "float64",
+            "bool"
+          ],
+          "sha256": "89b55a0f26451eaabec8a8774326fc4b21dc08b1190ec4dab71703ad0d8724d0"
+        },
+        "jf_cluster_annual": {
+          "rows": 0,
+          "columns": [
+            "Jahr",
+            "JF-Cluster",
+            "Kategorie",
+            "Ereignisart",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object"
+          ],
+          "sha256": "9c3e6d312eae5fe7a05a98d1d10a0ade19e8317939a409f88e72c93135704973"
+        },
+        "jf_cluster_stock": {
+          "rows": 0,
+          "columns": [],
+          "dtypes": [],
+          "sha256": "821bf06b4dcb406ea508a4a992eadc22f29850cd208ba24aea7c29148de8ccf1"
+        },
+        "jf_cluster_stock_checks": {
+          "rows": 6,
+          "columns": [
+            "JF-Cluster",
+            "Kennzahl",
+            "Prüfung",
+            "Berechnet",
+            "Zielbestand",
+            "Differenz",
+            "Abgestimmt"
+          ],
+          "dtypes": [
+            "object",
+            "object",
+            "object",
+            "float64",
+            "float64",
+            "float64",
+            "bool"
+          ],
+          "sha256": "54472791e32f8fe459e93f0f2dcdd4172e30a395bae83ef5a1e07f43fd1a7c2b"
+        }
+      }
+    },
+    "no_events": {
+      "oe_stock_status": "Abgestimmt",
+      "frames": {
+        "events": {
+          "rows": 0,
+          "columns": [
+            "event_date",
+            "Jahr",
+            "Organisationseinheit",
+            "OE-Cluster",
+            "Ereignisart",
+            "Kategorie",
+            "Ereignisquelle",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object"
+          ],
+          "sha256": "f37c4a5ce2d1c2d09c65e3ae5991fe63467db48c7332c19c766faa705de0a1ff"
+        },
+        "oe_annual": {
+          "rows": 0,
+          "columns": [
+            "Jahr",
+            "Organisationseinheit",
+            "Kategorie",
+            "Ereignisart",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object"
+          ],
+          "sha256": "e5dad525f0979f47a513b95451e74f853873119796caeb2a01299ec3d6546bf5"
+        },
+        "oe_cluster_annual": {
+          "rows": 0,
+          "columns": [
+            "Jahr",
+            "OE-Cluster",
+            "Kategorie",
+            "Ereignisart",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object"
+          ],
+          "sha256": "49288ef6ba68be6cd85031a7033805801b493cb62bb4eaf14efb36ec1c3c6439"
+        },
+        "oe_stock_annual": {
+          "rows": 20,
+          "columns": [
+            "Ebene",
+            "Organisation",
+            "Stichtag",
+            "Jahr",
+            "Art",
+            "Ausgangs-Köpfe",
+            "Ausgangs-MAK",
+            "Jahresänderung-Köpfe",
+            "Jahresänderung-MAK",
+            "Technischer Effekt-Köpfe",
+            "Technischer Effekt-MAK",
+            "Kumulierte Änderung-Köpfe",
+            "Kumulierte Änderung-MAK",
+            "Bestand-Köpfe",
+            "Bestand-MAK"
+          ],
+          "dtypes": [
+            "object",
+            "object",
+            "datetime64[ns]",
+            "int64",
+            "object",
+            "int64",
+            "float64",
+            "float64",
+            "float64",
+            "float64",
+            "float64",
+            "float64",
+            "float64",
+            "float64",
+            "float64"
+          ],
+          "sha256": "d9aafeea8deaf2012985cadfb76f16f2be6ca5bebfabdcfbcad472c2a6cd4e53"
+        },
+        "oe_stock_checks": {
+          "rows": 5,
+          "columns": [
+            "Ebene",
+            "Organisation",
+            "Berechnete Köpfe",
+            "Finale Köpfe",
+            "Differenz Köpfe",
+            "Berechnete MAK",
+            "Finale MAK",
+            "Differenz MAK",
+            "Abgestimmt"
+          ],
+          "dtypes": [
+            "object",
+            "object",
+            "float64",
+            "int64",
+            "float64",
+            "float64",
+            "float64",
+            "float64",
+            "bool"
+          ],
+          "sha256": "6f591ae24a0cb3b3fa4555829eee15f62a985dba6cd0f647c5cfd78ccdaf3616"
+        },
+        "jf_annual": {
+          "rows": 0,
+          "columns": [
+            "Jahr",
+            "Jobfamily",
+            "Kategorie",
+            "Ereignisart",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object"
+          ],
+          "sha256": "54958f0819647f877eb78187e259fc1f0f7203ba9f3c06debdda45f31ad07fd9"
+        },
+        "jf_stock": {
+          "rows": 12,
+          "columns": [
+            "Jobfamily",
+            "Stichtag",
+            "Art",
+            "Kennzahl",
+            "Bestand"
+          ],
+          "dtypes": [
+            "object",
+            "datetime64[ns]",
+            "object",
+            "object",
+            "float64"
+          ],
+          "sha256": "6fc6f66494dcfe4d2b70ffcbdce1e2c842c12c88ae83eea91d43cb63e4eed87b"
+        },
+        "jf_stock_checks": {
+          "rows": 4,
+          "columns": [
+            "Jobfamily",
+            "Kennzahl",
+            "Prüfung",
+            "Berechnet",
+            "Zielbestand",
+            "Differenz",
+            "Abgestimmt"
+          ],
+          "dtypes": [
+            "object",
+            "object",
+            "object",
+            "float64",
+            "float64",
+            "float64",
+            "bool"
+          ],
+          "sha256": "89b55a0f26451eaabec8a8774326fc4b21dc08b1190ec4dab71703ad0d8724d0"
+        },
+        "jf_cluster_annual": {
+          "rows": 0,
+          "columns": [
+            "Jahr",
+            "JF-Cluster",
+            "Kategorie",
+            "Ereignisart",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object"
+          ],
+          "sha256": "9c3e6d312eae5fe7a05a98d1d10a0ade19e8317939a409f88e72c93135704973"
+        },
+        "jf_cluster_stock": {
+          "rows": 12,
+          "columns": [
+            "JF-Cluster",
+            "Stichtag",
+            "Art",
+            "Kennzahl",
+            "Bestand"
+          ],
+          "dtypes": [
+            "object",
+            "datetime64[ns]",
+            "object",
+            "object",
+            "float64"
+          ],
+          "sha256": "ed35e997c3a2751f563bd46ad799ab366a739b00a678007cca9d5e40f4ce1d2f"
+        },
+        "jf_cluster_stock_checks": {
+          "rows": 4,
+          "columns": [
+            "JF-Cluster",
+            "Kennzahl",
+            "Prüfung",
+            "Berechnet",
+            "Zielbestand",
+            "Differenz",
+            "Abgestimmt"
+          ],
+          "dtypes": [
+            "object",
+            "object",
+            "object",
+            "float64",
+            "float64",
+            "float64",
+            "bool"
+          ],
+          "sha256": "292df3153f527fc7989f5f6daff8fb1720acf54083aa3b6bda8aa464f88d5a6b"
+        }
+      }
+    },
+    "departures": {
+      "oe_stock_status": "Abgestimmt",
+      "frames": {
+        "events": {
+          "rows": 5,
+          "columns": [
+            "period_label",
+            "period_start",
+            "period_end",
+            "event_date",
+            "persnr",
+            "reason_code",
+            "reason_label",
+            "Organisationseinheit",
+            "Jobfamily",
+            "headcount_change",
+            "mak_change",
+            "age",
+            "OE-Zuordnungsherkunft",
+            "Ereignisart",
+            "Ereignisquelle",
+            "OE-Cluster",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Kategorie",
+            "Abgänge",
+            "Zugänge",
+            "Jahr"
+          ],
+          "dtypes": [
+            "object",
+            "datetime64[ns]",
+            "datetime64[ns]",
+            "datetime64[ns]",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "int64",
+            "float64",
+            "float64",
+            "object",
+            "object",
+            "object",
+            "object",
+            "int64",
+            "float64",
+            "object",
+            "int64",
+            "int64",
+            "int32"
+          ],
+          "sha256": "924afd27a6598446fe659bffd871c1a5720a58be8ae2a95c12d9d7907c09bf69"
+        },
+        "oe_annual": {
+          "rows": 3,
+          "columns": [
+            "Jahr",
+            "Organisationseinheit",
+            "Kategorie",
+            "Ereignisart",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "int32",
+            "object",
+            "object",
+            "object",
+            "int64",
+            "float64",
+            "int64",
+            "int64"
+          ],
+          "sha256": "0021698b44aa92e745ea94c65dd0585b5d41f87329afeda7c2993d8cb41ae282"
+        },
+        "oe_cluster_annual": {
+          "rows": 3,
+          "columns": [
+            "Jahr",
+            "OE-Cluster",
+            "Kategorie",
+            "Ereignisart",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "int32",
+            "object",
+            "object",
+            "object",
+            "int64",
+            "float64",
+            "int64",
+            "int64"
+          ],
+          "sha256": "59dc601dc4950c30e69f22767322a6a7792cfd6cde42a15c0a1fed69828493d4"
+        },
+        "oe_stock_annual": {
+          "rows": 20,
+          "columns": [
+            "Ebene",
+            "Organisation",
+            "Stichtag",
+            "Jahr",
+            "Art",
+            "Ausgangs-Köpfe",
+            "Ausgangs-MAK",
+            "Jahresänderung-Köpfe",
+            "Jahresänderung-MAK",
+            "Technischer Effekt-Köpfe",
+            "Technischer Effekt-MAK",
+            "Kumulierte Änderung-Köpfe",
+            "Kumulierte Änderung-MAK",
+            "Bestand-Köpfe",
+            "Bestand-MAK"
+          ],
+          "dtypes": [
+            "object",
+            "object",
+            "datetime64[ns]",
+            "int64",
+            "object",
+            "int64",
+            "float64",
+            "float64",
+            "float64",
+            "float64",
+            "float64",
+            "float64",
+            "float64",
+            "float64",
+            "float64"
+          ],
+          "sha256": "6c070aa01ea6d1509ffa557fe6c2d739ccf402047f9b5e9918031372297cd556"
+        },
+        "oe_stock_checks": {
+          "rows": 5,
+          "columns": [
+            "Ebene",
+            "Organisation",
+            "Berechnete Köpfe",
+            "Finale Köpfe",
+            "Differenz Köpfe",
+            "Berechnete MAK",
+            "Finale MAK",
+            "Differenz MAK",
+            "Abgestimmt"
+          ],
+          "dtypes": [
+            "object",
+            "object",
+            "float64",
+            "int64",
+            "float64",
+            "float64",
+            "float64",
+            "float64",
+            "bool"
+          ],
+          "sha256": "7c3afa4d1c67b9e893b00f09ffd9c517fbb9d1af8a70a13218207f282cbaac8c"
+        },
+        "jf_annual": {
+          "rows": 3,
+          "columns": [
+            "Jahr",
+            "Jobfamily",
+            "Kategorie",
+            "Ereignisart",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "int32",
+            "string",
+            "object",
+            "object",
+            "int64",
+            "float64",
+            "int64",
+            "int64"
+          ],
+          "sha256": "821334bc050ad044bbad032a8263ed93b187413f262267643bd8ba885cb06d1f"
+        },
+        "jf_stock": {
+          "rows": 12,
+          "columns": [
+            "Jobfamily",
+            "Stichtag",
+            "Art",
+            "Kennzahl",
+            "Bestand"
+          ],
+          "dtypes": [
+            "object",
+            "datetime64[ns]",
+            "object",
+            "object",
+            "float64"
+          ],
+          "sha256": "0a625b2fdd491ab3bc73c0293a43b82760efdb66f248029f8d5d5367e3504a6c"
+        },
+        "jf_stock_checks": {
+          "rows": 4,
+          "columns": [
+            "Jobfamily",
+            "Kennzahl",
+            "Prüfung",
+            "Berechnet",
+            "Zielbestand",
+            "Differenz",
+            "Abgestimmt"
+          ],
+          "dtypes": [
+            "object",
+            "object",
+            "object",
+            "float64",
+            "float64",
+            "float64",
+            "bool"
+          ],
+          "sha256": "f2374982ed9dd4a8170d292497da552a89028ecdb4913f4a78b76017971afaf9"
+        },
+        "jf_cluster_annual": {
+          "rows": 3,
+          "columns": [
+            "Jahr",
+            "JF-Cluster",
+            "Kategorie",
+            "Ereignisart",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "int32",
+            "string",
+            "object",
+            "object",
+            "int64",
+            "float64",
+            "int64",
+            "int64"
+          ],
+          "sha256": "1969d6b749e0016398b214301f7ef042db6e149cba7e88ba23ccef63819aa80e"
+        },
+        "jf_cluster_stock": {
+          "rows": 12,
+          "columns": [
+            "JF-Cluster",
+            "Stichtag",
+            "Art",
+            "Kennzahl",
+            "Bestand"
+          ],
+          "dtypes": [
+            "object",
+            "datetime64[ns]",
+            "object",
+            "object",
+            "float64"
+          ],
+          "sha256": "0bf8cd4781fb185003cf8b6bb4f2125efa14ae22fabc93afbbe615218955f864"
+        },
+        "jf_cluster_stock_checks": {
+          "rows": 4,
+          "columns": [
+            "JF-Cluster",
+            "Kennzahl",
+            "Prüfung",
+            "Berechnet",
+            "Zielbestand",
+            "Differenz",
+            "Abgestimmt"
+          ],
+          "dtypes": [
+            "object",
+            "object",
+            "object",
+            "float64",
+            "float64",
+            "float64",
+            "bool"
+          ],
+          "sha256": "8a2c11c62f04c2377ec26d4d43dd8f722366cbb9045229710678b643c719a0ae"
+        }
+      }
+    },
+    "entries": {
+      "oe_stock_status": "Nicht verfügbar",
+      "frames": {
+        "events": {
+          "rows": 6,
+          "columns": [
+            "date",
+            "type",
+            "reason_label",
+            "count",
+            "persnr",
+            "org_unit",
+            "source",
+            "mak",
+            "TrfGr",
+            "St",
+            "Jobfamily",
+            "OE-Cluster",
+            "Planstelle",
+            "Geschlecht",
+            "Text Gsch",
+            "Ausbildung",
+            "PersNr",
+            "Organisationseinheit",
+            "month",
+            "JF-Cluster",
+            "Diagnose-Quelle",
+            "_jf_fallback",
+            "event_date",
+            "Ereignisart",
+            "Ereignisquelle",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Kategorie",
+            "Abgänge",
+            "Zugänge",
+            "Jahr"
+          ],
+          "dtypes": [
+            "datetime64[ns]",
+            "object",
+            "object",
+            "int64",
+            "object",
+            "object",
+            "object",
+            "float64",
+            "object",
+            "int64",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "period[M]",
+            "object",
+            "object",
+            "bool",
+            "datetime64[ns]",
+            "object",
+            "object",
+            "int64",
+            "float64",
+            "object",
+            "int64",
+            "int64",
+            "int32"
+          ],
+          "sha256": "19a77a55fcbc5fd7ebc0ed638c8b93d6cc75fc5c6b67474d040408f9635f6d5f"
+        },
+        "oe_annual": {
+          "rows": 2,
+          "columns": [
+            "Jahr",
+            "Organisationseinheit",
+            "Kategorie",
+            "Ereignisart",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "int32",
+            "object",
+            "object",
+            "object",
+            "int64",
+            "float64",
+            "int64",
+            "int64"
+          ],
+          "sha256": "fbefcb438fc61151445cb582c4f0611746ae413f97414ac611f58c92839adba1"
+        },
+        "oe_cluster_annual": {
+          "rows": 2,
+          "columns": [
+            "Jahr",
+            "OE-Cluster",
+            "Kategorie",
+            "Ereignisart",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "int32",
+            "object",
+            "object",
+            "object",
+            "int64",
+            "float64",
+            "int64",
+            "int64"
+          ],
+          "sha256": "244d524a708b5f8673e264fd5dab8a2f584c8a698f3b9051a7a2676b0182380c"
+        },
+        "oe_stock_annual": {
+          "rows": 0,
+          "columns": [],
+          "dtypes": [],
+          "sha256": "821bf06b4dcb406ea508a4a992eadc22f29850cd208ba24aea7c29148de8ccf1"
+        },
+        "oe_stock_checks": {
+          "rows": 0,
+          "columns": [],
+          "dtypes": [],
+          "sha256": "821bf06b4dcb406ea508a4a992eadc22f29850cd208ba24aea7c29148de8ccf1"
+        },
+        "jf_annual": {
+          "rows": 2,
+          "columns": [
+            "Jahr",
+            "Jobfamily",
+            "Kategorie",
+            "Ereignisart",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "int32",
+            "string",
+            "object",
+            "object",
+            "int64",
+            "float64",
+            "int64",
+            "int64"
+          ],
+          "sha256": "a360326c347a17db62a1f779ede3d4954ff18c1b3f488d74ef81bae09584c46d"
+        },
+        "jf_stock": {
+          "rows": 0,
+          "columns": [],
+          "dtypes": [],
+          "sha256": "821bf06b4dcb406ea508a4a992eadc22f29850cd208ba24aea7c29148de8ccf1"
+        },
+        "jf_stock_checks": {
+          "rows": 0,
+          "columns": [],
+          "dtypes": [],
+          "sha256": "821bf06b4dcb406ea508a4a992eadc22f29850cd208ba24aea7c29148de8ccf1"
+        },
+        "jf_cluster_annual": {
+          "rows": 2,
+          "columns": [
+            "Jahr",
+            "JF-Cluster",
+            "Kategorie",
+            "Ereignisart",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "int32",
+            "string",
+            "object",
+            "object",
+            "int64",
+            "float64",
+            "int64",
+            "int64"
+          ],
+          "sha256": "6b1a235a1f7d464bf16e7af3f3d8730622cf9681b58c7fff391d005dca22f9dc"
+        },
+        "jf_cluster_stock": {
+          "rows": 0,
+          "columns": [],
+          "dtypes": [],
+          "sha256": "821bf06b4dcb406ea508a4a992eadc22f29850cd208ba24aea7c29148de8ccf1"
+        },
+        "jf_cluster_stock_checks": {
+          "rows": 0,
+          "columns": [],
+          "dtypes": [],
+          "sha256": "821bf06b4dcb406ea508a4a992eadc22f29850cd208ba24aea7c29148de8ccf1"
+        }
+      }
+    },
+    "atz_ruhend": {
+      "oe_stock_status": "Abgestimmt",
+      "frames": {
+        "events": {
+          "rows": 7,
+          "columns": [
+            "period_label",
+            "event_date",
+            "persnr",
+            "reason_code",
+            "reason_label",
+            "Organisationseinheit",
+            "Jobfamily",
+            "headcount_change",
+            "mak_change",
+            "period_start",
+            "period_end",
+            "age",
+            "OE-Zuordnungsherkunft",
+            "Ereignisart",
+            "Ereignisquelle",
+            "OE-Cluster",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Kategorie",
+            "Abgänge",
+            "Zugänge",
+            "Jahr"
+          ],
+          "dtypes": [
+            "object",
+            "datetime64[ns]",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "int64",
+            "float64",
+            "datetime64[ns]",
+            "datetime64[ns]",
+            "float64",
+            "object",
+            "object",
+            "object",
+            "object",
+            "int64",
+            "float64",
+            "object",
+            "int64",
+            "int64",
+            "int32"
+          ],
+          "sha256": "5c5b9e04fbf0b460a821ed5527f5128085a0235ff62cbfa02f1d2ac0c77ce94b"
+        },
+        "oe_annual": {
+          "rows": 6,
+          "columns": [
+            "Jahr",
+            "Organisationseinheit",
+            "Kategorie",
+            "Ereignisart",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "int32",
+            "object",
+            "object",
+            "object",
+            "int64",
+            "float64",
+            "int64",
+            "int64"
+          ],
+          "sha256": "5cf12157bd431dee5d7b8f443e113f91146baac69ce79441393c3d3afb3b61ff"
+        },
+        "oe_cluster_annual": {
+          "rows": 6,
+          "columns": [
+            "Jahr",
+            "OE-Cluster",
+            "Kategorie",
+            "Ereignisart",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "int32",
+            "object",
+            "object",
+            "object",
+            "int64",
+            "float64",
+            "int64",
+            "int64"
+          ],
+          "sha256": "e9ecb4c44c3eee67085191d34b65646c2c5d5d1c691d639af67ff238aa401b7b"
+        },
+        "oe_stock_annual": {
+          "rows": 20,
+          "columns": [
+            "Ebene",
+            "Organisation",
+            "Stichtag",
+            "Jahr",
+            "Art",
+            "Ausgangs-Köpfe",
+            "Ausgangs-MAK",
+            "Jahresänderung-Köpfe",
+            "Jahresänderung-MAK",
+            "Technischer Effekt-Köpfe",
+            "Technischer Effekt-MAK",
+            "Kumulierte Änderung-Köpfe",
+            "Kumulierte Änderung-MAK",
+            "Bestand-Köpfe",
+            "Bestand-MAK"
+          ],
+          "dtypes": [
+            "object",
+            "object",
+            "datetime64[ns]",
+            "int64",
+            "object",
+            "int64",
+            "float64",
+            "float64",
+            "float64",
+            "float64",
+            "float64",
+            "float64",
+            "float64",
+            "float64",
+            "float64"
+          ],
+          "sha256": "08fb606f7347d9233bbce6a2fa98143dddfc3a066e15a4fb84eb4ffc6077f6e7"
+        },
+        "oe_stock_checks": {
+          "rows": 5,
+          "columns": [
+            "Ebene",
+            "Organisation",
+            "Berechnete Köpfe",
+            "Finale Köpfe",
+            "Differenz Köpfe",
+            "Berechnete MAK",
+            "Finale MAK",
+            "Differenz MAK",
+            "Abgestimmt"
+          ],
+          "dtypes": [
+            "object",
+            "object",
+            "float64",
+            "int64",
+            "float64",
+            "float64",
+            "float64",
+            "float64",
+            "bool"
+          ],
+          "sha256": "af00b182a7a0244223a549cbcf9c9fb63af6022fc08311f8a97bdc80c42d6873"
+        },
+        "jf_annual": {
+          "rows": 5,
+          "columns": [
+            "Jahr",
+            "Jobfamily",
+            "Kategorie",
+            "Ereignisart",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "int32",
+            "string",
+            "object",
+            "object",
+            "int64",
+            "float64",
+            "int64",
+            "int64"
+          ],
+          "sha256": "289ec1b18f7eaf4165ea138d11cbea70dbac2252ff774286fc87b3667fa67cf7"
+        },
+        "jf_stock": {
+          "rows": 0,
+          "columns": [],
+          "dtypes": [],
+          "sha256": "821bf06b4dcb406ea508a4a992eadc22f29850cd208ba24aea7c29148de8ccf1"
+        },
+        "jf_stock_checks": {
+          "rows": 5,
+          "columns": [
+            "Jobfamily",
+            "Kennzahl",
+            "Prüfung",
+            "Berechnet",
+            "Zielbestand",
+            "Differenz",
+            "Abgestimmt"
+          ],
+          "dtypes": [
+            "object",
+            "object",
+            "object",
+            "float64",
+            "object",
+            "object",
+            "bool"
+          ],
+          "sha256": "48066e332fe8bfc21c7b265d5e69d7d3c4b5c59c9d2129cab1621005a5992848"
+        },
+        "jf_cluster_annual": {
+          "rows": 5,
+          "columns": [
+            "Jahr",
+            "JF-Cluster",
+            "Kategorie",
+            "Ereignisart",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "int32",
+            "string",
+            "object",
+            "object",
+            "int64",
+            "float64",
+            "int64",
+            "int64"
+          ],
+          "sha256": "e54437895214a7b8827ba52706531793c75e3548004ca5718a635cc430d2f415"
+        },
+        "jf_cluster_stock": {
+          "rows": 0,
+          "columns": [],
+          "dtypes": [],
+          "sha256": "821bf06b4dcb406ea508a4a992eadc22f29850cd208ba24aea7c29148de8ccf1"
+        },
+        "jf_cluster_stock_checks": {
+          "rows": 5,
+          "columns": [
+            "JF-Cluster",
+            "Kennzahl",
+            "Prüfung",
+            "Berechnet",
+            "Zielbestand",
+            "Differenz",
+            "Abgestimmt"
+          ],
+          "dtypes": [
+            "object",
+            "object",
+            "object",
+            "float64",
+            "object",
+            "object",
+            "bool"
+          ],
+          "sha256": "fafac1f4e85ec55b5ab649a3eefd852b1b7b8b92dd7c708361f0f3163660aff1"
+        }
+      }
+    },
+    "azubi_transfer": {
+      "oe_stock_status": "Nicht verfügbar",
+      "frames": {
+        "events": {
+          "rows": 8,
+          "columns": [
+            "date",
+            "type",
+            "reason_label",
+            "count",
+            "persnr",
+            "org_unit",
+            "source",
+            "mak",
+            "TrfGr",
+            "St",
+            "Jobfamily",
+            "Planstelle",
+            "Geschlecht",
+            "Text Gsch",
+            "Ausbildung",
+            "OE-Cluster",
+            "JF-Cluster",
+            "is_forecast",
+            "source_pool",
+            "entry_date",
+            "graduation_date",
+            "cohort",
+            "comment",
+            "is_internal_transition",
+            "Vertragsart",
+            "MitarbGruppenbez.",
+            "Jobfamily_pre_azubi",
+            "PersNr",
+            "Organisationseinheit",
+            "month",
+            "Diagnose-Quelle",
+            "_jf_fallback",
+            "event_date",
+            "Ereignisart",
+            "Ereignisquelle",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Kategorie",
+            "Abgänge",
+            "Zugänge",
+            "Jahr"
+          ],
+          "dtypes": [
+            "datetime64[ns]",
+            "object",
+            "object",
+            "int64",
+            "object",
+            "object",
+            "object",
+            "float64",
+            "object",
+            "float64",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "bool",
+            "object",
+            "datetime64[ns]",
+            "datetime64[ns]",
+            "int64",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "period[M]",
+            "object",
+            "bool",
+            "datetime64[ns]",
+            "object",
+            "object",
+            "int64",
+            "float64",
+            "object",
+            "int64",
+            "int64",
+            "int32"
+          ],
+          "sha256": "47c659eecdac5136094e16b6cfd05b061085ffdc93d3275b88e1a2f5554098bc"
+        },
+        "oe_annual": {
+          "rows": 4,
+          "columns": [
+            "Jahr",
+            "Organisationseinheit",
+            "Kategorie",
+            "Ereignisart",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "int32",
+            "object",
+            "object",
+            "object",
+            "int64",
+            "float64",
+            "int64",
+            "int64"
+          ],
+          "sha256": "84346316ce28c9ec3b51ac5fcbd0719e23b402a3ff587477786200c4618bced7"
+        },
+        "oe_cluster_annual": {
+          "rows": 4,
+          "columns": [
+            "Jahr",
+            "OE-Cluster",
+            "Kategorie",
+            "Ereignisart",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "int32",
+            "object",
+            "object",
+            "object",
+            "int64",
+            "float64",
+            "int64",
+            "int64"
+          ],
+          "sha256": "09005689134a9ae4f1e2ac1fbcfb3194e6342e85872a26f99aa19a6e14f70255"
+        },
+        "oe_stock_annual": {
+          "rows": 0,
+          "columns": [],
+          "dtypes": [],
+          "sha256": "821bf06b4dcb406ea508a4a992eadc22f29850cd208ba24aea7c29148de8ccf1"
+        },
+        "oe_stock_checks": {
+          "rows": 0,
+          "columns": [],
+          "dtypes": [],
+          "sha256": "821bf06b4dcb406ea508a4a992eadc22f29850cd208ba24aea7c29148de8ccf1"
+        },
+        "jf_annual": {
+          "rows": 4,
+          "columns": [
+            "Jahr",
+            "Jobfamily",
+            "Kategorie",
+            "Ereignisart",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "int32",
+            "string",
+            "object",
+            "object",
+            "int64",
+            "float64",
+            "int64",
+            "int64"
+          ],
+          "sha256": "f1e987d0a1114ad93a20083e4543a6ef4d3712d5a1bb03da478769fd0e88ccfb"
+        },
+        "jf_stock": {
+          "rows": 0,
+          "columns": [],
+          "dtypes": [],
+          "sha256": "821bf06b4dcb406ea508a4a992eadc22f29850cd208ba24aea7c29148de8ccf1"
+        },
+        "jf_stock_checks": {
+          "rows": 0,
+          "columns": [],
+          "dtypes": [],
+          "sha256": "821bf06b4dcb406ea508a4a992eadc22f29850cd208ba24aea7c29148de8ccf1"
+        },
+        "jf_cluster_annual": {
+          "rows": 4,
+          "columns": [
+            "Jahr",
+            "JF-Cluster",
+            "Kategorie",
+            "Ereignisart",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "int32",
+            "string",
+            "object",
+            "object",
+            "int64",
+            "float64",
+            "int64",
+            "int64"
+          ],
+          "sha256": "42312259ed4b2fff296865e6e740c146e6d502546a8adf175808ea1bfffd49d9"
+        },
+        "jf_cluster_stock": {
+          "rows": 0,
+          "columns": [],
+          "dtypes": [],
+          "sha256": "821bf06b4dcb406ea508a4a992eadc22f29850cd208ba24aea7c29148de8ccf1"
+        },
+        "jf_cluster_stock_checks": {
+          "rows": 0,
+          "columns": [],
+          "dtypes": [],
+          "sha256": "821bf06b4dcb406ea508a4a992eadc22f29850cd208ba24aea7c29148de8ccf1"
+        }
+      }
+    },
+    "combined": {
+      "oe_stock_status": "Nicht verfügbar",
+      "frames": {
+        "events": {
+          "rows": 23,
+          "columns": [
+            "period_label",
+            "period_start",
+            "period_end",
+            "event_date",
+            "persnr",
+            "reason_code",
+            "reason_label",
+            "Organisationseinheit",
+            "Jobfamily",
+            "headcount_change",
+            "mak_change",
+            "age",
+            "OE-Zuordnungsherkunft",
+            "Ereignisart",
+            "Ereignisquelle",
+            "OE-Cluster",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Kategorie",
+            "Abgänge",
+            "Zugänge",
+            "Jahr",
+            "date",
+            "type",
+            "count",
+            "org_unit",
+            "source",
+            "mak",
+            "TrfGr",
+            "St",
+            "Planstelle",
+            "Geschlecht",
+            "Text Gsch",
+            "Ausbildung",
+            "JF-Cluster",
+            "is_forecast",
+            "source_pool",
+            "entry_date",
+            "graduation_date",
+            "cohort",
+            "comment",
+            "is_internal_transition",
+            "Vertragsart",
+            "MitarbGruppenbez.",
+            "Jobfamily_pre_azubi",
+            "PersNr",
+            "month",
+            "Diagnose-Quelle",
+            "_jf_fallback"
+          ],
+          "dtypes": [
+            "object",
+            "datetime64[ns]",
+            "datetime64[ns]",
+            "datetime64[ns]",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "float64",
+            "float64",
+            "float64",
+            "object",
+            "object",
+            "object",
+            "object",
+            "int64",
+            "float64",
+            "object",
+            "int64",
+            "int64",
+            "int32",
+            "datetime64[ns]",
+            "object",
+            "float64",
+            "object",
+            "object",
+            "float64",
+            "object",
+            "float64",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "datetime64[ns]",
+            "datetime64[ns]",
+            "float64",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "period[M]",
+            "object",
+            "object"
+          ],
+          "sha256": "c83bd5bce4abdefc03121ea65f31a2a3dea9a0d8821abd4f71f9595e589498f5"
+        },
+        "oe_annual": {
+          "rows": 13,
+          "columns": [
+            "Jahr",
+            "Organisationseinheit",
+            "Kategorie",
+            "Ereignisart",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "int32",
+            "object",
+            "object",
+            "object",
+            "int64",
+            "float64",
+            "int64",
+            "int64"
+          ],
+          "sha256": "43de046263f2e2850fcb1d5e7ed752c45d0ef235da602916da64efabe22b1bdd"
+        },
+        "oe_cluster_annual": {
+          "rows": 13,
+          "columns": [
+            "Jahr",
+            "OE-Cluster",
+            "Kategorie",
+            "Ereignisart",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "int32",
+            "object",
+            "object",
+            "object",
+            "int64",
+            "float64",
+            "int64",
+            "int64"
+          ],
+          "sha256": "aa3a63e4c5dc558402031142abba79e14b6ac716e028a195ff5b6ae6d7ee8779"
+        },
+        "oe_stock_annual": {
+          "rows": 0,
+          "columns": [],
+          "dtypes": [],
+          "sha256": "821bf06b4dcb406ea508a4a992eadc22f29850cd208ba24aea7c29148de8ccf1"
+        },
+        "oe_stock_checks": {
+          "rows": 0,
+          "columns": [],
+          "dtypes": [],
+          "sha256": "821bf06b4dcb406ea508a4a992eadc22f29850cd208ba24aea7c29148de8ccf1"
+        },
+        "jf_annual": {
+          "rows": 13,
+          "columns": [
+            "Jahr",
+            "Jobfamily",
+            "Kategorie",
+            "Ereignisart",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "int32",
+            "string",
+            "object",
+            "object",
+            "int64",
+            "float64",
+            "int64",
+            "int64"
+          ],
+          "sha256": "d50d9763d4dbd5b148f61ff64756190aeefcef8ade09029f0806c59c192cd6c4"
+        },
+        "jf_stock": {
+          "rows": 0,
+          "columns": [],
+          "dtypes": [],
+          "sha256": "821bf06b4dcb406ea508a4a992eadc22f29850cd208ba24aea7c29148de8ccf1"
+        },
+        "jf_stock_checks": {
+          "rows": 0,
+          "columns": [],
+          "dtypes": [],
+          "sha256": "821bf06b4dcb406ea508a4a992eadc22f29850cd208ba24aea7c29148de8ccf1"
+        },
+        "jf_cluster_annual": {
+          "rows": 13,
+          "columns": [
+            "Jahr",
+            "JF-Cluster",
+            "Kategorie",
+            "Ereignisart",
+            "Köpfe-Veränderung",
+            "MAK-Veränderung",
+            "Abgänge",
+            "Zugänge"
+          ],
+          "dtypes": [
+            "int32",
+            "string",
+            "object",
+            "object",
+            "int64",
+            "float64",
+            "int64",
+            "int64"
+          ],
+          "sha256": "38210eff771b69e32a05cfc4d1ac387083804cf379b206fb604c52dabfc6b931"
+        },
+        "jf_cluster_stock": {
+          "rows": 0,
+          "columns": [],
+          "dtypes": [],
+          "sha256": "821bf06b4dcb406ea508a4a992eadc22f29850cd208ba24aea7c29148de8ccf1"
+        },
+        "jf_cluster_stock_checks": {
+          "rows": 0,
+          "columns": [],
+          "dtypes": [],
+          "sha256": "821bf06b4dcb406ea508a4a992eadc22f29850cd208ba24aea7c29148de8ccf1"
+        }
+      }
+    }
+  }
+}
