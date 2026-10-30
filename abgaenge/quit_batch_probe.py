@@ -16,7 +16,8 @@ from .forecast import (_annual_to_period_rate, _annual_to_period_rates, _calc_ag
 from .params import get_retirement_ages
 from .schemas import (COL_ATZ_BEGINN, COL_ATZ_ENDE, COL_ATZ_PHASE,
                       COL_BSGRD, COL_GEB, COL_PERSNR, COL_SOLL, COL_STATUS,
-                      REASON_LABELS, REASON_QUIT, REASON_RETIREMENT)
+                      REASON_LABELS, REASON_QUIT, REASON_RETIREMENT,
+                      REASON_RUHEND_RETURN, REASON_RUHEND_START)
 from dataloader.jobfamily_service import normalize_jobfamily_value
 
 EMPTY_EVENT_COLUMNS = [
@@ -40,6 +41,14 @@ class PreparedQuitBatch:
     retirement_probs: tuple[np.ndarray, ...]
     include_quit: bool
     include_retirement: bool
+    initial_ruhend: np.ndarray
+    return_probs: tuple[float, ...]
+    new_ruhend_expected: tuple[float, ...]
+    ruhend_months: int
+    include_ruhend: bool
+    start_date: pd.Timestamp
+    initial_ruhend_until: np.ndarray
+    new_ruhend_until: tuple[pd.Timestamp, ...]
 
 
 @dataclass(frozen=True)
@@ -47,6 +56,7 @@ class QuitSeedResult:
     events: pd.DataFrame
     active: np.ndarray
     mak: np.ndarray
+    status_ruhend: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -80,12 +90,12 @@ def prepare_quit_yearly(baseline: pd.DataFrame, oe_map: dict[str, str]) -> Prepa
 def prepare_quit_batch(df_ma: pd.DataFrame, df_atz: pd.DataFrame,
                        start_date: pd.Timestamp, end_date: pd.Timestamp,
                        params: dict[str, Any], freq: str = "M") -> PreparedQuitBatch:
-    """Prepare immutable person/period data for retirement and/or quits."""
+    """Prepare immutable person/period data for retirement, quits and Ruhend."""
     components = params.get("components", {})
-    if (components.get("atz") is not False or components.get("ruhend") is not False
-            or not (components.get("retirement") is True or components.get("quit") is True)
+    if (components.get("atz") is not False
+            or not any(components.get(key) is True for key in ("retirement", "quit", "ruhend"))
             or set(components) != {"atz", "retirement", "quit", "ruhend"}):
-        raise ValueError("The probe supports only explicitly quit-only or retirement/quit components")
+        raise ValueError("The probe supports only retirement/quit/Ruhend components with ATZ off")
     start_date, end_date = pd.Timestamp(start_date), pd.Timestamp(end_date)
     if end_date <= start_date:
         raise ValueError("end_date must be after start_date")
@@ -119,6 +129,9 @@ def prepare_quit_batch(df_ma: pd.DataFrame, df_atz: pd.DataFrame,
         mak[state.index.isin(fr_ids)] = 0.0
     periods = tuple(_periods(start_date, end_date, freq))
     ages, period_probs, retirement_probs = [], [], []
+    return_probs, new_ruhend_expected, new_ruhend_until = [], [], []
+    ruhend_params = params.get("ruhend", {})
+    ruhend_months = int(ruhend_params.get("ruhend_avg_duration_months", 12))
     eligible = state.iloc[eligible_positions].copy()
     if components["retirement"]:
         retirement_age, early_retirement_age = get_retirement_ages(params.get("retirement", {}))
@@ -143,16 +156,30 @@ def prepare_quit_batch(df_ma: pd.DataFrame, df_atz: pd.DataFrame,
                          (eligible_ages < retirement_age), p60, 0.0)))
         else:
             retirement_probs.append(np.zeros(len(eligible_positions), dtype=float))
+        period_days = max(1, (period.end - period.start).days)
+        return_probs.append(_annual_to_period_rate(
+            float(ruhend_params.get("ruhend_return_rate", 0.95)), period_days))
+        new_ruhend_expected.append(
+            float(ruhend_params.get("ruhend_new_cases_per_year", 0)) *
+            (period_days / 365.25))
+        new_ruhend_until.append(period.start + pd.DateOffset(months=ruhend_months))
+    initial_ruhend = state[COL_STATUS].eq("Ruhendes Beschäftigungsverhältnis").to_numpy()
+    initial_until = np.full(len(state), pd.NaT, dtype=object)
+    initial_until[initial_ruhend] = start_date + pd.DateOffset(months=ruhend_months)
     return PreparedQuitBatch(ids, mak, state["Organisationseinheit"].to_numpy(),
                              state["Jobfamily"].to_numpy(), periods, eligible_positions,
                              tuple(ages), tuple(period_probs), tuple(retirement_probs),
-                             bool(components["quit"]), bool(components["retirement"]))
+                             bool(components["quit"]), bool(components["retirement"]),
+                             initial_ruhend,
+                             tuple(return_probs), tuple(new_ruhend_expected),
+                             ruhend_months, bool(components["ruhend"]), start_date,
+                             initial_until, tuple(new_ruhend_until))
 
 
-def iter_quit_seed_records(
+def _iter_departure_seed_states(
     prepared: PreparedQuitBatch, seeds: Iterable[int],
-) -> Iterator[tuple[int, list[dict[str, Any]], np.ndarray, np.ndarray]]:
-    """Yield one seed at a time, without creating or retaining event DataFrames."""
+) -> Iterator[tuple[int, list[dict[str, Any]], np.ndarray, np.ndarray, np.ndarray]]:
+    """Yield one seed's full mutable state; no per-seed DataFrame is created."""
     seen: set[int] = set()
     for seed in seeds:
         seed = int(seed)
@@ -162,11 +189,18 @@ def iter_quit_seed_records(
         component_seeds = np.random.SeedSequence(seed).spawn(5)
         rng_ret = np.random.default_rng(component_seeds[1])
         rng = np.random.default_rng(component_seeds[2])
+        rng_ruh_new = np.random.default_rng(component_seeds[3])
+        rng_ruh_ret = np.random.default_rng(component_seeds[4])
         active = np.ones(len(prepared.ids), dtype=bool)
         mak = prepared.mak.copy()
+        status_ruhend = prepared.initial_ruhend.copy()
+        mak_before_ruhend = mak.copy()
+        ruhend_until = (prepared.initial_ruhend_until.copy() if prepared.include_ruhend
+                        else np.empty(0, dtype=object))
         events = []
-        for period, ages, all_probs, ret_probs in zip(
+        for period, ages, all_probs, ret_probs, return_prob, new_expected, new_until in zip(
             prepared.periods, prepared.ages, prepared.period_probs, prepared.retirement_probs,
+            prepared.return_probs, prepared.new_ruhend_expected, prepared.new_ruhend_until,
         ):
             eligible_positions = prepared.eligible_positions
             if prepared.include_retirement:
@@ -194,12 +228,11 @@ def iter_quit_seed_records(
             if prepared.include_quit:
                 eligible_mask = active[eligible_positions]
                 eligible = eligible_positions[eligible_mask]
-                if len(eligible) == 0:
-                    continue
-                probs = all_probs[eligible_mask]
-                selected = eligible[rng.random(len(eligible)) < probs]
-                for pos in selected:
-                    events.append({
+                if len(eligible):
+                    probs = all_probs[eligible_mask]
+                    selected = eligible[rng.random(len(eligible)) < probs]
+                    for pos in selected:
+                        events.append({
                         "period_label": period.label,
                         "period_start": period.start,
                         "period_end": period.end,
@@ -212,19 +245,75 @@ def iter_quit_seed_records(
                         "headcount_change": -1,
                         "mak_change": -float(mak[pos]),
                         "age": float(ages[pos]),
-                    })
-                    active[pos] = False
-                    mak[pos] = 0.0
+                        })
+                        active[pos] = False
+                        mak[pos] = 0.0
+            if prepared.include_ruhend:
+                return_candidates = np.flatnonzero(active & status_ruhend)
+                can_return = [pos for pos in return_candidates
+                              if pd.notna(ruhend_until[pos]) and ruhend_until[pos] <= period.start]
+                if can_return:
+                    selected = np.asarray(can_return)[
+                        rng_ruh_ret.random(len(can_return)) < return_prob]
+                    for pos in selected:
+                        restored_mak = float(mak_before_ruhend[pos])
+                        status_ruhend[pos] = False
+                        mak[pos] = restored_mak
+                        ruhend_until[pos] = pd.NaT
+                        events.append({
+                            "period_label": period.label,
+                            "event_date": period.end,
+                            "persnr": prepared.ids[pos],
+                            "reason_code": REASON_RUHEND_RETURN,
+                            "reason_label": REASON_LABELS[REASON_RUHEND_RETURN],
+                            "Organisationseinheit": str(prepared.org[pos]),
+                            "Jobfamily": str(prepared.jobfamily[pos]),
+                            "headcount_change": 0,
+                            "mak_change": restored_mak,
+                        })
+                if new_expected > 0:
+                    count = int(rng_ruh_new.poisson(lam=new_expected))
+                    if count > 0:
+                        candidates = eligible_positions[
+                            active[eligible_positions] & ~status_ruhend[eligible_positions]]
+                        if len(candidates):
+                            chosen = candidates[rng_ruh_new.choice(
+                                len(candidates), size=min(count, len(candidates)), replace=False)]
+                            for pos in chosen:
+                                current_mak = float(mak[pos])
+                                mak_before_ruhend[pos] = current_mak
+                                status_ruhend[pos] = True
+                                mak[pos] = 0.0
+                                ruhend_until[pos] = new_until
+                                events.append({
+                                    "period_label": period.label,
+                                    "event_date": period.end,
+                                    "persnr": prepared.ids[pos],
+                                    "reason_code": REASON_RUHEND_START,
+                                    "reason_label": REASON_LABELS[REASON_RUHEND_START],
+                                    "Organisationseinheit": str(prepared.org[pos]),
+                                    "Jobfamily": str(prepared.jobfamily[pos]),
+                                    "headcount_change": 0,
+                                    "mak_change": -current_mak,
+                                })
+        yield seed, events, active, mak, status_ruhend
+
+
+def iter_quit_seed_records(
+    prepared: PreparedQuitBatch, seeds: Iterable[int],
+) -> Iterator[tuple[int, list[dict[str, Any]], np.ndarray, np.ndarray]]:
+    """Yield event records, active mask and MAK for one seed at a time."""
+    for seed, events, active, mak, _ in _iter_departure_seed_states(prepared, seeds):
         yield seed, events, active, mak
 
 
 def run_quit_batch(prepared: PreparedQuitBatch, seeds: Iterable[int]) -> dict[int, QuitSeedResult]:
     """Materialize small batches for exact comparison with the reference."""
     results: dict[int, QuitSeedResult] = {}
-    for seed, events, active, mak in iter_quit_seed_records(prepared, seeds):
+    for seed, events, active, mak, status_ruhend in _iter_departure_seed_states(prepared, seeds):
         results[seed] = QuitSeedResult(
             pd.DataFrame(events) if events else pd.DataFrame(columns=EMPTY_EVENT_COLUMNS),
-            active, mak,
+            active, mak, status_ruhend,
         )
     return results
 
@@ -233,19 +322,20 @@ def quit_annual_event_values(
     records: list[dict[str, Any]], yearly: PreparedQuitYearly | None = None,
 ) -> dict[tuple[int, str, str], tuple[int, float]]:
     """Aggregate quit-only annual event values without a per-seed DataFrame."""
-    grouped: dict[tuple[int, str, str], list[float]] = {}
+    grouped: dict[tuple[int, str, str], list[tuple[int, float]]] = {}
     for event in records:
         year = event["event_date"].year
         grouped.setdefault((year, "Organisationseinheit", event["Organisationseinheit"]), []).append(
-            event["mak_change"])
+            (event["headcount_change"], event["mak_change"]))
         if yearly is None:
             grouped.setdefault((year, "Jobfamily", event["Jobfamily"]), []).append(
-                event["mak_change"])
+                (event["headcount_change"], event["mak_change"]))
         if yearly is not None:
             person = str(event["persnr"])
             org = str(event["Organisationseinheit"]).strip() or "Nicht zugeordnet"
             oe_cluster = yearly.oe_map.get(org, "Nicht zugeordnet")
-            grouped.setdefault((year, "OE-Cluster", oe_cluster), []).append(event["mak_change"])
+            grouped.setdefault((year, "OE-Cluster", oe_cluster), []).append(
+                (event["headcount_change"], event["mak_change"]))
             for dimension, assignments, members in (
                 ("Jobfamily", yearly.jf_assignments, yearly.jf_members),
                 ("JF-Cluster", yearly.cluster_assignments, yearly.cluster_members),
@@ -259,8 +349,8 @@ def quit_annual_event_values(
                 else:
                     groups = [(yearly.jf_cluster_map.get(str(event["Jobfamily"]), "UNMAPPED"), 1.0)]
                 for group, ratio in groups:
-                    grouped.setdefault((year, dimension, str(group)), []).append(
-                        float(event["mak_change"]) * ratio)
+                    grouped.setdefault((year, dimension, str(group)), []).append((
+                        event["headcount_change"], float(event["mak_change"]) * ratio))
     def compensated_sum(values: list[float]) -> float:
         total = 0.0
         correction = 0.0
@@ -271,7 +361,9 @@ def quit_annual_event_values(
             total = updated
         return total
 
-    return {key: (-len(values), compensated_sum(values)) for key, values in grouped.items()}
+    return {key: (sum(headcount for headcount, _ in values),
+                  compensated_sum([mak for _, mak in values]))
+            for key, values in grouped.items()}
 
 
 def departure_annual_event_values(
@@ -279,7 +371,7 @@ def departure_annual_event_values(
 ) -> dict[tuple[int, str, str, str], tuple[int, float]]:
     """Keep retirement and quit annual groups separate like the reference views."""
     values = {}
-    for reason in (REASON_RETIREMENT, REASON_QUIT):
+    for reason in (REASON_RETIREMENT, REASON_QUIT, REASON_RUHEND_RETURN, REASON_RUHEND_START):
         selected = [record for record in records if record["reason_code"] == reason]
         values.update({(*key, reason): value
                        for key, value in quit_annual_event_values(selected, yearly).items()})

@@ -51,10 +51,15 @@ def main() -> None:
     base = _prepare_employee_forecast_base(snapshot, atz, FROZEN_STICHTAG)
     params = default_params()
     with_retirement = "--retirement" in sys.argv
+    with_ruhend = "--ruhend" in sys.argv
     params["components"] = {"atz": False, "retirement": with_retirement,
-                            "quit": True, "ruhend": False}
+                            "quit": True, "ruhend": with_ruhend}
+    if with_ruhend:
+        params["ruhend"].update(ruhend_new_cases_per_year=8,
+                                ruhend_return_rate=0.95,
+                                ruhend_avg_duration_months=3)
     def annual_values(records):
-        return (departure_annual_event_values(records, yearly) if with_retirement
+        return (departure_annual_event_values(records, yearly) if with_retirement or with_ruhend
                 else quit_annual_event_values(records, yearly))
     target = pd.Timestamp("2026-12-31")
     seeds = (42, 7, 123, 999)
@@ -94,18 +99,34 @@ def main() -> None:
                          context, summary, dimension=dimension, include_stock=False)["annual"])
             for _, row in table.iterrows():
                 key = (int(row["Jahr"]), dimension, str(row[dimension]))
-                if with_retirement:
+                if with_retirement or with_ruhend:
                     key = (*key, str(row["Ereignisart"]))
                 expected[key] = (
                     int(row["Köpfe-Veränderung"]), float(row["MAK-Veränderung"]))
         assert annual == expected, seed
-        departed = set(reference["persnr"]) if not reference.empty else set()
+        departed = set(reference.loc[reference["headcount_change"].eq(-1), "persnr"])
         expected_active = [person not in departed for person in prepared.ids]
         assert batch[seed].active.tolist() == expected_active, seed
-        assert batch[seed].mak.tolist() == [float(m) if a else 0.0
-                                            for m, a in zip(prepared.mak, expected_active)], seed
+        expected_mak = prepared.mak.copy()
+        person_positions = {person: index for index, person in enumerate(prepared.ids)}
+        for event in reference.itertuples():
+            position = person_positions[event.persnr]
+            if event.reason_code in ("RETIREMENT", "QUIT", "RUHEND_START"):
+                expected_mak[position] = 0.0
+            elif event.reason_code == "RUHEND_RETURN":
+                expected_mak[position] = event.mak_change
+        assert batch[seed].mak.tolist() == expected_mak.tolist(), seed
+        expected_status = prepared.initial_ruhend.copy()
+        for event in reference.itertuples():
+            position = person_positions[event.persnr]
+            if event.reason_code == "RUHEND_START":
+                expected_status[position] = True
+            elif event.reason_code == "RUHEND_RETURN":
+                expected_status[position] = False
+        assert batch[seed].status_ruhend.tolist() == expected_status.tolist(), seed
     reference_seconds = perf_counter() - start
-    print(f"retirement={with_retirement}; seeds={len(seeds)}; preparation={prepare_seconds:.4f}s; "
+    print(f"retirement={with_retirement}; ruhend={with_ruhend}; seeds={len(seeds)}; "
+          f"preparation={prepare_seconds:.4f}s; "
           f"batch={batch_seconds:.4f}s; reference={reference_seconds:.4f}s; "
           "exact event, state, four-level annual-event parity=True")
     if "--stress-1000" in sys.argv:

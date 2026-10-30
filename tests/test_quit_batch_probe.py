@@ -62,7 +62,7 @@ def test_quit_batch_matches_reference_event_order_and_final_state(matrix: bool, 
 def test_quit_batch_rejects_other_components() -> None:
     params = _params_only_quit()
     params["components"]["atz"] = True
-    with pytest.raises(ValueError, match="quit-only"):
+    with pytest.raises(ValueError, match="ATZ off"):
         prepare_quit_batch(pd.DataFrame([_make_employee("101")]), EMPTY_ATZ,
                            pd.Timestamp("2026-01-01"), pd.Timestamp("2026-12-31"), params)
 
@@ -152,6 +152,93 @@ def test_retirement_stream_matches_reference_and_four_yearly_levels(
         assert active.tolist() == expected_active
         assert mak.tolist() == [float(value) if still_active else 0.0
                                 for value, still_active in zip(prepared.mak, expected_active)]
+        context["departure_events"] = reference
+        normalized = normalize_simulation_events(context, expected_run_signature="a")
+        summary = {"run_signature": "a", "events": normalized, "metadata": context["metadata"]}
+        expected = {}
+        for dimension in ("Organisationseinheit", "OE-Cluster", "Jobfamily", "JF-Cluster"):
+            table = (aggregate_simulation_events(normalized, dimension=dimension)
+                     if dimension in ("Organisationseinheit", "OE-Cluster")
+                     else build_jobfamily_yearly_view(
+                         context, summary, dimension=dimension, include_stock=False)["annual"])
+            for _, row in table.iterrows():
+                expected[(int(row["Jahr"]), dimension, str(row[dimension]),
+                          str(row["Ereignisart"]))] = (
+                    int(row["Köpfe-Veränderung"]), float(row["MAK-Veränderung"]))
+        assert departure_annual_event_values(records, yearly) == expected
+
+
+@pytest.mark.parametrize("mode", ["return", "new", "combined"])
+def test_ruhend_stream_matches_reference_events_and_mak(mode: str) -> None:
+    from test_ruhend_mak_headcount import _params_only_ruhend
+
+    people = pd.DataFrame([
+        _make_employee(str(1000 + i), age_years=28 + i * 4, mak=0.5 + i / 10,
+                       status="Ruhendes Beschäftigungsverhältnis" if i == 0 else "Aktiv",
+                       org=f"OE-{i % 3}", jobfamily=f"JF-{i % 2}")
+        for i in range(12)
+    ])
+    params = _params_only_ruhend(new_cases_per_year=0 if mode == "return" else 6,
+                                 return_rate=1.0, avg_duration_months=3)
+    if mode == "combined":
+        params["components"].update(retirement=True, quit=True)
+        params["retirement"] = {"retirement_age": 65, "early_retirement_age": 60,
+                                "rent_rate_65": 0.8, "rent_rate_60_65": 0.3}
+        params["quit"] = {"quit_rate_base": 0.2, "use_quit_matrix": False}
+    start, end = pd.Timestamp("2026-01-01"), pd.Timestamp("2027-12-31")
+    prepared = prepare_quit_batch(people, EMPTY_ATZ, start, end, params)
+    for seed, records, active, mak in iter_quit_seed_records(prepared, (7, 42, 123)):
+        reference = run_forecast_abgaenge(
+            people, EMPTY_ATZ, start, end, "M", {**params, "random_seed": seed},
+            include_diagnostics=False)["events_person_level"]
+        actual = pd.DataFrame(records) if records else pd.DataFrame(columns=reference.columns)
+        pd.testing.assert_frame_equal(actual, reference, check_exact=True)
+        departed = set(reference.loc[reference["headcount_change"].eq(-1), "persnr"])
+        assert active.tolist() == [person not in departed for person in prepared.ids]
+        expected_mak = prepared.mak.copy()
+        for event in reference.itertuples():
+            pos = list(prepared.ids).index(event.persnr)
+            if event.reason_code in ("RETIREMENT", "QUIT", "RUHEND_START"):
+                expected_mak[pos] = 0.0
+            elif event.reason_code == "RUHEND_RETURN":
+                expected_mak[pos] = event.mak_change
+        assert mak.tolist() == expected_mak.tolist()
+        expected_status = prepared.initial_ruhend.copy()
+        for event in reference.itertuples():
+            pos = list(prepared.ids).index(event.persnr)
+            if event.reason_code == "RUHEND_START":
+                expected_status[pos] = True
+            elif event.reason_code == "RUHEND_RETURN":
+                expected_status[pos] = False
+        assert run_quit_batch(prepared, [seed])[seed].status_ruhend.tolist() == \
+            expected_status.tolist()
+
+
+def test_ruhend_stream_four_yearly_levels_match_reference() -> None:
+    from components.jobfamily_simulation_yearly import build_jobfamily_yearly_view
+    from dataloader.compact_simulation_engine import _prepare_employee_forecast_base
+    from test_org_simulation_reconciliation import _bridge_context
+    from test_ruhend_mak_headcount import _params_only_ruhend
+    from utils.org_simulation_events import aggregate_simulation_events, normalize_simulation_events
+
+    context = _bridge_context("identity")
+    baseline = context["baseline_snapshot"]
+    start, end = pd.Timestamp("2025-12-31"), pd.Timestamp("2027-12-31")
+    context["metadata"] = {"base_date": start, "target_date": end}
+    people = _prepare_employee_forecast_base(baseline, EMPTY_ATZ, start)
+    params = _params_only_ruhend(new_cases_per_year=8, return_rate=1.0,
+                                 avg_duration_months=3)
+    params["components"].update(retirement=True, quit=True)
+    params["retirement"] = {"retirement_age": 65, "early_retirement_age": 60,
+                            "rent_rate_65": 0.8, "rent_rate_60_65": 0.3}
+    params["quit"] = {"quit_rate_base": 0.15, "use_quit_matrix": False}
+    prepared = prepare_quit_batch(people, EMPTY_ATZ, start, end, params)
+    yearly = prepare_quit_yearly(baseline, context["cluster_mapping"]["oe_map"])
+    for seed, records, _, _ in iter_quit_seed_records(prepared, (7, 42, 123)):
+        reference = run_forecast_abgaenge(
+            people, EMPTY_ATZ, start, end, "M", {**params, "random_seed": seed},
+            include_diagnostics=False)["events_person_level"]
+        pd.testing.assert_frame_equal(pd.DataFrame(records), reference, check_exact=True)
         context["departure_events"] = reference
         normalized = normalize_simulation_events(context, expected_run_signature="a")
         summary = {"run_signature": "a", "events": normalized, "metadata": context["metadata"]}
