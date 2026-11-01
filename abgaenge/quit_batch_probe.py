@@ -326,9 +326,10 @@ def _iter_departure_seed_states(
                             if profile is not None:
                                 profile["atz_random_choice"] = profile.get("atz_random_choice", 0.0) + perf_counter() - subphase_start
                                 subphase_start = perf_counter()
-                            for pos in candidates[chosen]:
-                                offset_days = rng_atz.integers(
-                                    0, max(1, (period.end - period.start).days + 1))
+                            offsets = rng_atz.integers(
+                                0, max(1, (period.end - period.start).days + 1),
+                                size=count)
+                            for pos, offset_days in zip(candidates[chosen], offsets):
                                 in_atz[pos] = True
                                 fr_index, end_index = prepared.atz_transition_lookup[
                                     period_index][int(offset_days)]
@@ -381,10 +382,10 @@ def _iter_departure_seed_states(
                         })
                 if profile is not None:
                     profile["atz_transition_events"] = profile.get("atz_transition_events", 0.0) + perf_counter() - phase_start
+            eligible_positions = np.flatnonzero(~in_atz)
             if prepared.include_retirement:
                 if profile is not None:
                     phase_start = perf_counter()
-                eligible_positions = np.flatnonzero(~in_atz)
                 eligible_mask = active[eligible_positions]
                 eligible = eligible_positions[eligible_mask]
                 if len(eligible):
@@ -411,7 +412,6 @@ def _iter_departure_seed_states(
             if prepared.include_quit:
                 if profile is not None:
                     phase_start = perf_counter()
-                eligible_positions = np.flatnonzero(~in_atz)
                 eligible_mask = active[eligible_positions]
                 eligible = eligible_positions[eligible_mask]
                 if len(eligible):
@@ -439,7 +439,6 @@ def _iter_departure_seed_states(
             if prepared.include_ruhend:
                 if profile is not None:
                     phase_start = perf_counter()
-                eligible_positions = np.flatnonzero(~in_atz)
                 return_candidates = np.flatnonzero(active & status_ruhend)
                 can_return = [pos for pos in return_candidates
                               if pd.notna(ruhend_until[pos]) and ruhend_until[pos] <= period.start]

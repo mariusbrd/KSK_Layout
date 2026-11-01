@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import numpy as np
 import pytest
 
 from abgaenge.forecast import run_forecast_abgaenge
@@ -10,6 +11,19 @@ from abgaenge.quit_batch_probe import (iter_quit_seed_records, prepare_quit_batc
                                        quit_annual_event_values, departure_annual_event_values,
                                        run_quit_batch)
 from test_kuendigung_forecast import _atz_df, _make_employee, _params_only_quit, EMPTY_ATZ
+
+
+@pytest.mark.parametrize("count", [1, 2, 5, 20])
+@pytest.mark.parametrize("upper", [28, 30, 31, 91])
+def test_batched_atz_offsets_preserve_rng_stream(count: int, upper: int) -> None:
+    for seed in (7, 42, 123):
+        component_seed = np.random.SeedSequence(seed).spawn(5)[0]
+        scalar_rng = np.random.default_rng(component_seed)
+        batch_rng = np.random.default_rng(component_seed)
+        scalar = [scalar_rng.integers(0, upper) for _ in range(count)]
+        batched = batch_rng.integers(0, upper, size=count)
+        assert batched.tolist() == scalar
+        assert batch_rng.integers(0, upper) == scalar_rng.integers(0, upper)
 
 
 @pytest.mark.parametrize("matrix", [False, True])
