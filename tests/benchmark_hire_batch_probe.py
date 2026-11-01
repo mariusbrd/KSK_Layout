@@ -51,7 +51,9 @@ def main() -> None:
     prepare = prepare_hire_batch if yearly else prepare_hire_month
     prepared = prepare(after_departure, month_start, target, params, vacancies)
     prepare_seconds = perf_counter() - started
-    for seed, records, new_rows in iter_hire_seed_records(prepared, (42, 7, 123, 999)):
+    parity_seeds = (range(100) if "--parity-100" in sys.argv else (42, 7, 123, 999))
+    parity_count = 0
+    for seed, records, new_rows in iter_hire_seed_records(prepared, parity_seeds):
         reference = run_forecast_zugaenge(
             after_departure, month_start, end_date=target,
             params={**params, "random_seed": seed}, vacancies=vacancies,
@@ -59,6 +61,7 @@ def main() -> None:
         pd.testing.assert_frame_equal(pd.DataFrame(records), reference["events"],
                                       check_exact=True)
         assert len(new_rows) == len(records), seed
+        parity_count += 1
     started = perf_counter()
     seed_count = 1000 if "--stress-1000" in sys.argv else 100 if yearly else 1000
     phases = {} if "--profile" in sys.argv else None
@@ -67,7 +70,7 @@ def main() -> None:
     stream_seconds = perf_counter() - started
     print(f"scope={'one_year' if yearly else 'one_month'}_new_hires_only; seeds={seed_count}; "
           f"preparation={prepare_seconds:.4f}s; stream={stream_seconds:.4f}s; "
-          f"events={event_count}; productive_seed_parity=4")
+          f"events={event_count}; productive_seed_parity={parity_count}")
     if phases is not None:
         for name, seconds in sorted(phases.items()):
             print(f"phase={name}; seconds={seconds:.4f}")

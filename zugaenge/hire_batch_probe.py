@@ -38,11 +38,21 @@ class PreparedHireBatch:
     initial_genders: tuple[str, ...]
     initial_education: tuple[str, ...]
     initial_unit_cluster_map: dict[str, str]
+    initial_gender_counts: dict[str, int]
+    initial_education_counts: dict[str, int]
 
 
-def _observed_distribution(values: list[str]) -> tuple[list[str], list[float]]:
-    counts = pd.Series(values, dtype="object").value_counts(normalize=True)
-    return counts.index.tolist(), counts.values.astype(float).tolist()
+def _counts(values: Iterable[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for value in values:
+        counts[value] = counts.get(value, 0) + 1
+    return counts
+
+
+def _count_distribution(counts: dict[str, int]) -> tuple[list[str], list[float]]:
+    labels = sorted(counts, key=lambda label: -counts[label])
+    total = sum(counts.values())
+    return labels, [counts[label] / total for label in labels]
 
 
 def prepare_hire_month(df_snapshot: pd.DataFrame, start_date: pd.Timestamp,
@@ -108,7 +118,8 @@ def prepare_hire_batch(df_snapshot: pd.DataFrame, start_date: pd.Timestamp,
                              tuple(sorted(vacancies or [], key=lambda row: row["date"])),
                              tuple(counts), start_date, genders, education,
                              initial_genders, initial_education,
-                             _get_unit_to_cluster_map(state))
+                             _get_unit_to_cluster_map(state),
+                             _counts(initial_genders), _counts(initial_education))
 
 
 def iter_hire_seed_records(prepared: PreparedHireBatch, seeds: Iterable[int],
@@ -131,8 +142,8 @@ def iter_hire_seed_records(prepared: PreparedHireBatch, seeds: Iterable[int],
         unit_cluster_map = dict(prepared.initial_unit_cluster_map)
         hire_params = (prepared.params if configured_map else
                        {**prepared.params, "org_unit_to_cluster_map": unit_cluster_map})
-        genders_seen = list(prepared.initial_genders)
-        education_seen = list(prepared.initial_education)
+        gender_counts = prepared.initial_gender_counts.copy()
+        education_counts = prepared.initial_education_counts.copy()
         if profile is not None:
             profile["seed_setup"] = profile.get("seed_setup", 0.0) + perf_counter() - phase_start
         for period_index, (period, count) in enumerate(zip(prepared.periods, prepared.counts)):
@@ -141,11 +152,11 @@ def iter_hire_seed_records(prepared: PreparedHireBatch, seeds: Iterable[int],
                 if profile is not None:
                     phase_start = perf_counter()
                 genders = (prepared.gender_distribution if period_index == 0 else
-                           _observed_distribution(genders_seen) if genders_seen else
+                           _count_distribution(gender_counts) if gender_counts else
                            (["m", "w"], [0.5, 0.5]))
                 education = (prepared.education_distribution if period_index == 0 or
-                             not education_seen else
-                             _observed_distribution(education_seen))
+                             not education_counts else
+                             _count_distribution(education_counts))
                 if profile is not None:
                     profile["distributions"] = profile.get("distributions", 0.0) + perf_counter() - phase_start
                     phase_start = perf_counter()
@@ -154,10 +165,13 @@ def iter_hire_seed_records(prepared: PreparedHireBatch, seeds: Iterable[int],
                     prepared.org_units, vacancy_state, count, prepared.start_date,
                     genders, education,
                 )
-                genders_seen.extend(event["Geschlecht"] for event in period_events)
-                education_seen.extend(event["Ausbildung"] for event in period_events
-                                      if event["Ausbildung"] in EDUCATION_GROUPS and
-                                      event["Ausbildung"] != AZUBI_TRAINING_EDUCATION)
+                for event in period_events:
+                    gender = event["Geschlecht"]
+                    gender_counts[gender] = gender_counts.get(gender, 0) + 1
+                    education_value = event["Ausbildung"]
+                    if (education_value in EDUCATION_GROUPS and
+                            education_value != AZUBI_TRAINING_EDUCATION):
+                        education_counts[education_value] = education_counts.get(education_value, 0) + 1
                 if not configured_map:
                     for event in period_events:
                         row = event["_new_row"]

@@ -6,8 +6,23 @@ import pytest
 
 from zugaenge.forecast import run_forecast_zugaenge
 from zugaenge.hire_batch_probe import (prepare_hire_batch, prepare_hire_month,
-                                       iter_hire_seed_records)
+                                       iter_hire_seed_records, _counts,
+                                       _count_distribution)
 from zugaenge.params import default_params
+
+
+@pytest.mark.parametrize("values", [
+    ["m", "w", "m", "w"],
+    ["w", "m", "w", "m"],
+    ["d", "m", "w", "d", "w", "m"],
+    ["Bachelor FH", "kfm Berufsabschluss", "Bachelor FH"],
+    ["kfm Berufsabschluss", "Bachelor FH", "Bachelor FH", "kfm Berufsabschluss"],
+])
+def test_count_distribution_matches_pandas_value_counts(values: list[str]) -> None:
+    expected = pd.Series(values, dtype="object").value_counts(normalize=True)
+    labels, weights = _count_distribution(_counts(values))
+    assert labels == expected.index.tolist()
+    assert weights == expected.values.astype(float).tolist()
 
 
 @pytest.mark.parametrize("strategy", ["Random", "OrgUnit", "Fill Vacancies"])
