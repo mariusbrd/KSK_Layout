@@ -58,13 +58,17 @@ def main() -> None:
                                       check_exact=True)
         assert len(new_rows) == len(records), seed
     started = perf_counter()
-    seed_count = 100 if yearly else 1000
+    seed_count = 1000 if "--stress-1000" in sys.argv else 100 if yearly else 1000
+    phases = {} if "--profile" in sys.argv else None
     event_count = sum(len(records) for _, records, _ in
-                      iter_hire_seed_records(prepared, range(seed_count)))
+                      iter_hire_seed_records(prepared, range(seed_count), phases))
     stream_seconds = perf_counter() - started
     print(f"scope={'one_year' if yearly else 'one_month'}_new_hires_only; seeds={seed_count}; "
           f"preparation={prepare_seconds:.4f}s; stream={stream_seconds:.4f}s; "
           f"events={event_count}; productive_seed_parity=4")
+    if phases is not None:
+        for name, seconds in sorted(phases.items()):
+            print(f"phase={name}; seconds={seconds:.4f}")
 
 
 if __name__ == "__main__":

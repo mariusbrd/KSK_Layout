@@ -7,10 +7,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Iterable, Iterator
+from time import perf_counter
 import warnings
 
 import numpy as np
 import pandas as pd
+from config.settings import EDUCATION_GROUPS
 
 from .forecast import (
     AZUBI_TRAINING_EDUCATION, DEFAULT_NEW_HIRE_EDUCATION,
@@ -24,6 +26,7 @@ from .forecast import (
 @dataclass(frozen=True)
 class PreparedHireBatch:
     state: pd.DataFrame
+    decision_state: pd.DataFrame
     params: dict[str, Any]
     periods: tuple[PeriodInfo, ...]
     org_units: list[str]
@@ -32,6 +35,13 @@ class PreparedHireBatch:
     start_date: pd.Timestamp
     gender_distribution: tuple[list[str], list[float]]
     education_distribution: tuple[list[str], list[float]]
+    initial_genders: tuple[str, ...]
+    initial_education: tuple[str, ...]
+
+
+def _observed_distribution(values: list[str]) -> tuple[list[str], list[float]]:
+    counts = pd.Series(values, dtype="object").value_counts(normalize=True)
+    return counts.index.tolist(), counts.values.astype(float).tolist()
 
 
 def prepare_hire_month(df_snapshot: pd.DataFrame, start_date: pd.Timestamp,
@@ -83,16 +93,30 @@ def prepare_hire_batch(df_snapshot: pd.DataFrame, start_date: pd.Timestamp,
     education = _build_education_distribution(
         state, excluded_values=[AZUBI_TRAINING_EDUCATION],
         fallback_choices=[DEFAULT_NEW_HIRE_EDUCATION])
-    return PreparedHireBatch(state, params, tuple(periods), org_units,
+    initial_genders = tuple(_normalized_gender_series(state).tolist())
+    initial_education_series = state[INTERNAL_EDUCATION_COL].dropna().astype(str).str.strip()
+    initial_education_series = initial_education_series[
+        initial_education_series.isin(EDUCATION_GROUPS)]
+    initial_education_series = initial_education_series[
+        ~initial_education_series.isin((AZUBI_TRAINING_EDUCATION,))]
+    initial_education = tuple(initial_education_series.tolist())
+    decision_columns = {"PersNr", "Organisationseinheit", "OE-Cluster"}
+    decision_state = state[[column for column in state.columns
+                            if column in decision_columns]].copy()
+    return PreparedHireBatch(state, decision_state, params, tuple(periods), org_units,
                              tuple(sorted(vacancies or [], key=lambda row: row["date"])),
-                             tuple(counts), start_date, genders, education)
+                             tuple(counts), start_date, genders, education,
+                             initial_genders, initial_education)
 
 
-def iter_hire_seed_records(prepared: PreparedHireBatch, seeds: Iterable[int]
+def iter_hire_seed_records(prepared: PreparedHireBatch, seeds: Iterable[int],
+                           profile: dict[str, float] | None = None,
                            ) -> Iterator[tuple[int, list[dict[str, Any]], list[dict[str, Any]]]]:
     """Yield exact hire events and generated person rows for each seed."""
     seen: set[int] = set()
     for seed in seeds:
+        if profile is not None:
+            phase_start = perf_counter()
         seed = int(seed)
         if seed in seen:
             raise ValueError(f"duplicate seed: {seed}")
@@ -100,23 +124,43 @@ def iter_hire_seed_records(prepared: PreparedHireBatch, seeds: Iterable[int]
         rng = np.random.default_rng(np.random.SeedSequence(seed).spawn(1)[0])
         events: list[dict[str, Any]] = []
         vacancy_state = [row.copy() for row in prepared.vacancies]
-        state = prepared.state.copy() if len(prepared.periods) > 1 else prepared.state
+        state = prepared.decision_state.copy() if len(prepared.periods) > 1 else prepared.state
+        genders_seen = list(prepared.initial_genders)
+        education_seen = list(prepared.initial_education)
+        if profile is not None:
+            profile["seed_setup"] = profile.get("seed_setup", 0.0) + perf_counter() - phase_start
         for period_index, (period, count) in enumerate(zip(prepared.periods, prepared.counts)):
             period_events: list[dict[str, Any]] = []
             if count > 0:
+                if profile is not None:
+                    phase_start = perf_counter()
                 genders = (prepared.gender_distribution if period_index == 0 else
-                           _build_gender_distribution(state, _normalized_gender_series(state)))
-                education = (prepared.education_distribution if period_index == 0 else
-                             _build_education_distribution(
-                                 state, excluded_values=[AZUBI_TRAINING_EDUCATION],
-                                 fallback_choices=[DEFAULT_NEW_HIRE_EDUCATION]))
+                           _observed_distribution(genders_seen) if genders_seen else
+                           (["m", "w"], [0.5, 0.5]))
+                education = (prepared.education_distribution if period_index == 0 or
+                             not education_seen else
+                             _observed_distribution(education_seen))
+                if profile is not None:
+                    profile["distributions"] = profile.get("distributions", 0.0) + perf_counter() - phase_start
+                    phase_start = perf_counter()
                 _simulate_hires(
                     state, prepared.params, period, rng, period_events,
                     prepared.org_units, vacancy_state, count, prepared.start_date,
                     genders, education,
                 )
+                genders_seen.extend(event["Geschlecht"] for event in period_events)
+                education_seen.extend(event["Ausbildung"] for event in period_events
+                                      if event["Ausbildung"] in EDUCATION_GROUPS and
+                                      event["Ausbildung"] != AZUBI_TRAINING_EDUCATION)
+                if profile is not None:
+                    profile["hire_decisions"] = profile.get("hire_decisions", 0.0) + perf_counter() - phase_start
             if len(prepared.periods) > 1 and period_events:
-                df_new = pd.DataFrame([event["_new_row"] for event in period_events])
+                if profile is not None:
+                    phase_start = perf_counter()
+                df_new = pd.DataFrame([
+                    {key: value for key, value in event["_new_row"].items()
+                     if key in ("PersNr", "Organisationseinheit", "OE-Cluster")}
+                    for event in period_events])
                 df_new.set_index("PersNr", drop=False, inplace=True)
                 for column in df_new.columns:
                     if column not in state.columns:
@@ -126,7 +170,11 @@ def iter_hire_seed_records(prepared: PreparedHireBatch, seeds: Iterable[int]
                     warnings.filterwarnings("ignore", message=".*empty or all-NA.*",
                                             category=FutureWarning)
                     state = pd.concat([state, df_new])
+                if profile is not None:
+                    profile["state_append"] = profile.get("state_append", 0.0) + perf_counter() - phase_start
             events.extend(period_events)
+        if profile is not None:
+            phase_start = perf_counter()
         new_rows = [{key: value for key, value in event["_new_row"].items()
                      if key not in (INTERNAL_EDUCATION_COL, INTERNAL_AZUBI_FLAG_COL)}
                     for event in events]
@@ -135,4 +183,6 @@ def iter_hire_seed_records(prepared: PreparedHireBatch, seeds: Iterable[int]
             event["PersNr"] = event["persnr"]
             event["Organisationseinheit"] = event["org_unit"]
             event["month"] = event["date"].to_period("M")
+        if profile is not None:
+            profile["record_cleanup"] = profile.get("record_cleanup", 0.0) + perf_counter() - phase_start
         yield seed, events, new_rows

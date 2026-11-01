@@ -95,3 +95,29 @@ def test_hire_batch_multiple_months_match_reference(
             matching = generated.loc[generated["PersNr"].eq(row["PersNr"])].iloc[0]
             for column, value in row.items():
                 assert matching[column] == value, (seed, column)
+
+
+@pytest.mark.parametrize("missing_distribution", [False, True])
+def test_hire_batch_distribution_fallback_and_matrix_match_reference(
+        missing_distribution: bool) -> None:
+    people = pd.DataFrame([
+        {"PersNr": "000001", "Organisationseinheit": "OE-A",
+         "OE-Cluster": "C-A", "Jobfamily": "JF-A", "active": True,
+         "Geschlecht": None if missing_distribution else "d",
+         "Ausbildung": None if missing_distribution else "Bachelor FH"},
+    ])
+    params = default_params()
+    params["new_hires"].update(
+        active=True, count_per_year=36, strategy="Random",
+        distribution=[
+            {"Jobfamily": "JF-A", "OE-Cluster": "C-A", "Share %": 60.0},
+            {"Jobfamily": "JF-B", "OE-Cluster": "C-B", "Share %": 40.0},
+        ],
+    )
+    start, end = pd.Timestamp("2026-01-01"), pd.Timestamp("2026-06-30")
+    prepared = prepare_hire_batch(people, start, end, params)
+    for seed, records, _ in iter_hire_seed_records(prepared, (7, 42, 123)):
+        reference = run_forecast_zugaenge(
+            people, start, end_date=end, params={**params, "random_seed": seed})
+        pd.testing.assert_frame_equal(pd.DataFrame(records), reference["events"],
+                                      check_exact=True)
