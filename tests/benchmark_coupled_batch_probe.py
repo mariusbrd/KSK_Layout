@@ -19,7 +19,10 @@ from dataloader.compact_simulation_engine import (
 )
 from abgaenge.forecast import run_forecast_abgaenge
 from abgaenge.params import default_params as departure_defaults
-from zugaenge.coupled_batch_probe import prepare_coupled_batch, iter_coupled_seed_records
+from zugaenge.coupled_batch_probe import (
+    prepare_coupled_batch, iter_coupled_seed_records,
+    replay_final_employee_state,
+)
 from zugaenge.forecast import run_forecast_zugaenge
 from zugaenge.params import default_params as hire_defaults
 
@@ -58,6 +61,9 @@ def main() -> None:
             vacancies=expected_vacancies)
         pd.testing.assert_frame_equal(pd.DataFrame(hire_records),
                                       reference_hires["events"], check_exact=True)
+        pd.testing.assert_frame_equal(
+            replay_final_employee_state(people, dep_records, new_people),
+            reference_hires["final_state"], check_exact=True)
         assert len(new_people) == len(hire_records)
         parity_count += 1
     seed_count = (1000 if "--stress-1000" in sys.argv else
@@ -71,6 +77,12 @@ def main() -> None:
           f"stream={perf_counter() - started:.4f}s; "
           f"departures={total_departures}; hires={total_hires}; "
           f"productive_seed_parity={parity_count}")
+    if "--replay-100" in sys.argv:
+        started = perf_counter()
+        for _, departures, _, _, new_people in iter_coupled_seed_records(
+                prepared, range(100)):
+            replay_final_employee_state(people, departures, new_people)
+        print(f"coupled_replay_100={perf_counter() - started:.4f}s")
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ from dataloader.compact_simulation_engine import (
 )
 from zugaenge.coupled_batch_probe import (
     _donor_lookup, prepare_coupled_batch, iter_coupled_seed_records,
-    vacancies_from_departure_records,
+    replay_final_employee_state, vacancies_from_departure_records,
 )
 from zugaenge.forecast import run_forecast_zugaenge
 from zugaenge.params import default_params as hire_defaults
@@ -77,3 +77,6 @@ def test_coupled_seed_events_and_vacancies_match_reference() -> None:
         pd.testing.assert_frame_equal(pd.DataFrame(hire_records),
                                       reference_hires["events"], check_exact=True)
         assert len(new_people) == len(reference_hires["events"])
+        pd.testing.assert_frame_equal(
+            replay_final_employee_state(people, departure_records, new_people),
+            reference_hires["final_state"], check_exact=True)

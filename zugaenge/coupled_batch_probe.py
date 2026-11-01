@@ -13,7 +13,9 @@ import pandas as pd
 
 from abgaenge.quit_batch_probe import (PreparedQuitBatch, iter_quit_seed_records,
                                        prepare_quit_batch)
-from dataloader.compact_simulation_engine import _normalize_persnr_series
+from dataloader.compact_simulation_engine import (
+    _apply_attrition_events_to_employee_state, _normalize_persnr_series,
+)
 from .hire_batch_probe import (PreparedHireBatch, iter_hire_seed_records,
                                prepare_hire_batch)
 
@@ -93,3 +95,32 @@ def iter_coupled_seed_records(
             prepared.hires, [seed],
             vacancy_provider=lambda _seed: vacancies))
         yield seed, departures, vacancies, hires, new_people
+
+
+def replay_final_employee_state(
+        employee_base: pd.DataFrame,
+        departure_records: list[dict[str, Any]],
+        new_people: list[dict[str, Any]],
+) -> pd.DataFrame:
+    """Rebuild the reference person state from exact coupled seed records.
+
+    This is a parity bridge, not the optimized many-seed stock calculation.
+    """
+    state = _apply_attrition_events_to_employee_state(
+        employee_base, pd.DataFrame(departure_records))
+    if not state.empty and "PersNr" in state.columns:
+        state.set_index("PersNr", drop=False, inplace=True)
+        state.sort_index(inplace=True)
+    if new_people:
+        additions = pd.DataFrame(new_people)
+        additions.set_index("PersNr", drop=False, inplace=True)
+        for column in additions.columns:
+            if column not in state.columns:
+                state[column] = pd.NA
+        additions = additions.reindex(columns=state.columns)
+        import warnings
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*empty or all-NA.*",
+                                    category=FutureWarning)
+            state = pd.concat([state, additions])
+    return state
