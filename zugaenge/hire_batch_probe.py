@@ -6,7 +6,7 @@ This probe prepares the unchanged input state and distributions once per batch.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 from time import perf_counter
 
 import numpy as np
@@ -124,6 +124,7 @@ def prepare_hire_batch(df_snapshot: pd.DataFrame, start_date: pd.Timestamp,
 
 def iter_hire_seed_records(prepared: PreparedHireBatch, seeds: Iterable[int],
                            profile: dict[str, float] | None = None,
+                           vacancy_provider: Callable[[int], list[dict[str, Any]]] | None = None,
                            ) -> Iterator[tuple[int, list[dict[str, Any]], list[dict[str, Any]]]]:
     """Yield exact hire events and generated person rows for each seed."""
     seen: set[int] = set()
@@ -136,7 +137,10 @@ def iter_hire_seed_records(prepared: PreparedHireBatch, seeds: Iterable[int],
         seen.add(seed)
         rng = np.random.default_rng(np.random.SeedSequence(seed).spawn(1)[0])
         events: list[dict[str, Any]] = []
-        vacancy_state = [row.copy() for row in prepared.vacancies]
+        vacancy_source = (vacancy_provider(seed) if vacancy_provider is not None
+                          else prepared.vacancies)
+        vacancy_state = [row.copy() for row in sorted(vacancy_source,
+                                                     key=lambda row: row["date"])]
         state = prepared.decision_state if len(prepared.periods) > 1 else prepared.state
         configured_map = prepared.params.get("org_unit_to_cluster_map", {}) or {}
         unit_cluster_map = dict(prepared.initial_unit_cluster_map)
