@@ -6,6 +6,7 @@ stream and the same number of draws per period as the reference forecast.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Any, Iterable, Iterator
 
 import numpy as np
@@ -263,10 +264,13 @@ def prepare_quit_batch(df_ma: pd.DataFrame, df_atz: pd.DataFrame,
 
 def _iter_departure_seed_states(
     prepared: PreparedQuitBatch, seeds: Iterable[int],
+    profile: dict[str, float] | None = None,
 ) -> Iterator[tuple[int, list[dict[str, Any]], np.ndarray, np.ndarray, np.ndarray]]:
     """Yield one seed's full mutable state; no per-seed DataFrame is created."""
     seen: set[int] = set()
     for seed in seeds:
+        if profile is not None:
+            setup_start = perf_counter()
         seed = int(seed)
         if seed in seen:
             raise ValueError(f"duplicate seed: {seed}")
@@ -287,6 +291,8 @@ def _iter_departure_seed_states(
         ruhend_until = (prepared.initial_ruhend_until.copy() if prepared.include_ruhend
                         else np.empty(0, dtype=object))
         events = []
+        if profile is not None:
+            profile["seed_setup"] = profile.get("seed_setup", 0.0) + perf_counter() - setup_start
         for period_index, (period, ages, tenure, all_probs, ret_probs, return_prob, new_expected, new_until, atz_probs, atz_age) in enumerate(zip(
             prepared.periods, prepared.ages, prepared.tenures,
             prepared.period_probs, prepared.retirement_probs,
@@ -294,11 +300,19 @@ def _iter_departure_seed_states(
             prepared.atz_probabilities, prepared.atz_age_eligible,
         )):
             if prepared.include_atz:
+                if profile is not None:
+                    phase_start = perf_counter()
                 atz_candidates = np.flatnonzero(
                     active & ~in_atz & ~status_ruhend & atz_age & prepared.atz_oe_eligible)
+                if profile is not None:
+                    profile["atz_filter"] = profile.get("atz_filter", 0.0) + perf_counter() - phase_start
+                    subphase_start = perf_counter()
                 if len(atz_candidates):
                     probs = atz_probs[atz_candidates]
                     expected = float(np.sum(probs))
+                    if profile is not None:
+                        profile["atz_expected"] = profile.get("atz_expected", 0.0) + perf_counter() - subphase_start
+                        subphase_start = perf_counter()
                     if expected > 0:
                         count = int(rng_atz.poisson(lam=expected))
                         positive = probs > 0
@@ -309,6 +323,9 @@ def _iter_departure_seed_states(
                             weights = positive_probs / float(np.sum(positive_probs))
                             chosen = rng_atz.choice(len(candidates), size=count,
                                                     replace=False, p=weights)
+                            if profile is not None:
+                                profile["atz_random_choice"] = profile.get("atz_random_choice", 0.0) + perf_counter() - subphase_start
+                                subphase_start = perf_counter()
                             for pos in candidates[chosen]:
                                 offset_days = rng_atz.integers(
                                     0, max(1, (period.end - period.start).days + 1))
@@ -319,6 +336,11 @@ def _iter_departure_seed_states(
                                     atz_plans[fr_index][0].append(int(pos))
                                 if end_index >= 0:
                                     atz_plans[end_index][1].append(int(pos))
+                            if profile is not None:
+                                profile["atz_schedule"] = profile.get("atz_schedule", 0.0) + perf_counter() - subphase_start
+                if profile is not None:
+                    profile["atz_selection"] = profile.get("atz_selection", 0.0) + perf_counter() - phase_start
+                    phase_start = perf_counter()
                 ar_to_fr, atz_end = atz_plans[period_index]
                 for pos in sorted(set(ar_to_fr)):
                     if active[pos] and not atz_fr_active[pos]:
@@ -357,7 +379,11 @@ def _iter_departure_seed_states(
                             "mak_change": change,
                             "age": float(ages[pos]),
                         })
+                if profile is not None:
+                    profile["atz_transition_events"] = profile.get("atz_transition_events", 0.0) + perf_counter() - phase_start
             if prepared.include_retirement:
+                if profile is not None:
+                    phase_start = perf_counter()
                 eligible_positions = np.flatnonzero(~in_atz)
                 eligible_mask = active[eligible_positions]
                 eligible = eligible_positions[eligible_mask]
@@ -380,7 +406,11 @@ def _iter_departure_seed_states(
                         })
                         active[pos] = False
                         mak[pos] = 0.0
+                if profile is not None:
+                    profile["retirement"] = profile.get("retirement", 0.0) + perf_counter() - phase_start
             if prepared.include_quit:
+                if profile is not None:
+                    phase_start = perf_counter()
                 eligible_positions = np.flatnonzero(~in_atz)
                 eligible_mask = active[eligible_positions]
                 eligible = eligible_positions[eligible_mask]
@@ -404,7 +434,11 @@ def _iter_departure_seed_states(
                         })
                         active[pos] = False
                         mak[pos] = 0.0
+                if profile is not None:
+                    profile["quit"] = profile.get("quit", 0.0) + perf_counter() - phase_start
             if prepared.include_ruhend:
+                if profile is not None:
+                    phase_start = perf_counter()
                 eligible_positions = np.flatnonzero(~in_atz)
                 return_candidates = np.flatnonzero(active & status_ruhend)
                 can_return = [pos for pos in return_candidates
@@ -453,6 +487,8 @@ def _iter_departure_seed_states(
                                     "headcount_change": 0,
                                     "mak_change": -current_mak,
                                 })
+                if profile is not None:
+                    profile["ruhend"] = profile.get("ruhend", 0.0) + perf_counter() - phase_start
         yield seed, events, active, mak, status_ruhend
 
 

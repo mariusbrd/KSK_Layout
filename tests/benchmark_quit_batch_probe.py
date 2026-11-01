@@ -23,7 +23,7 @@ from abgaenge.params import default_params
 from abgaenge.quit_batch_probe import (iter_quit_seed_records, prepare_quit_batch,
                                        prepare_quit_yearly,
                                        quit_annual_event_values, departure_annual_event_values,
-                                       run_quit_batch)
+                                       run_quit_batch, _iter_departure_seed_states)
 from test_monte_carlo_yearly_reference import _frame_signature
 from components.jobfamily_simulation_yearly import build_jobfamily_yearly_view
 from utils.org_simulation_events import aggregate_simulation_events, normalize_simulation_events
@@ -166,6 +166,22 @@ def main() -> None:
         print(f"profile_seeds=1000; events={record_count}; annual_keys={annual_key_count}; "
               f"generation_seconds={generation_seconds:.4f}; "
               f"aggregation_seconds={aggregation_seconds:.4f}")
+    if "--profile-phases-1000" in sys.argv:
+        phases: dict[str, float] = {}
+        start = perf_counter()
+        event_count = annual_key_count = 0
+        aggregation_seconds = 0.0
+        for _, records, _, _, _ in _iter_departure_seed_states(prepared, range(1000), phases):
+            event_count += len(records)
+            aggregation_start = perf_counter()
+            annual_key_count += len(annual_values(records))
+            aggregation_seconds += perf_counter() - aggregation_start
+        elapsed = perf_counter() - start
+        for name, seconds in sorted(phases.items()):
+            print(f"phase={name}; seconds={seconds:.4f}")
+        print(f"phase=annual_aggregation; seconds={aggregation_seconds:.4f}")
+        print(f"profile_phases_seeds=1000; events={event_count}; "
+              f"annual_keys={annual_key_count}; total_seconds={elapsed:.4f}")
     if "--cprofile-1000" in sys.argv:
         import cProfile
         import pstats
