@@ -265,6 +265,7 @@ def prepare_quit_batch(df_ma: pd.DataFrame, df_atz: pd.DataFrame,
 def _iter_departure_seed_states(
     prepared: PreparedQuitBatch, seeds: Iterable[int],
     profile: dict[str, float] | None = None,
+    atz_rows_by_seed: dict[int, list[dict[str, Any]]] | None = None,
 ) -> Iterator[tuple[int, list[dict[str, Any]], np.ndarray, np.ndarray, np.ndarray]]:
     """Yield one seed's full mutable state; no per-seed DataFrame is created."""
     seen: set[int] = set()
@@ -291,6 +292,7 @@ def _iter_departure_seed_states(
         ruhend_until = (prepared.initial_ruhend_until.copy() if prepared.include_ruhend
                         else np.empty(0, dtype=object))
         events = []
+        new_atz_rows: list[dict[str, Any]] = []
         if profile is not None:
             profile["seed_setup"] = profile.get("seed_setup", 0.0) + perf_counter() - setup_start
         for period_index, (period, ages, tenure, all_probs, ret_probs, return_prob, new_expected, new_until, atz_probs, atz_age) in enumerate(zip(
@@ -331,6 +333,17 @@ def _iter_departure_seed_states(
                                 size=count)
                             for pos, offset_days in zip(candidates[chosen], offsets):
                                 in_atz[pos] = True
+                                if atz_rows_by_seed is not None:
+                                    ar_start = period.start + pd.Timedelta(days=int(offset_days))
+                                    ar_end = ar_start + pd.DateOffset(months=prepared.atz_ar_months)
+                                    fr_start = ar_end + pd.Timedelta(days=1)
+                                    fr_end = fr_start + pd.DateOffset(months=prepared.atz_fr_months)
+                                    new_atz_rows.append({
+                                        COL_PERSNR: prepared.ids[pos],
+                                        "ar_begin": ar_start, "ar_end": ar_end,
+                                        "fr_begin": fr_start, "fr_end": fr_end,
+                                        "contract_end": fr_end,
+                                    })
                                 fr_index, end_index = prepared.atz_transition_lookup[
                                     period_index][int(offset_days)]
                                 if fr_index >= 0:
@@ -488,6 +501,8 @@ def _iter_departure_seed_states(
                                 })
                 if profile is not None:
                     profile["ruhend"] = profile.get("ruhend", 0.0) + perf_counter() - phase_start
+        if atz_rows_by_seed is not None:
+            atz_rows_by_seed[seed] = new_atz_rows
         yield seed, events, active, mak, status_ruhend
 
 
@@ -497,6 +512,43 @@ def iter_quit_seed_records(
     """Yield event records, active mask and MAK for one seed at a time."""
     for seed, events, active, mak, _ in _iter_departure_seed_states(prepared, seeds):
         yield seed, events, active, mak
+
+
+def prepare_atz_pivot_for_probe(
+        prepared: PreparedQuitBatch, df_atz: pd.DataFrame,
+        params: dict[str, Any]) -> pd.DataFrame:
+    """Prepare the baseline ATZ schedule once, using reference date rules."""
+    pivot = _build_atz_pivot(df_atz)
+    if not pivot.empty:
+        pivot[COL_PERSNR] = pivot[COL_PERSNR].astype(str).str.split('.').str[0].str.zfill(6)
+        pivot = pivot[pivot[COL_PERSNR].isin(set(prepared.ids))].copy()
+        pivot["fr_begin"] = pd.to_datetime(pivot["fr_begin"], errors="coerce")
+        pivot["contract_end"] = pd.to_datetime(pivot["contract_end"], errors="coerce")
+    atz_params = params.get("atz", {})
+    try:
+        min_ar = int(round(float(atz_params.get("atz_duration_ar_years", 2.5)) * 12))
+    except (ValueError, TypeError):
+        min_ar = 30
+    if min_ar < 6:
+        min_ar = 30
+    min_fr = int(round(float(atz_params.get("atz_duration_fr_years", 2.5)) * 12))
+    fr_ids = set(prepared.ids[prepared.initial_atz_fr])
+    return _enforce_min_ar_duration(pivot, min_ar, min_fr, fr_ids)
+
+
+def iter_quit_seed_records_with_atz(
+        prepared: PreparedQuitBatch, seeds: Iterable[int],
+        initial_pivot: pd.DataFrame,
+) -> Iterator[tuple[int, list[dict[str, Any]], pd.DataFrame]]:
+    """Yield exact departure records and ATZ schedule without a reference run."""
+    rows_by_seed: dict[int, list[dict[str, Any]]] = {}
+    columns = [COL_PERSNR, "ar_begin", "ar_end", "fr_begin", "fr_end", "contract_end"]
+    for seed, events, _, _, _ in _iter_departure_seed_states(
+            prepared, seeds, atz_rows_by_seed=rows_by_seed):
+        rows = rows_by_seed.pop(seed)
+        pivot = (pd.concat([initial_pivot, pd.DataFrame(rows)], ignore_index=True)
+                 if rows else initial_pivot.copy())
+        yield seed, events, pivot[columns].copy()
 
 
 def run_quit_batch(prepared: PreparedQuitBatch, seeds: Iterable[int]) -> dict[int, QuitSeedResult]:

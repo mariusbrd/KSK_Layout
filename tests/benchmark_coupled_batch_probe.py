@@ -17,15 +17,17 @@ from dataloader.compact_simulation_engine import (
     _apply_attrition_events_to_employee_state, _build_vacancies_from_attrition,
     _prepare_employee_forecast_base, _apply_salary_automation_to_employee_state,
     _append_new_people_rows, _finalize_future_snapshot, _normalize_persnr_series,
-    _resolve_atz_status_map, _update_existing_rows, simulate_compact_snapshot,
+    _resolve_atz_status_map, _resolve_simulation_cluster_context,
+    _update_existing_rows, simulate_compact_snapshot,
 )
 from abgaenge.forecast import run_forecast_abgaenge
 from abgaenge.params import default_params as departure_defaults
 from zugaenge.coupled_batch_probe import (
     prepare_coupled_batch, iter_coupled_seed_records,
-    replay_final_employee_state,
+    iter_coupled_seed_records_with_atz, replay_final_employee_state,
 )
 from zugaenge.forecast import run_forecast_zugaenge
+from zugaenge.enrichment import build_jf_to_cluster_map, enrich_zugaenge_events
 from zugaenge.params import default_params as hire_defaults
 
 
@@ -95,8 +97,9 @@ def check_snapshot_matrix(snapshot, atz, people, start, end) -> None:
     cases = [
         ("vacancy_quit", "Fill Vacancies", 20, 0.05, 0.05),
         ("random_high_quit", "Random", 30, 0.25, 0.05),
-        ("org_no_quit_atz", "OrgUnit", 12, 0.0, 0.0),
+        ("org_high_atz", "OrgUnit", 12, 0.0, 2.0),
     ]
+    _, cluster_bundle, cluster_signature = _resolve_simulation_cluster_context()
     for name, strategy, annual_hires, quit_rate, atz_rate in cases:
         departure_params, hire_params = departure_defaults(), hire_defaults()
         departure_params["quit"].update(quit_rate_base=quit_rate,
@@ -110,7 +113,7 @@ def check_snapshot_matrix(snapshot, atz, people, start, end) -> None:
                                         if strategy == "OrgUnit" else None)
         prepared = prepare_coupled_batch(people, atz, start, end,
                                          departure_params, hire_params)
-        for seed, departures, _, _, new_people in iter_coupled_seed_records(
+        for seed, departures, atz_pivot, _, hire_records, new_people in iter_coupled_seed_records_with_atz(
                 prepared, (7, 42)):
             reference = simulate_compact_snapshot(
                 snapshot, atz, end, base_date=start,
@@ -120,6 +123,17 @@ def check_snapshot_matrix(snapshot, atz, people, start, end) -> None:
             pd.testing.assert_frame_equal(
                 pd.DataFrame(departures),
                 reference.abgaenge_result["events_person_level"], check_exact=True)
+            pd.testing.assert_frame_equal(
+                atz_pivot, reference.abgaenge_result["tables"]["atz_pivot"],
+                check_exact=True)
+            run_hire_params = {**hire_params, "random_seed": seed}
+            run_hire_params["azubi"]["jf_to_cluster_map"] = build_jf_to_cluster_map(snapshot)
+            enriched_hires = enrich_zugaenge_events(
+                pd.DataFrame(hire_records), snapshot, run_hire_params,
+                cluster_mapping_bundle=cluster_bundle,
+                active_cluster_source_signature=cluster_signature)
+            pd.testing.assert_frame_equal(
+                enriched_hires, reference.zugaenge_result["events"], check_exact=True)
             reference_people = reference.zugaenge_result["final_state"]
             reconstructed_people = replay_final_employee_state(
                 people, departures, new_people)
@@ -129,18 +143,18 @@ def check_snapshot_matrix(snapshot, atz, people, start, end) -> None:
             final_people["PersNr"] = _normalize_persnr_series(final_people["PersNr"])
             final_people = _apply_salary_automation_to_employee_state(
                 final_people, target_date=end,
-                events_df=reference.zugaenge_result["events"])
+                events_df=enriched_hires)
             pd.testing.assert_frame_equal(final_people,
                                           reference.future_employee_df, check_exact=True)
-            atz_status = _resolve_atz_status_map(
-                reference.abgaenge_result["tables"]["atz_pivot"], end)
+            atz_status = _resolve_atz_status_map(atz_pivot, end)
             future = _update_existing_rows(snapshot, final_people, end, atz_status)
             future = _append_new_people_rows(
-                future, snapshot, final_people, reference.zugaenge_result)
+                future, snapshot, final_people, {"events": enriched_hires})
             future = _finalize_future_snapshot(future, end)
             pd.testing.assert_frame_equal(future, reference.future_snapshot_df,
                                           check_exact=True)
-            print(f"snapshot_parity={name}; seed={seed}; rows={len(future)}")
+            print(f"snapshot_parity={name}; seed={seed}; rows={len(future)}; "
+                  f"new_atz={len(atz_pivot) - len(prepared.initial_atz_pivot)}")
 
 
 if __name__ == "__main__":

@@ -11,8 +11,10 @@ from typing import Any, Iterable, Iterator
 import numpy as np
 import pandas as pd
 
-from abgaenge.quit_batch_probe import (PreparedQuitBatch, iter_quit_seed_records,
-                                       prepare_quit_batch)
+from abgaenge.quit_batch_probe import (
+    PreparedQuitBatch, iter_quit_seed_records, iter_quit_seed_records_with_atz,
+    prepare_atz_pivot_for_probe, prepare_quit_batch,
+)
 from dataloader.compact_simulation_engine import (
     _apply_attrition_events_to_employee_state, _normalize_persnr_series,
 )
@@ -26,6 +28,7 @@ class PreparedCoupledBatch:
     departures: PreparedQuitBatch
     hires: PreparedHireBatch
     donor_lookup: dict[str, tuple[Any, Any]]
+    initial_atz_pivot: pd.DataFrame
 
 
 def _donor_lookup(employee_base: pd.DataFrame) -> dict[str, tuple[Any, Any]]:
@@ -75,12 +78,13 @@ def prepare_coupled_batch(employee_base: pd.DataFrame, df_atz: pd.DataFrame,
                           departure_params: dict[str, Any],
                           hire_params: dict[str, Any]) -> PreparedCoupledBatch:
     """Prepare the shared person input for departure and new-hire probes."""
+    departures = prepare_quit_batch(employee_base, df_atz, start_date, end_date,
+                                    departure_params)
     return PreparedCoupledBatch(
-        employee_base,
-        prepare_quit_batch(employee_base, df_atz, start_date, end_date,
-                           departure_params),
+        employee_base, departures,
         prepare_hire_batch(employee_base, start_date, end_date, hire_params),
         _donor_lookup(employee_base),
+        prepare_atz_pivot_for_probe(departures, df_atz, departure_params),
     )
 
 
@@ -95,6 +99,19 @@ def iter_coupled_seed_records(
             prepared.hires, [seed],
             vacancy_provider=lambda _seed: vacancies))
         yield seed, departures, vacancies, hires, new_people
+
+
+def iter_coupled_seed_records_with_atz(
+        prepared: PreparedCoupledBatch, seeds: Iterable[int],
+) -> Iterator[tuple[int, list[dict[str, Any]], pd.DataFrame,
+                    list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]]:
+    """Yield coupled events, new people and independent ATZ schedule per seed."""
+    for seed, departures, atz_pivot in iter_quit_seed_records_with_atz(
+            prepared.departures, seeds, prepared.initial_atz_pivot):
+        vacancies = vacancies_from_departure_records(departures, prepared.donor_lookup)
+        _, hires, new_people = next(iter_hire_seed_records(
+            prepared.hires, [seed], vacancy_provider=lambda _seed: vacancies))
+        yield seed, departures, atz_pivot, vacancies, hires, new_people
 
 
 def replay_final_employee_state(
