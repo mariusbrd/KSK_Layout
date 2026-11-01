@@ -121,3 +121,21 @@ def test_hire_batch_distribution_fallback_and_matrix_match_reference(
             people, start, end_date=end, params={**params, "random_seed": seed})
         pd.testing.assert_frame_equal(pd.DataFrame(records), reference["events"],
                                       check_exact=True)
+
+
+def test_hire_batch_builds_missing_org_cluster_map_from_new_people() -> None:
+    people = pd.DataFrame([
+        {"PersNr": "000001", "Organisationseinheit": "OE-A",
+         "Geschlecht": "m", "Ausbildung": "kfm Berufsabschluss",
+         "active": True},
+    ])
+    params = default_params()
+    params["new_hires"].update(active=True, count_per_year=36,
+                                strategy="OrgUnit", target_org_unit="OE-A")
+    start, end = pd.Timestamp("2026-01-01"), pd.Timestamp("2026-06-30")
+    prepared = prepare_hire_batch(people, start, end, params)
+    for seed, records, _ in iter_hire_seed_records(prepared, (7, 42, 123)):
+        reference = run_forecast_zugaenge(
+            people, start, end_date=end, params={**params, "random_seed": seed})
+        pd.testing.assert_frame_equal(pd.DataFrame(records), reference["events"],
+                                      check_exact=True)

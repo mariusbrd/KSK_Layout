@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import cProfile
+import pstats
 import sys
 from time import perf_counter
 
@@ -69,6 +71,18 @@ def main() -> None:
     if phases is not None:
         for name, seconds in sorted(phases.items()):
             print(f"phase={name}; seconds={seconds:.4f}")
+    if "--cprofile" in sys.argv:
+        profiler = cProfile.Profile()
+        profiler.enable()
+        sum(len(records) for _, records, _ in iter_hire_seed_records(prepared, range(100)))
+        profiler.disable()
+        entries = []
+        for (filename, line, name), (_, calls, own, cumulative, _) in pstats.Stats(profiler).stats.items():
+            if "zugaenge" in filename or "pandas" in filename:
+                entries.append((cumulative, own, calls, Path(filename).name, line, name))
+        for cumulative, own, calls, filename, line, name in sorted(entries, reverse=True)[:20]:
+            print(f"cprofile cumulative={cumulative:.4f}s own={own:.4f}s "
+                  f"calls={calls} {filename}:{line} {name}")
 
 
 if __name__ == "__main__":

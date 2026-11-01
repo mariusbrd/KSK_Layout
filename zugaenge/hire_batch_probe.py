@@ -8,7 +8,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable, Iterator
 from time import perf_counter
-import warnings
 
 import numpy as np
 import pandas as pd
@@ -19,7 +18,8 @@ from .forecast import (
     INTERNAL_AZUBI_FLAG_COL, INTERNAL_EDUCATION_COL, PeriodInfo,
     _annual_to_period_count, _build_education_distribution,
     _build_gender_distribution, _build_internal_azubi_series,
-    _build_internal_education_series, _normalized_gender_series, _simulate_hires,
+    _build_internal_education_series, _get_unit_to_cluster_map,
+    _normalized_gender_series, _simulate_hires,
 )
 
 
@@ -37,6 +37,7 @@ class PreparedHireBatch:
     education_distribution: tuple[list[str], list[float]]
     initial_genders: tuple[str, ...]
     initial_education: tuple[str, ...]
+    initial_unit_cluster_map: dict[str, str]
 
 
 def _observed_distribution(values: list[str]) -> tuple[list[str], list[float]]:
@@ -106,7 +107,8 @@ def prepare_hire_batch(df_snapshot: pd.DataFrame, start_date: pd.Timestamp,
     return PreparedHireBatch(state, decision_state, params, tuple(periods), org_units,
                              tuple(sorted(vacancies or [], key=lambda row: row["date"])),
                              tuple(counts), start_date, genders, education,
-                             initial_genders, initial_education)
+                             initial_genders, initial_education,
+                             _get_unit_to_cluster_map(state))
 
 
 def iter_hire_seed_records(prepared: PreparedHireBatch, seeds: Iterable[int],
@@ -124,7 +126,11 @@ def iter_hire_seed_records(prepared: PreparedHireBatch, seeds: Iterable[int],
         rng = np.random.default_rng(np.random.SeedSequence(seed).spawn(1)[0])
         events: list[dict[str, Any]] = []
         vacancy_state = [row.copy() for row in prepared.vacancies]
-        state = prepared.decision_state.copy() if len(prepared.periods) > 1 else prepared.state
+        state = prepared.decision_state if len(prepared.periods) > 1 else prepared.state
+        configured_map = prepared.params.get("org_unit_to_cluster_map", {}) or {}
+        unit_cluster_map = dict(prepared.initial_unit_cluster_map)
+        hire_params = (prepared.params if configured_map else
+                       {**prepared.params, "org_unit_to_cluster_map": unit_cluster_map})
         genders_seen = list(prepared.initial_genders)
         education_seen = list(prepared.initial_education)
         if profile is not None:
@@ -144,7 +150,7 @@ def iter_hire_seed_records(prepared: PreparedHireBatch, seeds: Iterable[int],
                     profile["distributions"] = profile.get("distributions", 0.0) + perf_counter() - phase_start
                     phase_start = perf_counter()
                 _simulate_hires(
-                    state, prepared.params, period, rng, period_events,
+                    state, hire_params, period, rng, period_events,
                     prepared.org_units, vacancy_state, count, prepared.start_date,
                     genders, education,
                 )
@@ -152,26 +158,13 @@ def iter_hire_seed_records(prepared: PreparedHireBatch, seeds: Iterable[int],
                 education_seen.extend(event["Ausbildung"] for event in period_events
                                       if event["Ausbildung"] in EDUCATION_GROUPS and
                                       event["Ausbildung"] != AZUBI_TRAINING_EDUCATION)
+                if not configured_map:
+                    for event in period_events:
+                        row = event["_new_row"]
+                        if pd.notna(row["OE-Cluster"]):
+                            unit_cluster_map[row["Organisationseinheit"]] = row["OE-Cluster"]
                 if profile is not None:
                     profile["hire_decisions"] = profile.get("hire_decisions", 0.0) + perf_counter() - phase_start
-            if len(prepared.periods) > 1 and period_events:
-                if profile is not None:
-                    phase_start = perf_counter()
-                df_new = pd.DataFrame([
-                    {key: value for key, value in event["_new_row"].items()
-                     if key in ("PersNr", "Organisationseinheit", "OE-Cluster")}
-                    for event in period_events])
-                df_new.set_index("PersNr", drop=False, inplace=True)
-                for column in df_new.columns:
-                    if column not in state.columns:
-                        state[column] = pd.NA
-                df_new = df_new.reindex(columns=state.columns)
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", message=".*empty or all-NA.*",
-                                            category=FutureWarning)
-                    state = pd.concat([state, df_new])
-                if profile is not None:
-                    profile["state_append"] = profile.get("state_append", 0.0) + perf_counter() - phase_start
             events.extend(period_events)
         if profile is not None:
             phase_start = perf_counter()
