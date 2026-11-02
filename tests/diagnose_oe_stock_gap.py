@@ -130,9 +130,11 @@ def main() -> None:
                 rows = frame.loc[frame["PersNr"].astype(str).eq(str(person))]
                 columns = [col for col in (
                     "Organisationseinheit", "Planstelle", "Soll_FTE", "BsGrd",
-                    "MAK_Calculated", "MAK_Reporting", "Is_Vacant", "Is_Excluded",
+                    "MAK_Calculated", "MAK_Reporting", "MAK_Technical_Uncorrected",
+                    "Personen_MAK_Source", "Personen_MAK", "MAK_Allocation_Flag",
+                    "Allocation_Weight", "Is_Vacant", "Is_Excluded",
                     "ATZ_Status", "ist_atz_fr") if col in rows]
-                print(f"{stage}: {rows[columns].to_dict('records')}")
+                print(f"{stage}: {rows[columns].drop(columns=['PersNr'], errors='ignore').to_dict('records')}")
             employee = result.future_employee_df.loc[
                 result.future_employee_df["PersNr"].astype(str).eq(str(person))]
             print(f"forecast_person: {employee[[c for c in ('mak', 'active', 'Personen_MAK_Source') if c in employee]].to_dict('records')}")
