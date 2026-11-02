@@ -1,4 +1,4 @@
-"""Frozen hashes of the local CompactPlus data path before optimization.
+"""Frozen hashes of the local CompactPlus data path after IST split correction.
 
 Capture once: py tests/test_monte_carlo_production_yearly_reference.py --capture
 The fixture contains hashes and metadata, never employee rows.
@@ -26,7 +26,7 @@ from utils.org_simulation_events import build_simulation_event_summary
 from utils.status_quo_baseline import build_status_quo_snapshot
 from components.jobfamily_simulation_yearly import build_jobfamily_yearly_view
 
-REFERENCE = ROOT / "tests" / "fixtures" / "monte_carlo_production_yearly_reference.json"
+REFERENCE = ROOT / "tests" / "fixtures" / "monte_carlo_production_yearly_reference_v2.json"
 TARGET = pd.Timestamp("2026-12-31")
 
 
@@ -97,8 +97,9 @@ if __name__ == "__main__":
         raise SystemExit("Use --capture only for the initial reference capture.")
     if REFERENCE.exists():
         raise SystemExit("Reference exists; refusing to overwrite.")
-    payload = {"description": "Hash-only local production input and yearly outputs before Monte Carlo optimization.",
-               "source_commit": "9e71aba", "python": sys.version.split()[0],
+    payload = {"description": "Hash-only local production outputs with original IST MAK on each occupied position.",
+               "supersedes": "monte_carlo_production_yearly_reference.json",
+               "business_rule": "preserve_multi_position_ist_mak", "python": sys.version.split()[0],
                "pandas": pd.__version__, "payload": _payload()}
     REFERENCE.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"Captured {len(payload['payload']['cases'])} local production reference cases: {REFERENCE.name}")

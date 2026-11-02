@@ -28,6 +28,77 @@ def test_existing_person_keeps_two_position_assignments():
     assert departed["Is_Vacant"].all()
 
 
+def test_existing_person_keeps_ist_mak_on_zero_soll_position():
+    from dataloader.loader import calculate_mak_vectorized, apply_exclusions
+    from dataloader.mak_allocation import apply_person_mak_allocation
+
+    baseline = pd.DataFrame([
+        {"PersNr": "000001", "Personalnummer": "000001", "Is_Vacant": False,
+         "Organisationseinheit": "OE-A", "Planstelle": "A", "Soll_FTE": 0.0,
+         "Sollarbeitszeit": 0.01, "BsGrd": 50.0, "MAK_Reporting": 0.5,
+         "MAK_Calculated": 0.5, "Personen_MAK_Source": 0.5},
+        {"PersNr": "000001", "Personalnummer": "000001", "Is_Vacant": False,
+         "Organisationseinheit": "OE-B", "Planstelle": "B", "Soll_FTE": 0.4,
+         "Sollarbeitszeit": 15.6, "BsGrd": 50.0, "MAK_Reporting": 0.5,
+         "MAK_Calculated": 0.5, "Personen_MAK_Source": 0.5},
+    ])
+    employee = pd.DataFrame([{"PersNr": "000001", "active": True, "mak": 1.0}])
+    updated = _update_existing_rows(baseline, employee, pd.Timestamp("2026-12-31"),
+                                    pd.DataFrame())
+    assert updated["MAK_Calculated"].tolist() == [0.5, 0.5]
+    assert updated["BsGrd"].tolist() == [50.0, 50.0]
+    recalculated = calculate_mak_vectorized(updated)
+    excluded = apply_exclusions(
+        recalculated, {"special_groups": ["sollarbeitszeit_001_positions"]},
+        record_counts=False)
+    reported = apply_person_mak_allocation(excluded)
+    assert reported["PersNr"].tolist() == ["000001", "000001"]
+    assert reported["MAK_Reporting"].tolist() == [0.5, 0.5]
+
+    departed = _update_existing_rows(
+        baseline, employee.assign(active=False, mak=0.0),
+        pd.Timestamp("2026-12-31"), pd.DataFrame())
+    assert departed["Is_Vacant"].all()
+    assert departed["MAK_Calculated"].sum() == 0.0
+
+
+def test_full_snapshot_keeps_unequal_ist_split_when_soll_split_differs():
+    from dataloader.cluster_resolver import ActiveClusterSource, ClusterMappingBundle
+
+    first = _base_snapshot()
+    first["Organisationseinheit"] = "OE-A"
+    first["Planstelle"] = "A"
+    first["Soll_FTE"] = 0.8
+    first["Sollarbeitszeit"] = 31.2
+    first["BsGrd"] = 30.0
+    first["MAK_Reporting"] = 0.3
+    first["Personen_MAK_Source"] = 1.0
+    second = first.copy()
+    second["Organisationseinheit"] = "OE-B"
+    second["Planstelle"] = "B"
+    second["Soll_FTE"] = 0.2
+    second["Sollarbeitszeit"] = 7.8
+    second["BsGrd"] = 70.0
+    second["MAK_Reporting"] = 0.7
+    baseline = pd.concat([first, second], ignore_index=True)
+    source = ActiveClusterSource(mode="synthetic", subtype="synthetic.default_fallback",
+                                 source_signature="unequal-ist")
+    mapping = ClusterMappingBundle(oe_map={"OE-A": "A", "OE-B": "B"},
+                                   jf_map={}, source_signature="unequal-ist")
+    result = simulate_compact_snapshot(
+        baseline, pd.DataFrame(), pd.Timestamp("2026-12-31"),
+        base_date=pd.Timestamp("2025-12-31"),
+        abgaenge_params={"components": {key: False for key in
+                          ("atz", "retirement", "quit", "ruhend")},
+                          "random_seed": 42},
+        zugaenge_params=_inactive_zugaenge_params(),
+        active_cluster_source=source, cluster_mapping_bundle=mapping,
+        cluster_source_signature="unequal-ist", include_audits=False)
+    future = result.future_snapshot_df.set_index("Planstelle")
+    assert future.loc[["A", "B"], "MAK_Reporting"].tolist() == [0.3, 0.7]
+    assert future.loc[["A", "B"], "Is_Vacant"].eq(False).all()
+
+
 def test_full_simulation_keeps_two_jobfamily_shares_without_events():
     from dataloader.cluster_resolver import ActiveClusterSource, ClusterMappingBundle
 

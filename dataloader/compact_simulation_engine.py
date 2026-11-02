@@ -804,9 +804,15 @@ def _update_existing_rows(
         total_mak = ae["PersNr_norm"].map(mak_lookup).fillna(0.0)
         if "Soll_FTE" in future_df.columns:
             weights = pd.to_numeric(ae["Soll_FTE"], errors="coerce").fillna(0.0)
-            fte_sum = ae.groupby("PersNr_norm")["Soll_FTE"].transform(
-                lambda x: float(pd.to_numeric(x, errors="coerce").fillna(0.0).sum())
-            )
+            # Existing multi-position employees keep their actual IST capacity
+            # on each original position. Soll_FTE describes position demand,
+            # not the person's distribution of worked capacity.
+            if "MAK_Reporting" in ae.columns:
+                ist_weights = pd.to_numeric(ae["MAK_Reporting"], errors="coerce").fillna(0.0)
+                ist_sum = ist_weights.groupby(ae["PersNr_norm"]).transform("sum")
+                keep_ist = multi_position_mask.loc[ae.index] & ist_sum.gt(0)
+                weights = weights.where(~keep_ist, ist_weights)
+            fte_sum = weights.groupby(ae["PersNr_norm"]).transform("sum")
             count = ae.groupby("PersNr_norm")["PersNr_norm"].transform("count").astype(float)
             ratio = weights / fte_sum.where(fte_sum > 0, np.nan)
             ratio = ratio.fillna(1.0 / count)
@@ -820,6 +826,11 @@ def _update_existing_rows(
         future_df.loc[active_existing_mask, "mak"] = mak_per_row.values
         future_df.loc[active_existing_mask, "MAK"] = mak_per_row.values
         future_df.loc[active_existing_mask, "BsGrd"] = (mak_per_row * 100.0).round(6).values
+        multi_active = multi_position_mask.loc[ae.index].to_numpy()
+        if multi_active.any():
+            future_df["_forecast_position_ist_mak"] = np.nan
+            future_df.loc[ae.index[multi_active], "_forecast_position_ist_mak"] = (
+                mak_per_row.loc[ae.index[multi_active]].to_numpy())
         if "FTE_person" in future_df.columns:
             future_df.loc[active_existing_mask, "FTE_person"] = mak_per_row.values
         if fte_for_assigned is not None and "FTE_assigned" in future_df.columns:
@@ -993,6 +1004,32 @@ def _finalize_future_snapshot(
     future_df = enrich_snapshot_data(future_df, stichtag=target_date)
     future_df = apply_exclusions(future_df, get_setting("exclusions", {}))
     future_df = apply_person_mak_allocation(future_df)
+    if "_forecast_position_ist_mak" in future_df.columns:
+        # The allocation helper normally recomputes each position from the
+        # single source BsGrd. Existing multi-position employees retain their
+        # original IST split instead; their forecast total was already applied
+        # to these positions by _update_existing_rows.
+        desired = pd.to_numeric(future_df["_forecast_position_ist_mak"], errors="coerce")
+        occupied = future_df["PersNr"].notna() & future_df["Is_Vacant"].ne(True)
+        preserve = desired.notna() & occupied
+        if preserve.any():
+            future_df.loc[preserve, "MAK_Reporting"] = desired.loc[preserve].to_numpy()
+            if "MAK_Technical_Uncorrected" in future_df:
+                future_df.loc[preserve, "MAK_Adjustment_Delta"] = (
+                    pd.to_numeric(future_df.loc[preserve, "MAK_Technical_Uncorrected"],
+                                  errors="coerce").fillna(0.0).to_numpy()
+                    - desired.loc[preserve].to_numpy())
+            person_total = desired.groupby(future_df["PersNr"]).transform("sum")
+            weights = desired / person_total.where(person_total.gt(0), np.nan)
+            future_df.loc[preserve, "Allocation_Weight"] = weights.loc[preserve].fillna(0.0).to_numpy()
+            if "Total_Cost_Year" in future_df and "EUR_Reporting" in future_df:
+                future_df.loc[preserve, "EUR_Reporting"] = (
+                    pd.to_numeric(future_df.loc[preserve, "Total_Cost_Year"], errors="coerce")
+                    .fillna(0.0).to_numpy() * weights.loc[preserve].fillna(0.0).to_numpy())
+            future_df.loc[preserve, "MAK_Allocation_Flag"] = "multi_position_ist_preserved"
+            future_df.loc[preserve, "MAK_Allocation_Comment"] = (
+                "existing position IST MAK preserved through forecast")
+        future_df = future_df.drop(columns=["_forecast_position_ist_mak"])
     return future_df
 
 
