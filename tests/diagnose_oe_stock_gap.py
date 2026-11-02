@@ -36,9 +36,12 @@ def main() -> None:
         build_status_quo_snapshot(snapshot, FROZEN_STICHTAG))
     dep, hire = departure_defaults(), hire_defaults()
     dep["random_seed"] = int(sys.argv[1]) if len(sys.argv) > 1 else 7
+    no_departures = "--no-departures" in sys.argv
     dep["atz"].update(new_atz_rate=0.35, use_atz_matrix=False,
                       atz_duration_ar_years=0.5, atz_duration_fr_years=0.5)
     dep["quit"].update(quit_rate_base=0.12, use_quit_matrix=False)
+    if no_departures:
+        dep["components"] = {key: False for key in dep["components"]}
     target = pd.Timestamp("2028-12-31")
     result = simulate_compact_snapshot(
         snapshot, atz, target, base_date=FROZEN_STICHTAG,
@@ -56,7 +59,8 @@ def main() -> None:
     bridge = summary["stock_reconciliation"]
     checks = bridge["checks"]
     failed = checks.loc[~checks["Abgestimmt"]].copy()
-    print(f"seed={dep['random_seed']}; status={bridge['status']}; reason={bridge['reason']}")
+    print(f"seed={dep['random_seed']}; no_departures={no_departures}; "
+          f"status={bridge['status']}; reason={bridge['reason']}")
     print(f"checks={len(checks)}; failed={len(failed)}")
     if not failed.empty:
         group = failed.groupby("Ebene", dropna=False).agg(
@@ -80,6 +84,30 @@ def main() -> None:
                   f"abs={diagnostics[column].abs().sum():.6f}")
         public = diagnostics.drop(columns=["PersNr"])
         print(public.to_string(index=False))
+        if no_departures:
+            concise = []
+            for person in diagnostics["PersNr"]:
+                old = baseline.loc[baseline["PersNr"].astype(str).eq(str(person))]
+                new = result.future_snapshot_df.loc[
+                    result.future_snapshot_df["PersNr"].astype(str).eq(str(person))]
+                employee = result.future_employee_df.loc[
+                    result.future_employee_df["PersNr"].astype(str).eq(str(person))]
+                source = pd.to_numeric(old.get("Personen_MAK_Source"), errors="coerce")
+                concise.append({
+                    "positions_before": len(old), "positions_after": len(new),
+                    "zero_soll_before": int(pd.to_numeric(old["Soll_FTE"], errors="coerce").eq(0).sum()),
+                    "source_mak": float(source.dropna().iloc[0]) if source.notna().any() else None,
+                    "forecast_mak": float(employee["mak"].iloc[0]) if not employee.empty else None,
+                    "reporting_before": float(old["MAK_Reporting"].sum()),
+                    "reporting_after": float(new["MAK_Reporting"].sum()),
+                    "atz_before": str(old["ATZ_Status"].iloc[0]) if "ATZ_Status" in old else "",
+                    "fr_before": bool(old["ist_atz_fr"].iloc[0]) if "ist_atz_fr" in old else False,
+                    "atz_after": str(new["ATZ_Status"].iloc[0]) if "ATZ_Status" in new and not new.empty else "",
+                    "fr_after": bool(new["ist_atz_fr"].iloc[0]) if "ist_atz_fr" in new and not new.empty else False,
+                    "status_after": str(new["Status kundenindividuell"].iloc[0]) if "Status kundenindividuell" in new and not new.empty else "",
+                })
+            print(pd.DataFrame(concise).to_string(index=False))
+            return
         from utils.org_simulation_reconciliation import reporting_projection_base
         projection = reporting_projection_base(context, baseline)
         for case, person in enumerate(diagnostics["PersNr"], 1):
@@ -93,6 +121,18 @@ def main() -> None:
                     "MAK_Calculated", "MAK_Reporting", "Is_Vacant", "Is_Excluded",
                     "ATZ_Status", "ist_atz_fr") if col in rows]
                 print(f"{stage}: {rows[columns].to_dict('records')}")
+            employee = result.future_employee_df.loc[
+                result.future_employee_df["PersNr"].astype(str).eq(str(person))]
+            print(f"forecast_person: {employee[[c for c in ('mak', 'active', 'Personen_MAK_Source') if c in employee]].to_dict('records')}")
+            source_rows = baseline.loc[baseline["PersNr"].astype(str).eq(str(person))]
+            for row_index in source_rows.index:
+                raw_rows = result.future_snapshot_df.loc[[row_index]]
+                columns = [c for c in ("PersNr", "Organisationseinheit", "Planstelle",
+                                       "Soll_FTE", "BsGrd", "Is_Vacant", "Is_Excluded",
+                                       "Exclusion_Group", "Is_IST_Preserved_Despite_Exclusion",
+                                       "Personen_MAK_Source", "MAK_Reporting") if c in raw_rows]
+                print("raw_position: " + ascii(raw_rows[columns].drop(
+                    columns=["PersNr"], errors="ignore").to_dict("records")))
             person_events = summary["events"].loc[
                 summary["events"]["persnr"].astype(str).eq(str(person))]
             columns = [col for col in ("Jahr", "Ereignisart", "Organisationseinheit",
