@@ -37,11 +37,15 @@ def main() -> None:
     dep, hire = departure_defaults(), hire_defaults()
     dep["random_seed"] = int(sys.argv[1]) if len(sys.argv) > 1 else 7
     no_departures = "--no-departures" in sys.argv
+    existing_atz_only = "--existing-atz-only" in sys.argv
     dep["atz"].update(new_atz_rate=0.35, use_atz_matrix=False,
                       atz_duration_ar_years=0.5, atz_duration_fr_years=0.5)
     dep["quit"].update(quit_rate_base=0.12, use_quit_matrix=False)
     if no_departures:
         dep["components"] = {key: False for key in dep["components"]}
+    if existing_atz_only:
+        dep["components"] = {key: key == "atz" for key in dep["components"]}
+        dep["atz"]["new_atz_rate"] = 0.0
     target = pd.Timestamp("2028-12-31")
     result = simulate_compact_snapshot(
         snapshot, atz, target, base_date=FROZEN_STICHTAG,
@@ -57,9 +61,17 @@ def main() -> None:
     summary = build_simulation_event_summary(context,
                                              expected_run_signature="oe-gap")
     bridge = summary["stock_reconciliation"]
+    baseline_person_mak = baseline.loc[baseline["PersNr"].notna()].groupby(
+        "PersNr")["MAK_Reporting"].sum()
+    forecast_person_mak = result.future_employee_df.set_index("PersNr")["mak"]
+    print(f"max_baseline_person_mak={baseline_person_mak.max():.6f}; "
+          f"baseline_persons_above_1={int((baseline_person_mak > 1.0 + 1e-9).sum())}; "
+          f"max_forecast_person_mak={forecast_person_mak.max():.6f}; "
+          f"forecast_persons_above_1={int((forecast_person_mak > 1.0 + 1e-9).sum())}")
     checks = bridge["checks"]
     failed = checks.loc[~checks["Abgestimmt"]].copy()
     print(f"seed={dep['random_seed']}; no_departures={no_departures}; "
+          f"existing_atz_only={existing_atz_only}; "
           f"status={bridge['status']}; reason={bridge['reason']}")
     print(f"checks={len(checks)}; failed={len(failed)}")
     if not failed.empty:

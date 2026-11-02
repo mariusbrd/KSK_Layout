@@ -7,6 +7,7 @@ from abgaenge.forecast import run_forecast_abgaenge
 from abgaenge.params import default_params as departure_defaults
 from dataloader.compact_simulation_engine import (
     _apply_attrition_events_to_employee_state, _build_vacancies_from_attrition,
+    _prepare_employee_forecast_base,
 )
 from zugaenge.coupled_batch_probe import (
     _donor_lookup, prepare_coupled_batch, iter_coupled_seed_records,
@@ -15,6 +16,30 @@ from zugaenge.coupled_batch_probe import (
 from zugaenge.forecast import run_forecast_zugaenge
 from zugaenge.params import default_params as hire_defaults
 from test_kuendigung_forecast import _make_employee, EMPTY_ATZ
+
+
+def test_departure_subtracts_person_ist_mak_independent_of_position_soll() -> None:
+    start, end = pd.Timestamp("2026-01-01"), pd.Timestamp("2026-01-31")
+    person = _make_employee("101", age_years=70, bsgrd=50.0, mak=0.5)
+    rows = []
+    for org, soll in (("OE-Null", 0.0), ("OE-Regular", 1.0)):
+        rows.append({**person, "Austritt": pd.NaT,
+                     "Organisationseinheit": org, "Soll_FTE": soll,
+                     "Sollarbeitszeit": soll * 39.0, "MAK_Reporting": 0.5,
+                     "Personen_MAK_Source": 0.5})
+    people = _prepare_employee_forecast_base(pd.DataFrame(rows), EMPTY_ATZ, start)
+    assert people.loc[0, "mak"] == 1.0
+    params = departure_defaults()
+    params["components"].update(atz=False, retirement=True, quit=False,
+                                ruhend=False)
+    params["retirement"].update(rent_rate_65=1.0, rent_rate_60_65=0.0)
+    result = run_forecast_abgaenge(people, EMPTY_ATZ, start, end, "M", params,
+                                   include_diagnostics=False)
+    departures = result["events_person_level"]
+    retirement = departures.loc[departures["reason_code"].eq("RETIREMENT")]
+    assert len(retirement) == 1
+    assert retirement.iloc[0]["headcount_change"] == -1
+    assert retirement.iloc[0]["mak_change"] == -1.0
 
 
 def test_compact_vacancies_preserve_missing_atz_org_and_person_normalization() -> None:
