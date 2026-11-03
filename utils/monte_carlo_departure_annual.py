@@ -1,0 +1,101 @@
+"""Compact annual departure values from an exact seeded event record stream."""
+from __future__ import annotations
+
+import numpy as np
+
+from abgaenge.quit_batch_probe import PreparedQuitYearly, departure_annual_event_values
+from abgaenge.quit_batch_probe import quit_annual_event_values
+from utils.org_simulation_reconciliation import _person_scope_weights
+from utils.monte_carlo_metric_packet import LEVELS
+from utils.org_simulation_events import CAPACITY, DEPARTURES, INTERNAL, METRICS
+
+
+def departure_annual_values(
+    records: list[dict], yearly: PreparedQuitYearly,
+) -> list[tuple[int, str, str, str, str, str, int | float]]:
+    """Return packet-shaped annual values without display or employee frames.
+
+    Ordering follows the four reference annual tables: level, year, group,
+    category, event type, metric. The source event records must come from the
+    exact seeded departure stream.
+    """
+    grouped = departure_annual_event_values(records, yearly)
+    output = []
+    for level in LEVELS:
+        level_rows = [(*key, value) for key, value in grouped.items() if key[1] == level]
+        for year, _, group, reason, (heads, mak) in sorted(
+                level_rows, key=lambda item: (item[0], item[2], item[3])):
+            if reason in DEPARTURES:
+                category = "Personalabgang"
+            elif reason in CAPACITY:
+                category = "Kapazitätsänderung"
+            elif reason in INTERNAL:
+                category = "Interner Wechsel"
+            else:
+                category = "Sonstige Veränderungen"
+            metrics = (heads, mak, max(-heads, 0) if reason in DEPARTURES else 0, 0)
+            output.extend((year, level, group, category, reason, metric, value)
+                          for metric, value in zip(METRICS, metrics))
+    return output
+
+
+def provisional_stock_values(
+    openings: dict[tuple[str, str], tuple[int | float, float]],
+    records: list[dict],
+    yearly: PreparedQuitYearly,
+    years: range,
+    oe_scopes: dict[str, dict[str, list[tuple[str, float]]]],
+) -> dict[tuple[int, str, str, str], float]:
+    """Derive year-end heads/MAK without a target snapshot.
+
+    The values are intentionally provisional: stock certification still needs
+    the final reporting snapshot and its exclusions. Callers must not label
+    these as reconciled or use them where technical basis effects are present.
+    """
+    changes = quit_annual_event_values(records, yearly)
+    for level in ("Organisationseinheit", "OE-Cluster"):
+        grouped: dict[tuple[int, str, str], list[tuple[int, float]]] = {}
+        for event in records:
+            person = str(event["persnr"])
+            memberships = oe_scopes[level].get(person)
+            if memberships is None:
+                org = event.get("Organisationseinheit") or "Nicht zugeordnet"
+                name = str(org).strip()
+                if level == "OE-Cluster":
+                    name = yearly.oe_map.get(name, "Nicht zugeordnet")
+                memberships = [(name, 1.0)]
+            for name, ratio in memberships:
+                key = (event["event_date"].year, level, name)
+                grouped.setdefault(key, []).append(
+                    (event["headcount_change"], float(event["mak_change"]) * ratio))
+        for key in [key for key in changes if key[1] == level]:
+            del changes[key]
+        for key, values in grouped.items():
+            # The stock bridge sums each filtered year's Series via numpy.
+            total = float(np.sum([mak for _, mak in values]))
+            changes[key] = (sum(heads for heads, _ in values), total)
+    groups = set(openings) | {(level, group) for _, level, group in changes}
+    values = {}
+    for level in LEVELS:
+        for name in sorted(group for group_level, group in groups if group_level == level):
+            opening_heads, opening_mak = openings.get((level, name), (0, 0.0))
+            cumulative_heads, cumulative_mak = 0, 0.0
+            for year in years:
+                delta_heads, delta_mak = changes.get((year, level, name), (0, 0.0))
+                cumulative_heads += delta_heads
+                cumulative_mak += delta_mak
+                values[(year, level, name, "Köpfe")] = float(opening_heads + cumulative_heads)
+                values[(year, level, name, "MAK")] = float(opening_mak + cumulative_mak)
+    return values
+
+
+def prepare_oe_stock_scopes(projection) -> dict[str, dict[str, list[tuple[str, float]]]]:
+    """Invert the reference bridge's original person/group allocation once."""
+    result = {}
+    for level in ("Organisationseinheit", "OE-Cluster"):
+        memberships: dict[str, list[tuple[str, float]]] = {}
+        for group, persons in _person_scope_weights(projection, level).items():
+            for person, ratio in persons.items():
+                memberships.setdefault(person, []).append((group, ratio))
+        result[level] = memberships
+    return result

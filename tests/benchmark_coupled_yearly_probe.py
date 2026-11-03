@@ -26,10 +26,15 @@ from dataloader.compact_simulation_engine import (
 from abgaenge.params import default_params as departure_defaults
 from abgaenge.quit_batch_probe import (
     iter_quit_seed_records_with_atz, prepare_atz_pivot_for_probe,
-    prepare_quit_batch,
+    prepare_quit_batch, prepare_quit_yearly,
 )
-from components.jobfamily_simulation_yearly import build_jobfamily_yearly_view
+from components.jobfamily_simulation_yearly import build_jobfamily_yearly_view, _dimension_values
 from utils.org_simulation_events import build_simulation_event_summary
+from utils.monte_carlo_departure_annual import (
+    departure_annual_values, prepare_oe_stock_scopes, provisional_stock_values,
+)
+from utils.monte_carlo_metric_packet import LEVELS, make_metric_packet
+from utils.org_simulation_reconciliation import grouped_stock_metrics, reporting_projection_base
 from utils.status_quo_baseline import build_status_quo_snapshot
 from zugaenge.coupled_batch_probe import (
     iter_coupled_seed_records_with_atz, prepare_coupled_batch,
@@ -60,6 +65,19 @@ def main() -> None:
     base, target = FROZEN_STICHTAG, pd.Timestamp("2028-12-31")
     people = _prepare_employee_forecast_base(snapshot, atz, base)
     baseline = compact.prepare_compact_data(build_status_quo_snapshot(snapshot, base))
+    departure_yearly = prepare_quit_yearly(baseline, bundle.oe_map)
+    stock_openings = {}
+    stock_scopes = None
+    for level in LEVELS:
+        stock_frame = baseline.copy()
+        if level in ("Jobfamily", "JF-Cluster"):
+            stock_frame[level] = _dimension_values(stock_frame, level)
+        else:
+            stock_frame[level] = stock_frame[level].fillna("Nicht zugeordnet").astype(str).str.strip().replace("", "Nicht zugeordnet")
+        stock_openings.update({(level, name): totals
+                               for name, totals in grouped_stock_metrics(stock_frame, level).items()})
+    for level in ("Organisationseinheit", "OE-Cluster"):
+        stock_openings.setdefault((level, "Nicht zugeordnet"), (0, 0.0))
 
     scenarios = (
         (("departures_only", 0, "standard"), ("with_hires", 20, "standard"))
@@ -97,7 +115,7 @@ def main() -> None:
             initial_pivot = prepare_atz_pivot_for_probe(prepared_dep, atz, dep_params)
             seed_stream = ((seed, departures, pivot, None, [])
                            for seed, departures, pivot in iter_quit_seed_records_with_atz(
-                               prepared_dep, (7, 42), initial_pivot))
+                               prepared_dep, (7, 42, 123, 999), initial_pivot))
 
         for seed, departures, pivot, hire_records, new_people in seed_stream:
             run_dep = {**dep_params, "random_seed": seed}
@@ -151,6 +169,11 @@ def main() -> None:
                 zugaenge_params=hire_params, abgaenge_params=dep_params,
                 df_atz=atz, run_settings={"exclusions": deepcopy(FROZEN_SETTINGS["exclusions"])},
                 source_snapshot=snapshot)
+            if stock_scopes is None:
+                projection = reporting_projection_base(context, baseline)
+                projection["Organisationseinheit"] = projection["Organisationseinheit"].fillna("Nicht zugeordnet").astype(str).str.strip().replace("", "Nicht zugeordnet")
+                projection["OE-Cluster"] = projection["Organisationseinheit"].map(bundle.oe_map).fillna("Nicht zugeordnet")
+                stock_scopes = prepare_oe_stock_scopes(projection)
             candidate = dict(context)
             candidate["departure_events"] = pd.DataFrame(departures)
             candidate["accession_events"] = hires
@@ -178,6 +201,9 @@ def main() -> None:
                 ref_bridge["status"], ref_bridge["reason"])
             _equal_frames(ref_bridge, probe_bridge,
                           ("annual", "checks", "person_diagnostics"))
+            annual_tables = {"Organisationseinheit": reference_summary["annual_oe"],
+                             "OE-Cluster": reference_summary["annual_cluster"]}
+            jf_views = {}
             for dimension in ("Jobfamily", "JF-Cluster"):
                 ref_jf = build_jobfamily_yearly_view(
                     context, reference_summary, dimension=dimension)
@@ -186,6 +212,35 @@ def main() -> None:
                 assert probe_jf["stock_reason"] == ref_jf["stock_reason"]
                 _equal_frames(ref_jf, probe_jf,
                               ("annual", "stock", "stock_checks"))
+                annual_tables[dimension] = ref_jf["annual"]
+                jf_views[dimension] = ref_jf
+            if not annual_hires:
+                assert ref_bridge["basis_effects"].empty, (label, seed, "basis_effects")
+                assert ref_bridge["documented_effects"].empty, (label, seed, "documented_effects")
+                reported = ref_bridge["reporting_events"]
+                assert reported["MAK-Veränderung"].equals(
+                    reported["Original MAK-Veränderung"]), (label, seed, "reporting_mak")
+                reference_packet = make_metric_packet(
+                    target_totals={"heads": 0, "mak": 0.0, "eur": 0.0},
+                    annual_tables=annual_tables,
+                    stock_status={level: "Nicht berechnet" for level in LEVELS})
+                assert departure_annual_values(departures, departure_yearly) == (
+                    reference_packet["annual_values"]), (label, seed)
+                provisional = provisional_stock_values(
+                    stock_openings, departures, departure_yearly, range(2025, 2029),
+                    stock_scopes)
+                for _, row in ref_bridge["annual"].iterrows():
+                    if row["Art"] != "Jahresstichtag" or row["Jahr"] < 2026:
+                        continue
+                    level = "Organisationseinheit" if row["Ebene"] == "Organisationseinheit" else "OE-Cluster" if row["Ebene"] == "OE-Cluster" else None
+                    if level is None:
+                        continue
+                    assert provisional[(int(row["Jahr"]), level, row["Organisation"], "Köpfe")] == float(row["Bestand-Köpfe"]), (label, seed, level, row["Organisation"], row["Jahr"], provisional[(int(row["Jahr"]), level, row["Organisation"], "Köpfe")], float(row["Bestand-Köpfe"]))
+                    assert provisional[(int(row["Jahr"]), level, row["Organisation"], "MAK")] == float(row["Bestand-MAK"]), (label, seed, level, row["Organisation"], row["Jahr"], provisional[(int(row["Jahr"]), level, row["Organisation"], "MAK")], float(row["Bestand-MAK"]))
+                for level, view in jf_views.items():
+                    for _, row in view["stock"].iterrows():
+                        if row["Art"] == "Jahresstichtag" and row["Stichtag"].year >= 2026:
+                            assert provisional[(row["Stichtag"].year, level, row[level], row["Kennzahl"])] == float(row["Bestand"]), (label, seed, level, row["Stichtag"])
             if annual_hires:
                 assert probe_bridge["status"] == "Nicht verfügbar"
                 assert probe_bridge["annual"].empty

@@ -13,6 +13,41 @@ from abgaenge.quit_batch_probe import (iter_quit_seed_records, prepare_quit_batc
 from test_kuendigung_forecast import _atz_df, _make_employee, _params_only_quit, EMPTY_ATZ
 
 
+def test_compact_stock_counts_departure_in_each_original_oe_from_start_year() -> None:
+    from utils.monte_carlo_departure_annual import (
+        prepare_oe_stock_scopes, provisional_stock_values,
+    )
+
+    baseline = pd.DataFrame([
+        {"PersNr": "000001", "Is_Vacant": False, "Organisationseinheit": "A",
+         "OE-Cluster": "X", "Jobfamily": "JF A", "JF-Cluster": "C A",
+         "MAK_Reporting": 0.5, "Allocation_Weight": 0.5},
+        {"PersNr": "000001", "Is_Vacant": False, "Organisationseinheit": "B",
+         "OE-Cluster": "Y", "Jobfamily": "JF B", "JF-Cluster": "C B",
+         "MAK_Reporting": 0.5, "Allocation_Weight": 0.5},
+    ])
+    yearly = prepare_quit_yearly(baseline, {"A": "X", "B": "Y"})
+    openings = {(level, name): (1, 0.5) for level, names in (
+        ("Organisationseinheit", ("A", "B")), ("OE-Cluster", ("X", "Y")),
+        ("Jobfamily", ("JF A", "JF B")), ("JF-Cluster", ("C A", "C B")))
+        for name in names}
+    event = {"persnr": "000001", "event_date": pd.Timestamp("2025-12-31"),
+             "reason_code": "QUIT", "headcount_change": -1, "mak_change": -1.0,
+             "Organisationseinheit": "A", "Jobfamily": "JF A"}
+    values = provisional_stock_values(
+        openings, [event], yearly, range(2025, 2027),
+        prepare_oe_stock_scopes(baseline))
+    for level, names in (("Organisationseinheit", ("A", "B")),
+                         ("OE-Cluster", ("X", "Y")),
+                         ("Jobfamily", ("JF A", "JF B")),
+                         ("JF-Cluster", ("C A", "C B"))):
+        for name in names:
+            assert values[(2025, level, name, "Köpfe")] == 0.0
+            assert values[(2025, level, name, "MAK")] == 0.0
+            assert values[(2026, level, name, "Köpfe")] == 0.0
+            assert values[(2026, level, name, "MAK")] == 0.0
+
+
 @pytest.mark.parametrize("count", [1, 2, 5, 20])
 @pytest.mark.parametrize("upper", [28, 30, 31, 91])
 def test_batched_atz_offsets_preserve_rng_stream(count: int, upper: int) -> None:
@@ -354,6 +389,8 @@ def test_existing_atz_schedule_matches_reference(combined: bool) -> None:
 
 
 def test_existing_atz_four_yearly_levels_match_reference() -> None:
+    from utils.monte_carlo_departure_annual import departure_annual_values
+    from utils.monte_carlo_metric_packet import LEVELS, make_metric_packet
     from components.jobfamily_simulation_yearly import build_jobfamily_yearly_view
     from dataloader.compact_simulation_engine import _prepare_employee_forecast_base
     from test_org_simulation_reconciliation import _bridge_context
@@ -387,13 +424,20 @@ def test_existing_atz_four_yearly_levels_match_reference() -> None:
         normalized = normalize_simulation_events(context, expected_run_signature="a")
         summary = {"run_signature": "a", "events": normalized, "metadata": context["metadata"]}
         expected = {}
+        annual_tables = {}
         for dimension in ("Organisationseinheit", "OE-Cluster", "Jobfamily", "JF-Cluster"):
             table = (aggregate_simulation_events(normalized, dimension=dimension)
                      if dimension in ("Organisationseinheit", "OE-Cluster")
                      else build_jobfamily_yearly_view(
                          context, summary, dimension=dimension, include_stock=False)["annual"])
+            annual_tables[dimension] = table
             for _, row in table.iterrows():
                 expected[(int(row["Jahr"]), dimension, str(row[dimension]),
                           str(row["Ereignisart"]))] = (
                     int(row["Köpfe-Veränderung"]), float(row["MAK-Veränderung"]))
         assert departure_annual_event_values(records, yearly) == expected
+        packet = make_metric_packet(
+            target_totals={"heads": 0, "mak": 0.0, "eur": 0.0},
+            annual_tables=annual_tables,
+            stock_status={level: "Nicht berechnet" for level in LEVELS})
+        assert departure_annual_values(records, yearly) == packet["annual_values"]
