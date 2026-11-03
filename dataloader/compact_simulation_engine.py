@@ -1002,7 +1002,8 @@ def _finalize_future_snapshot(
     future_df = _zero_out_azubi_mak(future_df)
     future_df = calculate_cost_vectorized(future_df, st.session_state.get("tvoed_lookup", {}))
     future_df = enrich_snapshot_data(future_df, stichtag=target_date)
-    future_df = apply_exclusions(future_df, get_setting("exclusions", {}))
+    future_df = apply_exclusions(
+        future_df, get_setting("exclusions", {}), preserve_atz_fr_occupancy=True)
     future_df = apply_person_mak_allocation(future_df)
     if "_forecast_position_ist_mak" in future_df.columns:
         # The allocation helper normally recomputes each position from the

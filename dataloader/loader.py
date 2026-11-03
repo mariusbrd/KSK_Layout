@@ -458,7 +458,13 @@ def _zero_out_azubi_mak(df: pd.DataFrame) -> pd.DataFrame:
     return df_out
 
 
-def apply_exclusions(df: pd.DataFrame, exclusions: Dict[str, Any], *, record_counts: bool = True) -> pd.DataFrame:
+def apply_exclusions(
+    df: pd.DataFrame,
+    exclusions: Dict[str, Any],
+    *,
+    record_counts: bool = True,
+    preserve_atz_fr_occupancy: bool = False,
+) -> pd.DataFrame:
     """
     Wendet Gruppen-Ausschlüsse auf den Snapshot an.
     Exkludierte Personen werden als Vakanz markiert (Ist entfernt, Soll bleibt).
@@ -485,6 +491,12 @@ def apply_exclusions(df: pd.DataFrame, exclusions: Dict[str, Any], *, record_cou
     unabhaengig vom BsGrd weiterhin vollstaendig aus IST entfernt, weil sie eine
     bewusste fachliche Entscheidung abbilden (z. B. "nicht aktiv arbeitend"), waehrend
     der 0,01-Fall ein reines Datenartefakt der Sollarbeitszeit-Spalte ist.
+
+    Bei prognostizierten Snapshots kann preserve_atz_fr_occupancy=True gesetzt
+    werden: Eine weiterhin beschaeftigte Person in ATZ-Freistellung behaelt auf
+    einer nur technisch ausgeschlossenen Planstelle ihren Kopf bei 0 IST-MAK.
+    Harte Ausschluesse behalten Vorrang. Der Default bewahrt die bisherige
+    Behandlung des Ausgangsbestands.
 
     Criteria (UI-konform):
     1. Vorstand: MitarbGruppenbez. == "Vorstand"
@@ -580,7 +592,19 @@ def apply_exclusions(df: pd.DataFrame, exclusions: Dict[str, Any], *, record_cou
         pd.to_numeric(df_out["BsGrd"], errors="coerce").fillna(0) > 0
         if "BsGrd" in df_out.columns else pd.Series(False, index=df_out.index)
     )
-    ist_preserve_mask = exclusion_mask & ~hard_exclusion_mask & has_real_person & has_positive_bsgrd
+    # An ATZ employee remains employed during the Freistellungsphase even
+    # though the phase correctly reduces worked MAK and BsGrd to zero. For
+    # forecast snapshots, technical position exclusions must not turn that
+    # zero-capacity occupation into an unrecorded headcount departure.
+    atz_fr_occupied = (
+        df_out["ist_atz_fr"].eq(True).fillna(False)
+        if preserve_atz_fr_occupancy and "ist_atz_fr" in df_out.columns
+        else pd.Series(False, index=df_out.index)
+    )
+    ist_preserve_mask = (
+        exclusion_mask & ~hard_exclusion_mask & has_real_person
+        & (has_positive_bsgrd | atz_fr_occupied)
+    )
     df_out["Is_IST_Preserved_Despite_Exclusion"] = ist_preserve_mask
 
     # --- Anwendung der Exklusion (Vacating) ---

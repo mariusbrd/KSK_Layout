@@ -6,6 +6,39 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from dataloader.compact_simulation_engine import _vacate_rows, _update_existing_rows, simulate_compact_snapshot
 
 
+def test_atz_fr_keeps_headcount_on_technical_position_only_in_forecast():
+    from dataloader.loader import apply_exclusions
+
+    rows = pd.DataFrame([
+        {"PersNr": "A", "Personalnummer": "A", "Is_Vacant": False,
+         "Planstellennr": "50001903", "Sollarbeitszeit": 0.01, "BsGrd": 0.0,
+         "MAK_Calculated": 0.0, "ist_atz_fr": True,
+         "Status kundenindividuell": "Aktives Beschäftigungsverhältnis"},
+        {"PersNr": "B", "Personalnummer": "B", "Is_Vacant": False,
+         "Planstellennr": "50001903", "Sollarbeitszeit": 0.01, "BsGrd": 0.0,
+         "MAK_Calculated": 0.0, "ist_atz_fr": False,
+         "Status kundenindividuell": "Aktives Beschäftigungsverhältnis"},
+        {"PersNr": "C", "Personalnummer": "C", "Is_Vacant": False,
+         "Planstellennr": "50001903", "Sollarbeitszeit": 0.01, "BsGrd": 0.0,
+         "MAK_Calculated": 0.0, "ist_atz_fr": True,
+         "Status kundenindividuell": "Ruhendes Beschäftigungsverhältnis"},
+    ])
+    exclusions = {"ruhend_bv": True, "special_groups": [
+        "jobfamily_validation_special_positions", "sollarbeitszeit_001_positions"]}
+    old = apply_exclusions(rows, exclusions, record_counts=False)
+    assert old["Is_Vacant"].eq(True).all()
+
+    future = apply_exclusions(rows, exclusions, record_counts=False,
+                              preserve_atz_fr_occupancy=True)
+    assert future["Is_Vacant"].tolist() == [False, True, True]
+    assert future.loc[0, "PersNr"] == "A"
+    assert future.loc[0, "MAK_Calculated"] == 0.0
+    assert bool(future.loc[0, "Is_Excluded"])
+    assert bool(future.loc[0, "Is_IST_Preserved_Despite_Exclusion"])
+    assert pd.isna(future.loc[1, "PersNr"])
+    assert pd.isna(future.loc[2, "PersNr"])
+
+
 def test_existing_person_keeps_two_position_assignments():
     baseline = pd.DataFrame([
         {"PersNr": "000001", "Is_Vacant": False, "Organisationseinheit": "OE Leitung",
