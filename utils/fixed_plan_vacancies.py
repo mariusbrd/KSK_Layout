@@ -4,6 +4,45 @@ from __future__ import annotations
 import pandas as pd
 
 
+def vacancy_matches_accession(vacancy: dict, kind: str) -> bool:
+    """Match explicit training positions without using reporting exclusions."""
+    code = str(vacancy.get("org_code") or "").strip().removesuffix(".0")
+    title = str(vacancy.get("planstelle") or "").casefold()
+    if kind == "trainee":
+        return code == "9920" or "trainee" in title
+    if kind == "azubi":
+        return code == "9910"
+    if kind == "regular":
+        return code not in {"9910", "9920"} and "trainee" not in title
+    raise ValueError(f"Unknown accession kind: {kind}")
+
+
+class FixedPlanVacancyPool:
+    """Reserve each concrete plan position at most once per vacancy period."""
+
+    def __init__(self, vacancies: list[dict]):
+        self._available = [row.copy() for row in vacancies]
+
+    def reserve(self, entry_date: pd.Timestamp, *, strategy: str,
+                rng=None, eligible=None) -> dict | None:
+        """Return one available matching vacancy and remove it from the pool."""
+        date = pd.Timestamp(entry_date)
+        candidates = [row for row in self._available
+                      if row["date"] <= date and
+                      (eligible is None or eligible(row))]
+        if not candidates:
+            return None
+        if strategy == "Random":
+            if rng is None:
+                raise ValueError("Random vacancy selection requires a seeded RNG")
+            choice = candidates[int(rng.integers(0, len(candidates)))]
+        else:
+            choice = min(candidates, key=lambda row: (
+                row["date"], row["position_index"]))
+        self._available.remove(choice)
+        return choice.copy()
+
+
 def _person_id(value) -> str | None:
     if pd.isna(value):
         return None
@@ -15,11 +54,13 @@ def _person_id(value) -> str | None:
 
 def available_position_vacancies(snapshot: pd.DataFrame,
                                  departure_events: pd.DataFrame,
-                                 base_date: pd.Timestamp) -> list[dict]:
+                                 base_date: pd.Timestamp, *,
+                                 include_report_excluded: bool = False) -> list[dict]:
     """Return each hireable plan row once, with its first available date.
 
-    A position with zero Soll or a reporting exclusion offers no hiring
-    capacity. All positions of a departing person become available together.
+    A position with zero Soll offers no hiring capacity. Whether reporting
+    exclusions also remove hiring capacity is an explicit policy input.
+    All positions of a departing person become available together.
     """
     exits: dict[str, pd.Timestamp] = {}
     if departure_events is not None and not departure_events.empty:
@@ -37,7 +78,7 @@ def available_position_vacancies(snapshot: pd.DataFrame,
         if pd.isna(soll) or not 0.0 < float(soll) <= 1.0:
             continue
         excluded = row.get("Is_Excluded")
-        if pd.notna(excluded) and bool(excluded):
+        if not include_report_excluded and pd.notna(excluded) and bool(excluded):
             continue
         person_id = _person_id(row.get("PersNr"))
         vacant = row.get("Is_Vacant")
@@ -51,6 +92,7 @@ def available_position_vacancies(snapshot: pd.DataFrame,
             "position_index": int(index),
             "date": date,
             "org_unit": row.get("Organisationseinheit"),
+            "org_code": row.get("Kürzel OrgEinheit"),
             "planstelle": row.get("Planstelle"),
             "planstellennr": row.get("Planstellennr"),
             "soll_mak": float(soll),
