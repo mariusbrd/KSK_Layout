@@ -102,7 +102,9 @@ def test_missing_or_mismatched_summary_shows_message_without_controls(monkeypatc
     for method in ("subheader", "info", "warning"):
         monkeypatch.setattr(ui.st, method, lambda message: messages.append(message))
     monkeypatch.setattr(ui.st, "radio", lambda *args, **kwargs: pytest.fail("No controls for invalid results"))
-    assert ui.render_org_simulation_yearly(summary, run_signature=signature) is None
+    # A Streamlit fragment does not execute outside an AppTest/runtime.
+    assert ui.render_org_simulation_yearly.__wrapped__(
+        summary, run_signature=signature) is None
     assert len(messages) == 2
 
 
@@ -120,7 +122,7 @@ def test_renderer_uses_saved_cluster_tables(monkeypatch):
     monkeypatch.setattr(ui.st, "altair_chart", lambda chart, **kwargs: rendered.append(chart.to_dict()))
     monkeypatch.setattr(ui.st, "dataframe", lambda df, **kwargs: rendered.append(df.copy()))
     monkeypatch.setattr(ui.st, "expander", lambda *args: Context())
-    view = ui.render_org_simulation_yearly(saved, run_signature="a")
+    view = ui.render_org_simulation_yearly.__wrapped__(saved, run_signature="a")
     assert view["dimension"] == "OE-Cluster"
     assert len(rendered) == 3
     assert view["table"].sum().sum() == 4

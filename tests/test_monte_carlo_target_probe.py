@@ -3,7 +3,11 @@ from __future__ import annotations
 
 import pandas as pd
 
-from utils.monte_carlo_departure_annual import target_head_mak_with_hires
+from utils.monte_carlo_departure_annual import (
+    prepare_target_array_model,
+    target_head_mak_from_array_model,
+    target_head_mak_with_hires,
+)
 
 
 def test_multi_position_split_and_atz_end_vacates_both_positions() -> None:
@@ -21,10 +25,17 @@ def test_multi_position_split_and_atz_end_vacates_both_positions() -> None:
     ])
     assert target_head_mak_with_hires(positions, active) == {
         "heads": 1, "mak": 0.5}
+    model = prepare_target_array_model(positions)
+    state = {row["PersNr"]: row for row in active.to_dict("records")}
+    assert target_head_mak_from_array_model(model, state) == {
+        "heads": 1, "mak": 0.5}
 
     # An ATZ_END event makes the person inactive; both original IST shares
     # disappear even when they belong to different organisation units.
     atz_ended = active.copy()
     atz_ended.loc[atz_ended["PersNr"] == "101", ["active", "mak"]] = [False, 0.0]
     assert target_head_mak_with_hires(positions, atz_ended) == {
+        "heads": 0, "mak": 0.0}
+    ended_state = {row["PersNr"]: row for row in atz_ended.to_dict("records")}
+    assert target_head_mak_from_array_model(model, ended_state) == {
         "heads": 0, "mak": 0.0}

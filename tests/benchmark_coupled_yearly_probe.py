@@ -37,6 +37,10 @@ from utils.monte_carlo_departure_annual import (
     provisional_target_head_mak,
     target_mak_in_position_order,
     target_head_mak_with_hires,
+    reporting_target_from_position_probe,
+    prepare_target_position_model, target_head_mak_reporting_bridge,
+    prepare_target_people, replay_target_people_compact,
+    prepare_target_array_model, target_head_mak_from_array_model,
 )
 from utils.monte_carlo_metric_packet import LEVELS, make_metric_packet
 from utils.org_simulation_reconciliation import grouped_stock_metrics, reporting_projection_base
@@ -58,10 +62,11 @@ def _equal_frames(reference: dict, candidate: dict, names: tuple[str, ...]) -> N
 def main() -> None:
     matrix_mode = sys.argv[1:] == ["--matrix"]
     exclusions_mode = sys.argv[1:] == ["--target-exclusions"]
-    target_only = sys.argv[1:] == ["--target-only"] or exclusions_mode
+    sample_mode = sys.argv[1:] == ["--target-sample"]
+    target_only = sys.argv[1:] == ["--target-only"] or exclusions_mode or sample_mode
     if sys.argv[1:] not in ([], ["--matrix"], ["--target-only"],
-                            ["--target-exclusions"]):
-        raise SystemExit("Usage: py tests/benchmark_coupled_yearly_probe.py [--matrix|--target-only|--target-exclusions]")
+                            ["--target-exclusions"], ["--target-sample"]):
+        raise SystemExit("Usage: py tests/benchmark_coupled_yearly_probe.py [--matrix|--target-only|--target-exclusions|--target-sample]")
     if exclusions_mode:
         FROZEN_SETTINGS["exclusions"] = {
             **FROZEN_SETTINGS["exclusions"], "vorstand": False,
@@ -79,6 +84,9 @@ def main() -> None:
     source, bundle, signature = page._get_simulation_cluster_context(source_summary)
     base, target = FROZEN_STICHTAG, pd.Timestamp("2028-12-31")
     people = _prepare_employee_forecast_base(snapshot, atz, base)
+    prepared_positions = prepare_target_position_model(snapshot)
+    prepared_target_people = prepare_target_people(people)
+    target_array_model = prepare_target_array_model(snapshot)
     occupied_counts = snapshot.loc[snapshot["PersNr"].notna(), "PersNr"].value_counts()
     assert occupied_counts.gt(1).any(), "No multi-position employee in source"
     baseline = compact.prepare_compact_data(build_status_quo_snapshot(snapshot, base))
@@ -131,15 +139,17 @@ def main() -> None:
                                                       else "Fill Vacancies"))
             prepared = prepare_coupled_batch(people, atz, base, target,
                                              dep_params, hire_params)
+            selected_seeds = range(1000, 1010) if sample_mode else (7, 42)
             seed_stream = ((seed, departures, pivot, hires, new_people)
                            for seed, departures, pivot, _, hires, new_people
-                           in iter_coupled_seed_records_with_atz(prepared, (7, 42)))
+                           in iter_coupled_seed_records_with_atz(prepared, selected_seeds))
         else:
             prepared_dep = prepare_quit_batch(people, atz, base, target, dep_params)
             initial_pivot = prepare_atz_pivot_for_probe(prepared_dep, atz, dep_params)
+            selected_seeds = range(1000, 1020) if sample_mode else (7, 42, 123, 999)
             seed_stream = ((seed, departures, pivot, None, [])
                            for seed, departures, pivot in iter_quit_seed_records_with_atz(
-                               prepared_dep, (7, 42, 123, 999), initial_pivot))
+                               prepared_dep, selected_seeds, initial_pivot))
 
         for seed, departures, pivot, hire_records, new_people in seed_stream:
             if target_only and variant == "existing_atz_only":
@@ -185,6 +195,7 @@ def main() -> None:
                 snapshot, final_people, target, atz_target)
             future = _append_new_people_rows(
                 future, snapshot, final_people, {"events": hires})
+            updated_positions = future
             future = _finalize_future_snapshot(
                 future, target, active_cluster_source=source,
                 cluster_mapping_bundle=bundle)
@@ -206,18 +217,52 @@ def main() -> None:
                     assert forecast_rows["MAK_Reporting"].eq(0.0).all(), (
                         label, seed, "forecast_reporting_mak")
                 target_start = perf_counter()
-                candidate_totals = target_head_mak_with_hires(snapshot, final_people)
+                atz_fr_people = set(atz_target.loc[
+                    atz_target["ist_atz_fr"] == True, "PersNr"].astype(str))
+                candidate_totals = target_head_mak_with_hires(
+                    snapshot, final_people, atz_fr_people)
                 target_seconds = perf_counter() - target_start
+                compact_start = perf_counter()
+                compact_people = replay_target_people_compact(
+                    prepared_target_people, departures, new_people)
+                compact_totals = target_head_mak_with_hires(
+                    snapshot, compact_people, atz_fr_people)
+                compact_seconds = perf_counter() - compact_start
+                assert compact_totals == {"heads": target_totals["heads"],
+                                          "mak": target_totals["mak"]}, (
+                    label, seed, "compact_replay", compact_totals,
+                    target_totals)
+                array_start = perf_counter()
+                array_people = replay_target_people_compact(
+                    prepared_target_people, departures, new_people, as_dict=True)
+                array_totals = target_head_mak_from_array_model(
+                    target_array_model, array_people, atz_fr_people)
+                array_seconds = perf_counter() - array_start
+                assert array_totals == {"heads": target_totals["heads"],
+                                        "mak": target_totals["mak"]}, (
+                    label, seed, "array_target", array_totals, target_totals)
+                bridge_start = perf_counter()
+                prepared_bridge = target_head_mak_reporting_bridge(
+                    prepared_positions, final_people, target, atz_target,
+                    hires, FROZEN_SETTINGS["exclusions"])
+                bridge_seconds = perf_counter() - bridge_start
+                assert prepared_bridge == {"heads": target_totals["heads"],
+                                           "mak": target_totals["mak"]}, (
+                    label, seed, "prepared_reporting_bridge", prepared_bridge,
+                    target_totals)
                 assert candidate_totals["heads"] == target_totals["heads"], (
                     label, seed, "heads", candidate_totals, target_totals)
                 if exclusions_mode:
-                    gap = target_totals["mak"] - candidate_totals["mak"]
-                    assert gap > 0, (label, seed, "expected_reporting_gap", gap)
-                    print(f"target_exclusion_gap={label}; seed={seed}; mak_gap={gap}; replay_s={replay_seconds:.4f}; target_s={target_seconds:.4f}")
-                    continue
+                    bridge = reporting_target_from_position_probe(
+                        updated_positions, target, FROZEN_SETTINGS["exclusions"])
+                    assert bridge == {"heads": target_totals["heads"],
+                                      "mak": target_totals["mak"]}, (
+                        label, seed, "reporting_bridge", bridge, target_totals)
+                    print(f"target_exclusion_parity={label}; seed={seed}; replay_s={replay_seconds:.4f}; target_s={target_seconds:.4f}; compact_s={compact_seconds:.4f}; array_s={array_seconds:.4f}; bridge_s={bridge_seconds:.4f}")
                 assert candidate_totals["mak"] == target_totals["mak"], (
                     label, seed, "mak", candidate_totals, target_totals)
-                print(f"target_parity={label}; seed={seed}; heads={candidate_totals['heads']}; mak={candidate_totals['mak']}; replay_s={replay_seconds:.4f}; target_s={target_seconds:.4f}")
+                if not exclusions_mode:
+                    print(f"target_parity={label}; seed={seed}; heads={candidate_totals['heads']}; mak={candidate_totals['mak']}; replay_s={replay_seconds:.4f}; target_s={target_seconds:.4f}; compact_s={compact_seconds:.4f}; array_s={array_seconds:.4f}; bridge_s={bridge_seconds:.4f}")
                 continue
             context = page._build_simulation_event_context(
                 reference, bundle, f"yearly::{label}::{seed}",
