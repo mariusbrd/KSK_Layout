@@ -32,6 +32,7 @@ from components.jobfamily_simulation_yearly import build_jobfamily_yearly_view, 
 from utils.org_simulation_events import build_simulation_event_summary
 from utils.monte_carlo_departure_annual import (
     departure_annual_values, prepare_oe_stock_scopes, provisional_stock_values,
+    provisional_target_head_mak,
 )
 from utils.monte_carlo_metric_packet import LEVELS, make_metric_packet
 from utils.org_simulation_reconciliation import grouped_stock_metrics, reporting_projection_base
@@ -229,6 +230,14 @@ def main() -> None:
                 provisional = provisional_stock_values(
                     stock_openings, departures, departure_yearly, range(2025, 2029),
                     stock_scopes)
+                target_totals = page._metric_totals(final_reference)
+                compact_target = provisional_target_head_mak(
+                    provisional, target.year, page._metric_totals(baseline)["heads"],
+                    departures)
+                assert compact_target["heads"] == target_totals["heads"], (
+                    label, seed, "target_heads", compact_target, target_totals)
+                assert abs(compact_target["mak"] - target_totals["mak"]) <= 1e-12, (
+                    label, seed, "target_mak", compact_target, target_totals)
                 for _, row in ref_bridge["annual"].iterrows():
                     if row["Art"] != "Jahresstichtag" or row["Jahr"] < 2026:
                         continue

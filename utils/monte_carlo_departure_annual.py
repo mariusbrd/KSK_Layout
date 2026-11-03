@@ -99,3 +99,27 @@ def prepare_oe_stock_scopes(projection) -> dict[str, dict[str, list[tuple[str, f
                 memberships.setdefault(person, []).append((group, ratio))
         result[level] = memberships
     return result
+
+
+def provisional_target_head_mak(
+    stock_values: dict[tuple[int, str, str, str], float],
+    target_year: int,
+    opening_unique_heads: int,
+    records: list[dict],
+    level: str = "Organisationseinheit",
+) -> dict[str, float]:
+    """Collapse provisional year-end group stock to target heads and MAK.
+
+    This is deliberately not a certified target packet: reporting effects,
+    hires and EUR require independent final-state derivation.
+    """
+    if level not in LEVELS:
+        raise ValueError(f"Unknown stock level: {level}")
+    mak = [value for (year, scope, _, metric), value in stock_values.items()
+           if year == target_year and scope == level and metric == "MAK"]
+    if not mak:
+        raise ValueError(f"No stock values for {level} in {target_year}")
+    heads = opening_unique_heads + sum(
+        int(event["headcount_change"]) for event in records
+        if event["event_date"].year <= target_year)
+    return {"heads": heads, "mak": float(np.sum(mak))}
