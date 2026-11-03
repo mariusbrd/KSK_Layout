@@ -123,3 +123,32 @@ def provisional_target_head_mak(
         int(event["headcount_change"]) for event in records
         if event["event_date"].year <= target_year)
     return {"heads": heads, "mak": float(np.sum(mak))}
+
+
+def target_mak_in_position_order(
+    source_positions,
+    final_people,
+) -> float:
+    """Probe target MAK in original position order without a future snapshot.
+
+    The original IST distribution is retained for multi-position employees.
+    This helper only covers existing people and is not yet an app calculation.
+    """
+    import pandas as pd
+
+    positions = source_positions.loc[source_positions["PersNr"].notna(),
+                                     ["PersNr", "MAK_Reporting"]].copy()
+    positions["PersNr"] = positions["PersNr"].astype(str).str.strip().str.replace(
+        r"\.0$", "", regex=True)
+    original = pd.to_numeric(positions["MAK_Reporting"], errors="coerce").fillna(0.0)
+    counts = positions.groupby("PersNr")["PersNr"].transform("size")
+    person_total = original.groupby(positions["PersNr"]).transform("sum")
+    people = final_people.drop_duplicates("PersNr", keep="last").set_index("PersNr")
+    active = positions["PersNr"].map(people["active"]).fillna(False).astype(bool)
+    final_mak = positions["PersNr"].map(people["mak"]).fillna(0.0).astype(float)
+    weights = original / person_total.where(person_total.gt(0), np.nan)
+    weights = weights.fillna(1.0 / counts)
+    row_mak = (final_mak * weights).where(active, 0.0)
+    # The app sums only occupied rows. Including zero-valued vacated rows can
+    # change NumPy's reduction tree and the final floating-point bit pattern.
+    return float(np.sum(row_mak.loc[active].to_numpy()))

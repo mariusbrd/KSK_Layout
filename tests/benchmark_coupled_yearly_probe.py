@@ -33,6 +33,7 @@ from utils.org_simulation_events import build_simulation_event_summary
 from utils.monte_carlo_departure_annual import (
     departure_annual_values, prepare_oe_stock_scopes, provisional_stock_values,
     provisional_target_head_mak,
+    target_mak_in_position_order,
 )
 from utils.monte_carlo_metric_packet import LEVELS, make_metric_packet
 from utils.org_simulation_reconciliation import grouped_stock_metrics, reporting_projection_base
@@ -53,8 +54,9 @@ def _equal_frames(reference: dict, candidate: dict, names: tuple[str, ...]) -> N
 
 def main() -> None:
     matrix_mode = sys.argv[1:] == ["--matrix"]
-    if sys.argv[1:] not in ([], ["--matrix"]):
-        raise SystemExit("Usage: py tests/benchmark_coupled_yearly_probe.py [--matrix]")
+    target_only = sys.argv[1:] == ["--target-only"]
+    if sys.argv[1:] not in ([], ["--matrix"], ["--target-only"]):
+        raise SystemExit("Usage: py tests/benchmark_coupled_yearly_probe.py [--matrix|--target-only]")
     logging.getLogger("streamlit").setLevel(logging.ERROR)
     _freeze_context()
     _reset_state()
@@ -81,6 +83,8 @@ def main() -> None:
         stock_openings.setdefault((level, "Nicht zugeordnet"), (0, 0.0))
 
     scenarios = (
+        (("departures_only", 0, "standard"),)
+        if target_only else
         (("departures_only", 0, "standard"), ("with_hires", 20, "standard"))
         if not matrix_mode else (
             ("existing_atz_only", 0, "existing_atz_only"),
@@ -164,6 +168,18 @@ def main() -> None:
             final_candidate = compact.prepare_compact_data(future)
             pd.testing.assert_frame_equal(final_candidate, final_reference,
                                           check_exact=True)
+            if target_only:
+                target_totals = page._metric_totals(final_reference)
+                target_heads = page._metric_totals(baseline)["heads"] + sum(
+                    int(event["headcount_change"]) for event in departures
+                    if event["event_date"].year <= target.year)
+                assert target_heads == target_totals["heads"], (
+                    label, seed, target_heads, target_totals["heads"])
+                row_order_mak = target_mak_in_position_order(snapshot, final_people)
+                assert row_order_mak == target_totals["mak"], (
+                    label, seed, row_order_mak, target_totals["mak"])
+                print(f"target_mak_parity={label}; seed={seed}; mak={row_order_mak}")
+                continue
             context = page._build_simulation_event_context(
                 reference, bundle, f"yearly::{label}::{seed}",
                 baseline_snapshot=baseline, final_snapshot=final_reference,
@@ -238,6 +254,10 @@ def main() -> None:
                     label, seed, "target_heads", compact_target, target_totals)
                 assert abs(compact_target["mak"] - target_totals["mak"]) <= 1e-12, (
                     label, seed, "target_mak", compact_target, target_totals)
+                row_order_mak = target_mak_in_position_order(snapshot, final_people)
+                assert row_order_mak == target_totals["mak"], (
+                    label, seed, "target_mak_position_order", row_order_mak,
+                    target_totals["mak"])
                 for _, row in ref_bridge["annual"].iterrows():
                     if row["Art"] != "Jahresstichtag" or row["Jahr"] < 2026:
                         continue
