@@ -125,11 +125,11 @@ def provisional_target_head_mak(
     return {"heads": heads, "mak": float(np.sum(mak))}
 
 
-def target_mak_in_position_order(
+def _existing_position_mak(
     source_positions,
     final_people,
-) -> float:
-    """Probe target MAK in original position order without a future snapshot.
+) -> tuple:
+    """Return occupied existing-row MAK and their active mask.
 
     The original IST distribution is retained for multi-position employees.
     This helper only covers existing people and is not yet an app calculation.
@@ -149,6 +149,72 @@ def target_mak_in_position_order(
     weights = original / person_total.where(person_total.gt(0), np.nan)
     weights = weights.fillna(1.0 / counts)
     row_mak = (final_mak * weights).where(active, 0.0)
+    return row_mak, active
+
+
+def target_mak_in_position_order(source_positions, final_people) -> float:
+    """Sum existing occupied positions without building a future snapshot."""
+    row_mak, active = _existing_position_mak(source_positions, final_people)
     # The app sums only occupied rows. Including zero-valued vacated rows can
     # change NumPy's reduction tree and the final floating-point bit pattern.
     return float(np.sum(row_mak.loc[active].to_numpy()))
+
+
+def target_head_mak_with_hires(source_positions, final_people) -> dict[str, int | float]:
+    """Probe exact target totals for existing and forecast people.
+
+    Vacancy matching follows the reference append helper. This remains a
+    parity probe until all hire and exclusion variants have been checked.
+    """
+    import pandas as pd
+
+    row_mak, active = _existing_position_mak(source_positions, final_people)
+    positions = source_positions.reset_index(drop=True)
+    values = [0.0] * len(positions)
+    occupied = [False] * len(positions)
+    for index, value in row_mak.items():
+        if bool(active.loc[index]):
+            values[index] = float(value)
+            occupied[index] = True
+    existing_ids = set(positions["PersNr"].dropna().astype(str).str.strip().str.replace(
+        r"\.0$", "", regex=True))
+    people = final_people.drop_duplicates("PersNr", keep="last").copy()
+    people["PersNr"] = people["PersNr"].astype(str).str.strip().str.replace(
+        r"\.0$", "", regex=True)
+    people = people.set_index("PersNr")
+    forecast = people.get("is_forecast", pd.Series(False, index=people.index))
+    forecast = forecast.fillna(False).astype(bool)
+    prefix = people.index.to_series().str.match(r"^(AZ|TR|NH)_", na=False)
+    new = people[(people["active"] == True) & (forecast | prefix)]
+    new = new[~new.index.isin(existing_ids)].sort_index()
+    for pid, person in new.iterrows():
+        org = person.get("Organisationseinheit")
+        planstelle = person.get("Planstelle")
+        candidates = [i for i in range(len(positions)) if not occupied[i]
+                      and (pd.isna(org) or str(positions.at[i, "Organisationseinheit"]) == str(org))]
+        if pd.notna(planstelle):
+            exact = [i for i in candidates if str(positions.at[i, "Planstelle"]) == str(planstelle)]
+            if exact:
+                candidates = exact
+        # The reference append helper carries existing person-source columns
+        # into new rows. Missing BsGrd stays NaN; it does not fall back to the
+        # event's technical `mak` in the reporting allocation.
+        mak = 0.0
+        for field, divisor in (("Personen_MAK_Source", 1.0),
+                               ("BsGrd_Source", 100.0),
+                               ("Personen_MAK", 1.0), ("BsGrd", 100.0)):
+            value = pd.to_numeric(person.get(field), errors="coerce")
+            if pd.notna(value):
+                mak = max(0.0, float(value) / divisor)
+                break
+        if str(person.get("Vertragsart", "")).strip().lower() == "auszubildende":
+            mak = 0.0
+        if candidates:
+            index = candidates[0]
+            values[index] = mak
+            occupied[index] = True
+        else:
+            values.append(mak)
+            occupied.append(True)
+    return {"heads": int(people.loc[people["active"] == True].index.nunique()),
+            "mak": float(np.sum(np.asarray(values)[occupied]))}

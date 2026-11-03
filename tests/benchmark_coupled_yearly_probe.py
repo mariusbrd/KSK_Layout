@@ -34,6 +34,7 @@ from utils.monte_carlo_departure_annual import (
     departure_annual_values, prepare_oe_stock_scopes, provisional_stock_values,
     provisional_target_head_mak,
     target_mak_in_position_order,
+    target_head_mak_with_hires,
 )
 from utils.monte_carlo_metric_packet import LEVELS, make_metric_packet
 from utils.org_simulation_reconciliation import grouped_stock_metrics, reporting_projection_base
@@ -83,7 +84,10 @@ def main() -> None:
         stock_openings.setdefault((level, "Nicht zugeordnet"), (0, 0.0))
 
     scenarios = (
-        (("departures_only", 0, "standard"),)
+        (("departures_only", 0, "standard"), ("with_hires", 20, "standard"),
+         ("random_hires", 30, "random_hires"),
+         ("existing_atz_only", 0, "existing_atz_only"),
+         ("high_quit", 0, "high_quit"))
         if target_only else
         (("departures_only", 0, "standard"), ("with_hires", 20, "standard"))
         if not matrix_mode else (
@@ -170,15 +174,20 @@ def main() -> None:
                                           check_exact=True)
             if target_only:
                 target_totals = page._metric_totals(final_reference)
-                target_heads = page._metric_totals(baseline)["heads"] + sum(
-                    int(event["headcount_change"]) for event in departures
-                    if event["event_date"].year <= target.year)
-                assert target_heads == target_totals["heads"], (
-                    label, seed, target_heads, target_totals["heads"])
-                row_order_mak = target_mak_in_position_order(snapshot, final_people)
-                assert row_order_mak == target_totals["mak"], (
-                    label, seed, row_order_mak, target_totals["mak"])
-                print(f"target_mak_parity={label}; seed={seed}; mak={row_order_mak}")
+                if annual_hires:
+                    forecast_rows = final_reference[
+                        final_reference["PersNr"].astype(str).str.match(
+                            r"^(AZ|TR|NH)_", na=False)]
+                    assert len(forecast_rows) == annual_hires * 3, (
+                        label, seed, "forecast_heads", len(forecast_rows))
+                    assert forecast_rows["MAK_Reporting"].eq(0.0).all(), (
+                        label, seed, "forecast_reporting_mak")
+                candidate_totals = target_head_mak_with_hires(snapshot, final_people)
+                assert candidate_totals["heads"] == target_totals["heads"], (
+                    label, seed, "heads", candidate_totals, target_totals)
+                assert candidate_totals["mak"] == target_totals["mak"], (
+                    label, seed, "mak", candidate_totals, target_totals)
+                print(f"target_parity={label}; seed={seed}; heads={candidate_totals['heads']}; mak={candidate_totals['mak']}")
                 continue
             context = page._build_simulation_event_context(
                 reference, bundle, f"yearly::{label}::{seed}",
