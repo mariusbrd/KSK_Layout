@@ -46,6 +46,9 @@ def _equal_frames(reference: dict, candidate: dict, names: tuple[str, ...]) -> N
 
 
 def main() -> None:
+    matrix_mode = sys.argv[1:] == ["--matrix"]
+    if sys.argv[1:] not in ([], ["--matrix"]):
+        raise SystemExit("Usage: py tests/benchmark_coupled_yearly_probe.py [--matrix]")
     logging.getLogger("streamlit").setLevel(logging.ERROR)
     _freeze_context()
     _reset_state()
@@ -58,15 +61,32 @@ def main() -> None:
     people = _prepare_employee_forecast_base(snapshot, atz, base)
     baseline = compact.prepare_compact_data(build_status_quo_snapshot(snapshot, base))
 
-    for label, annual_hires in (("departures_only", 0), ("with_hires", 20)):
+    scenarios = (
+        (("departures_only", 0, "standard"), ("with_hires", 20, "standard"))
+        if not matrix_mode else (
+            ("existing_atz_only", 0, "existing_atz_only"),
+            ("high_quit", 0, "high_quit"),
+            ("random_hires", 30, "random_hires"),
+        )
+    )
+    for label, annual_hires, variant in scenarios:
         dep_params, hire_params = departure_defaults(), hire_defaults()
-        dep_params["atz"].update(new_atz_rate=0.35, use_atz_matrix=False,
-                                 atz_duration_ar_years=0.5,
-                                 atz_duration_fr_years=0.5)
-        dep_params["quit"].update(quit_rate_base=0.12, use_quit_matrix=False)
+        if variant == "existing_atz_only":
+            dep_params["components"] = {
+                key: key == "atz" for key in dep_params["components"]}
+            dep_params["atz"].update(new_atz_rate=0.0, use_atz_matrix=False)
+        elif variant == "high_quit":
+            dep_params["atz"].update(new_atz_rate=0.0, use_atz_matrix=False)
+            dep_params["quit"].update(quit_rate_base=0.25, use_quit_matrix=False)
+        else:
+            dep_params["atz"].update(new_atz_rate=0.35, use_atz_matrix=False,
+                                     atz_duration_ar_years=0.5,
+                                     atz_duration_fr_years=0.5)
+            dep_params["quit"].update(quit_rate_base=0.12, use_quit_matrix=False)
         if annual_hires:
             hire_params["new_hires"].update(active=True, count_per_year=annual_hires,
-                                            strategy="Fill Vacancies")
+                                            strategy=("Random" if variant == "random_hires"
+                                                      else "Fill Vacancies"))
             prepared = prepare_coupled_batch(people, atz, base, target,
                                              dep_params, hire_params)
             seed_stream = ((seed, departures, pivot, hires, new_people)
@@ -146,10 +166,12 @@ def main() -> None:
             _equal_frames(reference_summary, candidate_summary,
                           ("events", "annual_oe", "annual_cluster"))
             event_years = set(candidate_summary["events"]["Jahr"].dropna().astype(int))
-            assert event_years == {2025, 2026, 2027, 2028}, (label, seed, event_years)
+            if not matrix_mode:
+                assert event_years == {2025, 2026, 2027, 2028}, (label, seed, event_years)
             departure_types = set(candidate_summary["events"]["Ereignisart"])
-            assert {"ATZ_AR_TO_FR", "ATZ_END"}.issubset(departure_types), (
-                label, seed, departure_types)
+            if not matrix_mode:
+                assert {"ATZ_AR_TO_FR", "ATZ_END"}.issubset(departure_types), (
+                    label, seed, departure_types)
             ref_bridge = reference_summary["stock_reconciliation"]
             probe_bridge = candidate_summary["stock_reconciliation"]
             assert (probe_bridge["status"], probe_bridge["reason"]) == (
