@@ -78,7 +78,8 @@ def aggregate_simulation_events(events: pd.DataFrame, *, dimension: str = "Organ
     return events.groupby(groups, dropna=False, sort=True)[list(METRICS)].sum().reset_index()
 
 
-def build_simulation_event_summary(context: dict, *, expected_run_signature: str) -> dict:
+def build_simulation_event_summary(context: dict, *, expected_run_signature: str,
+                                   use_preaggregated_stock: bool = True) -> dict:
     """Materialize all views once from the same saved run, before publishing state."""
     events = normalize_simulation_events(context, expected_run_signature=expected_run_signature)
     summary = {"run_signature": context["run_signature"],
@@ -89,9 +90,10 @@ def build_simulation_event_summary(context: dict, *, expected_run_signature: str
     for level, dimension in (("oe", "Organisationseinheit"), ("cluster", "OE-Cluster")):
         summary[f"annual_{level}"] = aggregate_simulation_events(events, dimension=dimension)
         summary[f"total_{level}"] = aggregate_simulation_events(events, dimension=dimension, by_year=False)
-    from utils.org_simulation_reconciliation import build_departure_stock_bridge
+    from utils.org_simulation_reconciliation import build_departure_stock_bridge, grouped_stock_metrics
     summary["stock_reconciliation"] = build_departure_stock_bridge(
-        context, events, expected_run_signature=expected_run_signature)
+        context, events, expected_run_signature=expected_run_signature,
+        stock_metric_provider=grouped_stock_metrics if use_preaggregated_stock else None)
     columns = ["PersNr", "GebDatum", "Organisationseinheit", "Planstelle", "Planstellennr", "Is_Vacant", "Is_Excluded",
                "Exclusion_Group", "MAK_Reporting", "MAK_Calculated", "Personen_MAK_Source", "Personen_MAK",
                "BsGrd_Source", "BsGrd", "Allocation_Weight", "Soll_FTE", "Status kundenindividuell",

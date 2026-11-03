@@ -1,7 +1,7 @@
-"""Read-only trial of grouped stock metrics against the exact current path.
+"""Compare grouped stock metrics against the historical row-wise path.
 
 Run: py tests/probe_oe_stock_preaggregation.py
-This does not patch or change production code.
+This does not patch production code.
 """
 from __future__ import annotations
 
@@ -21,19 +21,13 @@ from test_monte_carlo_yearly_reference import _frame_signature
 from components.jobfamily_simulation_yearly import build_jobfamily_yearly_view
 from dataloader.kpi_engine import compute_headcount
 from utils.org_simulation_events import build_simulation_event_summary, normalize_simulation_events
-from utils.org_simulation_reconciliation import build_departure_stock_bridge, raw_stock_mak, reporting_projection_base
+from utils.org_simulation_reconciliation import (
+    build_departure_stock_bridge, grouped_stock_metrics, raw_stock_mak,
+    reporting_projection_base,
+)
 
 
-def grouped_metrics(frame: pd.DataFrame, dimension: str) -> dict:
-    """Candidate formula; tested here, never substituted into the bridge."""
-    capacity = next((c for c in ("MAK_Reporting", "MAK_Calculated", "mak", "MAK") if c in frame), None)
-    occupied = frame.loc[~frame.Is_Vacant].dropna(subset=["PersNr"])
-    first = occupied.drop_duplicates(subset=[dimension, "PersNr"], keep="first")[[dimension, "PersNr"]]
-    person_capacity = occupied.groupby([dimension, "PersNr"], sort=True)[capacity].sum().rename("_sum").reset_index()
-    ordered = first.merge(person_capacity, on=[dimension, "PersNr"], how="left", sort=False)
-    populated = {name: (len(group), float(group["_sum"].fillna(0).sum()))
-                 for name, group in ordered.groupby(dimension, sort=True)}
-    return {name: populated.get(name, (0, 0.0)) for name in frame[dimension].dropna().unique()}
+grouped_metrics = grouped_stock_metrics
 
 
 def reference_metrics(frame: pd.DataFrame, dimension: str) -> dict:

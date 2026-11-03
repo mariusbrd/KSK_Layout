@@ -9,6 +9,27 @@ from dataloader.kpi_engine import compute_headcount, compute_fte_effektiv, get_u
 MAK_TOLERANCE = 1e-6  # Raw capacities; presentation alone rounds to two places.
 
 
+def grouped_stock_metrics(frame: pd.DataFrame, dimension: str) -> dict:
+    """Return exact per-group heads and MAK in first-person occurrence order.
+
+    The two-stage sum follows the existing unique-person stock semantics. A
+    group containing only vacancies is retained with zero occupied stock.
+    """
+    capacity = next((c for c in ("MAK_Reporting", "MAK_Calculated", "mak", "MAK")
+                     if c in frame), None)
+    occupied = frame.loc[~frame.Is_Vacant].dropna(subset=["PersNr"])
+    first = occupied.drop_duplicates(subset=[dimension, "PersNr"], keep="first")[[dimension, "PersNr"]]
+    person_capacity = (
+        occupied.groupby([dimension, "PersNr"], sort=True)[capacity]
+        .sum().rename("_sum").reset_index()
+    )
+    ordered = first.merge(person_capacity, on=[dimension, "PersNr"], how="left", sort=False)
+    populated = {name: (len(group), float(group["_sum"].fillna(0).sum()))
+                 for name, group in ordered.groupby(dimension, sort=True)}
+    return {name: populated.get(name, (0, 0.0))
+            for name in frame[dimension].dropna().unique()}
+
+
 def documented_atz_capacity_effects(context, projection, final, events):
     """Recognize only an undated ATZ capacity recovery supported by saved run data."""
     params = context.get("abgaenge_params", {})

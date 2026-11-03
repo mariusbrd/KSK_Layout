@@ -74,7 +74,7 @@ def _payload(*, profile: bool = False, probe=None) -> dict:
                 df_atz=atz, run_settings={"exclusions": deepcopy(FROZEN_SETTINGS["exclusions"])},
                 source_snapshot=snapshot)
             context_built = perf_counter()
-            if probe is not None and (label, seed) == ("departures_only", 7):
+            if probe is not None:
                 probe(context)
             summary = build_simulation_event_summary(
                 context, expected_run_signature=run_signature)
