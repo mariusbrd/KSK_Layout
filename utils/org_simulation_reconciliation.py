@@ -332,7 +332,7 @@ def build_departure_stock_bridge(context: dict, events: pd.DataFrame, *, expecte
         if grouped_stock is None or level == "Gesamt":
             hc, mak = compute_headcount(before), raw_stock_mak(before)
         else:
-            hc, mak = grouped_stock["initial"][level][name]
+            hc, mak = grouped_stock["initial"][level].get(name, (0, 0.0))
         projected_before = projection if level == "Gesamt" else projection.loc[projection[level].eq(name)]
         if grouped_stock is None or level == "Gesamt":
             projection_hc, projection_mak = compute_headcount(projected_before), raw_stock_mak(projected_before)

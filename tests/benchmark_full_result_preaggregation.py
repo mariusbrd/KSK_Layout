@@ -7,13 +7,15 @@ from __future__ import annotations
 
 import json
 import statistics
+import sys
 import time
 from unittest.mock import patch
 
 import pandas as pd
 
 from probe_oe_stock_preaggregation import grouped_metrics
-from test_monte_carlo_production_yearly_reference import _payload
+from test_monte_carlo_production_yearly_reference import _payload as _one_year_payload
+from test_monte_carlo_production_multi_year_reference import _payload as _multi_year_payload
 from test_monte_carlo_yearly_reference import _frame_signature
 from components.jobfamily_simulation_yearly import build_jobfamily_yearly_view
 from utils.org_simulation_events import build_simulation_event_summary
@@ -31,6 +33,9 @@ def _fingerprint(value):
 
 
 def main() -> None:
+    multi_year = sys.argv[1:] == ["--multi-year"]
+    if sys.argv[1:] not in ([], ["--multi-year"]):
+        raise SystemExit("Usage: py tests/benchmark_full_result_preaggregation.py [--multi-year]")
     output = {}
 
     def measure(context):
@@ -38,7 +43,7 @@ def main() -> None:
         original = reconciliation.build_departure_stock_bridge
         samples = {mode: [] for mode in ("standard", "preaggregated")}
         reference = None
-        for pair in range(3):
+        for pair in range(1 if multi_year else 3):
             order = ("standard", "preaggregated") if pair % 2 == 0 else ("preaggregated", "standard")
             for mode in order:
                 def optimized_bridge(ctx, events, *, expected_run_signature):
@@ -66,9 +71,10 @@ def main() -> None:
         output.update({"samples": samples, "median_seconds": {
             mode: {key: round(statistics.median(sample[key] for sample in values), 4)
                    for key in ("oe_summary_seconds", "full_result_seconds")}
-            for mode, values in samples.items()}, "exact_result_parity": True, "pairs": 3})
+            for mode, values in samples.items()}, "exact_result_parity": True,
+            "pairs": 1 if multi_year else 3})
 
-    _payload(probe=measure)
+    (_multi_year_payload if multi_year else _one_year_payload)(probe=measure)
     print(json.dumps(output, ensure_ascii=False, indent=2))
 
 
