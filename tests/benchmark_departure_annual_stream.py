@@ -26,7 +26,8 @@ from dataloader.compact_simulation_engine import (
 from utils.monte_carlo_departure_annual import (
     departure_annual_values, prepare_oe_stock_scopes, provisional_stock_values,
     prepare_target_people, replay_target_people_compact,
-    target_head_mak_with_hires,
+    target_head_mak_with_hires, prepare_target_array_model,
+    target_head_mak_from_array_model,
 )
 from utils.monte_carlo_metric_packet import LEVELS
 from utils.org_simulation_reconciliation import grouped_stock_metrics, reporting_projection_base
@@ -38,6 +39,8 @@ def main() -> None:
     count = int(sys.argv[1]) if len(sys.argv) > 1 else 1000
     with_stock = "--stock" in sys.argv
     with_target = "--target" in sys.argv
+    array_target = "--array-target" in sys.argv
+    with_target = with_target or array_target
     _freeze_context()
     _reset_state()
     compact = _load_page_module("*_Kompakt.py", "departure_annual_benchmark_compact")
@@ -49,6 +52,7 @@ def main() -> None:
         build_status_quo_snapshot(snapshot, FROZEN_STICHTAG))
     people = _prepare_employee_forecast_base(snapshot, atz, FROZEN_STICHTAG)
     target_people = prepare_target_people(people) if with_target else None
+    target_array_model = prepare_target_array_model(snapshot) if array_target else None
     target = pd.Timestamp("2028-12-31")
     dep = default_params()
     dep["atz"].update(new_atz_rate=0.35, use_atz_matrix=False,
@@ -102,11 +106,14 @@ def main() -> None:
                 atz_status["ist_atz_fr"] == True, "PersNr"].astype(str))
             phases["atz_status"] += perf_counter() - phase_start
             phase_start = perf_counter()
-            final_people = replay_target_people_compact(target_people, records, [])
+            final_people = replay_target_people_compact(
+                target_people, records, [], as_dict=array_target)
             phases["compact_replay"] += perf_counter() - phase_start
             phase_start = perf_counter()
-            totals = target_head_mak_with_hires(
-                snapshot, final_people, atz_fr_people)
+            totals = (target_head_mak_from_array_model(
+                target_array_model, final_people, atz_fr_people)
+                if array_target else target_head_mak_with_hires(
+                    snapshot, final_people, atz_fr_people))
             phases["target"] += perf_counter() - phase_start
             target_values += len(totals)
     print(f"seeds={count}; preparation_seconds={preparation:.4f}; "

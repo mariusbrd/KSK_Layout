@@ -31,7 +31,8 @@ def test_context_is_independent_of_later_edits():
     page = _load_page7_module()
     result = SimpleNamespace(metadata={"target_date": "2027-12-31", "nested": {"a": 1}},
                              abgaenge_result={"events_person_level": pd.DataFrame({"headcount_change": [-1]})},
-                             zugaenge_result={"events": pd.DataFrame({"count": [1]})})
+                             zugaenge_result={"events": pd.DataFrame({"count": [1]})},
+                             future_snapshot_df=pd.DataFrame())
     bundle = ClusterMappingBundle(oe_map={"OE1": "A"})
     saved = page._build_simulation_event_context(result, bundle, "run-a")
     result.metadata["nested"]["a"] = 2
@@ -46,7 +47,8 @@ def test_context_is_independent_of_later_edits():
 
 def test_empty_outputs_are_saved_without_fallback():
     page = _load_page7_module()
-    result = SimpleNamespace(metadata={}, abgaenge_result={}, zugaenge_result={})
+    result = SimpleNamespace(metadata={}, abgaenge_result={}, zugaenge_result={},
+                             future_snapshot_df=pd.DataFrame())
     context = page._build_simulation_event_context(result, ClusterMappingBundle(), "run-empty")
     assert context["departure_events"].empty
     assert context["accession_events"].empty
@@ -75,7 +77,8 @@ def test_storage_preserves_mapping_from_excel_file(tmp_path):
                                   source_path=str(path), source_signature="excel-storage-test")
     bundle = load_cluster_mappings_from_source(source)
     page = _load_page7_module()
-    result = SimpleNamespace(metadata={}, abgaenge_result={}, zugaenge_result={})
+    result = SimpleNamespace(metadata={}, abgaenge_result={}, zugaenge_result={},
+                             future_snapshot_df=pd.DataFrame())
     saved = page._build_simulation_event_context(result, bundle, "run-excel")
     assert saved["cluster_mapping"]["oe_map"] == {
         "OE1": "Vertrieb", "OE2": "Vertrieb", "OE3": "Marktfolge"}

@@ -183,14 +183,18 @@ def target_mak_in_position_order(source_positions, final_people) -> float:
 
 
 def target_head_mak_with_hires(source_positions, final_people,
-                               atz_fr_people=None, use_source_reporting=True
+                               atz_fr_people=None, use_source_reporting=True,
+                               excluded_new_people=None
                                ) -> dict[str, int | float]:
     """Probe exact target totals for existing and forecast people.
 
-    Vacancy matching follows the reference append helper. This remains a
-    parity probe until all hire and exclusion variants have been checked.
+    Vacancy matching follows the reference append helper. The caller passes
+    forecast IDs removed by final reporting exclusions. This remains a parity
+    probe until all hire and exclusion variants have been checked.
     """
     import pandas as pd
+
+    excluded_new_people = excluded_new_people or set()
 
     row_mak, active = _existing_position_mak(
         source_positions, final_people, atz_fr_people, use_source_reporting)
@@ -211,7 +215,7 @@ def target_head_mak_with_hires(source_positions, final_people,
     forecast = forecast.fillna(False).astype(bool)
     prefix = people.index.to_series().str.match(r"^(AZ|TR|NH)_", na=False)
     new = people[(people["active"] == True) & (forecast | prefix)]
-    new = new[~new.index.isin(existing_ids)].sort_index()
+    new = new[~new.index.isin(existing_ids | excluded_new_people)].sort_index()
     from heapq import heapify, heappop
     vacant_all = []
     vacant_org = {}
@@ -267,7 +271,9 @@ def target_head_mak_with_hires(source_positions, final_people,
         else:
             values.append(mak)
             occupied.append(True)
-    return {"heads": int(people.loc[people["active"] == True].index.nunique()),
+    return {"heads": int(people.loc[
+        (people["active"] == True) & ~people.index.isin(excluded_new_people)
+    ].index.nunique()),
             "mak": float(np.sum(np.asarray(values)[occupied]))}
 
 
@@ -412,12 +418,18 @@ def prepare_target_array_model(source_positions):
     }
 
 
-def target_head_mak_from_array_model(model, person_state, atz_fr_people=None):
-    """Compute target heads/MAK from prepared positions and compact state."""
+def target_head_mak_from_array_model(model, person_state, atz_fr_people=None,
+                                     excluded_new_people=None):
+    """Compute target heads/MAK from prepared positions and compact state.
+
+    ``excluded_new_people`` contains forecast IDs removed by final reporting
+    exclusions, as determined from the run settings and person/position data.
+    """
     from heapq import heapify, heappop
     import pandas as pd
 
     atz_fr_people = atz_fr_people or set()
+    excluded_new_people = excluded_new_people or set()
     ids = model["ids"]
     values = [0.0] * len(ids)
     occupied = [False] * len(ids)
@@ -453,6 +465,7 @@ def target_head_mak_from_array_model(model, person_state, atz_fr_people=None):
 
     new_ids = sorted(person_id for person_id, person in person_state.items()
                      if person_id not in model["existing_ids"] and
+                     person_id not in excluded_new_people and
                      person.get("active") == True and
                      (person.get("is_forecast") is True or
                       person_id.startswith(("AZ_", "TR_", "NH_"))))
@@ -486,5 +499,7 @@ def target_head_mak_from_array_model(model, person_state, atz_fr_people=None):
         else:
             values[index] = mak
             occupied[index] = True
-    return {"heads": sum(person.get("active") == True for person in person_state.values()),
+    return {"heads": sum(person.get("active") == True
+                         for person_id, person in person_state.items()
+                         if person_id not in excluded_new_people),
             "mak": float(np.sum(np.asarray(values)[occupied]))}

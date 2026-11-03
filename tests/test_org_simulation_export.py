@@ -14,6 +14,7 @@ from streamlit.testing.v1 import AppTest
 from test_analysis_pages_contracts import _FakeCompact, _analysis_snapshot, _capture_render_helpers
 from utils.compact_page_loader import load_compact_page_module
 from utils.org_simulation_export import build_org_simulation_export_bytes, build_plan_comparison, export_fingerprint
+from utils.simulation_validation import approve_original
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -143,8 +144,13 @@ def test_simulation_wrapper_freezes_saved_parameters_not_current_draft(monkeypat
     state = {"compact_sim_prepared_df": _analysis_snapshot(),
              "compact_sim_status_quo_df": _analysis_snapshot(),
              "compact_sim_metadata": {"target_date": "2028-01-01"}, "compact_sim_signature": "saved-run",
+             "compact_sim_event_context": {"run_signature": "saved-run", "baseline_snapshot": _analysis_snapshot(),
+                                           "final_snapshot": _analysis_snapshot()},
+             "compact_sim_event_summary": {"run_signature": "saved-run", "events": pd.DataFrame(),
+                                           "stock_reconciliation": {"status": "Abgestimmt"}},
              "compact_sim_abgaenge_params": {"retirement": {"retirement_age": 67}},
              "simulation_params": {"abgaenge": {"retirement": {"retirement_age": 70}}}}
+    approve_original(state, approved_at="2026-11-03T00:00:00+00:00")
     captured = {}
     monkeypatch.setattr(st, "session_state", state)
     monkeypatch.setattr(page, "_load_orgunit_analysis_module", lambda: types.SimpleNamespace(

@@ -63,14 +63,27 @@ def main() -> None:
     matrix_mode = sys.argv[1:] == ["--matrix"]
     exclusions_mode = sys.argv[1:] == ["--target-exclusions"]
     sample_mode = sys.argv[1:] == ["--target-sample"]
-    target_only = sys.argv[1:] == ["--target-only"] or exclusions_mode or sample_mode
+    atz_end_mode = sys.argv[1:] == ["--target-atz-end"]
+    training_mode = sys.argv[1:] == ["--target-training"]
+    target_only = (sys.argv[1:] == ["--target-only"] or exclusions_mode
+                   or sample_mode or atz_end_mode or training_mode)
     if sys.argv[1:] not in ([], ["--matrix"], ["--target-only"],
-                            ["--target-exclusions"], ["--target-sample"]):
-        raise SystemExit("Usage: py tests/benchmark_coupled_yearly_probe.py [--matrix|--target-only|--target-exclusions|--target-sample]")
+                            ["--target-exclusions"], ["--target-sample"],
+                            ["--target-atz-end"], ["--target-training"]):
+        raise SystemExit("Usage: py tests/benchmark_coupled_yearly_probe.py [--matrix|--target-only|--target-exclusions|--target-sample|--target-atz-end|--target-training]")
     if exclusions_mode:
         FROZEN_SETTINGS["exclusions"] = {
             **FROZEN_SETTINGS["exclusions"], "vorstand": False,
             "ruhend_bv": False, "org_units": [],
+        }
+        simulation_engine.get_setting = lambda key, default=None: deepcopy(
+            FROZEN_SETTINGS.get(key, default))
+    if training_mode:
+        FROZEN_SETTINGS["exclusions"] = {
+            **FROZEN_SETTINGS["exclusions"],
+            "special_groups": ["ausbildung_nachwuchs",
+                               "jobfamily_validation_special_positions",
+                               "sollarbeitszeit_001_positions"],
         }
         simulation_engine.get_setting = lambda key, default=None: deepcopy(
             FROZEN_SETTINGS.get(key, default))
@@ -82,7 +95,9 @@ def main() -> None:
     snapshot, _, _, source_summary = loader.load_and_prepare_data()
     atz = loader.load_atz_data_cached(str(ROOT), None, None, None)
     source, bundle, signature = page._get_simulation_cluster_context(source_summary)
-    base, target = FROZEN_STICHTAG, pd.Timestamp("2028-12-31")
+    base, target = FROZEN_STICHTAG, pd.Timestamp(
+        "2032-12-31" if atz_end_mode else
+        "2026-12-31" if training_mode else "2028-12-31")
     people = _prepare_employee_forecast_base(snapshot, atz, base)
     prepared_positions = prepare_target_position_model(snapshot)
     prepared_target_people = prepare_target_people(people)
@@ -105,6 +120,8 @@ def main() -> None:
         stock_openings.setdefault((level, "Nicht zugeordnet"), (0, 0.0))
 
     scenarios = (
+        (("existing_atz_end", 0, "existing_atz_only"),) if atz_end_mode else
+        (("training_hires", 8, "training_hires"),) if training_mode else
         (("departures_only", 0, "standard"), ("with_hires", 20, "standard"))
         if exclusions_mode else
         (("departures_only", 0, "standard"), ("with_hires", 20, "standard"),
@@ -134,19 +151,29 @@ def main() -> None:
                                      atz_duration_fr_years=0.5)
             dep_params["quit"].update(quit_rate_base=0.12, use_quit_matrix=False)
         if annual_hires:
-            hire_params["new_hires"].update(active=True, count_per_year=annual_hires,
-                                            strategy=("Random" if variant == "random_hires"
-                                                      else "Fill Vacancies"))
-            prepared = prepare_coupled_batch(people, atz, base, target,
-                                             dep_params, hire_params)
-            selected_seeds = range(1000, 1010) if sample_mode else (7, 42)
-            seed_stream = ((seed, departures, pivot, hires, new_people)
-                           for seed, departures, pivot, _, hires, new_people
-                           in iter_coupled_seed_records_with_atz(prepared, selected_seeds))
+            if variant == "training_hires":
+                hire_params["azubi"].update(active=True, new_cases_per_year=4,
+                                             retention_rate=0.5)
+                hire_params["trainee"].update(active=True, new_cases_per_year=4)
+            else:
+                hire_params["new_hires"].update(active=True, count_per_year=annual_hires,
+                                                strategy=("Random" if variant == "random_hires"
+                                                          else "Fill Vacancies"))
+            if training_mode:
+                # The isolated hire probe deliberately supports new hires only.
+                seed_stream = ((seed, None, None, None, None) for seed in (7, 42))
+            else:
+                prepared = prepare_coupled_batch(people, atz, base, target,
+                                                 dep_params, hire_params)
+                selected_seeds = range(1000, 1010) if sample_mode else (7, 42)
+                seed_stream = ((seed, departures, pivot, hires, new_people)
+                               for seed, departures, pivot, _, hires, new_people
+                               in iter_coupled_seed_records_with_atz(prepared, selected_seeds))
         else:
             prepared_dep = prepare_quit_batch(people, atz, base, target, dep_params)
             initial_pivot = prepare_atz_pivot_for_probe(prepared_dep, atz, dep_params)
-            selected_seeds = range(1000, 1020) if sample_mode else (7, 42, 123, 999)
+            selected_seeds = ((7, 42) if atz_end_mode else
+                              range(1000, 1020) if sample_mode else (7, 42, 123, 999))
             seed_stream = ((seed, departures, pivot, None, [])
                            for seed, departures, pivot in iter_quit_seed_records_with_atz(
                                prepared_dep, selected_seeds, initial_pivot))
@@ -155,7 +182,8 @@ def main() -> None:
             if target_only and variant == "existing_atz_only":
                 atz_reasons = {event["reason_code"] for event in departures
                                if str(event["reason_code"]).startswith("ATZ_")}
-                assert atz_reasons, (label, seed, "missing_existing_atz_events")
+                assert ("ATZ_END" in atz_reasons if atz_end_mode else atz_reasons), (
+                    label, seed, "missing_existing_atz_events", atz_reasons)
                 print(f"existing_atz_events={label}; seed={seed}; reasons={sorted(atz_reasons)}")
             run_dep = {**dep_params, "random_seed": seed}
             run_hire = deepcopy(hire_params)
@@ -165,6 +193,43 @@ def main() -> None:
                 abgaenge_params=run_dep, zugaenge_params=run_hire,
                 active_cluster_source=source, cluster_mapping_bundle=bundle,
                 cluster_source_signature=signature, include_audits=False)
+            if training_mode:
+                final_reference = compact.prepare_compact_data(reference.future_snapshot_df)
+                target_totals = page._metric_totals(final_reference)
+                training_rows = final_reference[final_reference["PersNr"].astype(str).str.match(
+                    r"^(AZ|TR)_", na=False)]
+                event_types = set(reference.zugaenge_result["events"]["type"])
+                assert {"Azubi_Hire", "Trainee_Hire"}.issubset(event_types), (
+                    label, seed, "training_types")
+                status = _resolve_atz_status_map(
+                    reference.abgaenge_result["tables"]["atz_pivot"], target)
+                atz_fr_people = set(status.loc[
+                    status["ist_atz_fr"] == True, "PersNr"].astype(str))
+                final_people = reference.future_employee_df
+                from utils.exclusion_groups import build_group_masks
+                exclusions = simulation_engine.get_setting("exclusions", {})
+                special = set(exclusions.get("special_groups") or [])
+                masks = build_group_masks(final_people)
+                excluded_new = set()
+                for key in special:
+                    if key in masks:
+                        excluded_new.update(final_people.loc[masks[key], "PersNr"].astype(str))
+                excluded_new &= set(final_people.loc[
+                    final_people["PersNr"].astype(str).str.match(r"^(AZ|TR|NH)_", na=False),
+                    "PersNr"].astype(str))
+                assert len(excluded_new) == 4, (label, seed, "training_exclusions", excluded_new)
+                expected = {"heads": target_totals["heads"], "mak": target_totals["mak"]}
+                dataframe_target = target_head_mak_with_hires(
+                    snapshot, final_people, atz_fr_people,
+                    excluded_new_people=excluded_new)
+                assert dataframe_target == expected, (
+                    label, seed, "dataframe_target", dataframe_target, expected)
+                assert target_head_mak_from_array_model(
+                    target_array_model, prepare_target_people(final_people),
+                    atz_fr_people, excluded_new_people=excluded_new
+                ) == expected, (label, seed, "array_target")
+                print(f"target_training_parity={label}; seed={seed}; training_rows={len(training_rows)}; heads={expected['heads']}; mak={expected['mak']}")
+                continue
             pd.testing.assert_frame_equal(
                 pd.DataFrame(departures),
                 reference.abgaenge_result["events_person_level"], check_exact=True)
@@ -208,7 +273,7 @@ def main() -> None:
                                           check_exact=True)
             if target_only:
                 target_totals = page._metric_totals(final_reference)
-                if annual_hires:
+                if annual_hires and variant != "training_hires":
                     forecast_rows = final_reference[
                         final_reference["PersNr"].astype(str).str.match(
                             r"^(AZ|TR|NH)_", na=False)]
