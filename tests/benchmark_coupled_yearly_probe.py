@@ -5,6 +5,7 @@ from copy import deepcopy
 import logging
 from pathlib import Path
 import sys
+from time import perf_counter
 
 import pandas as pd
 
@@ -17,6 +18,7 @@ from benchmark_page_rerun_paths import (
     _load_page_module, _reset_state,
 )
 from dataloader import loader
+import dataloader.compact_simulation_engine as simulation_engine
 from dataloader.compact_simulation_engine import (
     _append_new_people_rows, _apply_salary_automation_to_employee_state,
     _finalize_future_snapshot, _normalize_persnr_series,
@@ -55,9 +57,18 @@ def _equal_frames(reference: dict, candidate: dict, names: tuple[str, ...]) -> N
 
 def main() -> None:
     matrix_mode = sys.argv[1:] == ["--matrix"]
-    target_only = sys.argv[1:] == ["--target-only"]
-    if sys.argv[1:] not in ([], ["--matrix"], ["--target-only"]):
-        raise SystemExit("Usage: py tests/benchmark_coupled_yearly_probe.py [--matrix|--target-only]")
+    exclusions_mode = sys.argv[1:] == ["--target-exclusions"]
+    target_only = sys.argv[1:] == ["--target-only"] or exclusions_mode
+    if sys.argv[1:] not in ([], ["--matrix"], ["--target-only"],
+                            ["--target-exclusions"]):
+        raise SystemExit("Usage: py tests/benchmark_coupled_yearly_probe.py [--matrix|--target-only|--target-exclusions]")
+    if exclusions_mode:
+        FROZEN_SETTINGS["exclusions"] = {
+            **FROZEN_SETTINGS["exclusions"], "vorstand": False,
+            "ruhend_bv": False, "org_units": [],
+        }
+        simulation_engine.get_setting = lambda key, default=None: deepcopy(
+            FROZEN_SETTINGS.get(key, default))
     logging.getLogger("streamlit").setLevel(logging.ERROR)
     _freeze_context()
     _reset_state()
@@ -68,6 +79,8 @@ def main() -> None:
     source, bundle, signature = page._get_simulation_cluster_context(source_summary)
     base, target = FROZEN_STICHTAG, pd.Timestamp("2028-12-31")
     people = _prepare_employee_forecast_base(snapshot, atz, base)
+    occupied_counts = snapshot.loc[snapshot["PersNr"].notna(), "PersNr"].value_counts()
+    assert occupied_counts.gt(1).any(), "No multi-position employee in source"
     baseline = compact.prepare_compact_data(build_status_quo_snapshot(snapshot, base))
     departure_yearly = prepare_quit_yearly(baseline, bundle.oe_map)
     stock_openings = {}
@@ -84,6 +97,8 @@ def main() -> None:
         stock_openings.setdefault((level, "Nicht zugeordnet"), (0, 0.0))
 
     scenarios = (
+        (("departures_only", 0, "standard"), ("with_hires", 20, "standard"))
+        if exclusions_mode else
         (("departures_only", 0, "standard"), ("with_hires", 20, "standard"),
          ("random_hires", 30, "random_hires"),
          ("existing_atz_only", 0, "existing_atz_only"),
@@ -127,6 +142,11 @@ def main() -> None:
                                prepared_dep, (7, 42, 123, 999), initial_pivot))
 
         for seed, departures, pivot, hire_records, new_people in seed_stream:
+            if target_only and variant == "existing_atz_only":
+                atz_reasons = {event["reason_code"] for event in departures
+                               if str(event["reason_code"]).startswith("ATZ_")}
+                assert atz_reasons, (label, seed, "missing_existing_atz_events")
+                print(f"existing_atz_events={label}; seed={seed}; reasons={sorted(atz_reasons)}")
             run_dep = {**dep_params, "random_seed": seed}
             run_hire = deepcopy(hire_params)
             run_hire["random_seed"] = seed
@@ -152,14 +172,17 @@ def main() -> None:
             pd.testing.assert_frame_equal(
                 hires, reference.zugaenge_result["events"], check_exact=True)
 
+            replay_start = perf_counter()
             final_people = replay_final_employee_state(people, departures, new_people)
             final_people["PersNr"] = _normalize_persnr_series(final_people["PersNr"])
             final_people = _apply_salary_automation_to_employee_state(
                 final_people, target_date=target, events_df=hires)
+            replay_seconds = perf_counter() - replay_start
             pd.testing.assert_frame_equal(final_people, reference.future_employee_df,
                                           check_exact=True)
+            atz_target = _resolve_atz_status_map(pivot, target)
             future = _update_existing_rows(
-                snapshot, final_people, target, _resolve_atz_status_map(pivot, target))
+                snapshot, final_people, target, atz_target)
             future = _append_new_people_rows(
                 future, snapshot, final_people, {"events": hires})
             future = _finalize_future_snapshot(
@@ -182,12 +205,19 @@ def main() -> None:
                         label, seed, "forecast_heads", len(forecast_rows))
                     assert forecast_rows["MAK_Reporting"].eq(0.0).all(), (
                         label, seed, "forecast_reporting_mak")
+                target_start = perf_counter()
                 candidate_totals = target_head_mak_with_hires(snapshot, final_people)
+                target_seconds = perf_counter() - target_start
                 assert candidate_totals["heads"] == target_totals["heads"], (
                     label, seed, "heads", candidate_totals, target_totals)
+                if exclusions_mode:
+                    gap = target_totals["mak"] - candidate_totals["mak"]
+                    assert gap > 0, (label, seed, "expected_reporting_gap", gap)
+                    print(f"target_exclusion_gap={label}; seed={seed}; mak_gap={gap}; replay_s={replay_seconds:.4f}; target_s={target_seconds:.4f}")
+                    continue
                 assert candidate_totals["mak"] == target_totals["mak"], (
                     label, seed, "mak", candidate_totals, target_totals)
-                print(f"target_parity={label}; seed={seed}; heads={candidate_totals['heads']}; mak={candidate_totals['mak']}")
+                print(f"target_parity={label}; seed={seed}; heads={candidate_totals['heads']}; mak={candidate_totals['mak']}; replay_s={replay_seconds:.4f}; target_s={target_seconds:.4f}")
                 continue
             context = page._build_simulation_event_context(
                 reference, bundle, f"yearly::{label}::{seed}",
