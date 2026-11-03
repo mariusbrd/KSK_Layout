@@ -12,6 +12,35 @@ from test_org_simulation_reconciliation import _bridge_context
 from utils.org_simulation_events import METRICS, build_simulation_event_summary
 
 
+def test_jobfamily_levels_share_projection_without_changing_results(monkeypatch):
+    import components.jobfamily_simulation_yearly as yearly
+
+    context = _bridge_context("departures")
+    summary = build_simulation_event_summary(context, expected_run_signature="a")
+    expected = {dimension: build_jobfamily_yearly_view(
+        context, summary, dimension=dimension)
+        for dimension in ("Jobfamily", "JF-Cluster")}
+    original = yearly.reporting_projection_base
+    calls = []
+
+    def counted(*args):
+        calls.append(1)
+        return original(*args)
+
+    monkeypatch.setattr(yearly, "reporting_projection_base", counted)
+    shared = {}
+    for dimension in ("Jobfamily", "JF-Cluster"):
+        actual = build_jobfamily_yearly_view(
+            context, summary, dimension=dimension, projection_cache=shared)
+        for key, value in expected[dimension].items():
+            if isinstance(value, pd.DataFrame):
+                pd.testing.assert_frame_equal(actual[key], value, check_exact=True)
+            else:
+                assert actual[key] == value
+    assert len(calls) == 1
+    assert "projection" in shared
+
+
 def test_departure_is_reported_in_both_original_jobfamilies():
     baseline = pd.DataFrame([
         {"PersNr": "000001", "Is_Vacant": False, "Organisationseinheit": "OE",
@@ -132,6 +161,14 @@ def test_yearly_view_is_reused_for_filter_reruns_but_rebuilt_for_new_context(mon
     monkeypatch.setattr(module.st, "session_state", session)
     calls = []
     original = module.build_jobfamily_yearly_view
+    projection_calls = []
+    original_projection = module.reporting_projection_base
+
+    def counted_projection(*args):
+        projection_calls.append(1)
+        return original_projection(*args)
+
+    monkeypatch.setattr(module, "reporting_projection_base", counted_projection)
 
     def counted(*args, **kwargs):
         calls.append(kwargs["dimension"])
@@ -144,9 +181,11 @@ def test_yearly_view_is_reused_for_filter_reruns_but_rebuilt_for_new_context(mon
     _cached_yearly_view(context, summary, "JF-Cluster")
     assert _cached_yearly_view(context, summary, "Jobfamily") is first
     assert calls == ["Jobfamily", "JF-Cluster"]
+    assert len(projection_calls) == 1
     new_context = deepcopy(context)
     _cached_yearly_view(new_context, summary, "Jobfamily")
     assert calls == ["Jobfamily", "JF-Cluster", "Jobfamily"]
+    assert len(projection_calls) == 2
 
 
 def test_stock_export_matches_selected_view_and_keeps_both_metric_templates():

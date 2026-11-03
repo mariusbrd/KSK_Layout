@@ -15,7 +15,7 @@ from components.org_simulation_yearly import LABELS, yearly_periods, render_stac
 from dataloader.jobfamily_service import normalize_jobfamily_series
 from utils.org_simulation_events import DEPARTURES, METRICS
 from utils.org_simulation_reconciliation import (
-    raw_stock_mak, reporting_departure_events, reporting_projection_base,
+    grouped_stock_metrics, reporting_departure_events, reporting_projection_base,
 )
 from abgaenge.schemas import normalize_persnr
 from dataloader.kpi_engine import compute_headcount
@@ -109,7 +109,8 @@ def prepare_jobfamily_baseline(baseline: pd.DataFrame) -> dict:
 
 
 def build_jobfamily_yearly_view(context: dict, summary: dict, *, dimension: str,
-                                include_stock: bool = True, baseline_cache: dict | None = None) -> dict:
+                                include_stock: bool = True, baseline_cache: dict | None = None,
+                                projection_cache: dict | None = None) -> dict:
     """Aggregate saved events; certify departure-only stock slices separately."""
     if dimension not in DIMENSIONS:
         raise ValueError("Ungültige Jobgruppenebene.")
@@ -171,7 +172,15 @@ def build_jobfamily_yearly_view(context: dict, summary: dict, *, dimension: str,
         if not events.empty and events[dimension].eq(UNASSIGNED).any():
             stock_reason = "Ereignisse ohne eindeutige Jobgruppenzuordnung verhindern den Bestandsabgleich."
         else:
-            projection = reporting_projection_base(context, baseline) if pd.Timestamp(summary["metadata"]["target_date"]) > pd.Timestamp(summary["metadata"]["base_date"]) else baseline.copy(deep=True)
+            projection_key = (signature, id(context), id(baseline))
+            if (projection_cache is not None
+                    and projection_cache.get("key") == projection_key
+                    and "projection" in projection_cache):
+                projection = projection_cache["projection"]
+            else:
+                projection = reporting_projection_base(context, baseline) if pd.Timestamp(summary["metadata"]["target_date"]) > pd.Timestamp(summary["metadata"]["base_date"]) else baseline.copy(deep=True)
+                if projection_cache is not None:
+                    projection_cache.update(key=projection_key, projection=projection)
             reported = reporting_departure_events(projection, person_events if not events.empty else events, context)
             reported = _allocate_original_events_to_groups(reported, baseline, dimension)
             stock, stock_reason, stock_checks = _build_certified_stock(baseline, projection, final, reported, dimension, summary["metadata"])
@@ -186,9 +195,9 @@ def build_jobfamily_yearly_view(context: dict, summary: dict, *, dimension: str,
 def _group_totals(frame: pd.DataFrame, dimension: str) -> pd.DataFrame:
     work = frame.copy(deep=True)
     work[dimension] = _dimension_values(work, dimension)
-    rows = []
-    for name, group in work.groupby(dimension):
-        rows.append({dimension: name, "Köpfe": float(compute_headcount(group)), "MAK": raw_stock_mak(group)})
+    totals = grouped_stock_metrics(work, dimension)
+    rows = [{dimension: name, "Köpfe": float(totals[name][0]), "MAK": totals[name][1]}
+            for name in sorted(totals)]
     return pd.DataFrame(rows).set_index(dimension) if rows else pd.DataFrame(columns=["Köpfe", "MAK"])
 
 
@@ -237,9 +246,14 @@ def _cached_yearly_view(context: dict, summary: dict, dimension: str) -> dict:
     key = (YEARLY_VIEW_CACHE_VERSION, context["run_signature"], id(context), dimension)
     cache = st.session_state.get("jf_yearly_view_cache")
     if not isinstance(cache, dict) or key not in cache:
-        view = build_jobfamily_yearly_view(context, summary, dimension=dimension)
+        projection_key = key[:3] + ("projection",)
+        shared = cache[projection_key] if isinstance(cache, dict) and projection_key in cache else {}
+        view = build_jobfamily_yearly_view(
+            context, summary, dimension=dimension, projection_cache=shared)
         cache = {item: value for item, value in cache.items() if item[:3] == key[:3]} if isinstance(cache, dict) else {}
         cache[key] = view
+        if "projection" in shared:
+            cache[projection_key] = shared
         st.session_state["jf_yearly_view_cache"] = cache
         return view
     return cache[key]
