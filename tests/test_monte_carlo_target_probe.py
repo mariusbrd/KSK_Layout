@@ -6,6 +6,7 @@ import pandas as pd
 from utils.monte_carlo_departure_annual import (
     prepare_target_array_model,
     prepare_target_people,
+    excluded_forecast_people,
     target_head_mak_from_array_model,
     target_head_mak_with_hires,
 )
@@ -53,6 +54,11 @@ def test_forecast_training_exclusion_removes_head_from_both_target_paths() -> No
         "Vertragsart": "Auszubildende",
     }])
     excluded = {"AZ_2026_01"}
+    training_state = prepare_target_people(people.assign(TrfGr="TVA"))
+    assert excluded_forecast_people(training_state, set(), {
+        "special_groups": ["ausbildung_nachwuchs"]}) == excluded
+    assert excluded_forecast_people(training_state, set(), {
+        "special_groups": []}) == set()
     assert target_head_mak_with_hires(
         positions, people, excluded_new_people=excluded) == {"heads": 0, "mak": 0.0}
     assert target_head_mak_from_array_model(

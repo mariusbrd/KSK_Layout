@@ -41,6 +41,7 @@ from utils.monte_carlo_departure_annual import (
     prepare_target_position_model, target_head_mak_reporting_bridge,
     prepare_target_people, replay_target_people_compact,
     prepare_target_array_model, target_head_mak_from_array_model,
+    excluded_forecast_people,
 )
 from utils.monte_carlo_metric_packet import LEVELS, make_metric_packet
 from utils.org_simulation_reconciliation import grouped_stock_metrics, reporting_projection_base
@@ -64,13 +65,15 @@ def main() -> None:
     exclusions_mode = sys.argv[1:] == ["--target-exclusions"]
     sample_mode = sys.argv[1:] == ["--target-sample"]
     atz_end_mode = sys.argv[1:] == ["--target-atz-end"]
-    training_mode = sys.argv[1:] == ["--target-training"]
+    training_clear_mode = sys.argv[1:] == ["--target-training-clear"]
+    training_mode = sys.argv[1:] == ["--target-training"] or training_clear_mode
     target_only = (sys.argv[1:] == ["--target-only"] or exclusions_mode
                    or sample_mode or atz_end_mode or training_mode)
     if sys.argv[1:] not in ([], ["--matrix"], ["--target-only"],
                             ["--target-exclusions"], ["--target-sample"],
-                            ["--target-atz-end"], ["--target-training"]):
-        raise SystemExit("Usage: py tests/benchmark_coupled_yearly_probe.py [--matrix|--target-only|--target-exclusions|--target-sample|--target-atz-end|--target-training]")
+                            ["--target-atz-end"], ["--target-training"],
+                            ["--target-training-clear"]):
+        raise SystemExit("Usage: py tests/benchmark_coupled_yearly_probe.py [--matrix|--target-only|--target-exclusions|--target-sample|--target-atz-end|--target-training|--target-training-clear]")
     if exclusions_mode:
         FROZEN_SETTINGS["exclusions"] = {
             **FROZEN_SETTINGS["exclusions"], "vorstand": False,
@@ -81,9 +84,13 @@ def main() -> None:
     if training_mode:
         FROZEN_SETTINGS["exclusions"] = {
             **FROZEN_SETTINGS["exclusions"],
-            "special_groups": ["ausbildung_nachwuchs",
-                               "jobfamily_validation_special_positions",
-                               "sollarbeitszeit_001_positions"],
+            "special_groups": ([] if training_clear_mode else
+                               ["ausbildung_nachwuchs",
+                                "jobfamily_validation_special_positions",
+                                "sollarbeitszeit_001_positions"]),
+            "org_units": [] if training_clear_mode else FROZEN_SETTINGS["exclusions"]["org_units"],
+            "vorstand": False if training_clear_mode else FROZEN_SETTINGS["exclusions"]["vorstand"],
+            "ruhend_bv": False if training_clear_mode else FROZEN_SETTINGS["exclusions"]["ruhend_bv"],
         }
         simulation_engine.get_setting = lambda key, default=None: deepcopy(
             FROZEN_SETTINGS.get(key, default))
@@ -206,18 +213,17 @@ def main() -> None:
                 atz_fr_people = set(status.loc[
                     status["ist_atz_fr"] == True, "PersNr"].astype(str))
                 final_people = reference.future_employee_df
-                from utils.exclusion_groups import build_group_masks
                 exclusions = simulation_engine.get_setting("exclusions", {})
-                special = set(exclusions.get("special_groups") or [])
-                masks = build_group_masks(final_people)
-                excluded_new = set()
-                for key in special:
-                    if key in masks:
-                        excluded_new.update(final_people.loc[masks[key], "PersNr"].astype(str))
-                excluded_new &= set(final_people.loc[
-                    final_people["PersNr"].astype(str).str.match(r"^(AZ|TR|NH)_", na=False),
-                    "PersNr"].astype(str))
-                assert len(excluded_new) == 4, (label, seed, "training_exclusions", excluded_new)
+                excluded_new = excluded_forecast_people(
+                    prepare_target_people(final_people),
+                    target_array_model["existing_ids"], exclusions)
+                new_ids = set(final_people.loc[
+                    final_people["PersNr"].astype(str).str.match(r"^(AZ|TR|NH)_", na=False)
+                    & final_people["active"].eq(True), "PersNr"].astype(str))
+                final_ids = set(reference.future_snapshot_df["PersNr"].dropna().astype(str))
+                assert excluded_new == new_ids - final_ids, (
+                    label, seed, "training_exclusions", excluded_new,
+                    new_ids - final_ids)
                 expected = {"heads": target_totals["heads"], "mak": target_totals["mak"]}
                 dataframe_target = target_head_mak_with_hires(
                     snapshot, final_people, atz_fr_people,
@@ -228,7 +234,7 @@ def main() -> None:
                     target_array_model, prepare_target_people(final_people),
                     atz_fr_people, excluded_new_people=excluded_new
                 ) == expected, (label, seed, "array_target")
-                print(f"target_training_parity={label}; seed={seed}; training_rows={len(training_rows)}; heads={expected['heads']}; mak={expected['mak']}")
+                print(f"target_training_parity={label}; seed={seed}; excluded={len(excluded_new)}; training_rows={len(training_rows)}; heads={expected['heads']}; mak={expected['mak']}")
                 continue
             pd.testing.assert_frame_equal(
                 pd.DataFrame(departures),
@@ -273,6 +279,20 @@ def main() -> None:
                                           check_exact=True)
             if target_only:
                 target_totals = page._metric_totals(final_reference)
+                final_target_people = prepare_target_people(final_people)
+                run_exclusions = simulation_engine.get_setting("exclusions", {})
+                excluded_new = excluded_forecast_people(
+                    final_target_people, target_array_model["existing_ids"],
+                    run_exclusions)
+                active_new = {person_id for person_id, person in final_target_people.items()
+                              if person_id not in target_array_model["existing_ids"]
+                              and person.get("active") == True
+                              and (person.get("is_forecast") is True or
+                                   person_id.startswith(("AZ_", "TR_", "NH_")))}
+                final_ids = set(reference.future_snapshot_df["PersNr"].dropna().astype(str))
+                assert excluded_new == active_new - final_ids, (
+                    label, seed, "forecast_exclusions", excluded_new,
+                    active_new - final_ids)
                 if annual_hires and variant != "training_hires":
                     forecast_rows = final_reference[
                         final_reference["PersNr"].astype(str).str.match(
@@ -285,13 +305,15 @@ def main() -> None:
                 atz_fr_people = set(atz_target.loc[
                     atz_target["ist_atz_fr"] == True, "PersNr"].astype(str))
                 candidate_totals = target_head_mak_with_hires(
-                    snapshot, final_people, atz_fr_people)
+                    snapshot, final_people, atz_fr_people,
+                    excluded_new_people=excluded_new)
                 target_seconds = perf_counter() - target_start
                 compact_start = perf_counter()
                 compact_people = replay_target_people_compact(
                     prepared_target_people, departures, new_people)
                 compact_totals = target_head_mak_with_hires(
-                    snapshot, compact_people, atz_fr_people)
+                    snapshot, compact_people, atz_fr_people,
+                    excluded_new_people=excluded_new)
                 compact_seconds = perf_counter() - compact_start
                 assert compact_totals == {"heads": target_totals["heads"],
                                           "mak": target_totals["mak"]}, (
@@ -300,8 +322,13 @@ def main() -> None:
                 array_start = perf_counter()
                 array_people = replay_target_people_compact(
                     prepared_target_people, departures, new_people, as_dict=True)
+                assert excluded_forecast_people(
+                    array_people, target_array_model["existing_ids"],
+                    run_exclusions) == excluded_new, (
+                    label, seed, "compact_forecast_exclusions")
                 array_totals = target_head_mak_from_array_model(
-                    target_array_model, array_people, atz_fr_people)
+                    target_array_model, array_people, atz_fr_people,
+                    excluded_new_people=excluded_new)
                 array_seconds = perf_counter() - array_start
                 assert array_totals == {"heads": target_totals["heads"],
                                         "mak": target_totals["mak"]}, (

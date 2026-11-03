@@ -347,6 +347,7 @@ TARGET_PERSON_FIELDS = (
     "PersNr", "active", "mak", "Personen_MAK_Source", "BsGrd_Source",
     "Personen_MAK", "BsGrd", "Status kundenindividuell", "Vertragsart",
     "MitarbGruppenbez.", "is_forecast", "Organisationseinheit", "Planstelle",
+    "TrfGr",
 )
 
 
@@ -357,6 +358,46 @@ def prepare_target_people(employee_base):
     fields = [field for field in TARGET_PERSON_FIELDS if field in employee_base]
     people = employee_base.loc[:, fields].drop_duplicates("PersNr", keep="last")
     return {str(row["PersNr"]): row for row in people.to_dict("records")}
+
+
+def excluded_forecast_people(person_state, existing_ids, exclusions):
+    """Apply the reference exclusion rules to the new forecast row shape.
+
+    The reference append step replaces vacancy columns with a candidate made
+    from person fields. Position codes and identifiers are therefore missing
+    on the resulting new row, even when it occupies an existing vacancy.
+    """
+    import pandas as pd
+    from dataloader.loader import apply_exclusions
+
+    records = []
+    for person_id, person in person_state.items():
+        if (person_id in existing_ids or person.get("active") != True or
+                not (person.get("is_forecast") is True or
+                     person_id.startswith(("AZ_", "TR_", "NH_")))):
+            continue
+        records.append({
+            "_forecast_id": person_id,
+            "PersNr": person_id,
+            "Personalnummer": person_id,
+            "Is_Vacant": False,
+            "Organisationseinheit": person.get("Organisationseinheit"),
+            "Planstelle": person.get("Planstelle"),
+            "Status kundenindividuell": person.get("Status kundenindividuell"),
+            "MitarbGruppenbez.": person.get("MitarbGruppenbez."),
+            "Vertragsart": person.get("Vertragsart"),
+            "TrfGr": person.get("TrfGr"),
+            "BsGrd": person.get("BsGrd"),
+            "Sollarbeitszeit": 39.0,
+            "Planstellennr": pd.NA,
+            "Kürzel OrgEinheit": pd.NA,
+            "MA-Typ": pd.NA,
+        })
+    if not records:
+        return set()
+    candidates = pd.DataFrame.from_records(records)
+    filtered = apply_exclusions(candidates, exclusions, record_counts=False)
+    return set(filtered.loc[filtered["Is_Vacant"].eq(True), "_forecast_id"].astype(str))
 
 
 def replay_target_people_compact(prepared_people, departure_records, new_people,
