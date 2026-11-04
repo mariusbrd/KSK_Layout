@@ -63,6 +63,7 @@ from utils.audit_helpers import (
 )
 from zugaenge.enrichment import build_jf_to_cluster_map, enrich_zugaenge_events
 from zugaenge.forecast import run_forecast_zugaenge
+from utils.fixed_plan_vacancies import FixedPlanVacancyPool, available_position_vacancies
 from zugaenge.params import default_params as default_zugaenge_params
 
 
@@ -653,6 +654,8 @@ def _vacate_rows(df: pd.DataFrame, mask: pd.Series) -> pd.DataFrame:
     if "Is_Vacant" not in out.columns:
         out["Is_Vacant"] = False
     out.loc[mask, "Is_Vacant"] = True
+    if "Is_Plan_Vacant" in out:
+        out.loc[mask, "Is_Plan_Vacant"] = True
 
     clear_cols = [col for col in PERSON_CLEAR_FIELDS if col in out.columns]
     for col in clear_cols:
@@ -961,6 +964,92 @@ def _append_new_people_rows(
     return pd.concat([future_df, new_rows_df], ignore_index=True)
 
 
+def _fill_reserved_plan_positions(
+    future_df: pd.DataFrame,
+    base_snapshot_df: pd.DataFrame,
+    final_employee_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Place active forecast people on their reserved, unchanged plan rows."""
+    out = future_df.copy()
+    if "_plan_position_index" not in final_employee_df:
+        return out
+    state = final_employee_df.copy()
+    state = state[state["active"].fillna(False).astype(bool)]
+    state = state[state["_plan_position_index"].notna()]
+    if "_relocated_from_position_indices" in state:
+        old_indices = []
+        for value in state["_relocated_from_position_indices"]:
+            if isinstance(value, list):
+                old_indices.extend(value)
+        if old_indices:
+            old_labels = [out.index[int(index)] for index in old_indices]
+            out = _vacate_rows(out, out.index.isin(old_labels))
+    used: set[int] = set()
+    for _, person in state.iterrows():
+        index = int(person["_plan_position_index"])
+        if index in used or not 0 <= index < len(out):
+            raise ValueError(f"Invalid or duplicate reserved position: {index}")
+        row_label = out.index[index]
+        if not bool(out.at[row_label, "Is_Vacant"]):
+            raise ValueError(f"Reserved position is occupied: {index}")
+        used.add(index)
+        pid = str(person["PersNr"])
+        mak = float(person.get("mak", 0.0) or 0.0)
+        out.at[row_label, "PersNr"] = pid
+        if "Personalnummer" in out:
+            out.at[row_label, "Personalnummer"] = pid
+        out.at[row_label, "Is_Vacant"] = False
+        if "Is_Plan_Vacant" in out:
+            out.at[row_label, "Is_Plan_Vacant"] = False
+        # Only person attributes move; position identity, OE and Soll remain fixed.
+        for column in ("GebDatum", "Eintritt", "Geschlecht", "Text Gsch",
+                       "Ausbildung", "Vertragsart", "Status kundenindividuell",
+                       "MitarbGruppenbez.", "TrfGr", "St"):
+            if column in out and column in person and pd.notna(person[column]):
+                out.at[row_label, column] = person[column]
+        for column in ("MAK_Calculated", "MAK", "mak", "FTE_person",
+                       "Personen_MAK", "Personen_MAK_Source"):
+            if column in out:
+                out.at[row_label, column] = mak
+        for column in ("BsGrd", "BsGrd_Source", "snapshot_BsGrd"):
+            if column in out:
+                out.at[row_label, column] = mak * 100.0
+        if "FTE_assigned" in out:
+            out.at[row_label, "FTE_assigned"] = mak * float(out.at[row_label, "Soll_FTE"])
+    if len(out) != len(base_snapshot_df):
+        raise ValueError("Fixed staffing plan must retain its original row count")
+    return out
+
+
+def _build_fixed_plan_vacancy_context(
+    snapshot: pd.DataFrame,
+    departure_events: pd.DataFrame,
+    base_date: pd.Timestamp,
+) -> tuple[FixedPlanVacancyPool, dict, list[dict]]:
+    positions = available_position_vacancies(
+        snapshot, departure_events, base_date, include_report_excluded=True)
+    original: dict[str, list[dict]] = {"_by_index": {}}
+    person_ids = _normalize_persnr_series(snapshot["PersNr"].fillna(""))
+    for index, (_, position) in enumerate(snapshot.iterrows()):
+        soll = pd.to_numeric(position.get("Soll_FTE"), errors="coerce")
+        if pd.isna(soll) or not 0 < float(soll) <= 1:
+            continue
+        record = {
+            "position_index": index,
+            "date": base_date,
+            "org_unit": position.get("Organisationseinheit"),
+            "org_code": position.get("Kürzel OrgEinheit"),
+            "planstelle": position.get("Planstelle"),
+            "planstellennr": position.get("Planstellennr"),
+            "soll_mak": float(soll),
+        }
+        original["_by_index"][index] = record
+        person_id = person_ids.iloc[index]
+        if person_id:
+            original.setdefault(person_id, []).append(record)
+    return FixedPlanVacancyPool(positions), original, positions
+
+
 def _finalize_future_snapshot(
     future_df: pd.DataFrame,
     target_date: pd.Timestamp,
@@ -1236,7 +1325,10 @@ def simulate_compact_snapshot(
         abgaenge_result.get("events_person_level", pd.DataFrame()),
     )
 
-    vacancies = _build_vacancies_from_attrition(employee_base, abgaenge_result)
+    vacancy_pool, original_positions, position_vacancies = _build_fixed_plan_vacancy_context(
+        current_snapshot, abgaenge_result.get("events_person_level", pd.DataFrame()),
+        base_date)
+    vacancies = []  # The product path reserves concrete plan rows in vacancy_pool.
 
     _report("events_vacancies", "Schritt 4/9: Ereignisse und Vakanzen werden verarbeitet ...", 0.30)
     run_params_zug = {**zugaenge_params}
@@ -1251,6 +1343,8 @@ def simulate_compact_snapshot(
         freq="M",
         params=run_params_zug,
         vacancies=vacancies,
+        vacancy_pool=vacancy_pool,
+        original_positions=original_positions,
     )
     zug_events = zugaenge_result.get("events", pd.DataFrame())
     if not zug_events.empty:
@@ -1282,11 +1376,10 @@ def simulate_compact_snapshot(
         atz_status_df=atz_status_df,
     )
     snapshot_after_update_existing = future_snapshot.copy() if include_audits else None
-    future_snapshot = _append_new_people_rows(
+    future_snapshot = _fill_reserved_plan_positions(
         future_df=future_snapshot,
         base_snapshot_df=current_snapshot,
         final_employee_df=final_employee_df,
-        zugaenge_result=zugaenge_result,
     )
     snapshot_after_append = future_snapshot.copy() if include_audits else None
     _report("finalize_snapshot", "Schritt 7/9: Future Snapshot wird finalisiert ...", 0.65)
@@ -1301,7 +1394,7 @@ def simulate_compact_snapshot(
         "base_date": base_date,
         "target_date": target_date,
         "used_simulation": True,
-        "vacancy_count": len(vacancies),
+        "vacancy_count": len(position_vacancies),
         "abgaenge_events": len(abgaenge_result.get("events_person_level", pd.DataFrame())),
         "zugaenge_events": len(zugaenge_result.get("events", pd.DataFrame())),
         "cluster_source_signature": cluster_source_signature,

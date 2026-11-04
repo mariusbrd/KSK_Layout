@@ -42,6 +42,15 @@ class FixedPlanVacancyPool:
         self._available.remove(choice)
         return choice.copy()
 
+    def release(self, vacancy: dict, available_date: pd.Timestamp) -> None:
+        """Make a vacated training position available for a later entry."""
+        index = vacancy["position_index"]
+        if any(row["position_index"] == index for row in self._available):
+            return
+        released = vacancy.copy()
+        released["date"] = pd.Timestamp(available_date)
+        self._available.append(released)
+
 
 def _person_id(value) -> str | None:
     if pd.isna(value):
@@ -81,8 +90,16 @@ def available_position_vacancies(snapshot: pd.DataFrame,
         if not include_report_excluded and pd.notna(excluded) and bool(excluded):
             continue
         person_id = _person_id(row.get("PersNr"))
-        vacant = row.get("Is_Vacant")
-        if person_id is None or (pd.notna(vacant) and bool(vacant)):
+        plan_vacant = row.get("Is_Plan_Vacant")
+        if pd.notna(plan_vacant):
+            initially_vacant = bool(plan_vacant)
+        elif pd.notna(excluded) and bool(excluded):
+            # Reporting may have cleared the occupant; unknown is not free.
+            initially_vacant = False
+        else:
+            vacant = row.get("Is_Vacant")
+            initially_vacant = person_id is None or (pd.notna(vacant) and bool(vacant))
+        if initially_vacant:
             date = pd.Timestamp(base_date)
         elif person_id in exits:
             date = exits[person_id]
@@ -96,6 +113,9 @@ def available_position_vacancies(snapshot: pd.DataFrame,
             "planstelle": row.get("Planstelle"),
             "planstellennr": row.get("Planstellennr"),
             "soll_mak": float(soll),
+            "Jobfamily": row.get("Jobfamily"),
+            "OE-Cluster": row.get("OE-Cluster"),
+            "JF-Cluster": row.get("JF-Cluster"),
         })
     return sorted(vacancies, key=lambda vacancy: (
         vacancy["date"], vacancy["position_index"]))

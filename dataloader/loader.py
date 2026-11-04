@@ -507,6 +507,14 @@ def apply_exclusions(
     if df.empty: return df
 
     df_out = df.copy()
+    # Preserve real plan occupancy before reporting exclusions clear person IDs.
+    # A reporting vacancy is not necessarily a hireable vacant plan position.
+    if "Is_Plan_Vacant" not in df_out.columns:
+        if "Is_Vacant" in df_out.columns:
+            df_out["Is_Plan_Vacant"] = df_out["Is_Vacant"].fillna(False).astype(bool)
+        else:
+            person_col = "Personalnummer" if "Personalnummer" in df_out else "PersNr"
+            df_out["Is_Plan_Vacant"] = df_out[person_col].isna()
     exclusion_mask = pd.Series(False, index=df_out.index)
     from utils.exclusion_groups import effective_exclusions, MA_TYP_PREFIX
     exclusions = effective_exclusions(exclusions)

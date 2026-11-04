@@ -19,6 +19,7 @@ from utils.simulation_params import SESSION_KEY, get_compact_plus_params
 from zugaenge.enrichment import build_jf_to_cluster_map, enrich_zugaenge_events
 from zugaenge.forecast import run_forecast_zugaenge
 from zugaenge.params import default_params as default_zugaenge_params
+from utils.fixed_plan_vacancies import FixedPlanVacancyPool
 
 
 BASE_DATE = pd.Timestamp("2025-12-31")
@@ -347,6 +348,7 @@ def _run_direct_and_compact(scenario: HiringParityScenario) -> tuple[pd.DataFram
         freq="M",
         params=direct_params,
         vacancies=[],
+        vacancy_pool=FixedPlanVacancyPool([]),
     )
     direct_events = direct_result["events"]
     if not direct_events.empty:

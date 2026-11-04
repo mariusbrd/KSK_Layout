@@ -16,6 +16,7 @@ from abgaenge.forecast import run_forecast_abgaenge
 from abgaenge.params import default_params as default_abgaenge_params
 from dataloader.compact_simulation_engine import (
     _apply_attrition_events_to_employee_state,
+    _build_fixed_plan_vacancy_context,
     _build_vacancies_from_attrition,
     _prepare_employee_forecast_base,
     simulate_compact_snapshot,
@@ -388,6 +389,8 @@ def _run_direct_reference(
         abgaenge_result.get("events_person_level", pd.DataFrame()),
     )
     vacancies = _build_vacancies_from_attrition(employee_base, abgaenge_result)
+    vacancy_pool, original_positions, _ = _build_fixed_plan_vacancy_context(
+        snapshot_df, abgaenge_result.get("events_person_level", pd.DataFrame()), BASE_DATE)
 
     run_params_zug = deepcopy(zugaenge_params)
     run_params_zug.setdefault("azubi", {})
@@ -399,6 +402,8 @@ def _run_direct_reference(
         freq="M",
         params=run_params_zug,
         vacancies=deepcopy(vacancies),
+        vacancy_pool=vacancy_pool,
+        original_positions=original_positions,
     )
     if not zugaenge_result.get("events", pd.DataFrame()).empty:
         zugaenge_result["events"] = enrich_zugaenge_events(

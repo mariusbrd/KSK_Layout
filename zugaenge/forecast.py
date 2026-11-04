@@ -410,7 +410,9 @@ def _simulate_azubis(
     rng: np.random.RandomState,
     events: List[Dict[str, Any]],
     all_org_units: List[str],
-    debts: Dict[str, float] = None
+    debts: Dict[str, float] = None,
+    vacancy_pool=None,
+    original_positions=None,
 ):
     """
     Handle takeover of existing Azubis.
@@ -458,6 +460,19 @@ def _simulate_azubis(
     ]
     if current_azubis.empty:
         return
+
+    def training_positions(persnr, row):
+        if original_positions and str(persnr) in original_positions:
+            return original_positions[str(persnr)]
+        index = row.get("_plan_position_index", pd.NA)
+        if pd.notna(index) and original_positions:
+            return [original_positions["_by_index"][int(index)]]
+        return []
+
+    def release_training_positions(persnr, row, date):
+        if vacancy_pool is not None:
+            for position in training_positions(persnr, row):
+                vacancy_pool.release(position, date)
 
     # Support for Isolated Forecast (id: 16)
     exclude_baseline = params.get("azubi", {}).get("exclude_baseline_azubis", False)
@@ -547,9 +562,24 @@ def _simulate_azubis(
 
         # Phase 3: Update State & Create Events for Retained
         for i, (persnr, row, graduation_date, is_forecast) in enumerate(retained_info):
+            regular_vacancy = None
+            if vacancy_pool is not None:
+                from utils.fixed_plan_vacancies import vacancy_matches_accession
+                regular_vacancy = vacancy_pool.reserve(
+                    graduation_date, strategy=strategy, rng=rng,
+                    eligible=lambda item: vacancy_matches_accession(item, "regular")
+                    and (strategy != "OrgUnit" or item["org_unit"] == target_unit))
+                if regular_vacancy is None:
+                    exited_info.append((persnr, row, graduation_date, is_forecast))
+                    continue
+                release_training_positions(persnr, row, graduation_date)
             new_unit = assigned_units[i]
+            if regular_vacancy is not None:
+                new_unit = regular_vacancy["org_unit"]
             new_jf = assigned_jfs[i]
             new_cluster = assigned_clusters[i]
+            if regular_vacancy is not None:
+                new_cluster = unit_to_cluster.get(new_unit, "Sonstiges")
             current_education = normalize_education_value(row.get("Ausbildung", pd.NA))
             if pd.notna(current_education) and str(current_education) != AZUBI_TRAINING_EDUCATION:
                 new_education = str(current_education)
@@ -578,6 +608,12 @@ def _simulate_azubis(
                 "cohort": eintritt.year if pd.notna(eintritt) else "Unknown"
             }
             current_mak = float(row.get("mak", 0.0))
+            effective_mak_after = regular_vacancy["soll_mak"] if regular_vacancy is not None else mak_after
+            if regular_vacancy is not None:
+                old_positions = training_positions(persnr, row)
+                df_state.at[persnr, "_plan_position_index"] = regular_vacancy["position_index"]
+                df_state.at[persnr, "_relocated_from_position_indices"] = [
+                    item["position_index"] for item in old_positions]
             # Fachlich parametrisierbare Zielwerte fuer die Uebernahme.
             # Zielvertragsart / Ziel-Mitarbeitergruppe koennen spaeter als UI-Parameter
             # in azubi_params verschoben werden.
@@ -596,15 +632,15 @@ def _simulate_azubis(
             df_state.loc[persnr, "St"] = entry_step
             # MAK nach Uebernahme: fachlich parametrisierbar ueber
             # azubi.azubi_mak_after_takeover.
-            df_state.loc[persnr, "mak"] = mak_after
+            df_state.loc[persnr, "mak"] = effective_mak_after
             if "MAK_Calculated" in df_state.columns:
-                df_state.loc[persnr, "MAK_Calculated"] = mak_after
+                df_state.loc[persnr, "MAK_Calculated"] = effective_mak_after
             if "MAK" in df_state.columns:
-                df_state.loc[persnr, "MAK"] = mak_after
+                df_state.loc[persnr, "MAK"] = effective_mak_after
             if "BsGrd" in df_state.columns:
-                df_state.loc[persnr, "BsGrd"] = mak_after * 100.0
+                df_state.loc[persnr, "BsGrd"] = effective_mak_after * 100.0
             if "FTE_person" in df_state.columns:
-                df_state.loc[persnr, "FTE_person"] = mak_after
+                df_state.loc[persnr, "FTE_person"] = effective_mak_after
             # Kostenlogik nach Uebernahme wird im Kompakt-Snapshot mit der
             # zentralen TVoeD-Kostenfunktion neu berechnet.
             if "Total_Cost_Year" in df_state.columns:
@@ -643,7 +679,8 @@ def _simulate_azubis(
                 "persnr": persnr,
                 "org_unit": new_unit,
                 "source": "Regular",
-                "mak": mak_after,
+                "mak": effective_mak_after,
+                "position_index": regular_vacancy["position_index"] if regular_vacancy is not None else pd.NA,
                 "TrfGr": entry_tariff,
                 "St": entry_step,
                 "Jobfamily": new_jf,
@@ -676,6 +713,7 @@ def _simulate_azubis(
             "cohort": eintritt.year if pd.notna(eintritt) else "Unknown"
         }
         current_mak = float(row.get("mak", 0.0))
+        release_training_positions(persnr, row, graduation_date)
         
         df_state.loc[persnr, "active"] = False
         events.append({
@@ -703,6 +741,7 @@ def _simulate_new_azubis(
     debts: Dict[str, float] = None,
     gender_distribution: Optional[tuple[list[str], list[float]]] = None,
     unit_to_cluster_map: Optional[Dict[str, str]] = None,
+    vacancy_pool=None,
 ):
     """
     Simulate hiring of NEW Azubis (not just retention).
@@ -747,12 +786,23 @@ def _simulate_new_azubis(
     for i in range(num_cases):
         # Random start date in allowed period segment
         entry_date = eff_start + pd.Timedelta(days=rng.integers(0, eff_days + 1))
+        vacancy = None
+        if vacancy_pool is not None:
+            from utils.fixed_plan_vacancies import vacancy_matches_accession
+            vacancy = vacancy_pool.reserve(
+                entry_date, strategy=strategy, rng=rng,
+                eligible=lambda item: vacancy_matches_accession(item, "azubi")
+                and (strategy != "OrgUnit" or item["org_unit"] == target_unit))
+            if vacancy is None:
+                continue
 
         # Deterministic unique ID derived from rng (seed-reproducible, I9)
         unique_suffix = format(rng.integers(0, 0xFFFF), "04x")
         new_id = f"AZ_{entry_date.year}_N{i+1:02d}_{unique_suffix}"
         
         org_unit = _resolve_org_unit(strategy, target_unit, all_org_units, [], rng, valid_units)
+        if vacancy is not None:
+            org_unit = vacancy["org_unit"]
         new_cluster = unit_to_cluster.get(org_unit, "Sonstiges")
         gender_code, gender_text = _sample_gender(rng, gender_choices, gender_weights)
 
@@ -784,7 +834,8 @@ def _simulate_new_azubis(
             INTERNAL_AZUBI_FLAG_COL: True,
             "Vertragsart": "Auszubildende",
             "Status kundenindividuell": "Aktives Beschäftigungsverhältnis",
-            "Planstelle": "Azubi",
+            "Planstelle": vacancy["planstelle"] if vacancy is not None else "Azubi",
+            "_plan_position_index": vacancy["position_index"] if vacancy is not None else pd.NA,
             "age": 16.0,
             "tenure": 0.0,
             "mak": mak_during, # Azubi counts as 0 MAK initially (per new Rule)
@@ -824,7 +875,8 @@ def _simulate_new_azubis(
             "TrfGr": entry_tariff,
             "St": 1,
             "Jobfamily": new_jf,
-            "Planstelle": "Azubi",
+            "Planstelle": vacancy["planstelle"] if vacancy is not None else "Azubi",
+            "position_index": vacancy["position_index"] if vacancy is not None else pd.NA,
             "Geschlecht": gender_code,
             "Text Gsch": gender_text,
             "Ausbildung": azubi_edu,
@@ -849,6 +901,7 @@ def _simulate_trainees(
     forecast_start_date: Optional[pd.Timestamp] = None,
     gender_distribution: Optional[tuple[list[str], list[float]]] = None,
     education_distribution: Optional[tuple[list[str], list[float]]] = None,
+    vacancy_pool=None,
 ):
     trainee_params = params.get("trainee", {})
     if num_cases <= 0:
@@ -892,6 +945,16 @@ def _simulate_trainees(
         
         org_unit = _resolve_org_unit(strategy, target_unit, all_org_units, [], rng)
         entry_date = eff_start + pd.Timedelta(days=rng.integers(0, eff_days + 1))
+        vacancy = None
+        if vacancy_pool is not None:
+            from utils.fixed_plan_vacancies import vacancy_matches_accession
+            vacancy = vacancy_pool.reserve(
+                entry_date, strategy=strategy, rng=rng,
+                eligible=lambda item: vacancy_matches_accession(item, "trainee")
+                and (strategy != "OrgUnit" or item["org_unit"] == target_unit))
+            if vacancy is None:
+                continue
+            org_unit = vacancy["org_unit"]
         gender_code, gender_text = _sample_gender(rng, gender_choices, gender_weights)
         education = _sample_education(
             rng,
@@ -917,10 +980,11 @@ def _simulate_trainees(
             INTERNAL_EDUCATION_COL: education,
             "Vertragsart": "Zeitvertrag",
             "Status kundenindividuell": "Aktives Beschäftigungsverhältnis",
-            "Planstelle": "Trainee",
+            "Planstelle": vacancy["planstelle"] if vacancy is not None else "Trainee",
+            "_plan_position_index": vacancy["position_index"] if vacancy is not None else pd.NA,
             "age": 25.0,
             "tenure": 0.0,
-            "mak": 1.0 # Full FTE
+            "mak": vacancy["soll_mak"] if vacancy is not None else 1.0
         }
         
         events.append({
@@ -931,11 +995,12 @@ def _simulate_trainees(
             "persnr": new_id,
             "org_unit": org_unit,
             "source": "Trainee",
-            "mak": 1.0,
+            "mak": vacancy["soll_mak"] if vacancy is not None else 1.0,
+            "position_index": vacancy["position_index"] if vacancy is not None else pd.NA,
             "TrfGr": salary_group,
             "St": 1,
             "Jobfamily": "Trainee",
-            "Planstelle": "Trainee",
+            "Planstelle": vacancy["planstelle"] if vacancy is not None else "Trainee",
             "Geschlecht": gender_code,
             "Text Gsch": gender_text,
             "Ausbildung": education,
@@ -954,6 +1019,7 @@ def _simulate_hires(
     forecast_start_date: Optional[pd.Timestamp] = None,
     gender_distribution: Optional[tuple[list[str], list[float]]] = None,
     education_distribution: Optional[tuple[list[str], list[float]]] = None,
+    vacancy_pool=None,
 ):
     hire_params = params.get("new_hires", {})
     if num_cases <= 0:
@@ -1004,6 +1070,15 @@ def _simulate_hires(
     for _ in range(num_cases):
         new_id = f"NH_{rng.integers(10000, 99999)}"
         entry_date = eff_start + pd.Timedelta(days=rng.integers(0, eff_days + 1))
+        position_vacancy = None
+        if vacancy_pool is not None:
+            from utils.fixed_plan_vacancies import vacancy_matches_accession
+            position_vacancy = vacancy_pool.reserve(
+                entry_date, strategy=strategy, rng=rng,
+                eligible=lambda item: vacancy_matches_accession(item, "regular")
+                and (strategy != "OrgUnit" or item["org_unit"] == target_unit))
+            if position_vacancy is None:
+                continue
         gender_code, gender_text = _sample_gender(rng, gender_choices, gender_weights)
         education = _sample_education(
             rng,
@@ -1020,7 +1095,19 @@ def _simulate_hires(
         
         is_replacement = False
         
-        if strategy == "Fill Vacancies" and vacancies:
+        if position_vacancy is not None:
+            org_unit = position_vacancy["org_unit"]
+            plan_stelle = position_vacancy["planstelle"]
+            position_jf = position_vacancy.get("Jobfamily")
+            position_cluster = position_vacancy.get("OE-Cluster")
+            if pd.notna(position_jf) and str(position_jf).strip():
+                jf = position_jf
+            if pd.notna(position_cluster) and str(position_cluster).strip():
+                oe_c = position_cluster
+            else:
+                oe_c = unit_to_cluster_map.get(org_unit, oe_c)
+            is_replacement = True
+        elif strategy == "Fill Vacancies" and vacancies:
             # Find a matching vacancy (e.g. earliest date)
             valid_vacancies = [v for v in vacancies if v["date"] <= entry_date]
             if valid_vacancies:
@@ -1075,9 +1162,10 @@ def _simulate_hires(
             "Vertragsart": "Unbefristet",
             "Status kundenindividuell": "Aktives Beschäftigungsverhältnis",
             "Planstelle": plan_stelle,
+            "_plan_position_index": position_vacancy["position_index"] if position_vacancy is not None else pd.NA,
             "age": 30.0,
             "tenure": 0.0,
-            "mak": 1.0
+            "mak": position_vacancy["soll_mak"] if position_vacancy is not None else 1.0
         }
         
         events.append({
@@ -1088,7 +1176,8 @@ def _simulate_hires(
             "persnr": new_id,
             "org_unit": org_unit,
             "source": "NewHire",
-            "mak": 1.0,
+            "mak": position_vacancy["soll_mak"] if position_vacancy is not None else 1.0,
+            "position_index": position_vacancy["position_index"] if position_vacancy is not None else pd.NA,
             "TrfGr": "E9A",
             "St": 3,
             "Jobfamily": jf,
@@ -1107,7 +1196,9 @@ def run_forecast_zugaenge(
     end_date: Optional[pd.Timestamp] = None,
     freq: str = "M",
     params: Dict[str, Any] = None,
-    vacancies: List[Dict[str, Any]] = None
+    vacancies: List[Dict[str, Any]] = None,
+    vacancy_pool=None,
+    original_positions=None,
 ) -> Dict[str, Any]:
     
     if params is None:
@@ -1125,6 +1216,9 @@ def run_forecast_zugaenge(
         df_state["active"] = True # Assume snapshot is all active
     df_state[INTERNAL_EDUCATION_COL] = _build_internal_education_series(df_state)
     df_state[INTERNAL_AZUBI_FLAG_COL] = _build_internal_azubi_series(df_state)
+    if vacancy_pool is not None:
+        df_state["_relocated_from_position_indices"] = pd.Series(
+            [None] * len(df_state), index=df_state.index, dtype=object)
         
     if not df_state.empty and "PersNr" in df_state.columns:
         df_state.set_index("PersNr", drop=False, inplace=True)
@@ -1180,7 +1274,8 @@ def run_forecast_zugaenge(
 
         # 1. Azubis (Takeover of EXISTING & NEW from previous months)
         if params.get("azubi", {}).get("active", True):
-            _simulate_azubis(df_state, params, period, rng, period_events, all_org_units, debts)
+            _simulate_azubis(df_state, params, period, rng, period_events, all_org_units,
+                             debts, vacancy_pool, original_positions)
 
         period_gender_distribution = None
         if n_az > 0 or n_tr > 0 or n_hi > 0:
@@ -1199,6 +1294,7 @@ def run_forecast_zugaenge(
                 n_tr,
                 start_date,
                 period_gender_distribution,
+                vacancy_pool=vacancy_pool,
             )
         
         # 3. New Azubis (NEW Hire entry)
@@ -1216,6 +1312,7 @@ def run_forecast_zugaenge(
                 debts,
                 period_gender_distribution,
                 period_unit_to_cluster_map,
+                vacancy_pool=vacancy_pool,
             )
         
         # 4. New Hires (Standard)
@@ -1231,6 +1328,7 @@ def run_forecast_zugaenge(
                 n_hi,
                 start_date,
                 period_gender_distribution,
+                vacancy_pool=vacancy_pool,
             )
         
         # Apply New Rows
@@ -1328,9 +1426,11 @@ def run_forecast_zugaenge(
     # Audit Baseline Conversions (New Feature)
     if params.get("azubi", {}).get("active", True):
         # 1. Identify Baseline Conversions in events
+        forecast_flags = events_df.get(
+            "is_forecast", pd.Series(False, index=events_df.index))
         baseline_convs = events_df[
             (events_df["type"] == "Azubi_Conversion_In") & 
-            (events_df["is_forecast"] == False)
+            (forecast_flags == False)
         ]
         
         if not baseline_convs.empty:
