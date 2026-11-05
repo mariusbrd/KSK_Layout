@@ -182,6 +182,21 @@ def test_reporting_exclusion_cannot_create_hireable_vacancy() -> None:
     assert [item["position_index"] for item in vacancies] == [1]
 
 
+def test_zero_soll_only_eligible_for_dedicated_training_position() -> None:
+    base = pd.Timestamp("2025-12-31")
+    positions = pd.DataFrame([
+        {"PersNr": pd.NA, "Is_Plan_Vacant": True, "Soll_FTE": 0.0,
+         "Kürzel OrgEinheit": "9910", "Planstelle": "Ausbildung"},
+        {"PersNr": pd.NA, "Is_Plan_Vacant": True, "Soll_FTE": 0.0,
+         "Kürzel OrgEinheit": "1000", "Planstelle": "Beratung"},
+    ])
+    vacancies = available_position_vacancies(
+        positions, pd.DataFrame(), base, include_report_excluded=True)
+    assert [row["position_index"] for row in vacancies] == [0]
+    assert vacancy_matches_accession(vacancies[0], "azubi")
+    assert not vacancy_matches_accession(vacancies[0], "regular")
+
+
 def test_orgunit_hires_only_within_selected_unit() -> None:
     base = pd.Timestamp("2025-12-31")
     vacancies = [
@@ -226,3 +241,45 @@ def test_takeover_vacates_training_row_and_fills_regular_row() -> None:
     assert result.at[1, "PersNr"] == "100"
     assert result["Planstellennr"].tolist() == ["AZ-1", "REG-1"]
     assert result["Soll_FTE"].tolist() == [1.0, 0.6]
+
+
+def test_earlier_regular_entry_wins_and_tie_favors_takeover() -> None:
+    start, end = pd.Timestamp("2026-08-01"), pd.Timestamp("2026-08-31")
+    training = {"date": start, "position_index": 0, "org_code": "9910",
+                "org_unit": "Ausbildung", "planstelle": "Ausbildung", "soll_mak": 1.0}
+    regular = {"date": start, "position_index": 1, "org_code": "1000",
+               "org_unit": "Beratung", "planstelle": "Berater", "soll_mak": 0.6}
+    positions = {"100": [training], "_by_index": {0: training, 1: regular}}
+    params = default_params()
+    params["azubi"].update(active=True, retention_rate=1.0)
+    params["new_hires"].update(active=True, count_per_year=12)
+
+    def run(graduation: pd.Timestamp, seed: int) -> pd.DataFrame:
+        params["random_seed"] = seed
+        person = pd.DataFrame([{
+            "PersNr": "100", "active": True, "Jobfamily": "Azubi",
+            "TrfGr": "TVAöD", "Organisationseinheit": "Ausbildung",
+            "Eintritt": pd.Timestamp("2023-08-01"),
+            "GraduationDate": graduation, "GraduationModus": "Takeover",
+            "mak": 0.0, "Ausbildung": "derzeit Berufsausbildung",
+        }])
+        return run_forecast_zugaenge(
+            person, start, end_date=end, params=params,
+            vacancy_pool=FixedPlanVacancyPool([regular]),
+            original_positions=positions)["events"]
+
+    seed, hire_date = next(
+        (seed, date) for seed in range(100)
+        for date in run(pd.Timestamp("2026-09-01"), seed)
+        .loc[lambda frame: frame["type"].eq("New_Hire"), "date"]
+        if start + pd.Timedelta(days=2) <= date <= end - pd.Timedelta(days=2)
+    )
+    earlier_takeover = run(hire_date - pd.Timedelta(days=1), seed)
+    tied = run(hire_date, seed)
+    earlier_hire = run(hire_date + pd.Timedelta(days=1), seed)
+    assert "Azubi_Conversion_In" in set(earlier_takeover["type"])
+    assert "New_Hire" not in set(earlier_takeover["type"])
+    assert "Azubi_Conversion_In" in set(tied["type"])
+    assert "New_Hire" not in set(tied["type"])
+    assert "New_Hire" in set(earlier_hire["type"])
+    assert "Azubi_Conversion_In" not in set(earlier_hire["type"])

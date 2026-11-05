@@ -1032,7 +1032,9 @@ def _build_fixed_plan_vacancy_context(
     person_ids = _normalize_persnr_series(snapshot["PersNr"].fillna(""))
     for index, (_, position) in enumerate(snapshot.iterrows()):
         soll = pd.to_numeric(position.get("Soll_FTE"), errors="coerce")
-        if pd.isna(soll) or not 0 < float(soll) <= 1:
+        code = position.get("Kürzel OrgEinheit")
+        is_training = pd.notna(code) and str(code).strip().removesuffix(".0") == "9910"
+        if pd.isna(soll) or not 0 <= float(soll) <= 1 or (float(soll) == 0 and not is_training):
             continue
         record = {
             "position_index": index,

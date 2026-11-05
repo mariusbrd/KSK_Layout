@@ -1,4 +1,4 @@
-"""Frozen hash reference for corrected productive 2025–2028 OE/JF results.
+"""Frozen hash reference for fixed-plan productive 2025–2030 OE/JF results.
 
 Capture once with --capture. No employee rows are stored.
 """
@@ -28,7 +28,7 @@ from utils.org_simulation_events import build_simulation_event_summary
 from utils.status_quo_baseline import build_status_quo_snapshot
 from components.jobfamily_simulation_yearly import build_jobfamily_yearly_view
 
-REFERENCE = ROOT / "tests" / "fixtures" / "monte_carlo_production_multi_year_reference_v3.json"
+REFERENCE = ROOT / "tests" / "fixtures" / "monte_carlo_production_multi_year_reference_v4.json"
 TARGET = pd.Timestamp("2028-12-31")
 
 
@@ -46,7 +46,11 @@ def _payload(*, profile: bool = False, probe=None) -> dict:
     if profile:
         print(f"profile load_and_baseline={perf_counter() - start:.3f}s", flush=True)
     cases = {}
-    for label, hires in (("departures_only", 0), ("with_hires", 20)):
+    for label, hires, training, case_target in (
+        ("departures_only", 0, False, TARGET),
+        ("with_hires", 20, False, TARGET),
+        ("with_training", 0, True, pd.Timestamp("2030-12-31")),
+    ):
         for seed in (7, 42):
             if profile and (label, seed) != ("departures_only", 7):
                 continue
@@ -59,11 +63,27 @@ def _payload(*, profile: bool = False, probe=None) -> dict:
             if hires:
                 hire["new_hires"].update(active=True, count_per_year=hires,
                                          strategy="Fill Vacancies")
+            if training:
+                hire["azubi"].update(active=True, new_cases_per_year=4,
+                                     retention_rate=1.0)
+                hire["trainee"].update(active=True, new_cases_per_year=4)
             result = simulate_compact_snapshot(
-                snapshot, atz, TARGET, base_date=FROZEN_STICHTAG,
+                snapshot, atz, case_target, base_date=FROZEN_STICHTAG,
                 abgaenge_params=deepcopy(dep), zugaenge_params=deepcopy(hire),
                 active_cluster_source=source, cluster_mapping_bundle=bundle,
                 cluster_source_signature=signature, include_audits=False)
+            assert len(result.future_snapshot_df) == len(snapshot)
+            pd.testing.assert_series_equal(
+                result.future_snapshot_df["Planstellennr"].reset_index(drop=True),
+                snapshot["Planstellennr"].reset_index(drop=True))
+            pd.testing.assert_series_equal(
+                result.future_snapshot_df["Soll_FTE"].reset_index(drop=True),
+                snapshot["Soll_FTE"].reset_index(drop=True))
+            if training:
+                event_types = result.zugaenge_result["events"]["type"]
+                assert event_types.eq("Azubi_Hire").any()
+                assert event_types.eq("Azubi_Conversion_In").any()
+                assert not event_types.eq("Trainee_Hire").any()
             simulated = perf_counter()
             final = compact.prepare_compact_data(result.future_snapshot_df)
             compacted = perf_counter()
@@ -107,6 +127,7 @@ def _payload(*, profile: bool = False, probe=None) -> dict:
                       f"jf_yearly={jf_built - oe_built:.3f}s "
                       f"total={jf_built - case_start:.3f}s", flush=True)
             cases[f"{label}__seed_{seed}"] = {
+                "target_date": str(case_target.date()),
                 "departure_parameters": dep,
                 "hire_parameters": hire,
                 "oe_stock_status": bridge["status"],
@@ -115,6 +136,7 @@ def _payload(*, profile: bool = False, probe=None) -> dict:
                 "frames": {name: _frame_signature(frame) for name, frame in frames.items()},
             }
     return {
+        "rule_version": "fixed-plan-v1",
         "input": {"snapshot": _frame_signature(snapshot), "atz": _frame_signature(atz)},
         "settings": FROZEN_SETTINGS,
         "base_date": str(FROZEN_STICHTAG.date()),
@@ -137,7 +159,7 @@ if __name__ == "__main__":
     if REFERENCE.exists():
         raise SystemExit("Reference exists; refusing to overwrite.")
     payload = {
-        "description": "Hash-only corrected productive multi-year OE/JF reference.",
+        "description": "Hash-only fixed-plan productive multi-year OE/JF reference through 2030.",
         "business_rules": ["preserve_multi_position_ist_mak", "preserve_atz_fr_headcount"],
         "python": sys.version.split()[0], "pandas": pd.__version__,
         "payload": _payload(),

@@ -6,8 +6,10 @@ import pandas as pd
 
 def vacancy_matches_accession(vacancy: dict, kind: str) -> bool:
     """Match explicit training positions without using reporting exclusions."""
-    code = str(vacancy.get("org_code") or "").strip().removesuffix(".0")
-    title = str(vacancy.get("planstelle") or "").casefold()
+    raw_code = vacancy.get("org_code")
+    code = "" if pd.isna(raw_code) else str(raw_code).strip().removesuffix(".0")
+    raw_title = vacancy.get("planstelle")
+    title = "" if pd.isna(raw_title) else str(raw_title).casefold()
     if kind == "trainee":
         return code == "9920" or "trainee" in title
     if kind == "azubi":
@@ -67,8 +69,8 @@ def available_position_vacancies(snapshot: pd.DataFrame,
                                  include_report_excluded: bool = False) -> list[dict]:
     """Return each hireable plan row once, with its first available date.
 
-    A position with zero Soll offers no hiring capacity. Whether reporting
-    exclusions also remove hiring capacity is an explicit policy input.
+    A zero-Soll position can receive an apprentice only when designated PA 9910.
+    Whether reporting exclusions also remove hiring capacity is an explicit policy input.
     All positions of a departing person become available together.
     """
     exits: dict[str, pd.Timestamp] = {}
@@ -84,7 +86,11 @@ def available_position_vacancies(snapshot: pd.DataFrame,
     vacancies = []
     for index, row in snapshot.reset_index(drop=True).iterrows():
         soll = pd.to_numeric(row.get("Soll_FTE"), errors="coerce")
-        if pd.isna(soll) or not 0.0 < float(soll) <= 1.0:
+        raw_code = row.get("Kürzel OrgEinheit")
+        org_code = "" if pd.isna(raw_code) else str(raw_code).strip().removesuffix(".0")
+        if pd.isna(soll) or not 0.0 <= float(soll) <= 1.0:
+            continue
+        if float(soll) == 0.0 and org_code != "9910":
             continue
         excluded = row.get("Is_Excluded")
         if not include_report_excluded and pd.notna(excluded) and bool(excluded):

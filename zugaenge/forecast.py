@@ -413,6 +413,7 @@ def _simulate_azubis(
     debts: Dict[str, float] = None,
     vacancy_pool=None,
     original_positions=None,
+    only_graduation_date=None,
 ):
     """
     Handle takeover of existing Azubis.
@@ -495,6 +496,9 @@ def _simulate_azubis(
              graduation_date = _estimate_baseline_graduation_date(eintritt, duration_years, conv_month, conv_day, graduation_mode, grace_days)
 
         if pd.isna(graduation_date):
+            continue
+
+        if only_graduation_date is not None and pd.Timestamp(graduation_date) != pd.Timestamp(only_graduation_date):
             continue
 
         if period.start <= graduation_date <= period.end:
@@ -742,6 +746,8 @@ def _simulate_new_azubis(
     gender_distribution: Optional[tuple[list[str], list[float]]] = None,
     unit_to_cluster_map: Optional[Dict[str, str]] = None,
     vacancy_pool=None,
+    entry_dates=None,
+    case_number=None,
 ):
     """
     Simulate hiring of NEW Azubis (not just retention).
@@ -759,7 +765,8 @@ def _simulate_new_azubis(
     entry_tariff = "TVAöD" # Default for Azubis during apprenticeship
     
     # MAK Logic Parameters
-    mak_during = float(azubi_params.get("azubi_mak_during_training", 0.0))
+    mak_during = (0.0 if vacancy_pool is not None else
+                  float(azubi_params.get("azubi_mak_during_training", 0.0)))
     conv_month = int(azubi_params.get("azubi_conversion_month", 8))
     conv_day = int(azubi_params.get("azubi_conversion_day", 1))
     graduation_mode = azubi_params.get("graduation_mode", "next_cycle")
@@ -785,7 +792,8 @@ def _simulate_new_azubis(
 
     for i in range(num_cases):
         # Random start date in allowed period segment
-        entry_date = eff_start + pd.Timedelta(days=rng.integers(0, eff_days + 1))
+        entry_date = (pd.Timestamp(entry_dates[i]) if entry_dates is not None else
+                      eff_start + pd.Timedelta(days=rng.integers(0, eff_days + 1)))
         vacancy = None
         if vacancy_pool is not None:
             from utils.fixed_plan_vacancies import vacancy_matches_accession
@@ -798,7 +806,7 @@ def _simulate_new_azubis(
 
         # Deterministic unique ID derived from rng (seed-reproducible, I9)
         unique_suffix = format(rng.integers(0, 0xFFFF), "04x")
-        new_id = f"AZ_{entry_date.year}_N{i+1:02d}_{unique_suffix}"
+        new_id = f"AZ_{entry_date.year}_N{case_number if case_number is not None else i+1:02d}_{unique_suffix}"
         
         org_unit = _resolve_org_unit(strategy, target_unit, all_org_units, [], rng, valid_units)
         if vacancy is not None:
@@ -902,6 +910,7 @@ def _simulate_trainees(
     gender_distribution: Optional[tuple[list[str], list[float]]] = None,
     education_distribution: Optional[tuple[list[str], list[float]]] = None,
     vacancy_pool=None,
+    entry_dates=None,
 ):
     trainee_params = params.get("trainee", {})
     if num_cases <= 0:
@@ -944,7 +953,8 @@ def _simulate_trainees(
         # Check collision? Unlikely with prefix.
         
         org_unit = _resolve_org_unit(strategy, target_unit, all_org_units, [], rng)
-        entry_date = eff_start + pd.Timedelta(days=rng.integers(0, eff_days + 1))
+        entry_date = (pd.Timestamp(entry_dates[_]) if entry_dates is not None else
+                      eff_start + pd.Timedelta(days=rng.integers(0, eff_days + 1)))
         vacancy = None
         if vacancy_pool is not None:
             from utils.fixed_plan_vacancies import vacancy_matches_accession
@@ -1020,6 +1030,7 @@ def _simulate_hires(
     gender_distribution: Optional[tuple[list[str], list[float]]] = None,
     education_distribution: Optional[tuple[list[str], list[float]]] = None,
     vacancy_pool=None,
+    entry_dates=None,
 ):
     hire_params = params.get("new_hires", {})
     if num_cases <= 0:
@@ -1069,7 +1080,8 @@ def _simulate_hires(
 
     for _ in range(num_cases):
         new_id = f"NH_{rng.integers(10000, 99999)}"
-        entry_date = eff_start + pd.Timedelta(days=rng.integers(0, eff_days + 1))
+        entry_date = (pd.Timestamp(entry_dates[_]) if entry_dates is not None else
+                      eff_start + pd.Timedelta(days=rng.integers(0, eff_days + 1)))
         position_vacancy = None
         if vacancy_pool is not None:
             from utils.fixed_plan_vacancies import vacancy_matches_accession
@@ -1189,6 +1201,39 @@ def _simulate_hires(
             "_new_row": new_row # Marker to add to DF later
         })
 
+def _fixed_plan_graduation_dates(df_state: pd.DataFrame, params: Dict[str, Any],
+                                 period: PeriodInfo) -> list[pd.Timestamp]:
+    """Find already active apprentices graduating in this monthly period."""
+    azubi_params = params.get("azubi", {})
+    if INTERNAL_AZUBI_FLAG_COL not in df_state:
+        return []
+    dates = set()
+    for _, person in df_state.loc[
+            df_state["active"].eq(True) & df_state[INTERNAL_AZUBI_FLAG_COL].eq(True)
+    ].iterrows():
+        is_forecast = person.get("is_forecast", False)
+        is_forecast = False if pd.isna(is_forecast) else bool(is_forecast)
+        if azubi_params.get("exclude_baseline_azubis", False) and not is_forecast:
+            continue
+        graduation = pd.to_datetime(person.get("GraduationDate"), errors="coerce")
+        if pd.isna(graduation):
+            entry = pd.to_datetime(person.get("Eintritt"), errors="coerce")
+            if pd.isna(entry):
+                continue
+            raw_grace = azubi_params.get("nearest_cycle_grace_days")
+            graduation = _estimate_baseline_graduation_date(
+                entry,
+                float(azubi_params.get("duration_years", 3.0)),
+                int(azubi_params.get("azubi_conversion_month", 8)),
+                int(azubi_params.get("azubi_conversion_day", 1)),
+                azubi_params.get("graduation_mode", "next_cycle"),
+                int(raw_grace) if raw_grace is not None else None,
+            )
+        if pd.notna(graduation) and period.start <= graduation <= period.end:
+            dates.add(pd.Timestamp(graduation))
+    return sorted(dates)
+
+
 def run_forecast_zugaenge(
     df_snapshot: pd.DataFrame,
     start_date: pd.Timestamp,
@@ -1272,8 +1317,72 @@ def run_forecast_zugaenge(
         if params.get("new_hires", {}).get("active", True):
             n_hi, debts["new_hires"] = _annual_to_period_count(params.get("new_hires", {}).get("count_per_year", 0), period_days, rng, debts["new_hires"])
 
+        if vacancy_pool is not None:
+            scheduled = []
+            if params.get("azubi", {}).get("active", True):
+                # Preserve the training label even in months without graduates.
+                _simulate_azubis(
+                    df_state, params, period, rng, period_events, all_org_units,
+                    debts, vacancy_pool, original_positions,
+                    only_graduation_date=pd.Timestamp("1900-01-01"))
+                scheduled.extend((date, 0, "conversion", 0)
+                                 for date in _fixed_plan_graduation_dates(df_state, params, period))
+            horizon_days = (period.end - period.start).days
+            for kind, count, priority in (("trainee", n_tr, 1),
+                                          ("azubi", n_az, 2),
+                                          ("regular", n_hi, 3)):
+                for case in range(count):
+                    date = period.start + pd.Timedelta(days=rng.integers(0, horizon_days + 1))
+                    scheduled.append((date, priority, kind, case))
+            scheduled.sort(key=lambda item: (item[0], item[1], item[3]))
+
+            gender_distribution = None
+            if n_tr or n_az or n_hi:
+                gender_distribution = _build_gender_distribution(
+                    df_state, _normalized_gender_series(df_state))
+            unit_to_cluster = configured_org_unit_to_cluster_map or (
+                _get_unit_to_cluster_map(df_state) if n_az else None)
+            trainee_education = None
+            if n_tr:
+                trainee_education = _build_education_distribution(
+                    df_state,
+                    allowed_values=["Bachelor FH", "Bachelor Universität", "Master FH",
+                                    "Studium Lehrinstitut", "Master Universität",
+                                    "Bankbetriebswirt"],
+                    excluded_values=[AZUBI_TRAINING_EDUCATION],
+                    fallback_choices=[DEFAULT_TRAINEE_EDUCATION])
+            hire_education = None
+            if n_hi:
+                hire_education = _build_education_distribution(
+                    df_state, excluded_values=[AZUBI_TRAINING_EDUCATION],
+                    fallback_choices=[DEFAULT_NEW_HIRE_EDUCATION])
+
+            for date, _, kind, case in scheduled:
+                if kind == "conversion":
+                    _simulate_azubis(
+                        df_state, params, period, rng, period_events, all_org_units,
+                        debts, vacancy_pool, original_positions,
+                        only_graduation_date=date)
+                elif kind == "trainee":
+                    _simulate_trainees(
+                        df_state, params, period, rng, period_events, all_org_units,
+                        1, start_date, gender_distribution, trainee_education,
+                        vacancy_pool=vacancy_pool, entry_dates=[date])
+                elif kind == "azubi":
+                    _simulate_new_azubis(
+                        df_state, params, period, rng, period_events, all_org_units,
+                        1, start_date, debts, gender_distribution, unit_to_cluster,
+                        vacancy_pool=vacancy_pool, entry_dates=[date], case_number=case + 1)
+                else:
+                    _simulate_hires(
+                        df_state, params, period, rng, period_events, all_org_units,
+                        current_vacancies, 1, start_date, gender_distribution,
+                        hire_education, vacancy_pool=vacancy_pool,
+                        entry_dates=[date])
+            n_az = n_tr = n_hi = 0
+
         # 1. Azubis (Takeover of EXISTING & NEW from previous months)
-        if params.get("azubi", {}).get("active", True):
+        if vacancy_pool is None and params.get("azubi", {}).get("active", True):
             _simulate_azubis(df_state, params, period, rng, period_events, all_org_units,
                              debts, vacancy_pool, original_positions)
 
