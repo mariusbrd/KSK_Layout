@@ -60,10 +60,11 @@ def test_productive_regular_batch_events_match_fixed_plan_forecast() -> None:
         assert len(compact_events) > 0
 
 
-@pytest.mark.parametrize("strategy,annual_hires", [
-    ("Fill Vacancies", 20), ("Random", 30), ("OrgUnit", 12),
-])
-@pytest.mark.parametrize("target_label", ["2026-12-31", "2027-12-31"])
+@pytest.mark.parametrize("target_label,strategy,annual_hires", [
+    (year, strategy, hires)
+    for year in ("2026-12-31", "2027-12-31")
+    for strategy, hires in (("Fill Vacancies", 20), ("Random", 30), ("OrgUnit", 12))
+] + [("2028-12-31", "Fill Vacancies", 20)])
 def test_seed_specific_regular_coupling_matches_product(
         strategy: str, annual_hires: int, target_label: str) -> None:
     from copy import deepcopy
@@ -89,6 +90,10 @@ def test_seed_specific_regular_coupling_matches_product(
         build_compact_regular_annual_events, build_regular_year_end_stocks,
     )
     from utils.org_simulation_reconciliation import grouped_stock_metrics
+    from utils.compact_regular_stock import (
+        project_regular_group_stock_from_events, project_regular_position_stocks,
+    )
+    from dataloader.cluster_manager import apply_clusters_to_snapshot_from_source
     from components.jobfamily_simulation_yearly import _dimension_values
 
     _freeze_context()
@@ -104,6 +109,8 @@ def test_seed_specific_regular_coupling_matches_product(
     baseline = compact.prepare_compact_data(build_status_quo_snapshot(positions, start))
     jf_baseline = prepare_jobfamily_baseline(baseline)
     source, bundle, signature = _resolve_simulation_cluster_context()
+    mapped_baseline = apply_clusters_to_snapshot_from_source(
+        baseline, source, mapping_bundle=bundle)
     dep, hire = departure_defaults(), default_params()
     dep["quit"].update(quit_rate_base=0.12, use_quit_matrix=False)
     hire["azubi"]["active"] = False
@@ -180,12 +187,25 @@ def test_seed_specific_regular_coupling_matches_product(
             cluster_source_signature=signature,
             run_signature=f"regular-event-only::{strategy}::{seed}",
             prepared_jobfamily_baseline=jf_baseline)
+        stock_dimensions = ("Organisationseinheit", "OE-Cluster",
+                            "Jobfamily", "JF-Cluster")
+        projected_stocks = {}
+        for dimension in stock_dimensions:
+            stock_baseline = (baseline if dimension in stock_dimensions[:2]
+                              else mapped_baseline.assign(
+                                  **{dimension: _dimension_values(mapped_baseline, dimension)}))
+            projected_stocks[dimension] = project_regular_group_stock_from_events(
+                stock_baseline, expected_summary["events"], base_date=start,
+                target_date=end, dimension=dimension)
         year_stocks = build_regular_year_end_stocks(
             positions, people, departures, atz_pivot, hires, new_people, hire,
             base_date=start, target_date=end,
             active_cluster_source=source, cluster_mapping_bundle=bundle,
             cluster_source_signature=signature,
             prepared_employee_template=employee_template)
+        position_stocks = project_regular_position_stocks(
+            baseline, mapped_baseline, departures, new_people,
+            base_date=start, target_date=end)
         for year_end in sorted(year_stocks["oe"]["Stichtag"].unique()):
             year_end = pd.Timestamp(year_end)
             year_reference = (reference if year_end == end else simulate_compact_snapshot(
@@ -195,6 +215,30 @@ def test_seed_specific_regular_coupling_matches_product(
                 active_cluster_source=source, cluster_mapping_bundle=bundle,
                 cluster_source_signature=signature, include_audits=False))
             year_frame = compact.prepare_compact_data(year_reference.future_snapshot_df)
+            for dimension in stock_dimensions:
+                position_year = position_stocks[dimension].loc[
+                    position_stocks[dimension]["Stichtag"].eq(year_end)]
+                position_values = {row[dimension]: (row["Köpfe"], row["MAK"])
+                                   for _, row in position_year.iterrows()}
+                work = (year_frame if dimension in stock_dimensions[:2]
+                        else year_frame.assign(
+                            **{dimension: _dimension_values(year_frame, dimension)}))
+                assert position_values == grouped_stock_metrics(work, dimension), (
+                    dimension, year_end)
+            for dimension in stock_dimensions:
+                projected_year = projected_stocks[dimension].loc[
+                    projected_stocks[dimension]["Stichtag"].eq(year_end)]
+                work = (year_frame if dimension in stock_dimensions[:2]
+                        else year_frame.assign(
+                            **{dimension: _dimension_values(year_frame, dimension)}))
+                expected_stock = grouped_stock_metrics(work, dimension)
+                projected_values = {
+                    row[dimension]: (row["Köpfe"], row["MAK"])
+                    for _, row in projected_year.iterrows()}
+                assert set(projected_values) == set(expected_stock)
+                for group, (heads, mak) in expected_stock.items():
+                    assert projected_values[group][0] == heads, (dimension, year_end, group)
+                    assert abs(projected_values[group][1] - mak) <= 1e-12, (dimension, year_end, group)
             for key, dimension in (("oe", "Organisationseinheit"),
                                    ("oe_cluster", "OE-Cluster"),
                                    ("jf", "Jobfamily"),

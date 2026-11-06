@@ -38,6 +38,7 @@ def main() -> None:
     parser.add_argument("--complete-regular", action="store_true")
     parser.add_argument("--annual-events", action="store_true")
     parser.add_argument("--annual-stocks", action="store_true")
+    parser.add_argument("--annual-position-stocks", action="store_true")
     args = parser.parse_args()
     if args.seeds < 1:
         parser.error("--seeds must be positive")
@@ -55,6 +56,38 @@ def main() -> None:
     hire["azubi"].update(active=True, new_cases_per_year=4, retention_rate=1.0,
                          jf_to_cluster_map=build_jf_to_cluster_map(snapshot))
     hire["trainee"].update(active=True, new_cases_per_year=4)
+    if args.annual_position_stocks:
+        from dataloader.cluster_manager import apply_clusters_to_snapshot_from_source
+        from utils.compact_regular_stock import project_regular_position_stocks
+        from utils.status_quo_baseline import build_status_quo_snapshot
+
+        hire["azubi"]["active"] = False
+        hire["trainee"]["active"] = False
+        compact = _load_page_module("*_Kompakt.py", "regular_position_benchmark_compact")
+        baseline = compact.prepare_compact_data(
+            build_status_quo_snapshot(snapshot, start))
+        source, bundle, _ = _resolve_simulation_cluster_context()
+        mapped = apply_clusters_to_snapshot_from_source(
+            baseline, source, mapping_bundle=bundle)
+        started = perf_counter()
+        stock_seconds = 0.0
+        count = annual_rows = 0
+        for _, departures, _, _, new_people in iter_fixed_plan_regular_coupled_seeds(
+                snapshot, people, atz, start, target, dep, hire,
+                range(args.seeds)):
+            stock_started = perf_counter()
+            stocks = project_regular_position_stocks(
+                baseline, mapped, departures, new_people,
+                base_date=start, target_date=target)
+            annual_rows += sum(len(stock) for stock in stocks.values())
+            stock_seconds += perf_counter() - stock_started
+            count += 1
+        elapsed = perf_counter() - started
+        print(f"regular_position_stock_seeds={count}; target={target.date()}; "
+              f"total_s={elapsed:.3f}; stock_s={stock_seconds:.3f}; "
+              f"per_seed_s={elapsed / count:.3f}; rows={annual_rows}; "
+              "scope=departures_hires_four_position_year_end_stock_views")
+        return
     if args.annual_stocks:
         from utils.compact_regular_annual import build_regular_year_end_stocks
 
