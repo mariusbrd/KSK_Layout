@@ -9,6 +9,7 @@ from zugaenge.forecast import run_forecast_zugaenge
 from zugaenge.hire_batch_probe import prepare_hire_batch, iter_hire_seed_records
 from zugaenge.params import default_params
 from zugaenge.fixed_plan_seed_stream import (
+    _prepare_employee_after_departures,
     iter_fixed_plan_regular_coupled_seeds,
     replay_fixed_plan_regular_employee_state,
 )
@@ -94,6 +95,7 @@ def test_seed_specific_regular_coupling_matches_product(
     atz = loader.load_atz_data_cached(str(root), None, None, None)
     start, end = pd.Timestamp(FROZEN_STICHTAG), pd.Timestamp("2026-12-31")
     people = _prepare_employee_forecast_base(positions, atz, start)
+    employee_template = _prepare_employee_after_departures(people)
     baseline = compact.prepare_compact_data(build_status_quo_snapshot(positions, start))
     source, bundle, signature = _resolve_simulation_cluster_context()
     dep, hire = departure_defaults(), default_params()
@@ -128,7 +130,7 @@ def test_seed_specific_regular_coupling_matches_product(
         pd.testing.assert_frame_equal(
             enriched, reference.zugaenge_result["events"], check_exact=True)
         replay = replay_fixed_plan_regular_employee_state(
-            people, departures, new_people)
+            people, departures, new_people, employee_template)
         pd.testing.assert_frame_equal(
             replay, reference.zugaenge_result["final_state"], check_exact=True)
         final_people = replay.copy()

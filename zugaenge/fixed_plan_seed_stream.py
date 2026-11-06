@@ -17,6 +17,7 @@ import pandas as pd
 from dataloader.compact_simulation_engine import (
     _apply_attrition_events_to_employee_state,
     _build_fixed_plan_vacancy_context,
+    _normalize_persnr_series,
 )
 from abgaenge.quit_batch_probe import (
     iter_quit_seed_records_with_atz, prepare_atz_pivot_for_probe,
@@ -83,6 +84,54 @@ def _vacancies_for_seed(prepared: PreparedPositions,
 def _pool_for_seed(prepared: PreparedPositions,
                    departures: pd.DataFrame) -> FixedPlanVacancyPool:
     return FixedPlanVacancyPool(_vacancies_for_seed(prepared, departures))
+
+
+def _prepare_employee_after_departures(employee_base: pd.DataFrame) -> pd.DataFrame:
+    """Build the product's no-event state once for scalar seed event replay."""
+    template = _apply_attrition_events_to_employee_state(
+        employee_base, pd.DataFrame())
+    return template.set_index("PersNr", drop=False)
+
+
+def _replay_departures_prepared(template: pd.DataFrame,
+                                events_df: pd.DataFrame) -> pd.DataFrame:
+    """Replay seed events with scalar writes; preserve product event order."""
+    if not template.index.is_unique:
+        return _apply_attrition_events_to_employee_state(
+            template.reset_index(drop=True), events_df)
+    state = template.copy()
+    if events_df.empty:
+        return state.reset_index(drop=True)
+    events = events_df.copy()
+    events["persnr"] = _normalize_persnr_series(events["persnr"])
+    events["event_date"] = pd.to_datetime(events["event_date"], errors="coerce")
+    events = events.sort_values("event_date")
+    for event in events.to_dict("records"):
+        pid = event["persnr"]
+        if pid not in state.index:
+            continue
+        headcount_change = int(event.get("headcount_change", 0) or 0)
+        mak_change = float(event.get("mak_change", 0.0) or 0.0)
+        reason_code = str(event.get("reason_code", "") or "")
+        if headcount_change < 0:
+            state.at[pid, "active"] = False
+            state.at[pid, "mak"] = 0.0
+        elif headcount_change > 0:
+            state.at[pid, "active"] = True
+            state.at[pid, "mak"] = max(0.0, float(state.at[pid, "mak"]) + mak_change)
+        else:
+            state.at[pid, "mak"] = max(0.0, float(state.at[pid, "mak"]) + mak_change)
+        if reason_code == "RUHEND_START":
+            state.at[pid, "status_ruhend"] = True
+            if "Status kundenindividuell" in state.columns:
+                state.at[pid, "Status kundenindividuell"] = "Ruhendes Beschäftigungsverhältnis"
+        elif reason_code == "RUHEND_RETURN":
+            state.at[pid, "status_ruhend"] = False
+            if "Status kundenindividuell" in state.columns:
+                state.at[pid, "Status kundenindividuell"] = "Aktives Beschäftigungsverhältnis"
+        elif reason_code == "ATZ_AR_TO_FR":
+            state.at[pid, "atz_fr_active"] = True
+    return state.reset_index(drop=True)
 
 
 def iter_fixed_plan_accession_seeds(
@@ -186,6 +235,7 @@ def iter_fixed_plan_regular_coupled_seeds(
     departure_params: dict[str, Any],
     hire_params: dict[str, Any],
     seeds: Iterable[int],
+    profile: dict[str, float] | None = None,
 ) -> Iterator[tuple[int, pd.DataFrame, pd.DataFrame,
                     list[dict[str, Any]], list[dict[str, Any]]]]:
     """Stream exact regular hire decisions against seed-specific plan vacancies.
@@ -196,35 +246,54 @@ def iter_fixed_plan_regular_coupled_seeds(
     if any(hire_params.get(name, {}).get("active", True)
            for name in ("azubi", "trainee")):
         raise ValueError("Regular compact stream requires inactive azubi and trainee")
+    started = perf_counter()
     prepared_departures = prepare_quit_batch(
         employee_base, atz_data, pd.Timestamp(base_date),
         pd.Timestamp(target_date), departure_params)
     initial_pivot = prepare_atz_pivot_for_probe(
         prepared_departures, atz_data, departure_params)
+    if profile is not None:
+        profile["departure_prepare"] = perf_counter() - started
+    started = perf_counter()
     positions = prepare_positions(position_snapshot, base_date)
+    if profile is not None:
+        profile["position_prepare"] = perf_counter() - started
+    started = perf_counter()
+    prepared_hires = prepare_hire_batch(
+        employee_base, pd.Timestamp(base_date),
+        pd.Timestamp(target_date), hire_params)
+    if profile is not None:
+        profile["hire_prepare"] = perf_counter() - started
+    departure_clock = perf_counter()
     for seed, records, atz_pivot in iter_quit_seed_records_with_atz(
             prepared_departures, seeds, initial_pivot):
+        if profile is not None:
+            profile["departure_seed"] = profile.get("departure_seed", 0.0) + perf_counter() - departure_clock
         events = pd.DataFrame(records)
-        after_departures = _apply_attrition_events_to_employee_state(
-            employee_base, events)
+        started = perf_counter()
         vacancies = _vacancies_for_seed(positions, events)
-        prepared_hires = prepare_hire_batch(
-            after_departures, pd.Timestamp(base_date),
-            pd.Timestamp(target_date), hire_params)
+        if profile is not None:
+            profile["position_pool"] = profile.get("position_pool", 0.0) + perf_counter() - started
+        started = perf_counter()
         _, hires, new_people = next(iter_hire_seed_records(
             prepared_hires, [seed],
             fixed_plan_vacancy_provider=lambda _: vacancies))
+        if profile is not None:
+            profile["hire_decisions"] = profile.get("hire_decisions", 0.0) + perf_counter() - started
         yield seed, events, atz_pivot, hires, new_people
+        departure_clock = perf_counter()
 
 
 def replay_fixed_plan_regular_employee_state(
     employee_base: pd.DataFrame,
     departure_events: pd.DataFrame,
     new_people: list[dict[str, Any]],
+    prepared_employee_template: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Rebuild the regular-only product person state, preserving month order."""
-    state = _apply_attrition_events_to_employee_state(
-        employee_base, departure_events)
+    state = (_replay_departures_prepared(prepared_employee_template, departure_events)
+             if prepared_employee_template is not None else
+             _apply_attrition_events_to_employee_state(employee_base, departure_events))
     state["_relocated_from_position_indices"] = pd.Series(
         [None] * len(state), index=state.index, dtype=object)
     if not state.empty and "PersNr" in state.columns:

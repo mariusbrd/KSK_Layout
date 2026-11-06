@@ -8,7 +8,10 @@ from dataloader.compact_simulation_engine import (
     _apply_attrition_events_to_employee_state,
     _build_fixed_plan_vacancy_context,
 )
-from zugaenge.fixed_plan_seed_stream import iter_fixed_plan_accession_seeds
+from zugaenge.fixed_plan_seed_stream import (
+    _prepare_employee_after_departures, _replay_departures_prepared,
+    iter_fixed_plan_accession_seeds,
+)
 from zugaenge.forecast import run_forecast_zugaenge
 from zugaenge.params import default_params
 
@@ -79,3 +82,32 @@ def test_seed_stream_rejects_duplicate_seed() -> None:
             positions, people, [(7, empty), (7, empty)],
             pd.Timestamp("2025-12-31"), pd.Timestamp("2025-12-31"),
             default_params()))
+
+
+def test_prepared_departure_replay_preserves_multiple_status_events() -> None:
+    people = pd.DataFrame([{
+        "PersNr": "100", "active": True, "mak": 0.8,
+        "Status kundenindividuell": "Aktives Beschäftigungsverhältnis",
+    }, {
+        "PersNr": "200", "active": True, "mak": 0.5,
+        "Status kundenindividuell": "Aktives Beschäftigungsverhältnis",
+    }])
+    events = pd.DataFrame([
+        {"persnr": "100", "event_date": pd.Timestamp("2026-03-01"),
+         "headcount_change": 0, "mak_change": -0.2, "reason_code": "RUHEND_START"},
+        {"persnr": "100", "event_date": pd.Timestamp("2026-06-01"),
+         "headcount_change": 0, "mak_change": 0.2, "reason_code": "RUHEND_RETURN"},
+        {"persnr": "200", "event_date": pd.Timestamp("2026-07-01"),
+         "headcount_change": 0, "mak_change": -0.5, "reason_code": "ATZ_AR_TO_FR"},
+        {"persnr": "100", "event_date": pd.Timestamp("2026-10-01"),
+         "headcount_change": -1, "mak_change": -0.8, "reason_code": "QUIT"},
+    ])
+    from dataloader.compact_simulation_engine import _apply_attrition_events_to_employee_state
+    expected = _apply_attrition_events_to_employee_state(people, events)
+    template = _prepare_employee_after_departures(people)
+    actual = _replay_departures_prepared(template, events)
+    pd.testing.assert_frame_equal(actual, expected, check_exact=True)
+    pd.testing.assert_frame_equal(
+        _replay_departures_prepared(template, pd.DataFrame()),
+        _apply_attrition_events_to_employee_state(people, pd.DataFrame()),
+        check_exact=True)

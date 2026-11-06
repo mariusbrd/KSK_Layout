@@ -56,16 +56,19 @@ def main() -> None:
                 range(args.seeds)))
         reference_seconds = perf_counter() - started
         started = perf_counter()
+        compact_profile: dict[str, float] = {}
         compact_hires = sum(
             len(hires)
             for _, _, _, hires, _ in iter_fixed_plan_regular_coupled_seeds(
                 snapshot, people, atz, start, target, dep, hire,
-                range(args.seeds)))
+                range(args.seeds), compact_profile))
         compact_seconds = perf_counter() - started
         assert compact_hires == reference_hires
         print(f"regular_coupled_seeds={args.seeds}; reference_s={reference_seconds:.3f}; "
               f"compact_s={compact_seconds:.3f}; hires={compact_hires}; "
               "scope=departures_and_raw_regular_hires")
+        for phase, seconds in compact_profile.items():
+            print(f"compact_{phase}={seconds:.3f}s ({seconds / compact_seconds:.1%})")
         return
     profile: dict[str, float] = {}
     started = perf_counter()
