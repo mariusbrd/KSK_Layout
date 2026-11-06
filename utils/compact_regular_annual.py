@@ -33,7 +33,7 @@ def build_regular_year_end_stocks(
     *,
     base_date: pd.Timestamp,
     target_date: pd.Timestamp,
-    prepare_snapshot: Callable[[pd.DataFrame], pd.DataFrame],
+    prepare_snapshot: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
     active_cluster_source=None,
     cluster_mapping_bundle=None,
     cluster_source_signature: str | None = None,
@@ -43,7 +43,9 @@ def build_regular_year_end_stocks(
 
     This correctness reference avoids new random draws. It still materializes a
     product snapshot per year, so it is not the final fast Monte Carlo kernel.
-    ``prepare_snapshot`` must be the same reporting preparation used by OE/JF.
+    The finalized snapshot already contains the stock fields. An optional
+    ``prepare_snapshot`` hook can reproduce a page-specific preparation for
+    parity checks; the default avoids that additional full-frame pass.
     """
     start, end = pd.Timestamp(base_date), pd.Timestamp(target_date)
     if end < start:
@@ -68,12 +70,18 @@ def build_regular_year_end_stocks(
             active_cluster_source=active_cluster_source,
             cluster_mapping_bundle=cluster_mapping_bundle,
             cluster_source_signature=cluster_source_signature,
-            prepared_employee_template=prepared_employee_template)
-        frame = prepare_snapshot(rebuilt.future_snapshot)
+            prepared_employee_template=prepared_employee_template,
+            stock_only=prepare_snapshot is None)
+        frame = (prepare_snapshot(rebuilt.future_snapshot)
+                 if prepare_snapshot is not None else rebuilt.future_snapshot)
+        stock_columns = ["PersNr", "Is_Vacant", "MAK_Reporting",
+                         "Organisationseinheit", "OE-Cluster",
+                         "Jobfamily", "JF-Cluster"]
+        stock = frame[stock_columns].copy()
+        for dimension in ("Jobfamily", "JF-Cluster"):
+            stock[dimension] = _dimension_values(stock, dimension)
         for key, dimension in dimensions.items():
-            work = frame if key in ("oe", "oe_cluster") else frame.assign(
-                **{dimension: _dimension_values(frame, dimension)})
-            for group, (heads, mak) in grouped_stock_metrics(work, dimension).items():
+            for group, (heads, mak) in grouped_stock_metrics(stock, dimension).items():
                 rows[key].append({"Stichtag": date, dimension: group,
                                   "Köpfe": heads, "MAK": mak})
     return {key: pd.DataFrame(rows[key],

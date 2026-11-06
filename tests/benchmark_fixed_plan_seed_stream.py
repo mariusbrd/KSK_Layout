@@ -37,6 +37,7 @@ def main() -> None:
     parser.add_argument("--compare-regular", action="store_true")
     parser.add_argument("--complete-regular", action="store_true")
     parser.add_argument("--annual-events", action="store_true")
+    parser.add_argument("--annual-stocks", action="store_true")
     args = parser.parse_args()
     if args.seeds < 1:
         parser.error("--seeds must be positive")
@@ -54,6 +55,37 @@ def main() -> None:
     hire["azubi"].update(active=True, new_cases_per_year=4, retention_rate=1.0,
                          jf_to_cluster_map=build_jf_to_cluster_map(snapshot))
     hire["trainee"].update(active=True, new_cases_per_year=4)
+    if args.annual_stocks:
+        from utils.compact_regular_annual import build_regular_year_end_stocks
+
+        hire["azubi"]["active"] = False
+        hire["trainee"]["active"] = False
+        source, bundle, signature = _resolve_simulation_cluster_context()
+        template = _prepare_employee_after_departures(people)
+        started = perf_counter()
+        stock_seconds = 0.0
+        count = annual_rows = 0
+        for _, departures, atz_pivot, hires, new_people in (
+                iter_fixed_plan_regular_coupled_seeds(
+                    snapshot, people, atz, start, target, dep, hire,
+                    range(args.seeds))):
+            stock_started = perf_counter()
+            stocks = build_regular_year_end_stocks(
+                snapshot, people, departures, atz_pivot, hires, new_people,
+                hire, base_date=start, target_date=target,
+                active_cluster_source=source,
+                cluster_mapping_bundle=bundle,
+                cluster_source_signature=signature,
+                prepared_employee_template=template)
+            stock_seconds += perf_counter() - stock_started
+            count += 1
+            annual_rows += sum(len(frame) for frame in stocks.values())
+        elapsed = perf_counter() - started
+        print(f"regular_annual_stock_seeds={count}; target={target.date()}; "
+              f"total_s={elapsed:.3f}; stock_s={stock_seconds:.3f}; "
+              f"per_seed_s={elapsed / count:.3f}; rows={annual_rows}; "
+              "scope=departures_hires_four_year_end_stock_views")
+        return
     if args.annual_events:
         from components.jobfamily_simulation_yearly import prepare_jobfamily_baseline
         from utils.compact_regular_annual import build_compact_regular_annual_events

@@ -183,7 +183,6 @@ def test_seed_specific_regular_coupling_matches_product(
         year_stocks = build_regular_year_end_stocks(
             positions, people, departures, atz_pivot, hires, new_people, hire,
             base_date=start, target_date=end,
-            prepare_snapshot=compact.prepare_compact_data,
             active_cluster_source=source, cluster_mapping_bundle=bundle,
             cluster_source_signature=signature,
             prepared_employee_template=employee_template)

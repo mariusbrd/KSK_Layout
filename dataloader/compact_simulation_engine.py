@@ -1058,7 +1058,14 @@ def _finalize_future_snapshot(
     *,
     active_cluster_source: Optional[ActiveClusterSource] = None,
     cluster_mapping_bundle: Optional[ClusterMappingBundle] = None,
+    stock_only: bool = False,
 ) -> pd.DataFrame:
+    """Finalize the product snapshot or its restricted OE/JF stock projection.
+
+    ``stock_only`` skips cost and demographic enrichment. Its return value is
+    valid only for occupied heads and MAK by position group, not for display,
+    audits, EUR or the published single-run snapshot.
+    """
     future_df = future_df.copy()
 
     if "PersNr" in future_df.columns:
@@ -1091,8 +1098,9 @@ def _finalize_future_snapshot(
         future_df["Ausbildung"] = normalize_education_series(future_df["Ausbildung"])
         future_df = _fill_missing_education_values(future_df)
     future_df = _zero_out_azubi_mak(future_df)
-    future_df = calculate_cost_vectorized(future_df, st.session_state.get("tvoed_lookup", {}))
-    future_df = enrich_snapshot_data(future_df, stichtag=target_date)
+    if not stock_only:
+        future_df = calculate_cost_vectorized(future_df, st.session_state.get("tvoed_lookup", {}))
+        future_df = enrich_snapshot_data(future_df, stichtag=target_date)
     future_df = apply_exclusions(
         future_df, get_setting("exclusions", {}), preserve_atz_fr_occupancy=True)
     future_df = apply_person_mak_allocation(future_df)

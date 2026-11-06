@@ -347,8 +347,9 @@ def rebuild_fixed_plan_regular_snapshot(
     cluster_source_signature=None,
     prepared_employee_template: pd.DataFrame | None = None,
     profile: dict[str, float] | None = None,
+    stock_only: bool = False,
 ) -> RegularRebuild:
-    """Rebuild the product's complete regular-only target snapshot per seed."""
+    """Rebuild a regular-only target snapshot; stock-only omits non-stock fields."""
     started = perf_counter()
     raw_state = replay_fixed_plan_regular_employee_state(
         employee_base, departure_events, new_people,
@@ -356,7 +357,7 @@ def rebuild_fixed_plan_regular_snapshot(
     if profile is not None:
         profile["person_replay"] = profile.get("person_replay", 0.0) + perf_counter() - started
     started = perf_counter()
-    accession_events = pd.DataFrame(hire_records)
+    accession_events = pd.DataFrame(hire_records) if not stock_only else pd.DataFrame()
     if not accession_events.empty:
         accession_events = enrich_zugaenge_events(
             accession_events, position_snapshot, hire_params,
@@ -368,9 +369,10 @@ def rebuild_fixed_plan_regular_snapshot(
     future_employee = raw_state.copy()
     future_employee["PersNr"] = _normalize_persnr_series(
         future_employee["PersNr"])
-    future_employee = _apply_salary_automation_to_employee_state(
-        future_employee, target_date=pd.Timestamp(target_date),
-        events_df=accession_events)
+    if not stock_only:
+        future_employee = _apply_salary_automation_to_employee_state(
+            future_employee, target_date=pd.Timestamp(target_date),
+            events_df=accession_events)
     if profile is not None:
         profile["salary_automation"] = profile.get("salary_automation", 0.0) + perf_counter() - started
     started = perf_counter()
@@ -385,7 +387,8 @@ def rebuild_fixed_plan_regular_snapshot(
     future_snapshot = _finalize_future_snapshot(
         future_snapshot, pd.Timestamp(target_date),
         active_cluster_source=active_cluster_source,
-        cluster_mapping_bundle=cluster_mapping_bundle)
+        cluster_mapping_bundle=cluster_mapping_bundle,
+        stock_only=stock_only)
     if profile is not None:
         profile["snapshot_finalize"] = profile.get("snapshot_finalize", 0.0) + perf_counter() - started
     return RegularRebuild(raw_state, accession_events,
