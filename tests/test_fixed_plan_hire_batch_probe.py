@@ -11,7 +11,7 @@ from zugaenge.params import default_params
 from zugaenge.fixed_plan_seed_stream import (
     _prepare_employee_after_departures,
     iter_fixed_plan_regular_coupled_seeds,
-    replay_fixed_plan_regular_employee_state,
+    rebuild_fixed_plan_regular_snapshot,
 )
 
 
@@ -66,7 +66,6 @@ def test_productive_regular_batch_events_match_fixed_plan_forecast() -> None:
 def test_seed_specific_regular_coupling_matches_product(
         strategy: str, annual_hires: int) -> None:
     from copy import deepcopy
-    from dataclasses import replace
     from pathlib import Path
     from benchmark_page_rerun_paths import (
         FROZEN_SETTINGS, FROZEN_STICHTAG, _freeze_context, _load_page_module,
@@ -74,14 +73,12 @@ def test_seed_specific_regular_coupling_matches_product(
     )
     from dataloader import loader
     from dataloader.compact_simulation_engine import (
-        _apply_salary_automation_to_employee_state, _fill_reserved_plan_positions,
-        _finalize_future_snapshot, _normalize_persnr_series,
-        _prepare_employee_forecast_base, _resolve_atz_status_map,
-        _resolve_simulation_cluster_context, _update_existing_rows,
+        CompactSimulationResult, _prepare_employee_forecast_base,
+        _resolve_simulation_cluster_context,
         simulate_compact_snapshot,
     )
     from abgaenge.params import default_params as departure_defaults
-    from zugaenge.enrichment import build_jf_to_cluster_map, enrich_zugaenge_events
+    from zugaenge.enrichment import build_jf_to_cluster_map
     from components.jobfamily_simulation_yearly import build_jobfamily_yearly_view
     from utils.org_simulation_events import build_simulation_event_summary
     from utils.status_quo_baseline import build_status_quo_snapshot
@@ -123,34 +120,33 @@ def test_seed_specific_regular_coupling_matches_product(
         pd.testing.assert_frame_equal(
             atz_pivot, reference.abgaenge_result["tables"]["atz_pivot"],
             check_exact=True)
-        enriched = enrich_zugaenge_events(
-            pd.DataFrame(hires), positions, hire,
+        rebuilt = rebuild_fixed_plan_regular_snapshot(
+            positions, people, departures, atz_pivot, hires, new_people,
+            end, hire, active_cluster_source=source,
             cluster_mapping_bundle=bundle,
-            active_cluster_source_signature=signature)
+            cluster_source_signature=signature,
+            prepared_employee_template=employee_template)
+        enriched = rebuilt.accession_events
         pd.testing.assert_frame_equal(
             enriched, reference.zugaenge_result["events"], check_exact=True)
-        replay = replay_fixed_plan_regular_employee_state(
-            people, departures, new_people, employee_template)
+        replay = rebuilt.raw_employee_state
         pd.testing.assert_frame_equal(
             replay, reference.zugaenge_result["final_state"], check_exact=True)
-        final_people = replay.copy()
-        final_people["PersNr"] = _normalize_persnr_series(final_people["PersNr"])
-        final_people = _apply_salary_automation_to_employee_state(
-            final_people, target_date=end, events_df=enriched)
+        final_people = rebuilt.future_employee
         pd.testing.assert_frame_equal(
             final_people, reference.future_employee_df, check_exact=True)
-        future = _update_existing_rows(
-            positions, final_people, end, _resolve_atz_status_map(atz_pivot, end))
-        future = _fill_reserved_plan_positions(future, positions, final_people)
-        future = _finalize_future_snapshot(
-            future, end, active_cluster_source=source, cluster_mapping_bundle=bundle)
+        future = rebuilt.future_snapshot
         pd.testing.assert_frame_equal(
             future, reference.future_snapshot_df, check_exact=True)
         pd.testing.assert_series_equal(future["Soll_FTE"], positions["Soll_FTE"])
-        compact_result = replace(
-            reference, future_snapshot_df=future, future_employee_df=final_people,
-            zugaenge_result={**reference.zugaenge_result,
-                             "events": enriched, "final_state": replay})
+        compact_result = CompactSimulationResult(
+            future_snapshot_df=future, future_employee_df=final_people,
+            abgaenge_result={"events_person_level": departures,
+                             "tables": {"atz_pivot": atz_pivot}},
+            zugaenge_result={"events": enriched, "final_state": replay},
+            metadata={"base_date": start, "target_date": end,
+                      "cluster_source_signature": signature},
+            audit_tables={})
         annual = []
         for result in (reference, compact_result):
             context = page._build_simulation_event_context(

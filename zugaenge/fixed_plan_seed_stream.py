@@ -16,8 +16,13 @@ import pandas as pd
 
 from dataloader.compact_simulation_engine import (
     _apply_attrition_events_to_employee_state,
+    _apply_salary_automation_to_employee_state,
     _build_fixed_plan_vacancy_context,
+    _fill_reserved_plan_positions,
+    _finalize_future_snapshot,
     _normalize_persnr_series,
+    _resolve_atz_status_map,
+    _update_existing_rows,
 )
 from abgaenge.quit_batch_probe import (
     iter_quit_seed_records_with_atz, prepare_atz_pivot_for_probe,
@@ -25,6 +30,7 @@ from abgaenge.quit_batch_probe import (
 )
 from .forecast import run_forecast_zugaenge
 from .hire_batch_probe import iter_hire_seed_records, prepare_hire_batch
+from .enrichment import enrich_zugaenge_events
 from utils.fixed_plan_vacancies import (
     FixedPlanVacancyPool, _person_id, available_position_vacancies,
 )
@@ -35,6 +41,14 @@ class PreparedPositions:
     initial: tuple[dict[str, Any], ...]
     occupied: tuple[tuple[str, dict[str, Any]], ...]
     original: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class RegularRebuild:
+    raw_employee_state: pd.DataFrame
+    accession_events: pd.DataFrame
+    future_employee: pd.DataFrame
+    future_snapshot: pd.DataFrame
 
 
 def prepare_positions(position_snapshot: pd.DataFrame,
@@ -316,3 +330,63 @@ def replay_fixed_plan_regular_employee_state(
                                     category=FutureWarning)
             state = pd.concat([state, monthly])
     return state
+
+
+def rebuild_fixed_plan_regular_snapshot(
+    position_snapshot: pd.DataFrame,
+    employee_base: pd.DataFrame,
+    departure_events: pd.DataFrame,
+    atz_pivot: pd.DataFrame,
+    hire_records: list[dict[str, Any]],
+    new_people: list[dict[str, Any]],
+    target_date: pd.Timestamp,
+    hire_params: dict[str, Any],
+    *,
+    active_cluster_source=None,
+    cluster_mapping_bundle=None,
+    cluster_source_signature=None,
+    prepared_employee_template: pd.DataFrame | None = None,
+    profile: dict[str, float] | None = None,
+) -> RegularRebuild:
+    """Rebuild the product's complete regular-only target snapshot per seed."""
+    started = perf_counter()
+    raw_state = replay_fixed_plan_regular_employee_state(
+        employee_base, departure_events, new_people,
+        prepared_employee_template)
+    if profile is not None:
+        profile["person_replay"] = profile.get("person_replay", 0.0) + perf_counter() - started
+    started = perf_counter()
+    accession_events = pd.DataFrame(hire_records)
+    if not accession_events.empty:
+        accession_events = enrich_zugaenge_events(
+            accession_events, position_snapshot, hire_params,
+            cluster_mapping_bundle=cluster_mapping_bundle,
+            active_cluster_source_signature=cluster_source_signature)
+    if profile is not None:
+        profile["event_enrichment"] = profile.get("event_enrichment", 0.0) + perf_counter() - started
+    started = perf_counter()
+    future_employee = raw_state.copy()
+    future_employee["PersNr"] = _normalize_persnr_series(
+        future_employee["PersNr"])
+    future_employee = _apply_salary_automation_to_employee_state(
+        future_employee, target_date=pd.Timestamp(target_date),
+        events_df=accession_events)
+    if profile is not None:
+        profile["salary_automation"] = profile.get("salary_automation", 0.0) + perf_counter() - started
+    started = perf_counter()
+    future_snapshot = _update_existing_rows(
+        position_snapshot, future_employee, pd.Timestamp(target_date),
+        _resolve_atz_status_map(atz_pivot, pd.Timestamp(target_date)))
+    future_snapshot = _fill_reserved_plan_positions(
+        future_snapshot, position_snapshot, future_employee)
+    if profile is not None:
+        profile["position_update"] = profile.get("position_update", 0.0) + perf_counter() - started
+    started = perf_counter()
+    future_snapshot = _finalize_future_snapshot(
+        future_snapshot, pd.Timestamp(target_date),
+        active_cluster_source=active_cluster_source,
+        cluster_mapping_bundle=cluster_mapping_bundle)
+    if profile is not None:
+        profile["snapshot_finalize"] = profile.get("snapshot_finalize", 0.0) + perf_counter() - started
+    return RegularRebuild(raw_state, accession_events,
+                          future_employee, future_snapshot)

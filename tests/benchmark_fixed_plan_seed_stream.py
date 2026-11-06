@@ -12,13 +12,20 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
-from benchmark_page_rerun_paths import FROZEN_STICHTAG, _freeze_context, _reset_state
+from benchmark_page_rerun_paths import (
+    FROZEN_SETTINGS, FROZEN_STICHTAG, _freeze_context, _load_page_module,
+    _reset_state,
+)
 from dataloader import loader
-from dataloader.compact_simulation_engine import _prepare_employee_forecast_base
+from dataloader.compact_simulation_engine import (
+    CompactSimulationResult, _prepare_employee_forecast_base,
+    _resolve_simulation_cluster_context,
+)
 from abgaenge.params import default_params as departure_defaults
 from zugaenge.enrichment import build_jf_to_cluster_map
 from zugaenge.fixed_plan_seed_stream import (
-    iter_fixed_plan_coupled_seeds, iter_fixed_plan_regular_coupled_seeds,
+    _prepare_employee_after_departures, iter_fixed_plan_coupled_seeds,
+    iter_fixed_plan_regular_coupled_seeds, rebuild_fixed_plan_regular_snapshot,
 )
 from zugaenge.params import default_params as hire_defaults
 
@@ -28,6 +35,7 @@ def main() -> None:
     parser.add_argument("--seeds", type=int, default=10)
     parser.add_argument("--target", default="2026-12-31")
     parser.add_argument("--compare-regular", action="store_true")
+    parser.add_argument("--complete-regular", action="store_true")
     args = parser.parse_args()
     if args.seeds < 1:
         parser.error("--seeds must be positive")
@@ -45,6 +53,69 @@ def main() -> None:
     hire["azubi"].update(active=True, new_cases_per_year=4, retention_rate=1.0,
                          jf_to_cluster_map=build_jf_to_cluster_map(snapshot))
     hire["trainee"].update(active=True, new_cases_per_year=4)
+    if args.complete_regular:
+        from copy import deepcopy
+        from components.jobfamily_simulation_yearly import build_jobfamily_yearly_view
+        from utils.org_simulation_events import build_simulation_event_summary
+        from utils.status_quo_baseline import build_status_quo_snapshot
+
+        hire["azubi"]["active"] = False
+        hire["trainee"]["active"] = False
+        compact = _load_page_module("*_Kompakt.py", "regular_complete_benchmark_compact")
+        page = _load_page_module("*_Kompakt_plus_Simulation.py", "regular_complete_benchmark_page")
+        baseline = compact.prepare_compact_data(
+            build_status_quo_snapshot(snapshot, start))
+        source, bundle, signature = _resolve_simulation_cluster_context()
+        template = _prepare_employee_after_departures(people)
+        phases: dict[str, float] = {}
+        total_start = perf_counter()
+        count = 0
+        for seed, departures, atz_pivot, hires, new_people in (
+                iter_fixed_plan_regular_coupled_seeds(
+                    snapshot, people, atz, start, target, dep, hire,
+                    range(args.seeds), phases)):
+            count += 1
+            rebuilt = rebuild_fixed_plan_regular_snapshot(
+                snapshot, people, departures, atz_pivot, hires, new_people,
+                target, hire, active_cluster_source=source,
+                cluster_mapping_bundle=bundle,
+                cluster_source_signature=signature,
+                prepared_employee_template=template, profile=phases)
+            started = perf_counter()
+            final = compact.prepare_compact_data(rebuilt.future_snapshot)
+            phases["compact_prepare"] = phases.get("compact_prepare", 0.0) + perf_counter() - started
+            result = CompactSimulationResult(
+                rebuilt.future_snapshot, rebuilt.future_employee,
+                {"events_person_level": departures,
+                 "tables": {"atz_pivot": atz_pivot}},
+                {"events": rebuilt.accession_events,
+                 "final_state": rebuilt.raw_employee_state},
+                {"base_date": start, "target_date": target,
+                 "cluster_source_signature": signature}, {})
+            run_signature = f"regular-complete-benchmark::{seed}"
+            started = perf_counter()
+            context = page._build_simulation_event_context(
+                result, bundle, run_signature,
+                baseline_snapshot=baseline, final_snapshot=final,
+                zugaenge_params=hire, abgaenge_params=dep, df_atz=atz,
+                run_settings={"exclusions": deepcopy(FROZEN_SETTINGS["exclusions"])},
+                source_snapshot=snapshot)
+            phases["event_context"] = phases.get("event_context", 0.0) + perf_counter() - started
+            started = perf_counter()
+            summary = build_simulation_event_summary(
+                context, expected_run_signature=run_signature)
+            phases["oe_yearly"] = phases.get("oe_yearly", 0.0) + perf_counter() - started
+            started = perf_counter()
+            for dimension in ("Jobfamily", "JF-Cluster"):
+                build_jobfamily_yearly_view(context, summary, dimension=dimension)
+            phases["jf_yearly"] = phases.get("jf_yearly", 0.0) + perf_counter() - started
+        elapsed = perf_counter() - total_start
+        print(f"complete_regular_seeds={count}; target={target.date()}; "
+              f"total_s={elapsed:.3f}; per_seed_s={elapsed / count:.3f}; "
+              "scope=departures_snapshot_oe_jf")
+        for phase, seconds in phases.items():
+            print(f"complete_{phase}={seconds:.3f}s ({seconds / elapsed:.1%})")
+        return
     if args.compare_regular:
         hire["azubi"]["active"] = False
         hire["trainee"]["active"] = False
