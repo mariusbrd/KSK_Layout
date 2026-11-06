@@ -12,6 +12,7 @@ from time import perf_counter
 import numpy as np
 import pandas as pd
 from config.settings import EDUCATION_GROUPS
+from utils.fixed_plan_vacancies import FixedPlanVacancyPool
 
 from .forecast import (
     AZUBI_TRAINING_EDUCATION, DEFAULT_NEW_HIRE_EDUCATION,
@@ -125,8 +126,11 @@ def prepare_hire_batch(df_snapshot: pd.DataFrame, start_date: pd.Timestamp,
 def iter_hire_seed_records(prepared: PreparedHireBatch, seeds: Iterable[int],
                            profile: dict[str, float] | None = None,
                            vacancy_provider: Callable[[int], list[dict[str, Any]]] | None = None,
+                           fixed_plan_vacancy_provider: Callable[[int], list[dict[str, Any]]] | None = None,
                            ) -> Iterator[tuple[int, list[dict[str, Any]], list[dict[str, Any]]]]:
     """Yield exact hire events and generated person rows for each seed."""
+    if fixed_plan_vacancy_provider is not None and vacancy_provider is not None:
+        raise ValueError("Use one vacancy provider per stream")
     seen: set[int] = set()
     for seed in seeds:
         if profile is not None:
@@ -141,6 +145,8 @@ def iter_hire_seed_records(prepared: PreparedHireBatch, seeds: Iterable[int],
                           else prepared.vacancies)
         vacancy_state = [row.copy() for row in sorted(vacancy_source,
                                                      key=lambda row: row["date"])]
+        fixed_pool = (FixedPlanVacancyPool(fixed_plan_vacancy_provider(seed))
+                      if fixed_plan_vacancy_provider is not None else None)
         state = prepared.decision_state if len(prepared.periods) > 1 else prepared.state
         configured_map = prepared.params.get("org_unit_to_cluster_map", {}) or {}
         unit_cluster_map = dict(prepared.initial_unit_cluster_map)
@@ -164,11 +170,27 @@ def iter_hire_seed_records(prepared: PreparedHireBatch, seeds: Iterable[int],
                 if profile is not None:
                     profile["distributions"] = profile.get("distributions", 0.0) + perf_counter() - phase_start
                     phase_start = perf_counter()
-                _simulate_hires(
-                    state, hire_params, period, rng, period_events,
-                    prepared.org_units, vacancy_state, count, prepared.start_date,
-                    genders, education,
-                )
+                if fixed_pool is None:
+                    _simulate_hires(
+                        state, hire_params, period, rng, period_events,
+                        prepared.org_units, vacancy_state, count, prepared.start_date,
+                        genders, education,
+                    )
+                else:
+                    # The product draws all dates before making any hire decision.
+                    # Sort by actual date; stable order resolves equal dates.
+                    horizon_days = (period.end - period.start).days
+                    dates = [period.start + pd.Timedelta(
+                        days=rng.integers(0, horizon_days + 1))
+                        for _ in range(count)]
+                    for date in sorted(dates):
+                        _simulate_hires(
+                            state, hire_params, period, rng, period_events,
+                            prepared.org_units, vacancy_state, 1,
+                            prepared.start_date, genders, education,
+                            vacancy_pool=fixed_pool, entry_dates=[date],
+                            unit_to_cluster_map=(configured_map or unit_cluster_map),
+                        )
                 for event in period_events:
                     gender = event["Geschlecht"]
                     gender_counts[gender] = gender_counts.get(gender, 0) + 1
