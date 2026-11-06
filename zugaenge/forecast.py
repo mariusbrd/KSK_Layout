@@ -1031,6 +1031,7 @@ def _simulate_hires(
     education_distribution: Optional[tuple[list[str], list[float]]] = None,
     vacancy_pool=None,
     entry_dates=None,
+    unit_to_cluster_map=None,
 ):
     hire_params = params.get("new_hires", {})
     if num_cases <= 0:
@@ -1038,7 +1039,8 @@ def _simulate_hires(
 
     strategy = hire_params.get("strategy", "Fill Vacancies")
     target_unit = hire_params.get("target_org_unit", None)
-    unit_to_cluster_map = params.get("org_unit_to_cluster_map", {}) or _get_unit_to_cluster_map(df_state)
+    unit_to_cluster_map = (unit_to_cluster_map if unit_to_cluster_map is not None else
+                           params.get("org_unit_to_cluster_map", {}) or _get_unit_to_cluster_map(df_state))
     
     # Matrix Distribution Logic
     dist_list = hire_params.get("distribution", [])
@@ -1356,6 +1358,7 @@ def run_forecast_zugaenge(
                 hire_education = _build_education_distribution(
                     df_state, excluded_values=[AZUBI_TRAINING_EDUCATION],
                     fallback_choices=[DEFAULT_NEW_HIRE_EDUCATION])
+            hire_unit_to_cluster = None
 
             for date, _, kind, case in scheduled:
                 if kind == "conversion":
@@ -1363,6 +1366,7 @@ def run_forecast_zugaenge(
                         df_state, params, period, rng, period_events, all_org_units,
                         debts, vacancy_pool, original_positions,
                         only_graduation_date=date)
+                    hire_unit_to_cluster = None
                 elif kind == "trainee":
                     _simulate_trainees(
                         df_state, params, period, rng, period_events, all_org_units,
@@ -1374,11 +1378,15 @@ def run_forecast_zugaenge(
                         1, start_date, debts, gender_distribution, unit_to_cluster,
                         vacancy_pool=vacancy_pool, entry_dates=[date], case_number=case + 1)
                 else:
+                    if hire_unit_to_cluster is None:
+                        hire_unit_to_cluster = (configured_org_unit_to_cluster_map or
+                                                _get_unit_to_cluster_map(df_state))
                     _simulate_hires(
                         df_state, params, period, rng, period_events, all_org_units,
                         current_vacancies, 1, start_date, gender_distribution,
                         hire_education, vacancy_pool=vacancy_pool,
-                        entry_dates=[date])
+                        entry_dates=[date],
+                        unit_to_cluster_map=hire_unit_to_cluster)
             n_az = n_tr = n_hi = 0
 
         # 1. Azubis (Takeover of EXISTING & NEW from previous months)
