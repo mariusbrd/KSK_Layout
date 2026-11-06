@@ -15,6 +15,10 @@ from dataloader.compact_simulation_engine import (
     _apply_attrition_events_to_employee_state,
     _build_fixed_plan_vacancy_context,
 )
+from abgaenge.quit_batch_probe import (
+    iter_quit_seed_records_with_atz, prepare_atz_pivot_for_probe,
+    prepare_quit_batch,
+)
 from .forecast import run_forecast_zugaenge
 
 
@@ -54,3 +58,31 @@ def iter_fixed_plan_accession_seeds(
             vacancy_pool=pool,
             original_positions=original_positions,
         )
+
+
+def iter_fixed_plan_coupled_seeds(
+    position_snapshot: pd.DataFrame,
+    employee_base: pd.DataFrame,
+    atz_data: pd.DataFrame,
+    base_date: pd.Timestamp,
+    target_date: pd.Timestamp,
+    departure_params: dict[str, Any],
+    hire_params: dict[str, Any],
+    seeds: Iterable[int],
+) -> Iterator[tuple[int, pd.DataFrame, pd.DataFrame, dict[str, Any]]]:
+    """Couple prepared departure seeds to exact fixed-plan accession runs.
+
+    Outputs are seed, person-level departure events, ATZ pivot and accession
+    result. This is the correctness baseline, not the fast stock renderer.
+    """
+    prepared = prepare_quit_batch(
+        employee_base, atz_data, pd.Timestamp(base_date),
+        pd.Timestamp(target_date), departure_params)
+    initial_pivot = prepare_atz_pivot_for_probe(prepared, atz_data, departure_params)
+    for seed, records, atz_pivot in iter_quit_seed_records_with_atz(
+            prepared, seeds, initial_pivot):
+        events = pd.DataFrame(records)
+        _, accessions = next(iter_fixed_plan_accession_seeds(
+            position_snapshot, employee_base, [(seed, events)], base_date,
+            target_date, hire_params))
+        yield seed, events, atz_pivot, accessions
