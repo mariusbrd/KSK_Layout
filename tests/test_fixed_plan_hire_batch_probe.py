@@ -79,9 +79,12 @@ def test_seed_specific_regular_coupling_matches_product(
     )
     from abgaenge.params import default_params as departure_defaults
     from zugaenge.enrichment import build_jf_to_cluster_map
-    from components.jobfamily_simulation_yearly import build_jobfamily_yearly_view
+    from components.jobfamily_simulation_yearly import (
+        build_jobfamily_yearly_view, prepare_jobfamily_baseline,
+    )
     from utils.org_simulation_events import build_simulation_event_summary
     from utils.status_quo_baseline import build_status_quo_snapshot
+    from utils.compact_regular_annual import build_compact_regular_annual_events
 
     _freeze_context()
     _reset_state()
@@ -94,6 +97,7 @@ def test_seed_specific_regular_coupling_matches_product(
     people = _prepare_employee_forecast_base(positions, atz, start)
     employee_template = _prepare_employee_after_departures(people)
     baseline = compact.prepare_compact_data(build_status_quo_snapshot(positions, start))
+    jf_baseline = prepare_jobfamily_baseline(baseline)
     source, bundle, signature = _resolve_simulation_cluster_context()
     dep, hire = departure_defaults(), default_params()
     dep["quit"].update(quit_rate_base=0.12, use_quit_matrix=False)
@@ -164,6 +168,21 @@ def test_seed_specific_regular_coupling_matches_product(
                 for dimension in ("Jobfamily", "JF-Cluster")
             }))
         (expected_summary, expected_jf), (actual_summary, actual_jf) = annual
+        compact_years = build_compact_regular_annual_events(
+            baseline, positions, departures, hires, hire, dep,
+            base_date=start, target_date=end,
+            cluster_mapping_bundle=bundle,
+            cluster_source_signature=signature,
+            run_signature=f"regular-event-only::{strategy}::{seed}",
+            prepared_jobfamily_baseline=jf_baseline)
+        for key, expected in (
+            ("oe_annual", expected_summary["annual_oe"]),
+            ("oe_cluster_annual", expected_summary["annual_cluster"]),
+            ("jf_annual", expected_jf["Jobfamily"]["annual"]),
+            ("jf_cluster_annual", expected_jf["JF-Cluster"]["annual"]),
+        ):
+            pd.testing.assert_frame_equal(compact_years[key], expected,
+                                          check_exact=True)
         for key in ("events", "annual_oe", "annual_cluster"):
             pd.testing.assert_frame_equal(
                 actual_summary[key], expected_summary[key], check_exact=True)

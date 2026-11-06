@@ -36,6 +36,7 @@ def main() -> None:
     parser.add_argument("--target", default="2026-12-31")
     parser.add_argument("--compare-regular", action="store_true")
     parser.add_argument("--complete-regular", action="store_true")
+    parser.add_argument("--annual-events", action="store_true")
     args = parser.parse_args()
     if args.seeds < 1:
         parser.error("--seeds must be positive")
@@ -53,6 +54,37 @@ def main() -> None:
     hire["azubi"].update(active=True, new_cases_per_year=4, retention_rate=1.0,
                          jf_to_cluster_map=build_jf_to_cluster_map(snapshot))
     hire["trainee"].update(active=True, new_cases_per_year=4)
+    if args.annual_events:
+        from components.jobfamily_simulation_yearly import prepare_jobfamily_baseline
+        from utils.compact_regular_annual import build_compact_regular_annual_events
+        from utils.status_quo_baseline import build_status_quo_snapshot
+
+        hire["azubi"]["active"] = False
+        hire["trainee"]["active"] = False
+        compact = _load_page_module("*_Kompakt.py", "regular_event_benchmark_compact")
+        baseline = compact.prepare_compact_data(
+            build_status_quo_snapshot(snapshot, start))
+        jf_baseline = prepare_jobfamily_baseline(baseline)
+        _, bundle, signature = _resolve_simulation_cluster_context()
+        started = perf_counter()
+        count = annual_rows = 0
+        for seed, departures, _, hires, _ in iter_fixed_plan_regular_coupled_seeds(
+                snapshot, people, atz, start, target, dep, hire,
+                range(args.seeds)):
+            annual = build_compact_regular_annual_events(
+                baseline, snapshot, departures, hires, hire, dep,
+                base_date=start, target_date=target,
+                cluster_mapping_bundle=bundle,
+                cluster_source_signature=signature,
+                run_signature=f"regular-event-benchmark::{seed}",
+                prepared_jobfamily_baseline=jf_baseline)
+            count += 1
+            annual_rows += sum(len(frame) for frame in annual.values())
+        elapsed = perf_counter() - started
+        print(f"regular_annual_event_seeds={count}; total_s={elapsed:.3f}; "
+              f"per_seed_s={elapsed / count:.3f}; annual_rows={annual_rows}; "
+              "scope=departures_hires_four_annual_event_views")
+        return
     if args.complete_regular:
         from copy import deepcopy
         from components.jobfamily_simulation_yearly import build_jobfamily_yearly_view
