@@ -10,6 +10,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, Iterable, Iterator
+import warnings
 
 import pandas as pd
 
@@ -22,6 +23,7 @@ from abgaenge.quit_batch_probe import (
     prepare_quit_batch,
 )
 from .forecast import run_forecast_zugaenge
+from .hire_batch_probe import iter_hire_seed_records, prepare_hire_batch
 from utils.fixed_plan_vacancies import (
     FixedPlanVacancyPool, _person_id, available_position_vacancies,
 )
@@ -57,8 +59,8 @@ def prepare_positions(position_snapshot: pd.DataFrame,
     return PreparedPositions(tuple(initial), occupied, original)
 
 
-def _pool_for_seed(prepared: PreparedPositions,
-                   departures: pd.DataFrame) -> FixedPlanVacancyPool:
+def _vacancies_for_seed(prepared: PreparedPositions,
+                        departures: pd.DataFrame) -> list[dict[str, Any]]:
     exits: dict[str, pd.Timestamp] = {}
     if departures is not None and not departures.empty:
         for event in departures.to_dict("records"):
@@ -75,7 +77,12 @@ def _pool_for_seed(prepared: PreparedPositions,
             released["date"] = exits[person]
             vacancies.append(released)
     vacancies.sort(key=lambda row: (row["date"], row["position_index"]))
-    return FixedPlanVacancyPool(vacancies)
+    return vacancies
+
+
+def _pool_for_seed(prepared: PreparedPositions,
+                   departures: pd.DataFrame) -> FixedPlanVacancyPool:
+    return FixedPlanVacancyPool(_vacancies_for_seed(prepared, departures))
 
 
 def iter_fixed_plan_accession_seeds(
@@ -168,3 +175,75 @@ def iter_fixed_plan_coupled_seeds(
             target_date, hire_params, profile, prepared_positions))
         yield seed, events, atz_pivot, accessions
         departure_clock = perf_counter()
+
+
+def iter_fixed_plan_regular_coupled_seeds(
+    position_snapshot: pd.DataFrame,
+    employee_base: pd.DataFrame,
+    atz_data: pd.DataFrame,
+    base_date: pd.Timestamp,
+    target_date: pd.Timestamp,
+    departure_params: dict[str, Any],
+    hire_params: dict[str, Any],
+    seeds: Iterable[int],
+) -> Iterator[tuple[int, pd.DataFrame, pd.DataFrame,
+                    list[dict[str, Any]], list[dict[str, Any]]]]:
+    """Stream exact regular hire decisions against seed-specific plan vacancies.
+
+    Apprentices and trainees must be inactive. This stage deliberately yields
+    raw records; the final snapshot and OE/JF bridge are validated separately.
+    """
+    if any(hire_params.get(name, {}).get("active", True)
+           for name in ("azubi", "trainee")):
+        raise ValueError("Regular compact stream requires inactive azubi and trainee")
+    prepared_departures = prepare_quit_batch(
+        employee_base, atz_data, pd.Timestamp(base_date),
+        pd.Timestamp(target_date), departure_params)
+    initial_pivot = prepare_atz_pivot_for_probe(
+        prepared_departures, atz_data, departure_params)
+    positions = prepare_positions(position_snapshot, base_date)
+    for seed, records, atz_pivot in iter_quit_seed_records_with_atz(
+            prepared_departures, seeds, initial_pivot):
+        events = pd.DataFrame(records)
+        after_departures = _apply_attrition_events_to_employee_state(
+            employee_base, events)
+        vacancies = _vacancies_for_seed(positions, events)
+        prepared_hires = prepare_hire_batch(
+            after_departures, pd.Timestamp(base_date),
+            pd.Timestamp(target_date), hire_params)
+        _, hires, new_people = next(iter_hire_seed_records(
+            prepared_hires, [seed],
+            fixed_plan_vacancy_provider=lambda _: vacancies))
+        yield seed, events, atz_pivot, hires, new_people
+
+
+def replay_fixed_plan_regular_employee_state(
+    employee_base: pd.DataFrame,
+    departure_events: pd.DataFrame,
+    new_people: list[dict[str, Any]],
+) -> pd.DataFrame:
+    """Rebuild the regular-only product person state, preserving month order."""
+    state = _apply_attrition_events_to_employee_state(
+        employee_base, departure_events)
+    state["_relocated_from_position_indices"] = pd.Series(
+        [None] * len(state), index=state.index, dtype=object)
+    if not state.empty and "PersNr" in state.columns:
+        state.set_index("PersNr", drop=False, inplace=True)
+        state.sort_index(inplace=True)
+    if not new_people:
+        return state
+    additions = pd.DataFrame(new_people)
+    additions["_entry_month"] = pd.to_datetime(
+        additions["Eintritt"]).dt.to_period("M")
+    for _, month_rows in additions.groupby("_entry_month", sort=True):
+        monthly = month_rows.drop(columns=["_entry_month"])
+        monthly.set_index("PersNr", drop=False, inplace=True)
+        for column in monthly.columns:
+            if column not in state.columns:
+                state[column] = pd.NA
+        monthly = monthly.reindex(columns=state.columns)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*empty or all-NA.*",
+                                    category=FutureWarning)
+            state = pd.concat([state, monthly])
+    return state

@@ -17,7 +17,9 @@ from dataloader import loader
 from dataloader.compact_simulation_engine import _prepare_employee_forecast_base
 from abgaenge.params import default_params as departure_defaults
 from zugaenge.enrichment import build_jf_to_cluster_map
-from zugaenge.fixed_plan_seed_stream import iter_fixed_plan_coupled_seeds
+from zugaenge.fixed_plan_seed_stream import (
+    iter_fixed_plan_coupled_seeds, iter_fixed_plan_regular_coupled_seeds,
+)
 from zugaenge.params import default_params as hire_defaults
 
 
@@ -25,6 +27,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--seeds", type=int, default=10)
     parser.add_argument("--target", default="2026-12-31")
+    parser.add_argument("--compare-regular", action="store_true")
     args = parser.parse_args()
     if args.seeds < 1:
         parser.error("--seeds must be positive")
@@ -42,6 +45,28 @@ def main() -> None:
     hire["azubi"].update(active=True, new_cases_per_year=4, retention_rate=1.0,
                          jf_to_cluster_map=build_jf_to_cluster_map(snapshot))
     hire["trainee"].update(active=True, new_cases_per_year=4)
+    if args.compare_regular:
+        hire["azubi"]["active"] = False
+        hire["trainee"]["active"] = False
+        started = perf_counter()
+        reference_hires = sum(
+            len(accessions["events"])
+            for _, _, _, accessions in iter_fixed_plan_coupled_seeds(
+                snapshot, people, atz, start, target, dep, hire,
+                range(args.seeds)))
+        reference_seconds = perf_counter() - started
+        started = perf_counter()
+        compact_hires = sum(
+            len(hires)
+            for _, _, _, hires, _ in iter_fixed_plan_regular_coupled_seeds(
+                snapshot, people, atz, start, target, dep, hire,
+                range(args.seeds)))
+        compact_seconds = perf_counter() - started
+        assert compact_hires == reference_hires
+        print(f"regular_coupled_seeds={args.seeds}; reference_s={reference_seconds:.3f}; "
+              f"compact_s={compact_seconds:.3f}; hires={compact_hires}; "
+              "scope=departures_and_raw_regular_hires")
+        return
     profile: dict[str, float] = {}
     started = perf_counter()
     count = departure_count = accession_count = 0

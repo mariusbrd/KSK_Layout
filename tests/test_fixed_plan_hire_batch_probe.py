@@ -8,6 +8,10 @@ from utils.fixed_plan_vacancies import FixedPlanVacancyPool, available_position_
 from zugaenge.forecast import run_forecast_zugaenge
 from zugaenge.hire_batch_probe import prepare_hire_batch, iter_hire_seed_records
 from zugaenge.params import default_params
+from zugaenge.fixed_plan_seed_stream import (
+    iter_fixed_plan_regular_coupled_seeds,
+    replay_fixed_plan_regular_employee_state,
+)
 
 
 def test_productive_regular_batch_events_match_fixed_plan_forecast() -> None:
@@ -53,6 +57,127 @@ def test_productive_regular_batch_events_match_fixed_plan_forecast() -> None:
         pd.testing.assert_frame_equal(
             pd.DataFrame(compact_events), expected["events"], check_exact=True)
         assert len(compact_events) > 0
+
+
+@pytest.mark.parametrize("strategy,annual_hires", [
+    ("Fill Vacancies", 20), ("Random", 30), ("OrgUnit", 12),
+])
+def test_seed_specific_regular_coupling_matches_product(
+        strategy: str, annual_hires: int) -> None:
+    from copy import deepcopy
+    from dataclasses import replace
+    from pathlib import Path
+    from benchmark_page_rerun_paths import (
+        FROZEN_SETTINGS, FROZEN_STICHTAG, _freeze_context, _load_page_module,
+        _reset_state,
+    )
+    from dataloader import loader
+    from dataloader.compact_simulation_engine import (
+        _apply_salary_automation_to_employee_state, _fill_reserved_plan_positions,
+        _finalize_future_snapshot, _normalize_persnr_series,
+        _prepare_employee_forecast_base, _resolve_atz_status_map,
+        _resolve_simulation_cluster_context, _update_existing_rows,
+        simulate_compact_snapshot,
+    )
+    from abgaenge.params import default_params as departure_defaults
+    from zugaenge.enrichment import build_jf_to_cluster_map, enrich_zugaenge_events
+    from components.jobfamily_simulation_yearly import build_jobfamily_yearly_view
+    from utils.org_simulation_events import build_simulation_event_summary
+    from utils.status_quo_baseline import build_status_quo_snapshot
+
+    _freeze_context()
+    _reset_state()
+    root = Path(__file__).resolve().parents[1]
+    positions, _, _, _ = loader.load_and_prepare_data()
+    compact = _load_page_module("*_Kompakt.py", "regular_batch_parity_compact")
+    page = _load_page_module("*_Kompakt_plus_Simulation.py", "regular_batch_parity_page")
+    atz = loader.load_atz_data_cached(str(root), None, None, None)
+    start, end = pd.Timestamp(FROZEN_STICHTAG), pd.Timestamp("2026-12-31")
+    people = _prepare_employee_forecast_base(positions, atz, start)
+    baseline = compact.prepare_compact_data(build_status_quo_snapshot(positions, start))
+    source, bundle, signature = _resolve_simulation_cluster_context()
+    dep, hire = departure_defaults(), default_params()
+    dep["quit"].update(quit_rate_base=0.12, use_quit_matrix=False)
+    hire["azubi"]["active"] = False
+    hire["trainee"]["active"] = False
+    hire["new_hires"].update(active=True, count_per_year=annual_hires,
+                              strategy=strategy,
+                              target_org_unit=(str(people["Organisationseinheit"].dropna().iloc[0])
+                                               if strategy == "OrgUnit" else None))
+    hire["azubi"]["jf_to_cluster_map"] = build_jf_to_cluster_map(positions)
+    for seed, departures, atz_pivot, hires, new_people in (
+            iter_fixed_plan_regular_coupled_seeds(
+                positions, people, atz, start, end, dep, hire, [7, 42])):
+        reference = simulate_compact_snapshot(
+            positions, atz, end, base_date=start,
+            abgaenge_params={**dep, "random_seed": seed},
+            zugaenge_params={**hire, "random_seed": seed},
+            active_cluster_source=source, cluster_mapping_bundle=bundle,
+            cluster_source_signature=signature,
+            include_audits=False)
+        pd.testing.assert_frame_equal(
+            departures, reference.abgaenge_result["events_person_level"],
+            check_exact=True)
+        pd.testing.assert_frame_equal(
+            atz_pivot, reference.abgaenge_result["tables"]["atz_pivot"],
+            check_exact=True)
+        enriched = enrich_zugaenge_events(
+            pd.DataFrame(hires), positions, hire,
+            cluster_mapping_bundle=bundle,
+            active_cluster_source_signature=signature)
+        pd.testing.assert_frame_equal(
+            enriched, reference.zugaenge_result["events"], check_exact=True)
+        replay = replay_fixed_plan_regular_employee_state(
+            people, departures, new_people)
+        pd.testing.assert_frame_equal(
+            replay, reference.zugaenge_result["final_state"], check_exact=True)
+        final_people = replay.copy()
+        final_people["PersNr"] = _normalize_persnr_series(final_people["PersNr"])
+        final_people = _apply_salary_automation_to_employee_state(
+            final_people, target_date=end, events_df=enriched)
+        pd.testing.assert_frame_equal(
+            final_people, reference.future_employee_df, check_exact=True)
+        future = _update_existing_rows(
+            positions, final_people, end, _resolve_atz_status_map(atz_pivot, end))
+        future = _fill_reserved_plan_positions(future, positions, final_people)
+        future = _finalize_future_snapshot(
+            future, end, active_cluster_source=source, cluster_mapping_bundle=bundle)
+        pd.testing.assert_frame_equal(
+            future, reference.future_snapshot_df, check_exact=True)
+        pd.testing.assert_series_equal(future["Soll_FTE"], positions["Soll_FTE"])
+        compact_result = replace(
+            reference, future_snapshot_df=future, future_employee_df=final_people,
+            zugaenge_result={**reference.zugaenge_result,
+                             "events": enriched, "final_state": replay})
+        annual = []
+        for result in (reference, compact_result):
+            context = page._build_simulation_event_context(
+                result, bundle, f"regular-batch::{strategy}::{seed}",
+                baseline_snapshot=baseline,
+                final_snapshot=compact.prepare_compact_data(result.future_snapshot_df),
+                zugaenge_params=hire, abgaenge_params=dep, df_atz=atz,
+                run_settings={"exclusions": deepcopy(FROZEN_SETTINGS["exclusions"])},
+                source_snapshot=positions)
+            summary = build_simulation_event_summary(
+                context, expected_run_signature=f"regular-batch::{strategy}::{seed}")
+            annual.append((summary, {
+                dimension: build_jobfamily_yearly_view(
+                    context, summary, dimension=dimension)
+                for dimension in ("Jobfamily", "JF-Cluster")
+            }))
+        (expected_summary, expected_jf), (actual_summary, actual_jf) = annual
+        for key in ("events", "annual_oe", "annual_cluster"):
+            pd.testing.assert_frame_equal(
+                actual_summary[key], expected_summary[key], check_exact=True)
+        for key in ("annual", "checks"):
+            pd.testing.assert_frame_equal(
+                actual_summary["stock_reconciliation"][key],
+                expected_summary["stock_reconciliation"][key], check_exact=True)
+        for dimension in ("Jobfamily", "JF-Cluster"):
+            for key in ("annual", "stock", "stock_checks"):
+                pd.testing.assert_frame_equal(
+                    actual_jf[dimension][key], expected_jf[dimension][key],
+                    check_exact=True)
 
 
 @pytest.mark.parametrize("annual_hires", [12, 48])
