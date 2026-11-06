@@ -6,6 +6,7 @@ the product snapshot path until a compact stock calculation is proven exact.
 from __future__ import annotations
 
 from typing import Any
+from collections.abc import Callable
 
 import pandas as pd
 
@@ -16,6 +17,68 @@ from utils.org_simulation_events import (
     aggregate_simulation_events, normalize_simulation_events,
 )
 from zugaenge.enrichment import enrich_zugaenge_events
+from zugaenge.fixed_plan_seed_stream import rebuild_fixed_plan_regular_snapshot
+from utils.org_simulation_reconciliation import grouped_stock_metrics
+from components.jobfamily_simulation_yearly import _dimension_values
+
+
+def build_regular_year_end_stocks(
+    position_snapshot: pd.DataFrame,
+    employee_base: pd.DataFrame,
+    departure_events: pd.DataFrame,
+    atz_pivot: pd.DataFrame,
+    hire_records: list[dict[str, Any]],
+    new_people: list[dict[str, Any]],
+    hire_params: dict[str, Any],
+    *,
+    base_date: pd.Timestamp,
+    target_date: pd.Timestamp,
+    prepare_snapshot: Callable[[pd.DataFrame], pd.DataFrame],
+    active_cluster_source=None,
+    cluster_mapping_bundle=None,
+    cluster_source_signature: str | None = None,
+    prepared_employee_template: pd.DataFrame | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Replay saved regular decisions at year ends and return exact stock groups.
+
+    This correctness reference avoids new random draws. It still materializes a
+    product snapshot per year, so it is not the final fast Monte Carlo kernel.
+    ``prepare_snapshot`` must be the same reporting preparation used by OE/JF.
+    """
+    start, end = pd.Timestamp(base_date), pd.Timestamp(target_date)
+    if end < start:
+        raise ValueError("target_date must not precede base_date")
+    dimensions = {"oe": "Organisationseinheit", "oe_cluster": "OE-Cluster",
+                  "jf": "Jobfamily", "jf_cluster": "JF-Cluster"}
+    rows = {key: [] for key in dimensions}
+    dates = [min(pd.Timestamp(year, 12, 31), end)
+             for year in range(start.year, end.year + 1)]
+    dates = [date for date in dates if date > start]
+    for date in dates:
+        departures = (departure_events.loc[
+            pd.to_datetime(departure_events["event_date"]).dt.normalize() <= date].copy()
+            if not departure_events.empty else departure_events.copy())
+        hires = [record for record in hire_records
+                 if pd.Timestamp(record["date"]).normalize() <= date]
+        people = [person for person in new_people
+                  if pd.Timestamp(person["Eintritt"]).normalize() <= date]
+        rebuilt = rebuild_fixed_plan_regular_snapshot(
+            position_snapshot, employee_base, departures, atz_pivot,
+            hires, people, date, hire_params,
+            active_cluster_source=active_cluster_source,
+            cluster_mapping_bundle=cluster_mapping_bundle,
+            cluster_source_signature=cluster_source_signature,
+            prepared_employee_template=prepared_employee_template)
+        frame = prepare_snapshot(rebuilt.future_snapshot)
+        for key, dimension in dimensions.items():
+            work = frame if key in ("oe", "oe_cluster") else frame.assign(
+                **{dimension: _dimension_values(frame, dimension)})
+            for group, (heads, mak) in grouped_stock_metrics(work, dimension).items():
+                rows[key].append({"Stichtag": date, dimension: group,
+                                  "Köpfe": heads, "MAK": mak})
+    return {key: pd.DataFrame(rows[key],
+                              columns=["Stichtag", dimension, "Köpfe", "MAK"])
+            for key, dimension in dimensions.items()}
 
 
 def build_compact_regular_annual_events(

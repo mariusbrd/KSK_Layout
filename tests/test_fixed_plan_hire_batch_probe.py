@@ -63,8 +63,9 @@ def test_productive_regular_batch_events_match_fixed_plan_forecast() -> None:
 @pytest.mark.parametrize("strategy,annual_hires", [
     ("Fill Vacancies", 20), ("Random", 30), ("OrgUnit", 12),
 ])
+@pytest.mark.parametrize("target_label", ["2026-12-31", "2027-12-31"])
 def test_seed_specific_regular_coupling_matches_product(
-        strategy: str, annual_hires: int) -> None:
+        strategy: str, annual_hires: int, target_label: str) -> None:
     from copy import deepcopy
     from pathlib import Path
     from benchmark_page_rerun_paths import (
@@ -84,7 +85,11 @@ def test_seed_specific_regular_coupling_matches_product(
     )
     from utils.org_simulation_events import build_simulation_event_summary
     from utils.status_quo_baseline import build_status_quo_snapshot
-    from utils.compact_regular_annual import build_compact_regular_annual_events
+    from utils.compact_regular_annual import (
+        build_compact_regular_annual_events, build_regular_year_end_stocks,
+    )
+    from utils.org_simulation_reconciliation import grouped_stock_metrics
+    from components.jobfamily_simulation_yearly import _dimension_values
 
     _freeze_context()
     _reset_state()
@@ -93,7 +98,7 @@ def test_seed_specific_regular_coupling_matches_product(
     compact = _load_page_module("*_Kompakt.py", "regular_batch_parity_compact")
     page = _load_page_module("*_Kompakt_plus_Simulation.py", "regular_batch_parity_page")
     atz = loader.load_atz_data_cached(str(root), None, None, None)
-    start, end = pd.Timestamp(FROZEN_STICHTAG), pd.Timestamp("2026-12-31")
+    start, end = pd.Timestamp(FROZEN_STICHTAG), pd.Timestamp(target_label)
     people = _prepare_employee_forecast_base(positions, atz, start)
     employee_template = _prepare_employee_after_departures(people)
     baseline = compact.prepare_compact_data(build_status_quo_snapshot(positions, start))
@@ -175,6 +180,33 @@ def test_seed_specific_regular_coupling_matches_product(
             cluster_source_signature=signature,
             run_signature=f"regular-event-only::{strategy}::{seed}",
             prepared_jobfamily_baseline=jf_baseline)
+        year_stocks = build_regular_year_end_stocks(
+            positions, people, departures, atz_pivot, hires, new_people, hire,
+            base_date=start, target_date=end,
+            prepare_snapshot=compact.prepare_compact_data,
+            active_cluster_source=source, cluster_mapping_bundle=bundle,
+            cluster_source_signature=signature,
+            prepared_employee_template=employee_template)
+        for year_end in sorted(year_stocks["oe"]["Stichtag"].unique()):
+            year_end = pd.Timestamp(year_end)
+            year_reference = (reference if year_end == end else simulate_compact_snapshot(
+                positions, atz, year_end, base_date=start,
+                abgaenge_params={**dep, "random_seed": seed},
+                zugaenge_params={**hire, "random_seed": seed},
+                active_cluster_source=source, cluster_mapping_bundle=bundle,
+                cluster_source_signature=signature, include_audits=False))
+            year_frame = compact.prepare_compact_data(year_reference.future_snapshot_df)
+            for key, dimension in (("oe", "Organisationseinheit"),
+                                   ("oe_cluster", "OE-Cluster"),
+                                   ("jf", "Jobfamily"),
+                                   ("jf_cluster", "JF-Cluster")):
+                work = year_frame if key in ("oe", "oe_cluster") else year_frame.assign(
+                    **{dimension: _dimension_values(year_frame, dimension)})
+                expected = grouped_stock_metrics(work, dimension)
+                observed = year_stocks[key].loc[year_stocks[key]["Stichtag"].eq(year_end)]
+                actual = {row[dimension]: (row["Köpfe"], row["MAK"])
+                          for _, row in observed.iterrows()}
+                assert actual == expected
         for key, expected in (
             ("oe_annual", expected_summary["annual_oe"]),
             ("oe_cluster_annual", expected_summary["annual_cluster"]),
