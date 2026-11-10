@@ -89,7 +89,7 @@ Datei: `pages/11_💼_Jobfamily_Simulation.py`; Komponente `components/jobfamily
 
 | Phase | Status | Technische Prüfung | Sichtprüfung/Entscheidung |
 | --- | --- | --- | --- |
-| 0 Gemeinsamer Vertrag | in Arbeit: Laufvertrag, Datenfingerprint und Prozessrahmen implementiert | 20 kombinierte Orchestrierungs-/Laufvertrags-/Fingerprinttests sowie frühere Produktreferenztests bestanden (10.11.2026) | Produkt-Worker, Session und appnahe vollständige Parität noch offen |
+| 0 Gemeinsamer Vertrag | in Arbeit: Laufvertrag, Datenfingerprint, Prozessrahmen und erster Produkt-Worker implementiert | 21 kombinierte Tests; N=2-Produktpakete inklusive aller vier Jahresdimensionen seriell/Spawn identisch und gegen vorhandenen Benchmark SHA-256-identisch (10.11.2026) | N=10/Mehrjahresparität, Zieltermine außerhalb Jahresende, Session und App-Anbindung offen |
 | 1 Simulationsparameter | offen | – | – |
 | 2 CompactPlus | offen | – | – |
 | 3 Simulation abnehmen | offen | – | – |
@@ -105,6 +105,12 @@ Dieses Dokument wird nach jeder Phase mit Befunden, Änderungen, Testergebnissen
 - Jeder Worker liefert ein signiertes Ergebnis oder einen Fehler. Die zentrale Finalisierung sortiert anhand des Laufindex und veröffentlicht Mittelwerte und Quantile nur bei vollständigem, gültigem Paketbestand. Fortschritt und Laufzeiten werden erfasst. Während der aktiven Rechnung verhindert ein Windows-Schlafschutz den Idle-Standby und wird anschließend freigegeben.
 - Synthetische Spawn-Tests prüfen `N=2` und `N=10` gegen einzeln berechnete Seed-Werte sowie abweichende Worker-Eingaben, fehlgeschlagene Seeds, nachträglich geänderte Eltern-Eingaben, ungültige Kennzahlpakete und die Sperre für `N=1`. Diese Tests belegen den Orchestrierungsvertrag, noch keine Produktparität.
 - **Offen:** Einen produktiven Worker-Adapter mit vollständig eingefrorenen Zusatzinputs bauen. Der Simulationskern liest derzeit Gehaltsautomatik und Ausschlüsse über `get_setting` sowie die Kostenlookup aus `st.session_state`; diese Quellen dürfen im Spawn-Worker nicht implizit fehlen oder abweichen. Danach N=2/N=10 mit tatsächlichen Produktpaketen und allen OE-/JF-Jahresscheiben gegen serielle Einzelpfade prüfen und erst dann die App-Session anbinden. Phase 0 und sämtliche Seiten bleiben bis dahin offen.
+
+### Phase 0, Schritt 4 – produktiver Seed-Adapter und erster Paritätsnachweis (10.11.2026)
+
+- `utils/monte_carlo_product_worker.py` kapselt den unveränderten Produktlauf und den bereits im Benchmark zertifizierten Jahresbestandsaufbau in einem aufrufbaren Worker. `freeze_product_worker_input` erfasst Snapshot, ATZ, Datumswerte, Clusterquelle/-bundle, Gehaltsautomatik, Ausschlüsse und die für die Finalisierung relevanten Session-Werte vor dem Spawn. Der Fingerprint umfasst Personal-/ATZ-Frame, Gehaltsautomatik, Session-Werte und Clusterbundle; Datum, Fachparameter, Ausschlüsse und Clusterquellensignatur gehören zusätzlich in die `RunPlan`-Signatur.
+- Für den ersten Test wurden zwei Seeds mit aktiven Abgängen, Neueinstellungen, Azubis und Trainees bis 31.12.2026 berechnet. Die seriellen Produktpakete und das Spawn-Ensemble stimmen einschließlich aller Jahresereignisse und OE-, OE-Cluster-, Jobfamily- und JF-Cluster-Jahresbestände exakt überein. Die SHA-256-Prüfsummen beider vollständigen Pakete stimmen außerdem mit einem unabhängig erzeugten Lauf von `tests/benchmark_special_annual_many_seeds.py` überein: Seed 0 `c7dad96d…`, Seed 1 `6e603bab…`. Der kombinierte Vertrags-/Adapter-/Fingerprintlauf bestand mit **21/21 Tests**. Eine zunächst beobachtete Test-Reihenfolgeabhängigkeit durch globale Benchmark-Einstellungen wurde im Test-Fixture behoben.
+- **Grenzen vor App-Anbindung:** Der Adapter verlangt derzeit einen Zieltermin am 31.12.; andere Zieltermine benötigen einen getrennt geprüften Jahresvertrag. N=10 und mehrere Jahre sind für diesen neuen Adapter noch gegen den unabhängigen Benchmark zu prüfen. Die tatsächliche Streamlit-Session, gespeicherte Einstellungen und die alte N=1-Ansicht wurden noch nicht angeschlossen oder visuell abgenommen. Die Plan-/Payload-Konsistenz für Ausschlüsse wird beim späteren App-Einstieg zentral gebaut und geprüft. Keine Seite gilt als fertig.
 
 ### Phase 0, Schritt 1 – Laufvertrag (10.11.2026)
 
