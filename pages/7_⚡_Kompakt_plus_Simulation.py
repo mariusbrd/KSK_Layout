@@ -689,6 +689,7 @@ def main():
                 st.session_state["compact_sim_status_quo_df"] = status_quo_prepared_df
                 st.session_state["compact_sim_status_quo_signature"] = computed_signature
 
+        saved_ensemble = None
         if run_count > 1 and mode == "simulation" and not simulation_stale:
             if ensemble_request is None:
                 ensemble_request = prepare_ensemble_request(
@@ -715,12 +716,21 @@ def main():
                 st.success(
                     f"Monte Carlo abgeschlossen: {run_count} Läufe · "
                     "80-%-Ergebnisbereich (P10–P90).")
+                st.markdown("**Ungefilterter Zielbestand aller Läufe**")
                 st.caption(
                     f"Köpfe: Ø {target_stats['heads']['mean']:.1f} "
                     f"({target_stats['heads']['lower']:.1f}–{target_stats['heads']['upper']:.1f}) · "
                     f"MAK: Ø {target_stats['mak']['mean']:.2f} "
                     f"({target_stats['mak']['lower']:.2f}–{target_stats['mak']['upper']:.2f}). "
-                    "Personen- und Planstellenansichten zeigen den konkreten Referenzlauf.")
+                    "Der Bereich beschreibt die Streuung der Läufe, kein Konfidenzintervall des Mittelwerts.")
+                first_seed = saved_ensemble["seed_pairs"][0]
+                last_seed = saved_ensemble["seed_pairs"][-1]
+                st.caption(
+                    f"Referenzlauf: Abgangsseed {first_seed[0]}, Zugangsseed {first_seed[1]}. "
+                    f"Letzter Lauf: {last_seed[0]}/{last_seed[1]}. "
+                    "Personen- und Planstellenansichten zeigen ausschließlich den Referenzlauf.")
+                if saved_ensemble.get("seconds") is not None:
+                    st.caption(f"Mehrlauf-Rechenzeit: {saved_ensemble['seconds']:.1f} Sekunden.")
             elif ensemble_result is not None and ensemble_result["status"] != "complete":
                 st.error("Monte Carlo konnte nicht vollständig berechnet werden; es werden keine Mittelwerte angezeigt.")
             else:
@@ -779,6 +789,8 @@ def main():
                 st.info("Vorläufiger Ergebnisstand. Für OE- und Jobgruppen-Analyse bitte auf der Seite 'Simulation abnehmen' freigeben.")
                 st.page_link("pages/12_✅_Simulation_abnehmen.py", label="Simulation abnehmen")
 
+        if run_count > 1 and mode == "simulation":
+            st.caption("Die folgenden Zu- und Abgangszahlen stammen aus dem konkreten Referenzlauf; sie sind keine Mehrlauf-Mittelwerte.")
         _render_summary_cards(
             base_date=base_date,
             display_target=display_target,
@@ -803,6 +815,9 @@ def main():
         elif simulation_stale:
             export_download_label = "Zuletzt berechnete Simulation als Excel exportieren"
             export_file_name = f"KompaktPlus_Simulation_{display_target:%Y%m%d}.xlsx"
+        elif run_count > 1 and mode == "simulation":
+            export_download_label = "Referenzlauf als Excel exportieren"
+            export_file_name = f"KompaktPlus_Referenzlauf_{display_target:%Y%m%d}.xlsx"
         else:
             export_download_label = "Simulationsergebnisse als Excel exportieren"
             export_file_name = f"KompaktPlus_Simulation_{display_target:%Y%m%d}.xlsx"
@@ -831,6 +846,11 @@ def main():
         filtered_df = filter_dataframe_by_view_filters(prepared_df, get_active_view_filters())
         filter_summary = get_filter_summary()
         render_active_filter_banner(filter_summary)
+
+        if run_count > 1 and mode == "simulation" and saved_ensemble is not None:
+            st.caption(
+                "Die Monte-Carlo-Kennzahlen oben beziehen sich auf den ungefilterten Gesamtbestand. "
+                "Die Personenfilter und die folgenden Auswertungen beziehen sich auf den konkreten Referenzlauf.")
 
         if filtered_df.empty:
             st.warning(t("sim.warning.no_data"))

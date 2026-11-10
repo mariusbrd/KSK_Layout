@@ -75,6 +75,8 @@ def test_compact_plus_single_run_uses_saved_target_without_monte_carlo():
     assert not app.exception
     assert str(app.session_state["compact_sim_target_date_cached"].date()) == "2026-12-31"
     assert "monte_carlo_ensemble_result" not in app.session_state
+    assert not any("Monte-Carlo-Kennzahlen" in item.value for item in app.caption)
+    assert any(button.label == "Simulationsergebnisse als Excel exportieren" for button in app.button)
 
 
 def test_compact_plus_two_runs_create_complete_bound_ensemble():
@@ -90,6 +92,10 @@ def test_compact_plus_two_runs_create_complete_bound_ensemble():
     assert saved["status"] == "complete"
     assert saved["count"] == 2
     assert saved["statistics"]["annual_stock_values"]
+    assert any("Ungefilterter Zielbestand aller Läufe" in item.value for item in app.markdown)
+    assert any("Personenfilter und die folgenden Auswertungen" in item.value for item in app.caption)
+    assert any("Zu- und Abgangszahlen stammen aus dem konkreten Referenzlauf" in item.value for item in app.caption)
+    assert any(button.label == "Referenzlauf als Excel exportieren" for button in app.button)
     app.session_state["test_start_simulation"] = False
     before_instance = app.session_state["simulation_validation_instance"]
     app.run()

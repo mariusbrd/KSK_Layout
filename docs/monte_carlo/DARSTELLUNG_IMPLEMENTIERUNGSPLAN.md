@@ -91,7 +91,7 @@ Datei: `pages/11_💼_Jobfamily_Simulation.py`; Komponente `components/jobfamily
 | --- | --- | --- | --- |
 | 0 Gemeinsamer Vertrag | in Arbeit: Laufvertrag und App-Einstieg technisch angebunden | N=2/N=10/Teiljahr produktparitätisch; echter N=2-AppTest vollständig; 22/22 Referenz-/Vertragsprüfungen und 44/44 CompactPlus-/Exportprüfungen (10.11.2026) | N=100-App-Leistungs-/Speicherprüfung und Gesamtabnahme offen |
 | 1 Simulationsparameter | technisch umgesetzt, Sichtabnahme offen | Zieltermin/Laufzahl gespeichert und nach Rerun stabil; 3/3 AppTests einschließlich N=1 und N=2; Seed-Paar unverändert (10.11.2026) | Browser-Sichtprüfung und fachliche Freigabe offen |
-| 2 CompactPlus | Mehrlaufstart und erste Ergebniskarte implementiert, Seite insgesamt offen | N=2 im echten Seitenablauf vollständig; Rerun und Laufzahlwechsel ohne Neuberechnung bzw. alte Mittelwerte (10.11.2026) | Kennzahlen-/Filter-/Exportansichten und Abnahme offen |
+| 2 CompactPlus | Mehrlaufstart und erste Ergebniskarte implementiert; Referenzlauf und ungefilterte Mehrlaufwerte sichtbar getrennt, Seite insgesamt offen | 3/3 Streamlit-AppTests mit N=1/N=2, Rerun und Laufzahlwechsel bestanden (10.11.2026) | Ensemble-Kennzahlenexport, Browser-Sichtprüfung und Abnahme offen |
 | 3 Simulation abnehmen | offen | – | – |
 | 4 Organisationseinheiten | offen | – | – |
 | 5 Jobgruppen | offen | – | – |
