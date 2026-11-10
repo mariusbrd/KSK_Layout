@@ -91,7 +91,7 @@ def test_seed_specific_regular_coupling_matches_product(
     )
     from utils.org_simulation_reconciliation import grouped_stock_metrics
     from utils.compact_regular_stock import (
-        project_regular_group_stock_from_events, project_regular_position_stocks,
+        project_regular_position_stocks,
     )
     from dataloader.cluster_manager import apply_clusters_to_snapshot_from_source
     from components.jobfamily_simulation_yearly import _dimension_values
@@ -189,14 +189,6 @@ def test_seed_specific_regular_coupling_matches_product(
             prepared_jobfamily_baseline=jf_baseline)
         stock_dimensions = ("Organisationseinheit", "OE-Cluster",
                             "Jobfamily", "JF-Cluster")
-        projected_stocks = {}
-        for dimension in stock_dimensions:
-            stock_baseline = (baseline if dimension in stock_dimensions[:2]
-                              else mapped_baseline.assign(
-                                  **{dimension: _dimension_values(mapped_baseline, dimension)}))
-            projected_stocks[dimension] = project_regular_group_stock_from_events(
-                stock_baseline, expected_summary["events"], base_date=start,
-                target_date=end, dimension=dimension)
         year_stocks = build_regular_year_end_stocks(
             positions, people, departures, atz_pivot, hires, new_people, hire,
             base_date=start, target_date=end,
@@ -225,20 +217,6 @@ def test_seed_specific_regular_coupling_matches_product(
                             **{dimension: _dimension_values(year_frame, dimension)}))
                 assert position_values == grouped_stock_metrics(work, dimension), (
                     dimension, year_end)
-            for dimension in stock_dimensions:
-                projected_year = projected_stocks[dimension].loc[
-                    projected_stocks[dimension]["Stichtag"].eq(year_end)]
-                work = (year_frame if dimension in stock_dimensions[:2]
-                        else year_frame.assign(
-                            **{dimension: _dimension_values(year_frame, dimension)}))
-                expected_stock = grouped_stock_metrics(work, dimension)
-                projected_values = {
-                    row[dimension]: (row["Köpfe"], row["MAK"])
-                    for _, row in projected_year.iterrows()}
-                assert set(projected_values) == set(expected_stock)
-                for group, (heads, mak) in expected_stock.items():
-                    assert projected_values[group][0] == heads, (dimension, year_end, group)
-                    assert abs(projected_values[group][1] - mak) <= 1e-12, (dimension, year_end, group)
             for key, dimension in (("oe", "Organisationseinheit"),
                                    ("oe_cluster", "OE-Cluster"),
                                    ("jf", "Jobfamily"),

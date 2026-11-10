@@ -7,8 +7,51 @@ from test_org_simulation_stock import _app
 from test_org_simulation_reconciliation import _bridge_context
 from components.org_simulation_yearly import build_yearly_view
 from utils.org_simulation_events import build_simulation_event_summary
-from utils.org_simulation_export import build_org_simulation_export_bytes, export_fingerprint
+from utils.org_simulation_export import append_yearly_export, build_org_simulation_export_bytes, export_fingerprint
 from utils.org_yearly_view_export import build_stock_slide_table, prepare_yearly_view_export
+
+
+def test_yearly_event_export_lists_all_starting_positions_without_splitting_effects():
+    events = pd.DataFrame({
+        "persnr": ["1", "000001", "2", "3"],
+        "event_date": pd.to_datetime(["2027-12-31"] * 4),
+        "Jahr": [2027] * 4,
+        "Organisationseinheit": ["OE1"] * 4,
+        "OE-Cluster": ["A"] * 4,
+        "Ereignisquelle": ["departure_events", "departure_events", "departure_events", "accession_events"],
+        "Ereignisart": ["QUIT", "ATZ_AR_TO_FR", "RETIREMENT", "New_Hire"],
+        "Kategorie": ["Personalabgang", "Kapazitätsänderung", "Personalabgang", "Externer Zugang"],
+        "Köpfe-Veränderung": [-1, 0, -1, 1],
+        "MAK-Veränderung": [-0.8, -0.2, -1.0, 1.0],
+        "Abgänge": [1, 0, 1, 0],
+        "Zugänge": [0, 0, 0, 1],
+    })
+    baseline = pd.DataFrame({
+        "PersNr": ["000001", "1", "1", "000002", "000003", "000001"],
+        "Planstelle": ["Beratung", "Sachbearbeitung", "Beratung", "Leitung", "Altbestand", "Vakant"],
+        "Is_Vacant": [False, False, False, False, False, True],
+    })
+    summary = {
+        "run_signature": "run-1", "metadata": {"base_date": "2026-12-31", "target_date": "2027-12-31"}, "events": events,
+        "annual_oe": pd.DataFrame(), "annual_cluster": pd.DataFrame(),
+        "total_oe": pd.DataFrame(), "total_cluster": pd.DataFrame(),
+        "stock_basis": {"baseline_snapshot": baseline},
+    }
+    tables, context = {}, {"Laufkennung": "run-1"}
+    append_yearly_export(tables, context, summary, None)
+    basis = tables["Jahres_Ereignisbasis"]
+    assert basis["Planstellenbezeichnung"].tolist() == [
+        "Beratung, Sachbearbeitung", "Beratung, Sachbearbeitung", "Leitung", ""
+    ]
+    assert len(basis) == len(events)
+    for column in ("Köpfe-Veränderung", "MAK-Veränderung"):
+        assert basis[column].sum() == pytest.approx(events[column].sum())
+    book = pd.ExcelFile(BytesIO(build_org_simulation_export_bytes(tables, context)))
+    inventory = pd.read_excel(book, "Exportinventar").set_index("Bereich")
+    sheet = inventory.loc["Jahres_Ereignisbasis", "Tabellenblatt"]
+    actual = pd.read_excel(book, sheet)
+    assert actual["Planstellenbezeichnung"].iloc[:3].tolist() == basis["Planstellenbezeichnung"].iloc[:3].tolist()
+    assert pd.isna(actual["Planstellenbezeichnung"].iloc[3])
 
 
 @pytest.mark.parametrize("level,metric", [("Organisationseinheit", "Köpfe"), ("OE-Cluster", "MAK")])

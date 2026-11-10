@@ -4,7 +4,7 @@ Forecast engine for Zugaenge (New Hires).
 
 import pandas as pd
 import numpy as np
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass
 
 from config.settings import EDUCATION_GROUPS
@@ -1246,6 +1246,8 @@ def run_forecast_zugaenge(
     vacancies: List[Dict[str, Any]] = None,
     vacancy_pool=None,
     original_positions=None,
+    year_end_observer: Optional[Callable[[pd.Timestamp, pd.DataFrame, pd.DataFrame], None]] = None,
+    month_end_observer: Optional[Callable[[pd.Timestamp, pd.DataFrame, pd.DataFrame], None]] = None,
 ) -> Dict[str, Any]:
     
     if params is None:
@@ -1469,6 +1471,18 @@ def run_forecast_zugaenge(
         for e in period_events:
             e.pop("_new_row", None)
             all_events.append(e)
+        if year_end_observer is not None and period.label.endswith("-12"):
+            year_end_observer(
+                pd.Timestamp(period.end).normalize(),
+                df_state.copy(deep=True),
+                pd.DataFrame(all_events),
+            )
+        if month_end_observer is not None:
+            month_end_observer(
+                pd.Timestamp(period.end).normalize(),
+                df_state.copy(deep=True),
+                pd.DataFrame(all_events),
+            )
 
     # Result
     events_df = pd.DataFrame(all_events)

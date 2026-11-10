@@ -10,6 +10,7 @@ import re
 
 import pandas as pd
 
+from abgaenge.schemas import normalize_persnr
 from utils.compact_simulation_export import build_parameter_sheet
 from utils.lineage import write_lineage_sheet
 from utils.lineage.excel import _sanitize_excel_value
@@ -102,6 +103,33 @@ def build_org_simulation_export_bytes(tables, context):
     return output.getvalue()
 
 
+def _departure_planstelle_labels(events: pd.DataFrame, baseline: pd.DataFrame | None) -> pd.Series:
+    """Describe all occupied starting positions without multiplying person events."""
+    labels = pd.Series("", index=events.index, dtype=object)
+    if (baseline is None or baseline.empty or events.empty
+            or not {"PersNr", "Planstelle"}.issubset(baseline.columns)):
+        return labels
+
+    positions = baseline.copy()
+    if "Is_Vacant" in positions:
+        positions = positions.loc[~positions["Is_Vacant"].fillna(True).astype(bool)].copy()
+    positions["_person"] = normalize_persnr(positions["PersNr"])
+    positions["_label"] = positions["Planstelle"].fillna("").astype(str).str.strip()
+    positions = positions.loc[positions["_person"].notna() & positions["_label"].ne("")]
+    if positions.empty:
+        return labels
+
+    by_person = positions.groupby("_person", sort=False)["_label"].agg(
+        lambda values: ", ".join(dict.fromkeys(values))
+    )
+    event_ids = events.get("persnr", events.get("PersNr"))
+    if event_ids is None:
+        return labels
+    departures = events["Ereignisquelle"].eq("departure_events")
+    labels.loc[departures] = normalize_persnr(event_ids.loc[departures]).map(by_person).fillna("")
+    return labels
+
+
 def append_yearly_export(tables, context, summary, yearly_view):
     """Copy saved annual outputs; current selection and full run stay distinct."""
     if not summary or not context.get("Laufkennung") or summary.get("run_signature") != context["Laufkennung"]:
@@ -116,7 +144,13 @@ def append_yearly_export(tables, context, summary, yearly_view):
     columns = ["event_date", "Jahr", "Organisationseinheit", "OE-Cluster", "Ereignisquelle", "Ereignisart",
                "Kategorie", "Köpfe-Veränderung", "MAK-Veränderung", "Abgänge", "Zugänge"]
     columns = [c for c in ("persnr", "PersNr", "OE-Zuordnungsherkunft") if c in events] + columns
-    tables["Jahres_Ereignisbasis"] = events[columns].copy(deep=True)
+    event_basis = events[columns].copy(deep=True)
+    baseline = summary.get("stock_basis", {}).get("baseline_snapshot")
+    position_labels = _departure_planstelle_labels(events, baseline)
+    id_columns = [c for c in ("persnr", "PersNr") if c in event_basis]
+    insert_at = event_basis.columns.get_loc(id_columns[-1]) + 1 if id_columns else 0
+    event_basis.insert(insert_at, "Planstellenbezeichnung", position_labels)
+    tables["Jahres_Ereignisbasis"] = event_basis
     tables["OE_Cluster_Laufzuordnung"] = events[["Organisationseinheit", "OE-Cluster"]].drop_duplicates().reset_index(drop=True)
     if "cluster_mapping" in summary:
         tables["OE_Cluster_Quelldefinition"] = pd.DataFrame(

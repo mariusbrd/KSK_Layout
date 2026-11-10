@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 from pathlib import Path
 import sys
-from time import perf_counter
+from time import perf_counter, process_time
 
 import pandas as pd
 
@@ -30,6 +31,34 @@ from zugaenge.fixed_plan_seed_stream import (
 from zugaenge.params import default_params as hire_defaults
 
 
+def _peak_working_set_mib() -> float | None:
+    """OS-reported process peak working set; unavailable platforms return None."""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    size_t = ctypes.c_size_t
+    class ProcessMemoryCounters(ctypes.Structure):
+        _fields_ = [
+            ("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD),
+            ("PeakWorkingSetSize", size_t), ("WorkingSetSize", size_t),
+            ("QuotaPeakPagedPoolUsage", size_t), ("QuotaPagedPoolUsage", size_t),
+            ("QuotaPeakNonPagedPoolUsage", size_t), ("QuotaNonPagedPoolUsage", size_t),
+            ("PagefileUsage", size_t), ("PeakPagefileUsage", size_t),
+        ]
+    counters = ProcessMemoryCounters()
+    counters.cb = ctypes.sizeof(counters)
+    ctypes.windll.kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    ctypes.windll.psapi.GetProcessMemoryInfo.argtypes = (
+        wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD)
+    ctypes.windll.psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+    handle = ctypes.windll.kernel32.GetCurrentProcess()
+    ok = ctypes.windll.psapi.GetProcessMemoryInfo(
+        handle, ctypes.byref(counters), counters.cb)
+    return counters.PeakWorkingSetSize / 2**20 if ok else None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--seeds", type=int, default=10)
@@ -39,9 +68,18 @@ def main() -> None:
     parser.add_argument("--annual-events", action="store_true")
     parser.add_argument("--annual-stocks", action="store_true")
     parser.add_argument("--annual-position-stocks", action="store_true")
+    parser.add_argument("--compare-groupings", action="store_true")
+    parser.add_argument("--repeat", type=int, default=1)
+    parser.add_argument("--warmup", type=int, default=0)
+    parser.add_argument("--grouping-method", choices=("product", "indexed"),
+                        default="indexed")
     args = parser.parse_args()
     if args.seeds < 1:
         parser.error("--seeds must be positive")
+    if args.repeat < 1 or args.warmup < 0:
+        parser.error("--repeat must be positive and --warmup nonnegative")
+    cluster_file = ROOT / "config" / "cluster_mapping.xlsx"
+    cluster_hash_before = hashlib.sha256(cluster_file.read_bytes()).hexdigest()
     _freeze_context()
     _reset_state()
     snapshot, _, _, _ = loader.load_and_prepare_data()
@@ -56,7 +94,7 @@ def main() -> None:
     hire["azubi"].update(active=True, new_cases_per_year=4, retention_rate=1.0,
                          jf_to_cluster_map=build_jf_to_cluster_map(snapshot))
     hire["trainee"].update(active=True, new_cases_per_year=4)
-    if args.annual_position_stocks:
+    if args.annual_position_stocks or args.compare_groupings:
         from dataloader.cluster_manager import apply_clusters_to_snapshot_from_source
         from utils.compact_regular_stock import project_regular_position_stocks
         from utils.status_quo_baseline import build_status_quo_snapshot
@@ -69,24 +107,79 @@ def main() -> None:
         source, bundle, _ = _resolve_simulation_cluster_context()
         mapped = apply_clusters_to_snapshot_from_source(
             baseline, source, mapping_bundle=bundle)
-        started = perf_counter()
-        stock_seconds = 0.0
-        count = annual_rows = 0
-        for _, departures, _, _, new_people in iter_fixed_plan_regular_coupled_seeds(
-                snapshot, people, atz, start, target, dep, hire,
-                range(args.seeds)):
-            stock_started = perf_counter()
-            stocks = project_regular_position_stocks(
-                baseline, mapped, departures, new_people,
-                base_date=start, target_date=target)
-            annual_rows += sum(len(stock) for stock in stocks.values())
-            stock_seconds += perf_counter() - stock_started
-            count += 1
-        elapsed = perf_counter() - started
-        print(f"regular_position_stock_seeds={count}; target={target.date()}; "
-              f"total_s={elapsed:.3f}; stock_s={stock_seconds:.3f}; "
-              f"per_seed_s={elapsed / count:.3f}; rows={annual_rows}; "
-              "scope=departures_hires_four_position_year_end_stock_views")
+        if args.compare_groupings:
+            times = {"product": 0.0, "indexed": 0.0}
+            count = 0
+            for seed, departures, _, _, new_people in iter_fixed_plan_regular_coupled_seeds(
+                    snapshot, people, atz, start, target, dep, hire,
+                    range(args.seeds)):
+                results = {}
+                order = ("product", "indexed") if seed % 2 == 0 else ("indexed", "product")
+                for method in order:
+                    run_started = perf_counter()
+                    results[method] = project_regular_position_stocks(
+                        baseline, mapped, departures, new_people,
+                        base_date=start, target_date=target,
+                        grouping_method=method)
+                    times[method] += perf_counter() - run_started
+                for dimension in results["product"]:
+                    pd.testing.assert_frame_equal(
+                        results["product"][dimension], results["indexed"][dimension],
+                        check_exact=True)
+                count += 1
+            cluster_hash_after = hashlib.sha256(cluster_file.read_bytes()).hexdigest()
+            if cluster_hash_before != cluster_hash_after:
+                raise RuntimeError("Cluster mapping changed during benchmark")
+            print(f"paired_grouping_seeds={count}; target={target.date()}; "
+                  f"product_s={times['product']:.3f}; indexed_s={times['indexed']:.3f}; "
+                  f"ratio={times['indexed'] / times['product']:.3f}; "
+                  f"cluster_mapping_sha256={cluster_hash_after[:16]}; "
+                  "scope=four_exact_year_end_stock_views_per_seed")
+            return
+        measured: list[float] = []
+        for repetition in range(args.warmup + args.repeat):
+            started = perf_counter()
+            cpu_started = process_time()
+            stock_seconds = 0.0
+            stock_profile: dict[str, float] = {}
+            count = annual_rows = 0
+            for _, departures, _, _, new_people in iter_fixed_plan_regular_coupled_seeds(
+                    snapshot, people, atz, start, target, dep, hire,
+                    range(args.seeds)):
+                stock_started = perf_counter()
+                stocks = project_regular_position_stocks(
+                    baseline, mapped, departures, new_people,
+                    base_date=start, target_date=target, profile=stock_profile,
+                    grouping_method=args.grouping_method)
+                annual_rows += sum(len(stock) for stock in stocks.values())
+                stock_seconds += perf_counter() - stock_started
+                count += 1
+            elapsed = perf_counter() - started
+            cpu_elapsed = process_time() - cpu_started
+            if repetition < args.warmup:
+                print(f"regular_position_stock_warmup_s={elapsed:.3f}; cpu_s={cpu_elapsed:.3f}")
+                continue
+            measured.append(elapsed)
+            print(f"regular_position_stock_seeds={count}; repetition={len(measured)}; "
+                  f"target={target.date()}; total_s={elapsed:.3f}; "
+                  f"cpu_s={cpu_elapsed:.3f}; "
+                  f"grouping_method={args.grouping_method}; "
+                  f"stock_s={stock_seconds:.3f}; per_seed_s={elapsed / count:.3f}; "
+                  f"rows={annual_rows}; "
+                  "scope=departures_hires_four_position_year_end_stock_views")
+            for phase, seconds in stock_profile.items():
+                print(f"{phase}={seconds:.3f}s ({seconds / stock_seconds:.1%} of stock)")
+        if measured:
+            import statistics
+            print(f"regular_position_stock_median_s={statistics.median(measured):.3f}; "
+                  f"min_s={min(measured):.3f}; max_s={max(measured):.3f}")
+        peak = _peak_working_set_mib()
+        if peak is not None:
+            print(f"process_peak_working_set_mib={peak:.1f}")
+        cluster_hash_after = hashlib.sha256(cluster_file.read_bytes()).hexdigest()
+        print(f"cluster_mapping_sha256={cluster_hash_after[:16]}")
+        if cluster_hash_before != cluster_hash_after:
+            raise RuntimeError("Cluster mapping changed during benchmark")
         return
     if args.annual_stocks:
         from utils.compact_regular_annual import build_regular_year_end_stocks

@@ -1250,6 +1250,8 @@ def simulate_compact_snapshot(
     cluster_source_signature: Optional[str] = None,
     progress_callback: Any = None,
     include_audits: bool = True,
+    year_end_observer: Any = None,
+    month_end_observer: Any = None,
 ) -> CompactSimulationResult:
     """
     Projects the current snapshot to a future target date for use on the
@@ -1355,6 +1357,8 @@ def simulate_compact_snapshot(
         vacancies=vacancies,
         vacancy_pool=vacancy_pool,
         original_positions=original_positions,
+        year_end_observer=year_end_observer,
+        month_end_observer=month_end_observer,
     )
     zug_events = zugaenge_result.get("events", pd.DataFrame())
     if not zug_events.empty:

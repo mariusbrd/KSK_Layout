@@ -3,11 +3,29 @@ from __future__ import annotations
 
 import pandas as pd
 import pytest
+import numpy as np
 
 from utils.compact_regular_stock import (
+    _grouped_stock_metrics_indexed,
     project_regular_group_stock_from_events, project_regular_position_stocks,
     reconcile_regular_year_stock,
 )
+from utils.org_simulation_reconciliation import grouped_stock_metrics
+
+
+def test_indexed_grouping_matches_product_on_mixed_position_rows() -> None:
+    rng = np.random.default_rng(391)
+    for _ in range(20):
+        frame = pd.DataFrame({
+            "PersNr": rng.choice(["1", "2", "3", "4", None], size=80),
+            "Is_Vacant": rng.choice([False, True], size=80, p=[0.8, 0.2]),
+            "MAK_Reporting": rng.choice(
+                [0.0, 0.1, 0.2, 0.3, 0.6154, 1e-12, np.nan], size=80),
+            "Organisationseinheit": rng.choice(["A", "B", "C", None], size=80),
+        })
+        assert _grouped_stock_metrics_indexed(
+            frame, "Organisationseinheit") == grouped_stock_metrics(
+                frame, "Organisationseinheit")
 
 
 def test_reconciliation_identifies_undated_atz_capacity_change() -> None:
@@ -71,5 +89,30 @@ def test_position_projection_rejects_training_accessions() -> None:
     with pytest.raises(ValueError, match="only NH_ hires"):
         project_regular_position_stocks(
             baseline, baseline, pd.DataFrame(), [{"PersNr": "AZ_1"}],
+            base_date=pd.Timestamp("2025-12-31"),
+            target_date=pd.Timestamp("2026-12-31"))
+
+
+def test_dormant_return_on_multiple_positions_requires_reference() -> None:
+    baseline = pd.DataFrame([
+        {"PersNr": "1", "Is_Vacant": False, "MAK_Reporting": 0.0,
+         "Personen_MAK_Source": 0.6,
+         "Status kundenindividuell": "Ruhendes Beschäftigungsverhältnis",
+         "Organisationseinheit": "A", "OE-Cluster": "A",
+         "Jobfamily": "J", "JF-Cluster": "J"},
+        {"PersNr": "1", "Is_Vacant": False, "MAK_Reporting": 0.0,
+         "Personen_MAK_Source": 0.6,
+         "Status kundenindividuell": "Ruhendes Beschäftigungsverhältnis",
+         "Organisationseinheit": "B", "OE-Cluster": "B",
+         "Jobfamily": "J", "JF-Cluster": "J"},
+    ])
+    events = pd.DataFrame([{
+        "persnr": "1", "event_date": pd.Timestamp("2026-06-30"),
+        "reason_code": "RUHEND_RETURN", "headcount_change": 0,
+        "mak_change": 0.0,
+    }])
+    with pytest.raises(ValueError, match="multiple original positions"):
+        project_regular_position_stocks(
+            baseline, baseline, events, [],
             base_date=pd.Timestamp("2025-12-31"),
             target_date=pd.Timestamp("2026-12-31"))

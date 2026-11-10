@@ -7,9 +7,177 @@ callers publishing a report should aggregate or anonymize them first.
 from __future__ import annotations
 
 import pandas as pd
+import numpy as np
+from time import perf_counter
+from typing import Callable, Sequence
 
 from abgaenge.schemas import normalize_persnr
+from utils.compact_special_position_events import PositionTransition
 from utils.org_simulation_reconciliation import grouped_stock_metrics
+
+
+def rebase_existing_atz_status(
+    first_updated: pd.DataFrame,
+    original_positions: pd.DataFrame,
+    preapplied_people: pd.DataFrame,
+    atz_status: pd.DataFrame,
+) -> pd.DataFrame:
+    """Reuse the year-invariant part of the product's existing-row update.
+
+    `_update_existing_rows` uses its date only through the supplied ATZ map.
+    This bridge starts from one complete product update and replays exactly
+    its ATZ assignments for a later year. It must be parity-checked before
+    use with a different product implementation.
+    """
+    out = first_updated.copy()
+    original_ids = (original_positions["PersNr"].fillna("").astype(str).str.strip()
+                    .str.replace(r"\.0$", "", regex=True))
+    state = preapplied_people.copy()
+    state["PersNr"] = (state["PersNr"].astype(str).str.strip()
+                       .str.replace(r"\.0$", "", regex=True))
+    active_ids = set(state.loc[state["active"] == True, "PersNr"])
+    active_existing_ids = set(original_ids.loc[original_ids.ne("")]) & active_ids
+    mask = original_ids.isin(active_existing_ids)
+    if "ATZ_Status" in original_positions and mask.any():
+        out.loc[mask, "ATZ_Status"] = "Kein ATZ"
+    if "ist_atz_fr" in original_positions and mask.any():
+        out.loc[mask, "ist_atz_fr"] = False
+    atz_map = (atz_status.drop_duplicates(subset=["PersNr"], keep="last")
+               .set_index("PersNr") if not atz_status.empty else pd.DataFrame())
+    for person in sorted(active_existing_ids):
+        rows = original_ids.eq(person)
+        if person in atz_map.index:
+            out.loc[rows, "ATZ_Status"] = atz_map.loc[person, "ATZ_Status"]
+            out.loc[rows, "ist_atz_fr"] = bool(atz_map.loc[person, "ist_atz_fr"])
+    return out
+
+
+def atz_affected_position_mask(
+    previous_input: pd.DataFrame,
+    current_input: pd.DataFrame,
+) -> pd.Series:
+    """Return all original positions of people with a changed ATZ status."""
+    changed = pd.Series(False, index=current_input.index)
+    for column in ("ATZ_Status", "ist_atz_fr"):
+        if column in current_input and column in previous_input:
+            left = current_input[column].astype("string").fillna("<NA>")
+            right = previous_input[column].astype("string").fillna("<NA>")
+            equal = left.eq(right)
+            changed |= ~equal
+    if not changed.any():
+        return changed
+    people = current_input.loc[changed, "PersNr"].dropna().unique()
+    return current_input["PersNr"].isin(people)
+
+
+def update_stock_only_for_atz_changes(
+    previous_input: pd.DataFrame,
+    previous_stock: pd.DataFrame,
+    current_input: pd.DataFrame,
+    finalize_subset: Callable[[pd.DataFrame], pd.DataFrame],
+) -> pd.DataFrame:
+    """Recompute complete person groups whose ATZ status changed.
+
+    This is an isolated stock-only probe. The caller must verify that all
+    other pre-finalization input fields are unchanged between years and that
+    the resulting stock frame matches a full product finalization exactly.
+    """
+    affected = atz_affected_position_mask(previous_input, current_input)
+    if not affected.any():
+        return previous_stock.copy()
+    refreshed = finalize_subset(current_input.loc[affected].copy())
+    out = previous_stock.copy()
+    for column in refreshed.columns:
+        if column != "Ausbildung":
+            out.loc[affected, column] = refreshed[column]
+    return out
+
+
+def update_compact_for_atz_changes(
+    previous_compact: pd.DataFrame,
+    current_stock: pd.DataFrame,
+    affected: pd.Series,
+    prepare_subset: Callable[[pd.DataFrame], pd.DataFrame],
+) -> pd.DataFrame:
+    """Reuse row-local compact preparation for unchanged stock positions."""
+    out = previous_compact.copy()
+    if affected.any():
+        refreshed = prepare_subset(current_stock.loc[affected].copy())
+        out.loc[affected, refreshed.columns] = refreshed
+    return out
+
+
+def sync_original_position_oe(
+    baseline: pd.DataFrame,
+    original_positions: pd.DataFrame,
+    year_end_people: pd.DataFrame,
+) -> pd.DataFrame:
+    """Apply the product's single-position person OE sync to original rows.
+
+    The accessions engine can update an original holder's OE even when a
+    different person is later reserved on that position. The fixed position
+    snapshot inherits this OE from the original holder at each year end.
+    """
+    out = baseline.copy()
+    original_ids = normalize_persnr(original_positions["PersNr"]).reset_index(drop=True)
+    counts = original_ids.value_counts()
+    state = year_end_people.copy()
+    state["_person"] = normalize_persnr(state["PersNr"])
+    state = state.drop_duplicates("_person", keep="last").set_index("_person")
+    for index, person in original_ids.items():
+        if pd.isna(person) or counts.get(person, 0) != 1 or person not in state.index:
+            continue
+        if not bool(state.at[person, "active"]):
+            continue
+        for column in ("Organisationseinheit", "OE-Cluster"):
+            if column in out.columns and column in state.columns:
+                out.at[out.index[index], column] = state.at[person, column]
+    return out
+
+
+def _grouped_stock_metrics_indexed(frame: pd.DataFrame, dimension: str) -> dict:
+    """Probe the product's two-stage sum with indexed final groups.
+
+    Person/group sums and first-person order remain pandas operations. Only
+    the final iteration over group DataFrames is replaced by positional
+    indexes into the already ordered capacity vector.
+    """
+    occupied = frame.loc[~frame.Is_Vacant].dropna(subset=["PersNr"])
+    first = occupied.drop_duplicates(subset=[dimension, "PersNr"], keep="first")[[
+        dimension, "PersNr"]]
+    person_capacity = (
+        occupied.groupby([dimension, "PersNr"], sort=True)["MAK_Reporting"]
+        .sum().rename("_sum").reset_index()
+    )
+    ordered = first.merge(person_capacity, on=[dimension, "PersNr"],
+                          how="left", sort=False)
+    values = ordered["_sum"].fillna(0).to_numpy()
+    populated = {name: (len(indices), float(np.sum(values[indices])))
+                 for name, indices in ordered.groupby(dimension, sort=True).indices.items()}
+    return {name: populated.get(name, (0, 0.0))
+            for name in frame[dimension].dropna().unique()}
+
+
+def _position_initial(baseline: pd.DataFrame, mapped_baseline: pd.DataFrame) -> pd.DataFrame:
+    """Keep the product's position order and all stock replay input fields."""
+    initial = baseline[["PersNr", "Is_Vacant", "MAK_Reporting",
+                        "Organisationseinheit", "OE-Cluster"]].copy().reset_index(drop=True)
+    initial["_report_excluded"] = baseline.get(
+        "Is_Excluded", pd.Series(False, index=baseline.index)
+    ).fillna(False).astype(bool).reset_index(drop=True)
+    initial["Jobfamily"] = mapped_baseline["Jobfamily"].reset_index(drop=True)
+    initial["JF-Cluster"] = mapped_baseline["JF-Cluster"].reset_index(drop=True)
+    initial["_source_mak"] = pd.to_numeric(
+        baseline.get("Personen_MAK_Source", pd.Series(index=baseline.index, dtype=float)),
+        errors="coerce").reset_index(drop=True)
+    initial["_initial_ruhend"] = baseline.get(
+        "Status kundenindividuell", pd.Series("", index=baseline.index)
+    ).astype(str).str.strip().eq("Ruhendes BeschÃ¤ftigungsverhÃ¤ltnis").reset_index(drop=True)
+    initial["_initial_azubi"] = baseline.get(
+        "Ist_Azubi", pd.Series(False, index=baseline.index)
+    ).fillna(False).astype(bool).reset_index(drop=True)
+    initial["_person"] = normalize_persnr(initial["PersNr"])
+    return initial
 
 
 def allocate_departures_to_position_groups(
@@ -100,20 +268,45 @@ def project_regular_position_stocks(
     *,
     base_date: pd.Timestamp,
     target_date: pd.Timestamp,
+    profile: dict[str, float] | None = None,
+    exclude_ruhend: bool = True,
+    grouping_method: str = "indexed",
+    special_transitions: Sequence[PositionTransition] | None = None,
+    position_observer: Callable[[pd.Timestamp, pd.DataFrame], None] | None = None,
+    target_only: bool = False,
 ) -> dict[str, pd.DataFrame]:
-    """Replay regular positions once for all four OE/JF stock dimensions.
+    """Replay positions once for all four OE/JF stock dimensions.
 
-    Apprentices, trainees and conversions require a separate chronological
-    position-state extension and are deliberately rejected here.
+    The default input remains regular-only. The isolated special-transitions
+    input replays full fixed-plan accession reservations and training releases.
     """
+    if special_transitions is not None and new_people:
+        raise ValueError("Special transitions and regular new_people are mutually exclusive")
     if any(not str(person.get("PersNr", "")).startswith("NH_")
            for person in new_people):
         raise ValueError("Regular position stock projection accepts only NH_ hires")
+    if grouping_method not in {"product", "indexed"}:
+        raise ValueError("Unknown grouping method")
+    group_metrics = (grouped_stock_metrics if grouping_method == "product"
+                     else _grouped_stock_metrics_indexed)
+    phase_start = perf_counter()
     dimensions = ("Organisationseinheit", "OE-Cluster", "Jobfamily", "JF-Cluster")
     initial = baseline[["PersNr", "Is_Vacant", "MAK_Reporting",
                         "Organisationseinheit", "OE-Cluster"]].copy().reset_index(drop=True)
+    initial["_report_excluded"] = baseline.get(
+        "Is_Excluded", pd.Series(False, index=baseline.index)
+    ).fillna(False).astype(bool).reset_index(drop=True)
     initial["Jobfamily"] = mapped_baseline["Jobfamily"].reset_index(drop=True)
     initial["JF-Cluster"] = mapped_baseline["JF-Cluster"].reset_index(drop=True)
+    initial["_source_mak"] = pd.to_numeric(
+        baseline.get("Personen_MAK_Source", pd.Series(index=baseline.index, dtype=float)),
+        errors="coerce").reset_index(drop=True)
+    initial["_initial_ruhend"] = baseline.get(
+        "Status kundenindividuell", pd.Series("", index=baseline.index)
+    ).astype(str).str.strip().eq("Ruhendes Beschäftigungsverhältnis").reset_index(drop=True)
+    initial["_initial_azubi"] = baseline.get(
+        "Ist_Azubi", pd.Series(False, index=baseline.index)
+    ).fillna(False).astype(bool).reset_index(drop=True)
     initial["_person"] = normalize_persnr(initial["PersNr"])
     occupied = initial.loc[initial["_person"].notna()
                            & ~initial["Is_Vacant"].fillna(True).astype(bool)]
@@ -126,34 +319,112 @@ def project_regular_position_stocks(
         ordered_events["_day"] = pd.to_datetime(
             ordered_events["event_date"]).dt.normalize()
         event_rows = ordered_events.to_dict("records")
+    if profile is not None:
+        profile["position_prepare"] = profile.get("position_prepare", 0.0) + perf_counter() - phase_start
     start, end = pd.Timestamp(base_date), pd.Timestamp(target_date)
     output: dict[str, list[dict]] = {dimension: [] for dimension in dimensions}
+    frame = initial.copy()
+    ruhend_people: set[str] = set()
+    event_cursor = 0
+    special_cursor = 0
+    azubi_report_positions: set[int] = set()
+    ordered_special = tuple(special_transitions or ())
+    if any(ordered_special[i].date > ordered_special[i + 1].date
+           for i in range(len(ordered_special) - 1)):
+        raise ValueError("Special position transitions must be date ordered")
     for year in range(start.year, end.year + 1):
         date = min(pd.Timestamp(year, 12, 31), end)
         if date <= start:
             continue
-        frame = initial.copy()
-        for event in event_rows:
-            if event["_day"] > date:
-                continue
+        phase_start = perf_counter()
+        while event_cursor < len(event_rows) and event_rows[event_cursor]["_day"] <= date:
+            event = event_rows[event_cursor]
+            event_cursor += 1
             indices = person_rows.get(event["_person"])
             if indices is None or len(indices) == 0:
                 continue
             indices = list(indices)
+            single_index = indices[0] if len(indices) == 1 else None
+            reason = str(event.get("reason_code", "") or "")
+            if reason == "RUHEND_START":
+                ruhend_people.add(event["_person"])
+            elif reason == "RUHEND_RETURN":
+                ruhend_people.discard(event["_person"])
             if int(event.get("headcount_change", 0) or 0) < 0:
-                frame.loc[indices, "PersNr"] = pd.NA
-                frame.loc[indices, "Is_Vacant"] = True
-                frame.loc[indices, "MAK_Reporting"] = 0.0
+                if single_index is not None:
+                    frame.at[single_index, "PersNr"] = pd.NA
+                    frame.at[single_index, "Is_Vacant"] = True
+                    frame.at[single_index, "MAK_Reporting"] = 0.0
+                else:
+                    frame.loc[indices, "PersNr"] = pd.NA
+                    frame.loc[indices, "Is_Vacant"] = True
+                    frame.loc[indices, "MAK_Reporting"] = 0.0
                 continue
             mak_delta = float(event.get("mak_change", 0.0) or 0.0)
+            if (reason == "RUHEND_RETURN" and mak_delta == 0.0 and len(indices) > 1
+                    and initial.loc[indices, "_initial_ruhend"].any()
+                    and initial.loc[indices, "_source_mak"].fillna(0.0).gt(0).any()):
+                raise ValueError(
+                    "Dormant return across multiple original positions requires product parity")
             if mak_delta:
-                old = pd.to_numeric(frame.loc[indices, "MAK_Reporting"],
-                                    errors="coerce").fillna(0.0)
-                total = float(old.sum())
-                weights = old / total if total > 0 else pd.Series(
-                    1.0 / len(indices), index=old.index)
-                frame.loc[indices, "MAK_Reporting"] = (
-                    old + mak_delta * weights).clip(lower=0.0).to_numpy()
+                if single_index is not None:
+                    old_value = pd.to_numeric(frame.at[single_index, "MAK_Reporting"],
+                                              errors="coerce")
+                    old_value = 0.0 if pd.isna(old_value) else float(old_value)
+                    frame.at[single_index, "MAK_Reporting"] = max(0.0, old_value + mak_delta)
+                else:
+                    old = pd.to_numeric(frame.loc[indices, "MAK_Reporting"],
+                                        errors="coerce").fillna(0.0)
+                    total = float(old.sum())
+                    weights = old / total if total > 0 else pd.Series(
+                        1.0 / len(indices), index=old.index)
+                    frame.loc[indices, "MAK_Reporting"] = (
+                        old + mak_delta * weights).clip(lower=0.0).to_numpy()
+            elif (reason == "RUHEND_RETURN" and len(indices) == 1
+                  and bool(initial.at[indices[0], "_initial_ruhend"])
+                  and not bool(initial.at[indices[0], "_initial_azubi"])
+                  and float(frame.at[indices[0], "MAK_Reporting"]) == 0.0
+                  and pd.notna(initial.at[indices[0], "_source_mak"])):
+                # Existing dormant people can have zero reported MAK while
+                # retaining a positive source capacity. Their return event
+                # carries zero delta; product reporting restores the source.
+                frame.at[indices[0], "MAK_Reporting"] = float(initial.at[indices[0], "_source_mak"])
+            if reason == "RUHEND_START":
+                if single_index is not None:
+                    frame.at[single_index, "MAK_Reporting"] = 0.0
+                else:
+                    frame.loc[indices, "MAK_Reporting"] = 0.0
+        if profile is not None:
+            profile["position_departures"] = profile.get("position_departures", 0.0) + perf_counter() - phase_start
+        phase_start = perf_counter()
+        while (special_cursor < len(ordered_special)
+               and ordered_special[special_cursor].date.normalize() <= date):
+            transition = ordered_special[special_cursor]
+            special_cursor += 1
+            index = transition.position_index
+            if transition.action == "release":
+                azubi_report_positions.discard(index)
+                frame.at[index, "PersNr"] = pd.NA
+                frame.at[index, "Is_Vacant"] = True
+                frame.at[index, "MAK_Reporting"] = 0.0
+            elif transition.action == "reserve":
+                if (transition.event_type == "Azubi_Hire"
+                        and bool(initial.at[index, "_report_excluded"])):
+                    azubi_report_positions.add(index)
+                else:
+                    azubi_report_positions.discard(index)
+                frame.at[index, "PersNr"] = transition.person
+                frame.at[index, "Is_Vacant"] = False
+                frame.at[index, "MAK_Reporting"] = transition.mak
+            elif transition.action == "relabel":
+                if transition.mak is not None:
+                    frame.at[index, "MAK_Reporting"] = transition.mak
+                if transition.org_unit is not None and pd.notna(transition.org_unit):
+                    frame.at[index, "Organisationseinheit"] = transition.org_unit
+                if transition.oe_cluster is not None and pd.notna(transition.oe_cluster):
+                    frame.at[index, "OE-Cluster"] = transition.oe_cluster
+            else:
+                raise ValueError(f"Unknown position transition: {transition.action}")
         for person in new_people:
             if pd.Timestamp(person["Eintritt"]).normalize() > date:
                 continue
@@ -164,13 +435,115 @@ def project_regular_position_stocks(
             frame.at[index, "PersNr"] = person["PersNr"]
             frame.at[index, "Is_Vacant"] = False
             frame.at[index, "MAK_Reporting"] = float(person["mak"])
+        if target_only and date != end:
+            if profile is not None:
+                profile["position_hires"] = (
+                    profile.get("position_hires", 0.0) + perf_counter() - phase_start)
+            continue
+        # The product excludes a person while their employment is dormant.
+        # Mask only the grouped view; preserve the position state for later years.
+        grouped_frame = (frame.copy() if azubi_report_positions or
+                         (exclude_ruhend and ruhend_people) else frame)
+
+        if azubi_report_positions:
+            grouped_frame.loc[list(azubi_report_positions), "PersNr"] = pd.NA
+        if exclude_ruhend:
+            for person in ruhend_people:
+                indices = person_rows.get(person)
+                if indices is not None:
+                    grouped_frame.loc[list(indices), "PersNr"] = pd.NA
+        if position_observer is not None:
+            position_observer(date, grouped_frame.copy(deep=True))
+        if profile is not None:
+            profile["position_hires"] = profile.get("position_hires", 0.0) + perf_counter() - phase_start
         for dimension in dimensions:
+            phase_start = perf_counter()
             output[dimension].extend(
                 {"Stichtag": date, dimension: group,
                  "Köpfe": heads, "MAK": mak}
-                for group, (heads, mak) in grouped_stock_metrics(frame, dimension).items())
+                for group, (heads, mak) in group_metrics(grouped_frame, dimension).items())
+            if profile is not None:
+                key = f"position_group_{dimension}"
+                profile[key] = profile.get(key, 0.0) + perf_counter() - phase_start
     return {dimension: pd.DataFrame(
         output[dimension], columns=["Stichtag", dimension, "Köpfe", "MAK"])
+        for dimension in dimensions}
+
+
+def project_special_annual_position_stocks(
+    annual_baselines: Sequence[tuple[pd.Timestamp, pd.DataFrame, pd.DataFrame]],
+    special_transitions: Sequence[PositionTransition],
+    *,
+    grouping_method: str = "indexed",
+) -> dict[str, pd.DataFrame]:
+    """Project all supplied year ends with one chronological transition pass.
+
+    Each annual baseline already includes the product's preapplied departures,
+    ATZ state, exclusions, and original-holder OE sync for that year. Only
+    accession position transitions are carried forward here.
+    """
+    if grouping_method not in {"product", "indexed"}:
+        raise ValueError("Unknown grouping method")
+    dimensions = ("Organisationseinheit", "OE-Cluster", "Jobfamily", "JF-Cluster")
+    group_metrics = (grouped_stock_metrics if grouping_method == "product"
+                     else _grouped_stock_metrics_indexed)
+    ordered = tuple(special_transitions)
+    if any(ordered[i].date > ordered[i + 1].date for i in range(len(ordered) - 1)):
+        raise ValueError("Special position transitions must be date ordered")
+    output: dict[str, list[dict]] = {dimension: [] for dimension in dimensions}
+    latest_occupancy: dict[int, PositionTransition] = {}
+    latest_labels: dict[int, PositionTransition] = {}
+    cursor = 0
+    last_date = None
+    expected_size = None
+    for date, baseline, mapped in annual_baselines:
+        date = pd.Timestamp(date)
+        if last_date is not None and date <= last_date:
+            raise ValueError("Annual baselines must have increasing dates")
+        last_date = date
+        frame = _position_initial(baseline, mapped)
+        if expected_size is None:
+            expected_size = len(frame)
+        elif len(frame) != expected_size:
+            raise ValueError("Fixed staffing plan row count changed")
+        while cursor < len(ordered) and ordered[cursor].date.normalize() <= date:
+            transition = ordered[cursor]
+            cursor += 1
+            if transition.action in {"release", "reserve"}:
+                latest_occupancy[transition.position_index] = transition
+            elif transition.action == "relabel":
+                latest_labels[transition.position_index] = transition
+            else:
+                raise ValueError(f"Unknown position transition: {transition.action}")
+        azubi_report_positions = []
+        for index, transition in latest_occupancy.items():
+            if transition.action == "release":
+                frame.at[index, "PersNr"] = pd.NA
+                frame.at[index, "Is_Vacant"] = True
+                frame.at[index, "MAK_Reporting"] = 0.0
+            else:
+                frame.at[index, "PersNr"] = transition.person
+                frame.at[index, "Is_Vacant"] = False
+                frame.at[index, "MAK_Reporting"] = transition.mak
+                if (transition.event_type == "Azubi_Hire"
+                        and bool(frame.at[index, "_report_excluded"])):
+                    azubi_report_positions.append(index)
+        for index, transition in latest_labels.items():
+            if transition.mak is not None:
+                frame.at[index, "MAK_Reporting"] = transition.mak
+            if transition.org_unit is not None and pd.notna(transition.org_unit):
+                frame.at[index, "Organisationseinheit"] = transition.org_unit
+            if transition.oe_cluster is not None and pd.notna(transition.oe_cluster):
+                frame.at[index, "OE-Cluster"] = transition.oe_cluster
+        if azubi_report_positions:
+            frame.loc[azubi_report_positions, "PersNr"] = pd.NA
+        for dimension in dimensions:
+            output[dimension].extend(
+                {"Stichtag": date, dimension: group,
+                 "K\u00f6pfe": heads, "MAK": mak}
+                for group, (heads, mak) in group_metrics(frame, dimension).items())
+    return {dimension: pd.DataFrame(
+        output[dimension], columns=["Stichtag", dimension, "K\u00f6pfe", "MAK"])
         for dimension in dimensions}
 
 

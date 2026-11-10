@@ -1,4 +1,4 @@
-"""Freeze the first compact metric contract on complete seeded reference runs.
+"""Check the current compact metric contract against versioned reference runs.
 
 Capture once: py tests/test_monte_carlo_metric_packet.py --capture
 """
@@ -20,7 +20,8 @@ from components.jobfamily_simulation_yearly import build_jobfamily_yearly_view
 from utils.monte_carlo_metric_packet import LEVELS, make_metric_packet
 from utils.org_simulation_events import build_simulation_event_summary
 
-REFERENCE = ROOT / "tests" / "fixtures" / "monte_carlo_metric_packet.json"
+HISTORICAL_REFERENCE = ROOT / "tests" / "fixtures" / "monte_carlo_metric_packet.json"
+REFERENCE = ROOT / "tests" / "fixtures" / "monte_carlo_metric_packet_v2.json"
 CASES = (("departures", 7), ("departures", 123), ("combined", 7), ("combined", 123))
 
 
@@ -55,6 +56,12 @@ def _signature(packet: dict) -> dict:
 def test_metric_packet_matches_frozen_full_run(scenario: str, seed: int) -> None:
     expected = json.loads(REFERENCE.read_text(encoding="utf-8"))["cases"][f"{scenario}:{seed}"]
     assert _signature(_packet(scenario, seed)) == expected
+
+
+@pytest.mark.parametrize("seed", (7, 123))
+def test_historical_departure_only_reference_remains_identical(seed: int) -> None:
+    expected = json.loads(HISTORICAL_REFERENCE.read_text(encoding="utf-8"))["cases"][f"departures:{seed}"]
+    assert _signature(_packet("departures", seed)) == expected
 
 
 if __name__ == "__main__":
