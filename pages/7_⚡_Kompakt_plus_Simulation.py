@@ -52,6 +52,7 @@ from utils.simulation_params import get_simulation_params
 from utils.monte_carlo_app_run import (
     calculate_ensemble, current_ensemble, prepare_ensemble_request,
 )
+from utils.monte_carlo_export import build_monte_carlo_export_bytes
 from utils.org_simulation_events import build_simulation_event_summary
 from utils.simulation_validation import current_view, invalidate_approval, register_new_run, value_fingerprint
 from utils.settings_loader import get_setting
@@ -852,6 +853,18 @@ def main():
             fingerprint=active_result.version if active_result and active_result.approved and mode != "actual" else computed_signature,
             use_container_width=True,
         )
+        if saved_ensemble is not None:
+            lazy_excel_download_button_compat(
+                label="Monte-Carlo-Kennzahlen als Excel exportieren",
+                data_builder=lambda: build_monte_carlo_export_bytes(
+                    ensemble=saved_ensemble, base_date=base_date, target_date=target_date,
+                ),
+                file_name=f"KompaktPlus_MonteCarlo_Kennzahlen_{target_date:%Y%m%d}_N{run_count}.xlsx",
+                mime=EXCEL_MIME,
+                key="compact_plus_monte_carlo_export",
+                fingerprint=saved_ensemble["plan_signature"],
+                use_container_width=True,
+            )
         set_metric_page_hint(None)
         render_global_filters(prepared_df, history_df)
 

@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from io import BytesIO
 
+from openpyxl import load_workbook
 from streamlit.testing.v1 import AppTest
 
+from utils.monte_carlo_export import build_monte_carlo_export_bytes
 from utils.simulation_params import default_simulation_params
 
 
@@ -75,6 +78,7 @@ def test_compact_plus_single_run_uses_saved_target_without_monte_carlo():
     assert "monte_carlo_ensemble_result" not in app.session_state
     assert not any("Monte-Carlo-Kennzahlen" in item.value for item in app.caption)
     assert any(button.label == "Simulationsergebnisse als Excel exportieren" for button in app.button)
+    assert not any(button.label == "Monte-Carlo-Kennzahlen als Excel exportieren" for button in app.button)
 
 
 def test_compact_plus_two_runs_create_complete_bound_ensemble():
@@ -90,12 +94,24 @@ def test_compact_plus_two_runs_create_complete_bound_ensemble():
     assert saved["status"] == "complete"
     assert saved["count"] == 2
     assert saved["statistics"]["annual_stock_values"]
+    workbook = load_workbook(BytesIO(build_monte_carlo_export_bytes(
+        ensemble=saved, base_date="2026-09-01", target_date="2026-12-31")),
+        read_only=True, data_only=True)
+    assert list(workbook["Zielwerte"].values)[1][2:] == tuple(
+        saved["statistics"]["target"]["heads"][key] for key in ("mean", "lower", "upper"))
+    assert workbook["Jahresereignisse"].max_row == len(saved["statistics"]["annual_values"]) + 1
+    assert workbook["Jahresbestaende"].max_row == len(saved["statistics"]["annual_stock_values"]) + 1
     assert any("Ungefilterter Zielbestand aller Läufe" in item.value for item in app.markdown)
     assert any("Personenfilter und die folgenden Auswertungen" in item.value for item in app.caption)
     assert any("Zu- und Abgangszahlen stammen aus dem konkreten Referenzlauf" in item.value for item in app.caption)
     assert any(button.label == "Referenzlauf als Excel exportieren" for button in app.button)
+    assert any(button.label == "Monte-Carlo-Kennzahlen als Excel exportieren" for button in app.button)
     app.session_state["test_start_simulation"] = False
     before_instance = app.session_state["simulation_validation_instance"]
+    next(button for button in app.button if button.label == "Monte-Carlo-Kennzahlen als Excel exportieren").click().run()
+    assert not app.exception
+    assert app.session_state["simulation_validation_instance"] == before_instance
+    assert app.session_state["compact_plus_monte_carlo_export__lazy_payload"][:2] == b"PK"
     app.run()
     assert not app.exception
     assert app.session_state["simulation_validation_instance"] == before_instance
@@ -114,3 +130,4 @@ def test_compact_plus_two_runs_create_complete_bound_ensemble():
     assert not app.exception
     assert app.session_state["simulation_validation_instance"] == before_instance
     assert any("noch nicht berechnet" in item.value for item in app.info)
+    assert not any(button.label == "Monte-Carlo-Kennzahlen als Excel exportieren" for button in app.button)
