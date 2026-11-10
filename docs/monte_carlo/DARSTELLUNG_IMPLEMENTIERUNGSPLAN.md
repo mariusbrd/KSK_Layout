@@ -91,7 +91,9 @@ Datei: `pages/11_💼_Jobfamily_Simulation.py`; Komponente `components/jobfamily
 | --- | --- | --- | --- |
 | 0 Gemeinsamer Vertrag | in Arbeit: Laufvertrag und App-Einstieg technisch angebunden | N=2/N=10/Teiljahr produktparitätisch; echter N=2-AppTest vollständig; 22/22 Referenz-/Vertragsprüfungen und 44/44 CompactPlus-/Exportprüfungen (10.11.2026) | N=100-App-Leistungs-/Speicherprüfung und Gesamtabnahme offen |
 | 1 Simulationsparameter | Laufzahl neben bestehendem Abgangs-Seed; zusätzliches Datumsfeld entfernt, Sichtabnahme offen | Laufzahl gespeichert und nach Rerun stabil; Seed-Paar unverändert (10.11.2026) | Browser-Sichtprüfung und fachliche Freigabe offen |
-| 2 CompactPlus | Referenzlauf und ungefilterte Mehrlaufwerte samt getrennten Excel-Exporten sichtbar; P10/P90-Overlay für Ist-Köpfe/MAK inklusive Vergütung integriert, Soll/Ist-Grafiken offen | 7/7 Chart-/AppTests mit exakter Seed-0-Balkenparität und gestapelter Tarifgrafik; 1/1 historischer Zwei-Seed-Pakethash; frühere 5/5 Exporttests (10.11.2026) | Soll/Ist-Overlay, Browser-Sichtprüfung, Leistungsmessung und Abnahme offen |
+| 2 CompactPlus | Referenzlauf und ungefilterte Mehrlaufwerte samt getrennten Excel-Exporten sichtbar; graue P10/P90-Markierungen für sieben Ist-Dimensionen integriert, Vergütung ohne Fehlerbänder, Soll/Ist-Grafiken offen | 7/7 Chart-/AppTests und historischer Zwei-Seed-Pakethash bestätigt (10.11.2026) | Soll/Ist-Overlay, Browser-Sichtprüfung, Leistungsmessung und Abnahme offen |
+
+**Darstellungskorrektur (10.11.2026):** Auf Wunsch des Nutzers werden in der gestapelten Vergütungsgrafik keine Monte-Carlo-Fehlerbänder mehr angezeigt. Der App-spezifische Ist-Chart-Vertrag (Version 2) sammelt für Vergütung keine zusätzlichen Seed-Werte. Die übrigen sieben Ist-Dimensionen behalten ihre grauen P10/P90-Markierungen; historische Simulationspakete und Einzelläufe bleiben unverändert.
 | 3 Simulation abnehmen | offen | – | – |
 | 4 Organisationseinheiten | offen | – | – |
 | 5 Jobgruppen | offen | – | – |

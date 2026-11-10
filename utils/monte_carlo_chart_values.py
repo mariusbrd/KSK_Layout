@@ -9,11 +9,10 @@ import pandas as pd
 from utils.monte_carlo_ensemble import _statistics
 
 
-CHART_VERSION = 1
+CHART_VERSION = 2
 IST_DIMENSIONS = (
     "Geschlecht", "Alterskohorte", "Ausbildung", "Beschäftigungsgrad_Kat",
     "Beschäftigungsstatus", "Betriebszugehörigkeit_Bin", "ATZ_Status",
-    "Vergütungsklasse",
 )
 
 
@@ -24,18 +23,13 @@ def extract_ist_chart_values(prepared: pd.DataFrame, compact_module) -> list[tup
                     if name in occupied.columns), "FTE_assigned")
     records = []
     for dimension in IST_DIMENSIONS:
-        if dimension != "Vergütungsklasse" and dimension not in occupied.columns:
+        if dimension not in occupied.columns:
             continue
         for metric, value_col in (("heads", "Headcount"), ("mak", mak_col)):
-            if dimension == "Vergütungsklasse":
-                table = compact_module.create_stacked_tariff_breakdown_table(occupied, value_col)
-                group_col, metric_col = "Entgeltgruppe", "Gesamt"
-            else:
-                table = compact_module.create_breakdown_table(occupied, dimension, value_col)
-                group_col, metric_col = dimension, "IST"
-            if "Hinweis" in table or group_col not in table or metric_col not in table:
+            table = compact_module.create_breakdown_table(occupied, dimension, value_col)
+            if "Hinweis" in table or dimension not in table or "IST" not in table:
                 continue
-            for group, value in table[[group_col, metric_col]].itertuples(index=False, name=None):
+            for group, value in table[[dimension, "IST"]].itertuples(index=False, name=None):
                 records.append((metric, dimension, str(group), float(value)))
     return records
 

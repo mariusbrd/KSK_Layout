@@ -3710,12 +3710,6 @@ def _render_single_breakdown_clean(
         col_chart, col_table = st.columns([3, 2])
         with col_chart:
             fig = create_stacked_tariff_chart(df, value_col, title="", print_mode=print_mode, value_type=value_type)
-            if chart_statistics is not None and value_type in {"koepfe", "mak"}:
-                from utils.monte_carlo_chart_values import overlay_ist_band
-                fig = overlay_ist_band(
-                    fig, chart_statistics, metric="heads" if value_type == "koepfe" else "mak",
-                    dimension="Vergütungsklasse",
-                )
             st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_tariff_breakdown_chart")
 
         with col_table:

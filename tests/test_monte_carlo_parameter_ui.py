@@ -111,7 +111,7 @@ def test_compact_plus_two_runs_create_complete_bound_ensemble():
     assert workbook["Jahresereignisse"].max_row == len(saved["statistics"]["annual_values"]) + 1
     assert workbook["Jahresbestaende"].max_row == len(saved["statistics"]["annual_stock_values"]) + 1
     assert any("Ungefilterter Zielbestand aller Läufe" in item.value for item in app.markdown)
-    assert any("Referenzlauf, graue Markierungen" in item.value for item in app.caption)
+    assert any("Vergütung bleibt ohne Fehlerbänder" in item.value for item in app.caption)
     assert any("Zu- und Abgangszahlen stammen aus dem konkreten Referenzlauf" in item.value for item in app.caption)
     assert any(button.label == "Referenzlauf als Excel exportieren" for button in app.button)
     assert any(button.label == "Monte-Carlo-Kennzahlen als Excel exportieren" for button in app.button)

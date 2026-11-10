@@ -8,7 +8,7 @@ from utils.monte_carlo_chart_values import (
 
 
 def _packet(values):
-    return {"compact_ist_version": 1, "compact_ist_values": values}
+    return {"compact_ist_version": 2, "compact_ist_values": values}
 
 
 def test_chart_quantiles_are_per_category_and_missing_additive_groups_are_zero():
@@ -40,21 +40,12 @@ def test_overlay_adds_bounds_without_changing_reference_bar():
     assert overlay_ist_band(original, chart_stats, metric="mak", dimension="Geschlecht") is original
 
 
-def test_stacked_tariff_reference_traces_remain_intact():
-    original = go.Figure([
-        go.Bar(y=["E5", "E6"], x=[1, 2], orientation="h", name="Stufe 1"),
-        go.Bar(y=["E5", "E6"], x=[3, 4], orientation="h", name="Stufe 2"),
-    ])
-    original.update_layout(barmode="stack")
-    chart_stats = aggregate_ist_chart_values([
-        _packet([("mak", "Vergütungsklasse", "E5", 4), ("mak", "Vergütungsklasse", "E6", 6)]),
-        _packet([("mak", "Vergütungsklasse", "E5", 8), ("mak", "Vergütungsklasse", "E6", 2)]),
-    ], band_level=0.8)
-    overlaid = overlay_ist_band(original, chart_stats, metric="mak", dimension="Vergütungsklasse")
-    assert len(original.data) == 2
-    assert len(overlaid.data) == 5
-    assert [list(trace.x) for trace in overlaid.data[:2]] == [[1, 2], [3, 4]]
-    assert overlaid.layout.barmode == "stack"
+def test_tariff_values_are_outside_the_chart_band_contract():
+    with pytest.raises(ValueError, match="Unknown CompactPlus IST chart key"):
+        aggregate_ist_chart_values([
+            _packet([("mak", "Vergütungsklasse", "E5", 4)]),
+            _packet([("mak", "Vergütungsklasse", "E5", 8)]),
+        ], band_level=0.8)
 
 
 def test_missing_or_duplicate_chart_packet_is_rejected():
