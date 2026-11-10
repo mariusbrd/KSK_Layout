@@ -697,6 +697,8 @@ def _render_org_rangliste(
     display_orgs: list[str],
     value_label: str = "IST",
     export_tables: dict | None = None,
+    monte_carlo_ensemble: dict | None = None,
+    target_date=None,
 ) -> None:
     work_df = mapped_df[mapped_df[ORG_COL].isin(display_orgs)].copy()
     if "Is_Vacant" in work_df.columns:
@@ -760,6 +762,16 @@ def _render_org_rangliste(
         paper_bgcolor="rgba(0,0,0,0)",
         showlegend=False,
     )
+    if monte_carlo_ensemble is not None:
+        from utils.monte_carlo_org_view import target_rank_band_stats
+        from utils.monte_carlo_chart_values import overlay_ist_band
+        band_stats = target_rank_band_stats(
+            chart_df, ensemble=monte_carlo_ensemble, target_date=target_date,
+            metric=metric_view)
+        if band_stats is not None:
+            fig = overlay_ist_band(
+                fig, band_stats, metric="heads" if metric_view == "Köpfe" else "mak",
+                dimension=ORG_COL)
 
     display_table = pd.DataFrame({
         ORG_COL: display_orgs,
@@ -1382,6 +1394,7 @@ def render_orgunit_analysis_page(
     departure_events_df: pd.DataFrame | None = None,
     export_context: dict | None = None,
     event_summary: dict | None = None,
+    monte_carlo_ensemble: dict | None = None,
 ) -> None:
     compact = load_compact_page_module()
     export_tables = {} if export_context is not None else None
@@ -1390,6 +1403,14 @@ def render_orgunit_analysis_page(
         title,
         subtitle,
     )
+    if monte_carlo_ensemble is not None:
+        st.info(
+            f"{monte_carlo_ensemble['count']} Läufe: Die Jahresdiagramme zeigen den konkreten "
+            "Referenzlauf als Balken und P10–P90 als graue Markierung. Mittelwerte und Grenzen "
+            "stehen in den Jahrestabellen. Die ungefilterte Rangliste erhält bei Köpfen/MAK "
+            "ebenfalls Bänder, sofern jeder Balken mit der zertifizierten Endjahresscheibe "
+            "übereinstimmt. Zusammensetzung und Tarifstruktur zeigen den konkreten Referenzlauf."
+        )
 
     set_metric_page_hint(
         f"{title} nutzt den globalen Metrik-Switch direkt für KPIs, Rangliste und Detailblöcke."
@@ -1401,7 +1422,9 @@ def render_orgunit_analysis_page(
         if export_tables is None:
             return None
         from components.org_simulation_yearly import render_org_simulation_yearly
-        return render_org_simulation_yearly(event_summary, run_signature=export_context.get("Laufkennung"))
+        return render_org_simulation_yearly(
+            event_summary, run_signature=export_context.get("Laufkennung"),
+            monte_carlo_ensemble=monte_carlo_ensemble)
 
     prepared_df = _normalize_org_column(prepared_df)
     comparison_prepared_df = None
@@ -1597,7 +1620,12 @@ def render_orgunit_analysis_page(
             **({"export_tables": export_tables} if export_tables is not None else {}),
         )
     else:
-        _render_org_rangliste(mapped_df, metric_view, metric_config, compact, display_orgs, value_label=value_label, **({"export_tables": export_tables} if export_tables is not None else {}))
+        _render_org_rangliste(
+            mapped_df, metric_view, metric_config, compact, display_orgs,
+            value_label=value_label,
+            monte_carlo_ensemble=monte_carlo_ensemble if filtered_df.equals(prepared_df) else None,
+            target_date=event_summary.get("metadata", {}).get("target_date") if event_summary else None,
+            **({"export_tables": export_tables} if export_tables is not None else {}))
 
     # --- Zusammensetzung (all three blocks use same display_orgs) ---
     if selected_top_n == "Alle":

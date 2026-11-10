@@ -101,6 +101,12 @@ def prepare_yearly_view_export(summary, view, *, stock=False, stock_view=None):
         append_yearly_export(tables, context, summary, view)
         if stock_view and stock_view.get("run_signature") == summary.get("run_signature"):
             append_stock_slide_tables(tables, summary, stock_view)
+            if "monte_carlo_bands" in stock_view:
+                tables["MC_Jahresbestand_Auswahl"] = stock_view["monte_carlo_bands"].rename(
+                    columns={"mean": "Mittelwert", "lower": "P10", "upper": "P90"}).copy(deep=True)
+                context["Monte-Carlo Jahresbestand"] = dict(stock_view["monte_carlo_metadata"])
+                tables["MC_Jahresbestand_Info"] = pd.DataFrame(
+                    list(stock_view["monte_carlo_metadata"].items()), columns=["Merkmal", "Wert"])
     from components.org_simulation_yearly import LABELS, build_yearly_view
     events = summary["events"]
     departures = events.loc[events["Ereignisquelle"].eq("departure_events")]
@@ -153,7 +159,7 @@ def render_yearly_view_export(summary, view, *, stock=False, stock_view=None):
     if "table" in view and "organizations" not in view:
         selection["organizations"] = view["table"].index.tolist()
     fingerprint = export_fingerprint(
-        {key: view[key] for key in ("chart", "table") if isinstance(view.get(key), pd.DataFrame)},
+        {key: view[key] for key in ("chart", "table", "monte_carlo_bands") if isinstance(view.get(key), pd.DataFrame)},
         {"run": summary["run_signature"], "summary_object": id(summary), "stock": stock,
          "selection": selection, "stock_view": None if stock_view is None else
          {key: stock_view.get(key) for key in ("level", "metric", "organizations", "years")}},

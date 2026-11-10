@@ -277,6 +277,7 @@ def test_orgunit_simulation_page_uses_computed_future_snapshot_and_preserves_val
     assert captured["kwargs"]["value_label"] == "Simulation"
     assert captured["kwargs"]["comparison_label"] == "IST"
     assert captured["kwargs"]["enable_comparison_toggle"] is True
+    assert captured["kwargs"]["monte_carlo_ensemble"] is None
     assert captured["kwargs"]["comparison_df"] is st.session_state["compact_sim_status_quo_df"]
     assert not captured["kwargs"]["departure_events_df"].empty
     assert "31.01.2026" in captured["kwargs"]["subtitle"]
@@ -286,6 +287,29 @@ def test_orgunit_simulation_page_uses_computed_future_snapshot_and_preserves_val
         check_dtype=False,
     )
     assert metric_config == {"value_col": "Headcount", "value_type": "koepfe"}
+
+
+def test_orgunit_simulation_page_passes_only_matching_approved_ensemble(monkeypatch):
+    _run_reusable_orgunit_simulation()
+    sim_page = _load_page_module("Organisationseinheiten_Simulation", "orgunit_simulation_mc")
+    from utils.simulation_validation import current_view
+    view = current_view(st.session_state, require_approval=True)
+    saved = {
+        "status": "complete", "count": 2, "band_level": 0.8,
+        "reference_signature": view.signature, "reference_instance": view.instance,
+        "statistics": {"status": "complete", "requested_count": 2,
+                       "annual_event_samples": [], "annual_stock_samples": []},
+    }
+    st.session_state["monte_carlo_ensemble_result"] = saved
+    captured = {}
+    fake = type("FakeOrgModule", (), {"render_orgunit_analysis_page": staticmethod(
+        lambda *_args, **kwargs: captured.update(kwargs))})
+    monkeypatch.setattr(sim_page, "_load_orgunit_analysis_module", lambda: fake)
+    sim_page.main()
+    assert captured["monte_carlo_ensemble"] is saved
+    saved["reference_instance"] += 1
+    sim_page.main()
+    assert captured["monte_carlo_ensemble"] is None
 
 
 @pytest.mark.parametrize("page_name,loader_name", [

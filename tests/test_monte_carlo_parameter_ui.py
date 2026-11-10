@@ -96,6 +96,26 @@ def test_compact_plus_two_runs_create_complete_bound_ensemble():
     assert saved["status"] == "complete"
     assert saved["count"] == 2
     assert saved["statistics"]["annual_stock_values"]
+    from components.org_simulation_yearly import build_yearly_view, yearly_periods
+    from utils.monte_carlo_org_view import event_band_table, stock_band_table
+    summary = app.session_state["compact_sim_event_summary"]
+    for level, source_key in (("Organisationseinheit", "annual_oe"),
+                              ("OE-Cluster", "annual_cluster")):
+        source = summary[source_key]
+        view = build_yearly_view(
+            summary, dimension=level,
+            years=yearly_periods(summary["metadata"])["Jahr"].tolist(),
+            organizations=sorted(source[level].unique().tolist()),
+            event_types=sorted(source["Ereignisart"].unique().tolist()), metric="Abgänge")
+        assert not event_band_table(view, ensemble=saved).empty
+        annual = summary["stock_reconciliation"]["annual"]
+        stock = annual.loc[annual["Ebene"].eq(level)].drop_duplicates(
+            ["Organisation", "Stichtag"], keep="last")
+        stock = stock[["Stichtag", "Organisation", "Bestand-MAK"]]
+        stock["Bestand-MAK"] = stock["Bestand-MAK"].round(2)
+        assert not stock_band_table(
+            stock, ensemble=saved, level=level, metric="MAK",
+            base_date=summary["metadata"]["base_date"]).empty
     chart_values = {(metric, dimension, group): values for metric, dimension, group, values
                     in saved["chart_statistics"]["values"]}
     reference_chart_values = extract_ist_chart_values(

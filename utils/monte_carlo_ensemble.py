@@ -118,6 +118,7 @@ def aggregate_packets(*, base_seed: int, count: int, runs: Sequence[Mapping],
               "successful_count": len(checked), "failures": failures,
               "band_level": float(band_level), "band_kind": "empirical_quantile",
               "target": None, "annual_values": None, "annual_stock_values": None,
+              "annual_event_samples": None, "annual_stock_samples": None,
               "stock_status_by_seed": {
                   run["seed"]: dict(run["packet"]["stock_status"])
                   for run in runs if run.get("status") == "ok"
@@ -138,6 +139,18 @@ def aggregate_packets(*, base_seed: int, count: int, runs: Sequence[Mapping],
     result["annual_values"] = [
         (*key, _statistics([annual.get(key, 0.0) for _, _, annual, _ in checked], band_level))
         for key in keys]
+    # Compact per-seed sums allow exact quantiles after the user's event-type
+    # selection. Summing already calculated P10/P90 values would be invalid.
+    event_per_run = []
+    for _, _, annual, _ in checked:
+        grouped = {}
+        for (year, level, group, _category, event_type, metric), value in annual.items():
+            key = (year, level, group, event_type, metric)
+            grouped[key] = grouped.get(key, 0.0) + value
+        event_per_run.append(grouped)
+    event_keys = sorted(set().union(*(set(values) for values in event_per_run)))
+    result["annual_event_samples"] = [
+        (*key, [values.get(key, 0.0) for values in event_per_run]) for key in event_keys]
     if all(stock_present):
         dates_by_run = [
             {(date, level) for date, level, _, _ in stock}
@@ -155,6 +168,8 @@ def aggregate_packets(*, base_seed: int, count: int, runs: Sequence[Mapping],
         result["annual_stock_values"] = [
             (*key, _statistics([stock.get(key, 0.0) for _, _, _, stock in checked], band_level))
             for key in stock_keys]
+        result["annual_stock_samples"] = [
+            (*key, [stock.get(key, 0.0) for _, _, _, stock in checked]) for key in stock_keys]
     return result
 
 

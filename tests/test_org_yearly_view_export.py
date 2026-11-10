@@ -77,6 +77,22 @@ def test_selected_stock_workbook_equals_visible_selection(level, metric):
     assert export_fingerprint(*prepare_yearly_view_export(summary, changed, stock=True)) != before
 
 
+def test_stock_workbook_adds_selected_monte_carlo_bands_without_changing_reference_sheet():
+    summary = build_simulation_event_summary(_bridge_context("atz_ruhend"), expected_run_signature="a")
+    app = _app(summary)
+    assert not app.exception
+    view = app.session_state["view"].copy()
+    view["monte_carlo_bands"] = pd.DataFrame({
+        "Stichtag": ["2027-12-31"], "Organisation": ["A"],
+        "Referenzlauf": [4.0], "mean": [5.0], "lower": [3.0], "upper": [7.0]})
+    view["monte_carlo_metadata"] = {"Anzahl Läufe": 2, "Band": "P10–P90",
+                                     "Seed-Paare": "((42, 42), (43, 43))"}
+    tables, context = prepare_yearly_view_export(summary, view, stock=True)
+    assert tables["MC_Jahresbestand_Auswahl"]["Mittelwert"].tolist() == [5.0]
+    assert tables["MC_Jahresbestand_Info"].set_index("Merkmal").loc["Band", "Wert"] == "P10–P90"
+    pd.testing.assert_frame_equal(tables["Bestand_Auswahl_Grafik"], view["chart"])
+
+
 def test_stock_slide_table_uses_reporting_events_and_separates_departure_reasons():
     summary = build_simulation_event_summary(_bridge_context("atz_ruhend"), expected_run_signature="a")
     app = _app(summary)

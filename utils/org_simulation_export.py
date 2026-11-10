@@ -162,6 +162,12 @@ def append_yearly_export(tables, context, summary, yearly_view):
     info["Clusterquellkennung"] = summary.get("cluster_mapping", {}).get("source_signature")
     info["Clusterdefinition"] = "Vollständiges gespeichertes OE-Mapping" if "cluster_mapping" in summary else "Nur Ereignis-OEs; für vollständiges Mapping Simulation neu berechnen."
     if yearly_view is not None and yearly_view.get("run_signature") == summary["run_signature"]:
+        if "monte_carlo_bands" in yearly_view:
+            tables["MC_Jahresereignisse_Auswahl"] = yearly_view["monte_carlo_bands"].rename(
+                columns={"mean": "Mittelwert", "lower": "P10", "upper": "P90"}).copy(deep=True)
+            context["Monte-Carlo Jahresereignisse"] = dict(yearly_view["monte_carlo_metadata"])
+            tables["MC_Jahresereignisse_Info"] = pd.DataFrame(
+                list(yearly_view["monte_carlo_metadata"].items()), columns=["Merkmal", "Wert"])
         tables["Jahresauswahl_Matrix"] = yearly_view["table"].reset_index()
         if "summary_table" in yearly_view:
             tables["Jahresauswahl_Summen"] = yearly_view["summary_table"].reset_index()
@@ -228,6 +234,12 @@ def append_stock_export(tables, context, summary, stock_view):
         return
     tables["Bestand_Überleitung_vollständig"] = bridge["annual"].copy(deep=True)
     if stock_view and stock_view.get("run_signature") == signature:
+        if "monte_carlo_bands" in stock_view:
+            tables["MC_Jahresbestand_Auswahl"] = stock_view["monte_carlo_bands"].rename(
+                columns={"mean": "Mittelwert", "lower": "P10", "upper": "P90"}).copy(deep=True)
+            context["Monte-Carlo Jahresbestand"] = dict(stock_view["monte_carlo_metadata"])
+            tables["MC_Jahresbestand_Info"] = pd.DataFrame(
+                list(stock_view["monte_carlo_metadata"].items()), columns=["Merkmal", "Wert"])
         tables["Bestand_Auswahl_Grafik"] = stock_view["chart"].copy(deep=True)
         tables["Bestand_Auswahl_Matrix"] = stock_view["table"].reset_index()
         if "summary_table" in stock_view:

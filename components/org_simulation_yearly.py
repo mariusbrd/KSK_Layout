@@ -71,7 +71,8 @@ def build_stacked_event_chart(view: dict) -> pd.DataFrame:
     return grouped.reindex(index, fill_value=0).rename(metric).reset_index()
 
 
-def render_stacked_event_chart(data: pd.DataFrame, *, dimension: str, metric: str) -> None:
+def render_stacked_event_chart(data: pd.DataFrame, *, dimension: str, metric: str,
+                               bands: pd.DataFrame | None = None) -> None:
     labels = sorted(data.Ereignisart.unique())
     display = data.copy()
     display["Ereignisart"] = display.Ereignisart.map(lambda value: LABELS.get(value, value))
@@ -84,6 +85,14 @@ def render_stacked_event_chart(data: pd.DataFrame, *, dimension: str, metric: st
                                      legend=alt.Legend(title="Ereignisart")),
                      tooltip=["Jahr:O", f"{dimension}:N", "Ereignisart:N", alt.Tooltip(f"{metric}:Q", format=".2f")])
              .properties(height=360))
+    if bands is not None:
+        marks = alt.Chart(bands).mark_rule(color="#6b7280", strokeWidth=5).encode(
+            x="Jahr:O", xOffset=f"{dimension}:N", y="lower:Q", y2="upper:Q",
+            tooltip=["Jahr:O", f"{dimension}:N", "Referenzlauf:Q",
+                     alt.Tooltip("mean:Q", title="Mittelwert"),
+                     alt.Tooltip("lower:Q", title="P10"),
+                     alt.Tooltip("upper:Q", title="P90")])
+        chart = alt.layer(chart, marks)
     st.altair_chart(chart, use_container_width=True)
 
 
@@ -140,7 +149,8 @@ def render_yearly_headline_metrics(metrics: dict) -> None:
 
 
 @st.fragment
-def render_org_simulation_yearly(summary: dict | None, *, run_signature: str | None) -> dict | None:
+def render_org_simulation_yearly(summary: dict | None, *, run_signature: str | None,
+                                 monte_carlo_ensemble: dict | None = None) -> dict | None:
     st.subheader("Veränderungen pro Jahr")
     if not summary:
         st.info("Bitte die Simulation auf 'Kompakt plus Simulation' neu berechnen, um die Jahresauswertung bereitzustellen.")
@@ -201,7 +211,8 @@ def render_org_simulation_yearly(summary: dict | None, *, run_signature: str | N
     if years and organizations:
         stock_view = render_departure_stock(summary, run_signature=run_signature, level=dimension,
                                            years=years, organizations=organizations, embedded=True,
-                                           metric=stock_metric)
+                                           metric=stock_metric,
+                                           monte_carlo_ensemble=monte_carlo_ensemble)
     else:
         st.info("Bitte mindestens ein Jahr und eine Organisation auswählen.")
         stock_view = None
@@ -227,6 +238,21 @@ def render_org_simulation_yearly(summary: dict | None, *, run_signature: str | N
         return {"stock_view": stock_view} if stock_view is not None else None
     view = build_yearly_view(summary, dimension=dimension, years=years,
                              organizations=organizations, event_types=event_types, metric=metric)
+    if monte_carlo_ensemble is not None:
+        from utils.monte_carlo_org_view import event_band_table
+        try:
+            bands = event_band_table(view, ensemble=monte_carlo_ensemble)
+        except ValueError as exc:
+            st.warning(f"Monte-Carlo-Band für die Jahresereignisse nicht verfügbar: {exc}")
+            monte_carlo_ensemble = None
+        else:
+            view["monte_carlo_bands"] = bands
+            view["monte_carlo_metadata"] = {
+                "Anzahl Läufe": monte_carlo_ensemble["count"],
+                "Band": f"P{(1-monte_carlo_ensemble['band_level'])*50:.0f}–P{(1+monte_carlo_ensemble['band_level'])*50:.0f}",
+                "Seed-Paare": str(monte_carlo_ensemble.get("seed_pairs", ())),
+                "Bezugsstand": "Freigegebener Originallauf; ausgewählte Jahresscheiben und Ereignisarten",
+            }
     view["summary_table"] = build_yearly_summary_table(view)
     if len(set(event_types) & DEPARTURES) > 1:
         view["stacked_chart"] = build_stacked_event_chart(view)
@@ -256,9 +282,28 @@ def render_org_simulation_yearly(summary: dict | None, *, run_signature: str | N
         if row.Teiljahr:
             st.caption(f"{row.Jahr}: Teiljahr {row.Von:%d.%m.%Y} bis {row.Bis:%d.%m.%Y}.")
     if "stacked_chart" in view:
-        render_stacked_event_chart(view["stacked_chart"], dimension=dimension, metric=metric)
+        render_stacked_event_chart(view["stacked_chart"], dimension=dimension, metric=metric,
+                                   bands=view.get("monte_carlo_bands"))
     else:
-        st.bar_chart(view["chart"], x="Jahr", y=metric, color=dimension, stack=False)
+        if monte_carlo_ensemble is None:
+            st.bar_chart(view["chart"], x="Jahr", y=metric, color=dimension, stack=False)
+        else:
+            bars = alt.Chart(view["chart"]).mark_bar().encode(
+                x=alt.X("Jahr:O", title="Jahr"), xOffset=alt.XOffset(f"{dimension}:N"),
+                y=alt.Y(f"{metric}:Q", title=metric), color=f"{dimension}:N")
+            marks = alt.Chart(view["monte_carlo_bands"]).mark_rule(
+                color="#6b7280", strokeWidth=5).encode(
+                x="Jahr:O", xOffset=f"{dimension}:N", y="lower:Q", y2="upper:Q",
+                tooltip=["Jahr:O", f"{dimension}:N", "Referenzlauf:Q",
+                         alt.Tooltip("mean:Q", title="Mittelwert"),
+                         alt.Tooltip("lower:Q", title="P10"),
+                         alt.Tooltip("upper:Q", title="P90")])
+            st.altair_chart(alt.layer(bars, marks), use_container_width=True)
+    if monte_carlo_ensemble is not None:
+        st.caption("Balken: konkreter Referenzlauf. Graue Markierungen: P10–P90 je ausgewählter Jahresscheibe, Organisation und Ereignisart. Die Grenzen werden aus Summen je Lauf berechnet.")
+        with st.expander("Monte-Carlo-Jahresereignisse"):
+            st.dataframe(view["monte_carlo_bands"].rename(columns={"mean": "Mittelwert", "lower": "P10", "upper": "P90"}),
+                         hide_index=True, use_container_width=True)
     st.caption("Die Summen beziehen sich auf die ausgewählten Jahre und Ereignisarten. Abgehende MAK zeigen den positiven Kapazitätsverlust aus ausgewählten Personalabgängen.")
     st.dataframe(view["summary_table"], use_container_width=True)
     from components.org_quit_evaluation import render_quit_evaluation

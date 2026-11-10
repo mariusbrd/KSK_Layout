@@ -22,6 +22,7 @@ else:
 from components.ui_shell import render_context_box, render_page_header
 from utils.org_simulation_events import build_simulation_event_summary, RECONCILIATION_VERSION
 from utils.simulation_validation import current_view
+from utils.monte_carlo_org_view import approved_org_ensemble
 
 
 ORG_ANALYSIS_PAGE = BASE_PATH / "pages" / "9_🏢_Organisationseinheiten_Analyse.py"
@@ -130,6 +131,13 @@ def main() -> None:
         return
 
     org_analysis = _load_orgunit_analysis_module()
+    ensemble = approved_org_ensemble(st.session_state, view)
+    saved_ensemble = st.session_state.get("monte_carlo_ensemble_result")
+    if (ensemble is None and view.version == f"{view.signature}::{view.instance}::original"
+            and isinstance(saved_ensemble, dict) and saved_ensemble.get("count", 0) > 1
+            and saved_ensemble.get("reference_signature") == view.signature
+            and saved_ensemble.get("reference_instance") == view.instance):
+        st.info("Für die OE-Monte-Carlo-Bänder bitte die Simulation mit der aktuellen Version neu berechnen und den Originallauf erneut freigeben.")
     org_analysis.render_orgunit_analysis_page(
         prepared_df.copy(),
         history_df=None,
@@ -152,6 +160,7 @@ def main() -> None:
         enable_comparison_toggle=True,
         departure_events_df=_get_departure_events(view.audit_tables),
         event_summary=view.event_summary if view.version != f"{view.signature}::{view.instance}::original" else _get_current_event_summary(),
+        monte_carlo_ensemble=ensemble,
         export_context={
             "Lauf": deepcopy(metadata),
             "Laufkennung": view.event_summary.get("run_signature"),

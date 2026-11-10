@@ -6,7 +6,7 @@ import streamlit as st
 
 
 def render_departure_stock(summary, *, run_signature, level=None, years=None, organizations=None, embedded=False,
-                           metric=None):
+                           metric=None, monte_carlo_ensemble=None):
     if not embedded:
         st.subheader("Verbleibender Bestand aus Abgangsprognose")
     if not summary or not run_signature or summary.get("run_signature") != run_signature:
@@ -88,6 +88,23 @@ def render_departure_stock(summary, *, run_signature, level=None, years=None, or
     view = {"run_signature": run_signature, "level": level, "metric": metric,
             "organizations": list(orgs), "years": list(years) if years is not None else sorted(rows.Jahr.unique()),
             "chart": chart, "table": table, "summary_table": display_table}
+    if monte_carlo_ensemble is not None:
+        from utils.monte_carlo_org_view import stock_band_table
+        try:
+            bands = stock_band_table(
+                chart, ensemble=monte_carlo_ensemble, level=level, metric=metric,
+                base_date=summary["metadata"]["base_date"])
+        except ValueError as exc:
+            st.warning(f"Monte-Carlo-Band für den Jahresbestand nicht verfügbar: {exc}")
+            monte_carlo_ensemble = None
+        else:
+            view["monte_carlo_bands"] = bands
+            view["monte_carlo_metadata"] = {
+                "Anzahl Läufe": monte_carlo_ensemble["count"],
+                "Band": f"P{(1-monte_carlo_ensemble['band_level'])*50:.0f}–P{(1+monte_carlo_ensemble['band_level'])*50:.0f}",
+                "Seed-Paare": str(monte_carlo_ensemble.get("seed_pairs", ())),
+                "Bezugsstand": "Freigegebener Originallauf; ungefilterte Jahresscheiben",
+            }
     if level != "Gesamt":
         from components.org_simulation_yearly import LABELS
         departure_types = sorted(summary["events"].loc[
@@ -103,7 +120,26 @@ def render_departure_stock(summary, *, run_signature, level=None, years=None, or
     # Categorical dates expose every yearly slice; time axes can hide middle ticks.
     plotted = chart.copy()
     plotted["Stichtag"] = plotted["Stichtag"].dt.strftime("%Y-%m-%d")
-    st.bar_chart(plotted, x="Stichtag", y=value, color="Organisation", stack=False)
+    if monte_carlo_ensemble is None:
+        st.bar_chart(plotted, x="Stichtag", y=value, color="Organisation", stack=False)
+    else:
+        import altair as alt
+        bands = view["monte_carlo_bands"]
+        bars = alt.Chart(plotted).mark_bar().encode(
+            x=alt.X("Stichtag:O", title="Stichtag"),
+            xOffset=alt.XOffset("Organisation:N"),
+            y=alt.Y(f"{value}:Q", title=value), color="Organisation:N")
+        marks = alt.Chart(bands).mark_rule(color="#6b7280", strokeWidth=5).encode(
+            x="Stichtag:O", xOffset="Organisation:N", y="lower:Q", y2="upper:Q",
+            tooltip=["Stichtag:O", "Organisation:N", "Referenzlauf:Q",
+                     alt.Tooltip("mean:Q", title="Mittelwert"),
+                     alt.Tooltip("lower:Q", title="P10"),
+                     alt.Tooltip("upper:Q", title="P90")])
+        st.altair_chart(alt.layer(bars, marks).resolve_scale(y="shared"), use_container_width=True)
+        st.caption("Balken: konkreter Referenzlauf. Graue Markierungen: P10–P90 der Monte-Carlo-Läufe je Jahresscheibe und Organisation.")
+        with st.expander("Monte-Carlo-Jahresbestände"):
+            st.dataframe(bands.rename(columns={"mean": "Mittelwert", "lower": "P10", "upper": "P90"}),
+                         hide_index=True, use_container_width=True)
     st.caption("Bestand am letzten ausgewählten Stichtag; abgehende Köpfe und MAK summieren die Abgangsereignisse der ausgewählten Jahre.")
     st.dataframe(display_table, use_container_width=True)
     with st.expander("Bestandsüberleitung und Endwertabgleich"):
