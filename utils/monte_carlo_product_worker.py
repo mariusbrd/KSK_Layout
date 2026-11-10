@@ -109,7 +109,7 @@ def _annual_stocks(snapshot, atz, start, end, product, observed, source, bundle,
     first_updated = previous_input = previous_stock = previous_compact = None
     first_year = start.year if start < pd.Timestamp(start.year, 12, 31) else start.year + 1
     for year in range(first_year, end.year + 1):
-        date = pd.Timestamp(year, 12, 31)
+        date = min(pd.Timestamp(year, 12, 31), end)
         status = engine._resolve_atz_status_map(atz_pivot, date)
         if first_updated is None:
             base = engine._update_existing_rows(snapshot, preapplied, date, status)
@@ -151,9 +151,7 @@ def run_product_seed(index: int, attrition: dict, accession: dict,
     if set(settings) != required:
         raise ValueError("Worker settings must contain salary_automation and exclusions")
     session_values = payload["session_values"]
-    end_date = pd.Timestamp(payload["target_date"])
-    if end_date != pd.Timestamp(end_date.year, 12, 31):
-        raise ValueError("Annual stock packets currently require a year-end target")
+    end_date = pd.Timestamp(payload["target_date"]).normalize()
     original_get_setting = engine.get_setting
     original_session_state = st.session_state
     try:
@@ -172,6 +170,8 @@ def run_product_seed(index: int, attrition: dict, accession: dict,
             cluster_source_signature=payload["cluster_source_signature"],
             include_audits=False,
             year_end_observer=lambda date, state, events: observed.setdefault(date, state),
+            month_end_observer=lambda date, state, events: observed.setdefault(date, state)
+            if date == end_date else None,
         )
         stocks = _annual_stocks(snapshot, atz, start, end, product, observed,
                                 source, bundle, _compact_prepare())
