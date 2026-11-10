@@ -48,6 +48,7 @@ from utils.status_quo_baseline import (
 from utils.i18n import t
 from utils.simulation_params import get_compact_plus_params
 from utils.simulation_params import get_compact_plus_run_options
+from utils.simulation_params import get_simulation_params
 from utils.monte_carlo_app_run import (
     calculate_ensemble, current_ensemble, prepare_ensemble_request,
 )
@@ -516,9 +517,14 @@ def main():
     # ── Controls section ──────────────────────────────────────────────────
     ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([2, 1, 1])
     with ctrl_col1:
-        st.caption("Zieltermin und Anzahl Läufe (auf Simulationsparameter ändern)")
-        st.markdown(f"**{pd.Timestamp(default_target).strftime('%d.%m.%Y')} · {run_count} Lauf{'e' if run_count != 1 else ''}**")
-        target_date_input = default_target
+        target_date_input = st.date_input(
+            t("sim.controls.date_label"),
+            value=default_target,
+            min_value=base_date.date(),
+            key="compact_sim_target_date",
+            help=t("sim.controls.date_caption"),
+        )
+        st.caption(f"{run_count} Lauf{'e' if run_count != 1 else ''} · Laufzahl auf Simulationsparameter ändern")
     with ctrl_col2:
         st.markdown("<div style='padding-top:1.6rem'></div>", unsafe_allow_html=True)
         _ist_stand_clicked = st.button(
@@ -540,16 +546,22 @@ def main():
             type="primary",
             help=t("sim.controls.compute_help"),
         )
+    previous_target = st.session_state.get("compact_sim_target_date_seen")
+    target_changed = previous_target is not None and pd.Timestamp(previous_target).date() != target_date_input
+    st.session_state["compact_sim_target_date_seen"] = target_date_input
+    if target_changed:
+        get_simulation_params()["compact_plus"]["target_date"] = target_date_input
+    compute_requested = recalc_clicked or target_changed
     st.caption(
         "Ist-Stand = Basisdaten ohne Fortschreibung. "
-        "Simulation = Fortschreibung bis zum gespeicherten Zieltermin."
+        "Simulation = Fortschreibung bis zum gewählten Ziel-Datum. Eine Datumsänderung startet die Berechnung erneut."
     )
 
     # Commit mode from this run's button clicks (persists for next rerun)
     if _ist_stand_clicked:
         st.session_state["compact_plus_mode"] = "actual"
         mode = "actual"
-    elif recalc_clicked:
+    elif compute_requested:
         st.session_state["compact_plus_mode"] = "simulation"
         mode = "simulation"
 
@@ -580,7 +592,7 @@ def main():
         simulation_stale = has_cached_result and (computed_signature != draft_signature)
         needs_recompute = not has_cached_result
 
-        if recalc_clicked or _ist_stand_clicked:
+        if compute_requested or _ist_stand_clicked:
             _clear_simulation_cache()
             computed_signature = None
             simulation_stale = False
@@ -591,7 +603,7 @@ def main():
         ensemble_result = None
         if needs_recompute:
             df_atz = _get_atz_input()
-            if run_count > 1 and mode == "simulation" and recalc_clicked:
+            if run_count > 1 and mode == "simulation" and compute_requested:
                 ensemble_request = prepare_ensemble_request(
                     snapshot=snapshot_df, atz=df_atz,
                     base_date=base_date, target_date=target_date,
@@ -701,7 +713,7 @@ def main():
                     cluster_mapping_bundle=cluster_mapping_bundle,
                     cluster_source_signature=cluster_source_signature,
                     count=run_count)
-            if recalc_clicked:
+            if compute_requested:
                 ensemble_progress = st.progress(0, text=f"Monte Carlo: 0/{run_count} Läufe")
                 try:
                     ensemble_result = calculate_ensemble(

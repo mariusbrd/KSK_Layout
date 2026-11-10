@@ -11,24 +11,22 @@ from utils.simulation_params import default_simulation_params
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_parameter_page_saves_count_target_and_distinct_seeds():
+def test_parameter_page_saves_count_without_duplicate_target_date():
     page = next((ROOT / "pages").glob("8_*_Simulationsparameter.py"))
     app = AppTest.from_file(str(page), default_timeout=90).run()
     assert not app.exception
-    app.date_input(key="sim_params_target_date").set_value("2027-06-15").run()
     app.selectbox(key="sim_params_run_count").set_value(2).run()
     assert not app.exception
     next(button for button in app.button if button.label == "Parameter speichern").click().run()
     assert not app.exception
     saved = app.session_state["simulation_params"]
-    assert str(saved["compact_plus"]["target_date"]) == "2027-06-15"
     assert saved["compact_plus"]["run_count"] == 2
     assert saved["abgaenge"]["random_seed"] == 42
     assert saved["zugaenge"]["random_seed"] == 42
     assert "compact_sim_signature" not in app.session_state
+    assert not any(item.key == "sim_params_target_date" for item in app.date_input)
     app.run()
     assert app.selectbox(key="sim_params_run_count").value == 2
-    assert str(app.date_input(key="sim_params_target_date").value) == "2027-06-15"
 
 
 def _compact_app(count):
@@ -102,6 +100,13 @@ def test_compact_plus_two_runs_create_complete_bound_ensemble():
     assert not app.exception
     assert app.session_state["simulation_validation_instance"] == before_instance
     assert app.session_state["monte_carlo_ensemble_result"]["plan_signature"] == saved["plan_signature"]
+    app.date_input(key="compact_sim_target_date").set_value("2027-06-15").run()
+    assert not app.exception
+    assert str(app.session_state["compact_sim_target_date_cached"].date()) == "2027-06-15"
+    assert app.session_state["monte_carlo_ensemble_result"]["status"] == "complete"
+    assert app.session_state["monte_carlo_ensemble_result"]["plan_signature"] != saved["plan_signature"]
+    assert app.session_state["simulation_validation_instance"] != before_instance
+    before_instance = app.session_state["simulation_validation_instance"]
     settings = dict(app.session_state["simulation_params"])
     settings["compact_plus"] = {**settings["compact_plus"], "run_count": 10}
     app.session_state["simulation_params"] = settings

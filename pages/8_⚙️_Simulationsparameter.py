@@ -219,13 +219,13 @@ def _hire_distribution_editor(value: list[dict[str, Any]], key: str) -> list[dic
     return edited.to_dict("records")
 
 
-def _render_abgaenge(group: dict[str, Any], key_prefix: str, *, include_ruhend: bool, active_org_units: list[str] | None = None, valid_jfs: list[str] | None = None) -> dict[str, Any]:
+def _render_abgaenge(group: dict[str, Any], key_prefix: str, *, include_ruhend: bool, active_org_units: list[str] | None = None, valid_jfs: list[str] | None = None, run_count: int = 1) -> dict[str, Any]:
     params = deepcopy(group)
     ui = deepcopy(params.pop("_ui", {}))
     base_date = get_current_stichtag().date()
     default_end = date(base_date.year + 2, base_date.month, base_date.day)
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     ui["ist_stichtag"] = c1.date_input(
         "Ist-Stichtag",
         value=_as_date(ui.get("ist_stichtag"), base_date),
@@ -250,6 +250,12 @@ def _render_abgaenge(group: dict[str, Any], key_prefix: str, *, include_ruhend: 
         value=int(params.get("random_seed", 42)),
         step=1,
         key=f"{key_prefix}_abg_seed",
+    )
+    c5.selectbox(
+        "Anzahl Läufe", options=RUN_COUNTS,
+        index=RUN_COUNTS.index(run_count) if run_count in RUN_COUNTS else 0,
+        key="sim_params_run_count",
+        help="1 = bisheriger Einzellauf; mehrere Läufe = Monte Carlo. Die Laufzahl gilt für CompactPlus und verwendet beide Seed-Werte.",
     )
 
     st.markdown("**Komponenten**")
@@ -481,45 +487,18 @@ def main() -> None:
     )
     render_context_box(
         "Integrationsstand",
-        "Diese Parameter steuern die Annahmen für Abgänge und Zugänge. Die Hybrid-Prognose kombiniert diese Logiken. Zieltermin und Laufzahl für CompactPlus werden hier festgelegt; die Berechnung starten Sie auf der CompactPlus-Seite.",
+        "Diese Parameter steuern die Annahmen für Abgänge und Zugänge. Die Hybrid-Prognose kombiniert diese Logiken. Die Laufzahl für CompactPlus steht neben dem Random Seed; das Ziel-Datum wählen Sie auf der CompactPlus-Seite.",
         tone="neutral",
         compact=True,
     )
-
-    render_section_intro("Simulationslauf", "Zieltermin und Anzahl für die CompactPlus-Simulation festlegen.")
-    base_date = pd.Timestamp(get_current_stichtag()).normalize().date()
-    saved_target = _as_date(
-        draft["compact_plus"].get("target_date") or st.session_state.get("compact_sim_target_date"),
-        (pd.Timestamp(base_date) + pd.Timedelta(days=365)).date(),
-    )
-    run_cols = st.columns([1, 1, 1])
-    run_cols[0].text_input("Ist-Stichtag (Datenstand)", value=base_date.strftime("%d.%m.%Y"), disabled=True)
-    draft["compact_plus"]["target_date"] = run_cols[1].date_input(
-        "Zieltermin CompactPlus", value=max(saved_target, base_date),
-        min_value=base_date, key="sim_params_target_date")
-    current_count = draft["compact_plus"].get("run_count", 1)
-    draft["compact_plus"]["run_count"] = run_cols[2].selectbox(
-        "Anzahl Läufe", options=RUN_COUNTS,
-        index=RUN_COUNTS.index(current_count) if current_count in RUN_COUNTS else 0,
-        key="sim_params_run_count",
-        help="1 = bisheriger Einzellauf; 2 oder 10 bis 1000 in Zehnerschritten = Monte-Carlo-Simulation. Höhere Laufzahlen dauern länger.")
-    dep_seed = int(draft["abgaenge"].get("random_seed", 42))
-    zug_seed = int(draft["zugaenge"].get("random_seed", 42))
-    st.caption(
-        f"Gespeicherte Start-Seeds: Abgänge {dep_seed}, Zugänge {zug_seed}. "
-        "Weitere Läufe verwenden jeweils beide Seeds + Laufindex. "
-        "Änderungen in den Prognose-Tabs werden nach dem Speichern wirksam.")
-    if draft["compact_plus"]["run_count"] == 1:
-        st.info("1 konkreter Lauf mit dem gewählten Seed-Paar. Die bisherigen Ergebnisse bleiben unverändert.")
-    else:
-        st.info(f"{draft['compact_plus']['run_count']} Läufe: Mittelwert und 80-%-Ergebnisbereich (P10–P90).")
-    st.caption("Die Datumfelder in den folgenden Tabs gehören zu den getrennten Prognoseseiten. Für CompactPlus gilt der Zieltermin oben.")
 
     tabs = st.tabs(["Prognose Abgänge", "Prognose Zugänge"])
 
     with tabs[0]:
         render_section_intro("Prognose Abgänge", "Spiegelt die bestehende Abgänge-Seite; Ruhend bleibt hier wie dort fachlich deaktiviert.")
-        draft["abgaenge"] = _render_abgaenge(draft["abgaenge"], "sim_params_abgaenge", include_ruhend=False, active_org_units=active_org_units, valid_jfs=valid_jfs)
+        draft["abgaenge"] = _render_abgaenge(draft["abgaenge"], "sim_params_abgaenge", include_ruhend=False, active_org_units=active_org_units, valid_jfs=valid_jfs, run_count=draft["compact_plus"].get("run_count", 1))
+        draft["compact_plus"]["run_count"] = st.session_state["sim_params_run_count"]
+        st.caption("Die Laufzahl gilt für CompactPlus. Abgangs- und Zugangs-Seed bilden das Startpaar; weitere Läufe erhöhen beide Seeds um den Laufindex.")
 
     with tabs[1]:
         render_section_intro("Prognose Zugänge", "Azubis, Trainees und Neueinstellungen einzeln aktivieren oder deaktivieren. Änderungen mit 'Parameter speichern' übernehmen.")

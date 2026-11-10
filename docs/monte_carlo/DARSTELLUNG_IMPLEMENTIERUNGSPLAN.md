@@ -90,14 +90,18 @@ Datei: `pages/11_💼_Jobfamily_Simulation.py`; Komponente `components/jobfamily
 | Phase | Status | Technische Prüfung | Sichtprüfung/Entscheidung |
 | --- | --- | --- | --- |
 | 0 Gemeinsamer Vertrag | in Arbeit: Laufvertrag und App-Einstieg technisch angebunden | N=2/N=10/Teiljahr produktparitätisch; echter N=2-AppTest vollständig; 22/22 Referenz-/Vertragsprüfungen und 44/44 CompactPlus-/Exportprüfungen (10.11.2026) | N=100-App-Leistungs-/Speicherprüfung und Gesamtabnahme offen |
-| 1 Simulationsparameter | technisch umgesetzt, Sichtabnahme offen | Zieltermin/Laufzahl gespeichert und nach Rerun stabil; 3/3 AppTests einschließlich N=1 und N=2; Seed-Paar unverändert (10.11.2026) | Browser-Sichtprüfung und fachliche Freigabe offen |
-| 2 CompactPlus | Mehrlaufstart und erste Ergebniskarte implementiert; Referenzlauf und ungefilterte Mehrlaufwerte sichtbar getrennt, Seite insgesamt offen | 3/3 Streamlit-AppTests mit N=1/N=2, Rerun und Laufzahlwechsel bestanden (10.11.2026) | Ensemble-Kennzahlenexport, Browser-Sichtprüfung und Abnahme offen |
+| 1 Simulationsparameter | Laufzahl neben bestehendem Abgangs-Seed; zusätzliches Datumsfeld entfernt, Sichtabnahme offen | Laufzahl gespeichert und nach Rerun stabil; Seed-Paar unverändert (10.11.2026) | Browser-Sichtprüfung und fachliche Freigabe offen |
+| 2 CompactPlus | Eigenes Ziel-Datum wieder als Eingabe; Datumsänderung startet mit gespeicherter Laufzahl automatisch neu. Referenzlauf und ungefilterte Mehrlaufwerte sichtbar getrennt, Seite insgesamt offen | 11/11 Parameter-/Streamlit-AppTests einschließlich N=2-Datumswechsel ohne Button bestanden (10.11.2026) | Ensemble-Kennzahlenexport, Browser-Sichtprüfung und Abnahme offen |
 | 3 Simulation abnehmen | offen | – | – |
 | 4 Organisationseinheiten | offen | – | – |
 | 5 Jobgruppen | offen | – | – |
 | 6 Gesamtabnahme | offen | – | – |
 
 Dieses Dokument wird nach jeder Phase mit Befunden, Änderungen, Testergebnissen und offenen Punkten fortgeschrieben. Eine Seite gilt erst mit ausgefüllter Tabellenzeile und expliziter fachlicher Abnahme als fertig.
+
+### UI-Korrektur nach Sichtprüfung (10.11.2026)
+
+Die ursprüngliche Phase-1-Annahme eines zusätzlichen CompactPlus-Ziel-Datums auf der Parameterseite wurde zurückgenommen. Die bereits vorhandenen Datumsfelder der beiden Prognose-Tabs bleiben erhalten; eine zusätzliche dritte Datumseingabe auf dieser Seite entfällt. Die Laufzahl steht einmal neben dem Abgangs-Seed und gilt zusammen mit beiden Seeds für CompactPlus. Das CompactPlus-Ziel-Datum ist wieder direkt auf der CompactPlus-Seite editierbar. Eine Änderung startet dort den konkreten Referenzlauf und bei N>1 das vollständige Ensemble neu; die Signatur- und Referenzbindung verhindert die Wiederverwendung alter Mittelwerte. Die Prognose-Tab-Daten bleiben unabhängig, weil ihre getrennten Prognoseseiten sie weiterhin benötigen. 11/11 betroffene Parameter- und Streamlit-AppTests bestanden; insbesondere wurde N=2 nach Datumswechsel ohne erneuten Button-Klick vollständig neu berechnet. Browser-Sichtprüfung und fachliche Seitenabnahme bleiben offen.
 
 ### Phase 0, Schritt 3 – Prozess-Orchestrierungsrahmen (10.11.2026)
 
