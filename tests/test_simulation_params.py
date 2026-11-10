@@ -9,6 +9,10 @@ from abgaenge.params import default_params as default_abgaenge_params
 from utils.simulation_params import (
     SESSION_KEY,
     get_compact_plus_params,
+    get_compact_plus_run_options,
+    get_simulation_params,
+    save_simulation_params,
+    RUN_COUNTS,
 )
 from zugaenge.params import default_params as default_zugaenge_params
 
@@ -131,3 +135,32 @@ def test_compact_plus_params_leave_weight_quit_matrix_unchanged():
     abgaenge_params, _ = get_compact_plus_params()
 
     assert abgaenge_params["quit"]["quit_matrix"] == default_abgaenge_params()["quit"]["quit_matrix"]
+
+
+def test_run_options_save_and_preserve_distinct_single_run_seeds():
+    _clear_relevant_state()
+    params = get_simulation_params()
+    params["abgaenge"]["random_seed"] = 7
+    params["zugaenge"]["random_seed"] = 42
+    params["compact_plus"].update(target_date="2028-06-15", run_count=2)
+    save_simulation_params(params)
+    assert get_compact_plus_run_options("2025-12-31") == ("2028-06-15", 2)
+    assert get_compact_plus_params()[0]["random_seed"] == 7
+    assert get_compact_plus_params()[1]["random_seed"] == 42
+    params = get_simulation_params()
+    params["compact_plus"]["run_count"] = 1
+    save_simulation_params(params)
+    assert get_compact_plus_run_options("2025-12-31")[1] == 1
+    assert get_compact_plus_params()[0]["random_seed"] == 7
+    assert get_compact_plus_params()[1]["random_seed"] == 42
+
+
+def test_run_count_choices_and_invalid_save():
+    assert RUN_COUNTS[:4] == (1, 2, 10, 20)
+    assert RUN_COUNTS[-1] == 1000
+    _clear_relevant_state()
+    params = get_simulation_params()
+    params["compact_plus"]["run_count"] = 3
+    import pytest
+    with pytest.raises(ValueError, match="Anzahl"):
+        save_simulation_params(params)

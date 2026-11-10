@@ -56,7 +56,8 @@ def test_allowed_pages_and_helper_keep_expected_responsibilities() -> None:
     helper_source = _read(ROOT / "utils" / "simulation_params.py")
 
     assert "get_compact_plus_params" in compact_plus_source
-    assert "st.date_input" in compact_plus_source
+    assert "get_compact_plus_run_options" in compact_plus_source
+    assert "st.date_input" not in compact_plus_source
     assert "number_input" not in compact_plus_source
     assert "slider" not in compact_plus_source
     assert "selectbox" not in compact_plus_source

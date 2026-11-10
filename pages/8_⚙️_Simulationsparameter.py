@@ -25,6 +25,7 @@ from config.settings import TARIFF_GROUPS
 from kpi_reference import get_current_stichtag
 from utils.matrix_helpers import migrate_to_percent, percent_to_weights
 from utils.simulation_params import (
+    RUN_COUNTS,
     get_simulation_params,
     save_simulation_params,
 )
@@ -480,10 +481,39 @@ def main() -> None:
     )
     render_context_box(
         "Integrationsstand",
-        "Diese Parameter steuern die Annahmen für Abgänge und Zugänge. Die Hybrid-Prognose kombiniert diese Logiken. Die CompactPlus-Simulation nutzt die Abgänge- und Zugänge-Parameter, behält ihre eigene Simulationssteuerung jedoch auf der CompactPlus-Seite.",
+        "Diese Parameter steuern die Annahmen für Abgänge und Zugänge. Die Hybrid-Prognose kombiniert diese Logiken. Zieltermin und Laufzahl für CompactPlus werden hier festgelegt; die Berechnung starten Sie auf der CompactPlus-Seite.",
         tone="neutral",
         compact=True,
     )
+
+    render_section_intro("Simulationslauf", "Zieltermin und Anzahl für die CompactPlus-Simulation festlegen.")
+    base_date = pd.Timestamp(get_current_stichtag()).normalize().date()
+    saved_target = _as_date(
+        draft["compact_plus"].get("target_date") or st.session_state.get("compact_sim_target_date"),
+        (pd.Timestamp(base_date) + pd.Timedelta(days=365)).date(),
+    )
+    run_cols = st.columns([1, 1, 1])
+    run_cols[0].text_input("Ist-Stichtag (Datenstand)", value=base_date.strftime("%d.%m.%Y"), disabled=True)
+    draft["compact_plus"]["target_date"] = run_cols[1].date_input(
+        "Zieltermin CompactPlus", value=max(saved_target, base_date),
+        min_value=base_date, key="sim_params_target_date")
+    current_count = draft["compact_plus"].get("run_count", 1)
+    draft["compact_plus"]["run_count"] = run_cols[2].selectbox(
+        "Anzahl Läufe", options=RUN_COUNTS,
+        index=RUN_COUNTS.index(current_count) if current_count in RUN_COUNTS else 0,
+        key="sim_params_run_count",
+        help="1 = bisheriger Einzellauf; 2 oder 10 bis 1000 in Zehnerschritten = Monte-Carlo-Simulation. Höhere Laufzahlen dauern länger.")
+    dep_seed = int(draft["abgaenge"].get("random_seed", 42))
+    zug_seed = int(draft["zugaenge"].get("random_seed", 42))
+    st.caption(
+        f"Gespeicherte Start-Seeds: Abgänge {dep_seed}, Zugänge {zug_seed}. "
+        "Weitere Läufe verwenden jeweils beide Seeds + Laufindex. "
+        "Änderungen in den Prognose-Tabs werden nach dem Speichern wirksam.")
+    if draft["compact_plus"]["run_count"] == 1:
+        st.info("1 konkreter Lauf mit dem gewählten Seed-Paar. Die bisherigen Ergebnisse bleiben unverändert.")
+    else:
+        st.info(f"{draft['compact_plus']['run_count']} Läufe: Mittelwert und 80-%-Ergebnisbereich (P10–P90).")
+    st.caption("Die Datumfelder in den folgenden Tabs gehören zu den getrennten Prognoseseiten. Für CompactPlus gilt der Zieltermin oben.")
 
     tabs = st.tabs(["Prognose Abgänge", "Prognose Zugänge"])
 

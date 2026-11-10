@@ -152,6 +152,7 @@ def default_simulation_params() -> dict[str, Any]:
         "compact_plus": {
             "target_date": None,
             "mode": "simulation",
+            "run_count": 1,
         },
         "abgaenge": {
             **default_abgaenge_params(),
@@ -233,8 +234,29 @@ def get_compact_plus_params() -> tuple[dict[str, Any], dict[str, Any]]:
     )
 
 
+RUN_COUNTS = (1, 2, *range(10, 1001, 10))
+
+
+def get_compact_plus_run_options(base_date) -> tuple[Any, int]:
+    """Return the single effective target and count saved on the parameter page."""
+    compact_plus = get_simulation_params()["compact_plus"]
+    target = compact_plus.get("target_date")
+    if target is None:
+        target = st.session_state.get("compact_sim_target_date")
+    if target is None:
+        from datetime import timedelta
+        target = base_date + timedelta(days=365)
+    count = compact_plus.get("run_count", 1)
+    if isinstance(count, bool) or not isinstance(count, int) or count not in RUN_COUNTS:
+        raise ValueError("Ungültige Anzahl Simulationsläufe")
+    return target, count
+
+
 def save_simulation_params(params: Mapping[str, Any]) -> dict[str, Any]:
     current = _deep_merge(default_simulation_params(), params)
+    count = current["compact_plus"].get("run_count", 1)
+    if isinstance(count, bool) or not isinstance(count, int) or count not in RUN_COUNTS:
+        raise ValueError("Ungültige Anzahl Simulationsläufe")
     scenario = current.setdefault("scenario", {})
     scenario["source_page"] = SOURCE_PAGE
     scenario["last_modified"] = datetime.now().isoformat(timespec="seconds")

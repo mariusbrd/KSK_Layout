@@ -47,6 +47,10 @@ from utils.status_quo_baseline import (
 )
 from utils.i18n import t
 from utils.simulation_params import get_compact_plus_params
+from utils.simulation_params import get_compact_plus_run_options
+from utils.monte_carlo_app_run import (
+    calculate_ensemble, current_ensemble, prepare_ensemble_request,
+)
 from utils.org_simulation_events import build_simulation_event_summary
 from utils.simulation_validation import current_view, invalidate_approval, register_new_run, value_fingerprint
 from utils.settings_loader import get_setting
@@ -484,11 +488,7 @@ def main():
     compact = load_compact_page_module()
     base_date = pd.Timestamp(get_current_stichtag()).normalize()
     abgaenge_params, zugaenge_params = get_compact_plus_params()
-
-    default_target = st.session_state.get(
-        "compact_sim_target_date",
-        (base_date + pd.Timedelta(days=365)).date(),
-    )
+    default_target, run_count = get_compact_plus_run_options(base_date.date())
 
     # Mode reflects the last confirmed user action ("actual" or "simulation")
     mode = st.session_state.get("compact_plus_mode", "simulation")
@@ -516,13 +516,9 @@ def main():
     # ── Controls section ──────────────────────────────────────────────────
     ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([2, 1, 1])
     with ctrl_col1:
-        target_date_input = st.date_input(
-            t("sim.controls.date_label"),
-            value=default_target,
-            min_value=base_date.date(),
-            key="compact_sim_target_date",
-            help=t("sim.controls.date_caption"),
-        )
+        st.caption("Zieltermin und Anzahl Läufe (auf Simulationsparameter ändern)")
+        st.markdown(f"**{pd.Timestamp(default_target).strftime('%d.%m.%Y')} · {run_count} Lauf{'e' if run_count != 1 else ''}**")
+        target_date_input = default_target
     with ctrl_col2:
         st.markdown("<div style='padding-top:1.6rem'></div>", unsafe_allow_html=True)
         _ist_stand_clicked = st.button(
@@ -546,7 +542,7 @@ def main():
         )
     st.caption(
         "Ist-Stand = Basisdaten ohne Fortschreibung. "
-        "Simulation = Fortschreibung bis zum gewählten Ziel-Datum."
+        "Simulation = Fortschreibung bis zum gespeicherten Zieltermin."
     )
 
     # Commit mode from this run's button clicks (persists for next rerun)
@@ -591,8 +587,20 @@ def main():
             needs_recompute = True
 
         just_computed = False
+        ensemble_request = None
+        ensemble_result = None
         if needs_recompute:
             df_atz = _get_atz_input()
+            if run_count > 1 and mode == "simulation" and recalc_clicked:
+                ensemble_request = prepare_ensemble_request(
+                    snapshot=snapshot_df, atz=df_atz,
+                    base_date=base_date, target_date=target_date,
+                    attrition_params=abgaenge_params,
+                    accession_params=zugaenge_params,
+                    active_cluster_source=active_cluster_source,
+                    cluster_mapping_bundle=cluster_mapping_bundle,
+                    cluster_source_signature=cluster_source_signature,
+                    count=run_count)
             _progress_placeholder = st.empty()
             progress_init_text = (
                 "Ist-Stand wird geladen ..."
@@ -680,6 +688,43 @@ def main():
                 )
                 st.session_state["compact_sim_status_quo_df"] = status_quo_prepared_df
                 st.session_state["compact_sim_status_quo_signature"] = computed_signature
+
+        if run_count > 1 and mode == "simulation" and not simulation_stale:
+            if ensemble_request is None:
+                ensemble_request = prepare_ensemble_request(
+                    snapshot=snapshot_df, atz=_get_atz_input(),
+                    base_date=base_date, target_date=target_date,
+                    attrition_params=abgaenge_params,
+                    accession_params=zugaenge_params,
+                    active_cluster_source=active_cluster_source,
+                    cluster_mapping_bundle=cluster_mapping_bundle,
+                    cluster_source_signature=cluster_source_signature,
+                    count=run_count)
+            if recalc_clicked:
+                ensemble_progress = st.progress(0, text=f"Monte Carlo: 0/{run_count} Läufe")
+                try:
+                    ensemble_result = calculate_ensemble(
+                        st.session_state, ensemble_request,
+                        on_progress=lambda done, total: ensemble_progress.progress(
+                            int(100 * done / total), text=f"Monte Carlo: {done}/{total} Läufe"))
+                finally:
+                    ensemble_progress.empty()
+            saved_ensemble = current_ensemble(st.session_state, ensemble_request)
+            if saved_ensemble is not None:
+                target_stats = saved_ensemble["statistics"]["target"]
+                st.success(
+                    f"Monte Carlo abgeschlossen: {run_count} Läufe · "
+                    "80-%-Ergebnisbereich (P10–P90).")
+                st.caption(
+                    f"Köpfe: Ø {target_stats['heads']['mean']:.1f} "
+                    f"({target_stats['heads']['lower']:.1f}–{target_stats['heads']['upper']:.1f}) · "
+                    f"MAK: Ø {target_stats['mak']['mean']:.2f} "
+                    f"({target_stats['mak']['lower']:.2f}–{target_stats['mak']['upper']:.2f}). "
+                    "Personen- und Planstellenansichten zeigen den konkreten Referenzlauf.")
+            elif ensemble_result is not None and ensemble_result["status"] != "complete":
+                st.error("Monte Carlo konnte nicht vollständig berechnet werden; es werden keine Mittelwerte angezeigt.")
+            else:
+                st.info("Mehrlauf-Auswertung noch nicht berechnet. Mit ‚Simulation berechnen‘ starten.")
 
         cached_target = st.session_state.get("compact_sim_target_date_cached")
         display_target = pd.Timestamp(cached_target).normalize() if cached_target is not None else target_date
