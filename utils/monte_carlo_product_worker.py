@@ -28,7 +28,7 @@ from utils.settings_loader import get_setting
 
 
 _ROOT = Path(__file__).resolve().parents[1]
-_COMPACT_PREPARE = None
+_COMPACT_MODULE = None
 _SESSION_KEYS = (
     "cohort_definitions", "azubi_salaries", "vorstand_jahresgehalt",
     "employer_cost_factor", "tvoed_lookup",
@@ -72,15 +72,19 @@ def product_input_fingerprint(payload: dict[str, Any]) -> str:
     )
 
 
-def _compact_prepare():
-    global _COMPACT_PREPARE
-    if _COMPACT_PREPARE is None:
+def _compact_module():
+    global _COMPACT_MODULE
+    if _COMPACT_MODULE is None:
         page = next((_ROOT / "pages").glob("1_*_Kompakt.py"))
         spec = importlib.util.spec_from_file_location("monte_carlo_compact_prepare", page)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        _COMPACT_PREPARE = module.prepare_compact_data
-    return _COMPACT_PREPARE
+        _COMPACT_MODULE = module
+    return _COMPACT_MODULE
+
+
+def _compact_prepare():
+    return _compact_module().prepare_compact_data
 
 
 def _metric_totals(frame: pd.DataFrame) -> dict[str, float]:
@@ -144,7 +148,7 @@ def _annual_stocks(snapshot, atz, start, end, product, observed, source, bundle,
 
 
 def run_product_seed(index: int, attrition: dict, accession: dict,
-                     payload: dict[str, Any]) -> dict:
+                     payload: dict[str, Any], *, include_ist_charts: bool = False) -> dict:
     """Return one complete packet; all external values must come from payload."""
     settings = payload["settings"]
     required = {"salary_automation", "exclusions"}
@@ -185,9 +189,23 @@ def run_product_seed(index: int, attrition: dict, accession: dict,
             "departure_events": product.abgaenge_result["events_person_level"],
             "accession_events": product.zugaenge_result["events"],
         }
-        return build_complete_metric_packet(
+        packet = build_complete_metric_packet(
             context, target_totals=_metric_totals(product.future_snapshot_df),
             annual_stock_tables=stocks)
+        if include_ist_charts:
+            from utils.monte_carlo_chart_values import CHART_VERSION, extract_ist_chart_values
+            compact = _compact_module()
+            prepared = compact.prepare_compact_data(product.future_snapshot_df)
+            packet["compact_ist_version"] = CHART_VERSION
+            packet["compact_ist_values"] = extract_ist_chart_values(prepared, compact)
+        return packet
     finally:
         engine.get_setting = original_get_setting
         st.session_state = original_session_state
+
+
+def run_product_seed_with_ist_charts(index: int, attrition: dict, accession: dict,
+                                     payload: dict[str, Any]) -> dict:
+    """App-only extension; the frozen reference packet path remains byte-identical."""
+    return run_product_seed(index, attrition, accession, payload,
+                            include_ist_charts=True)

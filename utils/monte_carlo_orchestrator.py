@@ -84,6 +84,7 @@ def _execute_index(index: int) -> dict[str, Any]:
 def execute_ensemble(plan: RunPlan, *, frozen_input: Any,
                      input_fingerprint: Callable[[Any], str],
                      run_seed: Callable[..., dict], workers: int = 3,
+                     require_ist_charts: bool = False,
                      on_progress: Callable[[int, int], None] | None = None) -> dict[str, Any]:
     """Return complete statistics or an explicit incomplete result, never partial means.
 
@@ -123,6 +124,16 @@ def execute_ensemble(plan: RunPlan, *, frozen_input: Any,
                 if on_progress is not None:
                     on_progress(len(outcomes), plan.count)
     result = finalize_run_packets(plan, outcomes)
+    if result["status"] == "complete" and require_ist_charts:
+        from utils.monte_carlo_chart_values import aggregate_ist_chart_values
+        try:
+            ordered = sorted(outcomes, key=lambda outcome: outcome["index"])
+            result["chart_statistics"] = aggregate_ist_chart_values(
+                [outcome["packet"] for outcome in ordered], band_level=plan.band_level)
+        except (KeyError, TypeError, ValueError) as exc:
+            result["status"] = "incomplete"
+            result["statistics"] = None
+            result["failures"] = [{"index": None, "error": f"CompactPlus chart contract: {exc}"}]
     result["seconds"] = perf_counter() - started
     result["workers"] = min(workers, plan.count)
     result["run_seconds"] = {outcome["index"]: outcome.get("seconds")

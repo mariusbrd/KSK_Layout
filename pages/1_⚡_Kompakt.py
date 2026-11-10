@@ -3537,7 +3537,7 @@ def format_dataframe_for_display(df: pd.DataFrame, value_type: str = "mak") -> p
 
 def render_single_breakdown(df: pd.DataFrame, dimension_name: str, dimension_col: str,
                             value_col: str, value_type: str = "mak", key_prefix: str = "",
-                            print_mode: bool = False):
+                            print_mode: bool = False, chart_statistics=None):
     """
     Rendert einen einzelnen Breakdown-Block mit Chart und Tabelle.
 
@@ -3557,6 +3557,7 @@ def render_single_breakdown(df: pd.DataFrame, dimension_name: str, dimension_col
         value_type=value_type,
         key_prefix=key_prefix,
         print_mode=print_mode,
+        chart_statistics=chart_statistics,
     )
 
     # Sonderfall: Vergütungsklassen → gestapeltes Tarif-Chart
@@ -3686,6 +3687,7 @@ def _render_single_breakdown_clean(
     value_type: str = "mak",
     key_prefix: str = "",
     print_mode: bool = False,
+    chart_statistics=None,
 ):
     """Rendert einen Breakdown-Block mit bereinigten Warn- und Spaltenpfaden."""
     localized_dimension_name = _compact_text(dimension_name)
@@ -3708,6 +3710,12 @@ def _render_single_breakdown_clean(
         col_chart, col_table = st.columns([3, 2])
         with col_chart:
             fig = create_stacked_tariff_chart(df, value_col, title="", print_mode=print_mode, value_type=value_type)
+            if chart_statistics is not None and value_type in {"koepfe", "mak"}:
+                from utils.monte_carlo_chart_values import overlay_ist_band
+                fig = overlay_ist_band(
+                    fig, chart_statistics, metric="heads" if value_type == "koepfe" else "mak",
+                    dimension="Vergütungsklasse",
+                )
             st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_tariff_breakdown_chart")
 
         with col_table:
@@ -3763,6 +3771,12 @@ def _render_single_breakdown_clean(
                 preserve_order=(dimension_col in ORDINAL_ORDERS),
                 print_mode=print_mode,
             )
+            if chart_statistics is not None and value_type in {"koepfe", "mak"}:
+                from utils.monte_carlo_chart_values import overlay_ist_band
+                fig = overlay_ist_band(
+                    fig, chart_statistics, metric="heads" if value_type == "koepfe" else "mak",
+                    dimension=dimension_col,
+                )
             st.plotly_chart(fig, use_container_width=True)
 
         with col_table:
@@ -3904,7 +3918,7 @@ def _render_single_comparison_clean(
         st.markdown('</div>', unsafe_allow_html=True)
 
 
-def render_ist_mak_tab(df: pd.DataFrame, print_mode: bool = False):
+def render_ist_mak_tab(df: pd.DataFrame, print_mode: bool = False, chart_statistics=None):
     """Rendert den IST-MAK Tab mit allen Themenfeldern untereinander."""
     emp_df = df[~df["Is_Vacant"]] if "Is_Vacant" in df.columns else df
 
@@ -3952,7 +3966,8 @@ def render_ist_mak_tab(df: pd.DataFrame, print_mode: bool = False):
                 value_col=next((c for c in ("MAK_Reporting", "MAK_Calculated", "mak", "MAK") if c in emp_df.columns), "FTE_assigned"),
                 value_type="mak",
                 key_prefix="ist_mak",
-                print_mode=print_mode
+                print_mode=print_mode,
+                chart_statistics=chart_statistics,
             )
             if print_mode:
                 st.markdown("<div style='page-break-after: always;'></div>", unsafe_allow_html=True)
@@ -3964,7 +3979,7 @@ def render_ist_mak_tab(df: pd.DataFrame, print_mode: bool = False):
     render_management_summary("IST-MAK", summary_data, print_mode)
 
 
-def render_ist_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
+def render_ist_koepfe_tab(df: pd.DataFrame, print_mode: bool = False, chart_statistics=None):
     """Rendert den IST-Köpfe Tab mit allen Themenfeldern untereinander."""
     emp_df = df[~df["Is_Vacant"]] if "Is_Vacant" in df.columns else df
 
@@ -4010,7 +4025,8 @@ def render_ist_koepfe_tab(df: pd.DataFrame, print_mode: bool = False):
                 value_col="Headcount",
                 value_type="koepfe",
                 key_prefix="ist_koepfe",
-                print_mode=print_mode
+                print_mode=print_mode,
+                chart_statistics=chart_statistics,
             )
             if print_mode:
                 st.markdown("<div style='page-break-after: always;'></div>", unsafe_allow_html=True)

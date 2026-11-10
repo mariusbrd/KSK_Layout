@@ -8,6 +8,8 @@ from openpyxl import load_workbook
 from streamlit.testing.v1 import AppTest
 
 from utils.monte_carlo_export import build_monte_carlo_export_bytes
+from utils.monte_carlo_chart_values import extract_ist_chart_values
+from utils.monte_carlo_product_worker import _compact_module
 from utils.simulation_params import default_simulation_params
 
 
@@ -94,6 +96,13 @@ def test_compact_plus_two_runs_create_complete_bound_ensemble():
     assert saved["status"] == "complete"
     assert saved["count"] == 2
     assert saved["statistics"]["annual_stock_values"]
+    chart_values = {(metric, dimension, group): values for metric, dimension, group, values
+                    in saved["chart_statistics"]["values"]}
+    reference_chart_values = extract_ist_chart_values(
+        app.session_state["compact_sim_prepared_df"], _compact_module())
+    assert reference_chart_values
+    for metric, dimension, group, value in reference_chart_values:
+        assert chart_values[metric, dimension, group]["samples"][0] == value
     workbook = load_workbook(BytesIO(build_monte_carlo_export_bytes(
         ensemble=saved, base_date="2026-09-01", target_date="2026-12-31")),
         read_only=True, data_only=True)
@@ -102,7 +111,7 @@ def test_compact_plus_two_runs_create_complete_bound_ensemble():
     assert workbook["Jahresereignisse"].max_row == len(saved["statistics"]["annual_values"]) + 1
     assert workbook["Jahresbestaende"].max_row == len(saved["statistics"]["annual_stock_values"]) + 1
     assert any("Ungefilterter Zielbestand aller Läufe" in item.value for item in app.markdown)
-    assert any("Personenfilter und die folgenden Auswertungen" in item.value for item in app.caption)
+    assert any("Referenzlauf, pinke Markierungen" in item.value for item in app.caption)
     assert any("Zu- und Abgangszahlen stammen aus dem konkreten Referenzlauf" in item.value for item in app.caption)
     assert any(button.label == "Referenzlauf als Excel exportieren" for button in app.button)
     assert any(button.label == "Monte-Carlo-Kennzahlen als Excel exportieren" for button in app.button)

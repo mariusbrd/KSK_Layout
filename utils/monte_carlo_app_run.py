@@ -14,7 +14,7 @@ import pandas as pd
 from utils.monte_carlo_orchestrator import execute_ensemble
 from utils.monte_carlo_input_fingerprint import frame_fingerprint
 from utils.monte_carlo_product_worker import (
-    freeze_product_worker_input, product_input_fingerprint, run_product_seed,
+    freeze_product_worker_input, product_input_fingerprint, run_product_seed_with_ist_charts,
 )
 from utils.monte_carlo_run_contract import RunPlan, build_run_plan
 from utils.settings_loader import get_setting
@@ -131,6 +131,7 @@ def publish_ensemble(state: MutableMapping[str, Any], request: EnsembleRequest,
         "band_level": plan.band_level,
         "status": "complete",
         "statistics": result["statistics"],
+        "chart_statistics": result.get("chart_statistics"),
         "seconds": result.get("seconds"),
         "run_seconds": result.get("run_seconds"),
     }
@@ -171,7 +172,8 @@ def calculate_ensemble(state: MutableMapping[str, Any], request: EnsembleRequest
     result = execute_ensemble(
         request.plan, frozen_input=request.frozen_input,
         input_fingerprint=product_input_fingerprint,
-        run_seed=run_product_seed, workers=workers,
+        run_seed=run_product_seed_with_ist_charts, workers=workers,
+        require_ist_charts=True,
         on_progress=on_progress)
     if result["status"] == "complete":
         if reference != (state.get("compact_sim_signature"),

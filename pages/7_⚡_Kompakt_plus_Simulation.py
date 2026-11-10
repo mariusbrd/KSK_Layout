@@ -871,11 +871,23 @@ def main():
         filtered_df = filter_dataframe_by_view_filters(prepared_df, get_active_view_filters())
         filter_summary = get_filter_summary()
         render_active_filter_banner(filter_summary)
+        ist_chart_statistics = (
+            saved_ensemble.get("chart_statistics")
+            if saved_ensemble is not None and filtered_df.equals(prepared_df)
+            else None
+        )
 
         if run_count > 1 and mode == "simulation" and saved_ensemble is not None:
-            st.caption(
-                "Die Monte-Carlo-Kennzahlen oben beziehen sich auf den ungefilterten Gesamtbestand. "
-                "Die Personenfilter und die folgenden Auswertungen beziehen sich auf den konkreten Referenzlauf.")
+            if ist_chart_statistics is not None:
+                st.caption(
+                    "Ist-Grafiken: bestehende Balken = konkreter Referenzlauf, pinke Markierungen = "
+                    "P10 und P90 der ungefilterten Monte-Carlo-Läufe. "
+                    "Soll/Ist-Grafiken bleiben bis zur eigenen Zertifizierung Referenzlaufwerte.")
+            else:
+                st.caption(
+                    "Die Monte-Carlo-Kennzahlen oben beziehen sich auf den ungefilterten Gesamtbestand. "
+                    "Die gefilterten Grafiken zeigen nur den konkreten Referenzlauf; "
+                    "ungefilterte Bänder werden hier nicht darübergelegt.")
 
         if filtered_df.empty:
             st.warning(t("sim.warning.no_data"))
@@ -901,9 +913,15 @@ def main():
 
         with ist_tab:
             if metric_view == "Köpfe":
-                compact.render_ist_koepfe_tab(filtered_df)
+                if ist_chart_statistics is None:
+                    compact.render_ist_koepfe_tab(filtered_df)
+                else:
+                    compact.render_ist_koepfe_tab(filtered_df, chart_statistics=ist_chart_statistics)
             else:
-                compact.render_ist_mak_tab(filtered_df)
+                if ist_chart_statistics is None:
+                    compact.render_ist_mak_tab(filtered_df)
+                else:
+                    compact.render_ist_mak_tab(filtered_df, chart_statistics=ist_chart_statistics)
 
         with ist_soll_tab:
             if metric_view == "Köpfe":
