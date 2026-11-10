@@ -71,7 +71,7 @@ def aggregate_ist_chart_values(packets: Sequence[Mapping], *, band_level: float)
 
 def overlay_ist_band(fig, chart_statistics: Mapping, *, metric: str,
                      dimension: str):
-    """Return a copy of the reference bar plot with magenta P10/P90 marks."""
+    """Return a copy of the reference bar plot with gray P10/P90 marks."""
     import plotly.graph_objects as go
 
     if chart_statistics.get("version") != CHART_VERSION:
@@ -90,13 +90,13 @@ def overlay_ist_band(fig, chart_statistics: Mapping, *, metric: str,
     overlaid.add_trace(go.Scatter(
         x=[value for pair in zip(low, high) for value in (*pair, None)],
         y=[value for category in categories for value in (category, category, None)],
-        mode="lines", line=dict(color="rgba(190, 24, 93, 0.65)", width=7),
+        mode="lines", line=dict(color="rgba(107, 114, 128, 0.65)", width=7),
         name="P10–P90", hoverinfo="skip", legendgroup="monte_carlo",
     ))
     for name, values, symbol in (("P10", low, "line-ns-open"), ("P90", high, "line-ns-open")):
         overlaid.add_trace(go.Scatter(
             x=values, y=categories, mode="markers", name=name,
-            marker=dict(color="#be185d", size=14, symbol=symbol, line=dict(width=2)),
+            marker=dict(color="#6b7280", size=14, symbol=symbol, line=dict(width=2)),
             hovertemplate=f"<b>%{{y}}</b><br>{name}: %{{x:,.2f}}<extra></extra>",
             legendgroup="monte_carlo",
         ))

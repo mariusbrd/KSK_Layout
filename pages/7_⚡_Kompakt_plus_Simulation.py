@@ -880,7 +880,7 @@ def main():
         if run_count > 1 and mode == "simulation" and saved_ensemble is not None:
             if ist_chart_statistics is not None:
                 st.caption(
-                    "Ist-Grafiken: bestehende Balken = konkreter Referenzlauf, pinke Markierungen = "
+                    "Ist-Grafiken: bestehende Balken = konkreter Referenzlauf, graue Markierungen = "
                     "P10 und P90 der ungefilterten Monte-Carlo-Läufe. "
                     "Soll/Ist-Grafiken bleiben bis zur eigenen Zertifizierung Referenzlaufwerte.")
             else:

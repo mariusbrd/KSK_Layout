@@ -32,6 +32,9 @@ def test_overlay_adds_bounds_without_changing_reference_bar():
     assert len(original.data) == 1
     assert len(overlaid.data) == 4
     assert list(overlaid.data[0].x) == [4, 6]
+    assert overlaid.data[1].line.color == "rgba(107, 114, 128, 0.65)"
+    assert overlaid.data[2].marker.color == "#6b7280"
+    assert overlaid.data[3].marker.color == "#6b7280"
     assert list(overlaid.data[2].x) == pytest.approx([4.4, 2.4])
     assert list(overlaid.data[3].x) == pytest.approx([7.6, 5.6])
     assert overlay_ist_band(original, chart_stats, metric="mak", dimension="Geschlecht") is original
