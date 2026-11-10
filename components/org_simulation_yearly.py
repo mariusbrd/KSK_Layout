@@ -304,6 +304,10 @@ def render_org_simulation_yearly(summary: dict | None, *, run_signature: str | N
         with st.expander("Monte-Carlo-Jahresereignisse"):
             st.dataframe(view["monte_carlo_bands"].rename(columns={"mean": "Mittelwert", "lower": "P10", "upper": "P90"}),
                          hide_index=True, use_container_width=True)
+        from components.org_monte_carlo_yearly import render_annual_band_detail
+        render_annual_band_detail(
+            view["monte_carlo_bands"], group_col=dimension, x_col="Jahr", unit=metric,
+            key=f"org_events_mc_detail_{dimension}_{metric}")
     st.caption("Die Summen beziehen sich auf die ausgewählten Jahre und Ereignisarten. Abgehende MAK zeigen den positiven Kapazitätsverlust aus ausgewählten Personalabgängen.")
     st.dataframe(view["summary_table"], use_container_width=True)
     from components.org_quit_evaluation import render_quit_evaluation

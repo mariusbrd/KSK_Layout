@@ -103,6 +103,8 @@ Datei: `pages/11_💼_Jobfamily_Simulation.py`; Komponente `components/jobfamily
 
 **Paritätsbefund:** Der echte N=2-AppTest prüft die sichtbaren OE- und Cluster-Jahresereignisse sowie alle Bestandszeilen gegen Seed 0. Der Ausgangsstichtag ist ein gemeinsamer deterministischer Wert und fehlt deshalb in den Worker-Jahreswerten; sein Band ist ein Punkt auf dem Referenzwert. Der Worker nennt nicht zugeordnete Cluster `Unclustered`, die bestehende OE-Auswertung `Nicht zugeordnet`; nur die Anzeigezuordnung wird normalisiert. Bei jeder späteren Abweichung zwischen Seed 0 und Referenzbalken unterdrückt die Ansicht das betreffende Band mit Hinweis, anstatt eine scheinbar passende Streuung anzuzeigen.
 
+**Detail je Jahresscheibe (10.11.2026):** Zusätzlich zu den Balken mit grauen P10-/P90-Markierungen gibt es in Jahresbestand und Jahresereignissen eine aufklappbare Detailansicht. Die Auswahl einer OE oder eines OE-Clusters zeigt alle aktuell ausgewählten Jahresscheiben dieser Organisation als blauen Referenzverlauf, grauen Mittelwert und graues P10-/P90-Flächenband. Bei nur einem Jahr wird der Bereich als vertikale Markierung sichtbar. Die Tabelle darunter enthält die numerischen Werte für genau diese Organisation. Die vorhandenen Jahresfilter steuern die Detailansicht mit; N=1 bleibt ohne zusätzlichen Abschnitt. Ein Streamlit-AppTest bestätigt den Wechsel zwischen zwei Organisationen.
+
 Dieses Dokument wird nach jeder Phase mit Befunden, Änderungen, Testergebnissen und offenen Punkten fortgeschrieben. Eine Seite gilt erst mit ausgefüllter Tabellenzeile und expliziter fachlicher Abnahme als fertig.
 
 ### UI-Korrektur nach Sichtprüfung (10.11.2026)

@@ -140,6 +140,10 @@ def render_departure_stock(summary, *, run_signature, level=None, years=None, or
         with st.expander("Monte-Carlo-Jahresbestände"):
             st.dataframe(bands.rename(columns={"mean": "Mittelwert", "lower": "P10", "upper": "P90"}),
                          hide_index=True, use_container_width=True)
+        from components.org_monte_carlo_yearly import render_annual_band_detail
+        render_annual_band_detail(
+            bands, group_col="Organisation", x_col="Stichtag", unit=value,
+            key=f"org_stock_mc_detail_{level}_{metric}")
     st.caption("Bestand am letzten ausgewählten Stichtag; abgehende Köpfe und MAK summieren die Abgangsereignisse der ausgewählten Jahre.")
     st.dataframe(display_table, use_container_width=True)
     with st.expander("Bestandsüberleitung und Endwertabgleich"):
