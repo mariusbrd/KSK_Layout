@@ -89,7 +89,7 @@ Datei: `pages/11_💼_Jobfamily_Simulation.py`; Komponente `components/jobfamily
 
 | Phase | Status | Technische Prüfung | Sichtprüfung/Entscheidung |
 | --- | --- | --- | --- |
-| 0 Gemeinsamer Vertrag | in Arbeit: Laufvertrag und Datenfingerprint implementiert | 24 Vertrags-/Ensemble-/Parametertests; 18 Fingerprint-/Referenztests plus separater echter Zwei-Prozess-Eingabetest bestanden (10.11.2026) | App-Orchestrierung, Session und appnahe vollständige Parität noch offen |
+| 0 Gemeinsamer Vertrag | in Arbeit: Laufvertrag, Datenfingerprint und Prozessrahmen implementiert | 20 kombinierte Orchestrierungs-/Laufvertrags-/Fingerprinttests sowie frühere Produktreferenztests bestanden (10.11.2026) | Produkt-Worker, Session und appnahe vollständige Parität noch offen |
 | 1 Simulationsparameter | offen | – | – |
 | 2 CompactPlus | offen | – | – |
 | 3 Simulation abnehmen | offen | – | – |
@@ -98,6 +98,13 @@ Datei: `pages/11_💼_Jobfamily_Simulation.py`; Komponente `components/jobfamily
 | 6 Gesamtabnahme | offen | – | – |
 
 Dieses Dokument wird nach jeder Phase mit Befunden, Änderungen, Testergebnissen und offenen Punkten fortgeschrieben. Eine Seite gilt erst mit ausgefüllter Tabellenzeile und expliziter fachlicher Abnahme als fertig.
+
+### Phase 0, Schritt 3 – Prozess-Orchestrierungsrahmen (10.11.2026)
+
+- `utils/monte_carlo_orchestrator.py` führt ausschließlich `N>1` über Windows-kompatible Spawn-Prozesse aus. Ein `RunPlan` weist jedem Laufindex das feste Abgangs-/Zugangs-Seed-Paar zu. Eingaben werden vor dem Start im Elternprozess und nach dem Start in jedem Worker gegen denselben Fingerprint geprüft. Der bestehende `N=1`-Produktpfad ist hiervon ausgeschlossen.
+- Jeder Worker liefert ein signiertes Ergebnis oder einen Fehler. Die zentrale Finalisierung sortiert anhand des Laufindex und veröffentlicht Mittelwerte und Quantile nur bei vollständigem, gültigem Paketbestand. Fortschritt und Laufzeiten werden erfasst. Während der aktiven Rechnung verhindert ein Windows-Schlafschutz den Idle-Standby und wird anschließend freigegeben.
+- Synthetische Spawn-Tests prüfen `N=2` und `N=10` gegen einzeln berechnete Seed-Werte sowie abweichende Worker-Eingaben, fehlgeschlagene Seeds, nachträglich geänderte Eltern-Eingaben, ungültige Kennzahlpakete und die Sperre für `N=1`. Diese Tests belegen den Orchestrierungsvertrag, noch keine Produktparität.
+- **Offen:** Einen produktiven Worker-Adapter mit vollständig eingefrorenen Zusatzinputs bauen. Der Simulationskern liest derzeit Gehaltsautomatik und Ausschlüsse über `get_setting` sowie die Kostenlookup aus `st.session_state`; diese Quellen dürfen im Spawn-Worker nicht implizit fehlen oder abweichen. Danach N=2/N=10 mit tatsächlichen Produktpaketen und allen OE-/JF-Jahresscheiben gegen serielle Einzelpfade prüfen und erst dann die App-Session anbinden. Phase 0 und sämtliche Seiten bleiben bis dahin offen.
 
 ### Phase 0, Schritt 1 – Laufvertrag (10.11.2026)
 
