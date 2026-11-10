@@ -6,6 +6,7 @@ The fixture contains hashes and metadata, never employee rows.
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -27,6 +28,11 @@ from utils.status_quo_baseline import build_status_quo_snapshot
 from components.jobfamily_simulation_yearly import build_jobfamily_yearly_view
 
 REFERENCE = ROOT / "tests" / "fixtures" / "monte_carlo_production_yearly_reference_v2.json"
+CURRENT_REFERENCE = ROOT / "tests" / "fixtures" / "monte_carlo_production_yearly_reference_v3.json"
+REFERENCE_BY_MAPPING = {
+    "39a4e67184c832289d28030c85e9d08d6b6cdafaecf43f3994d3224703fe2c2c": REFERENCE,
+    "52d18a2dbb46f8f29f2567f1caa3574096d203d0cb9b4481a78d3cc718656625": CURRENT_REFERENCE,
+}
 TARGET = pd.Timestamp("2026-12-31")
 
 
@@ -88,7 +94,10 @@ def _payload(probe=None) -> dict:
 
 
 def test_frozen_production_yearly_outputs() -> None:
-    reference = json.loads(REFERENCE.read_text(encoding="utf-8"))
+    mapping_hash = hashlib.sha256((ROOT / "config" / "cluster_mapping.xlsx").read_bytes()).hexdigest()
+    if mapping_hash not in REFERENCE_BY_MAPPING:
+        raise AssertionError(f"No certified yearly reference for cluster mapping {mapping_hash}")
+    reference = json.loads(REFERENCE_BY_MAPPING[mapping_hash].read_text(encoding="utf-8"))
     assert _payload() == reference["payload"]
 
 

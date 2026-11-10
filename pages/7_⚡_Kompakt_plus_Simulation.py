@@ -107,6 +107,7 @@ def _clear_simulation_cache():
         "compact_sim_export_context",
         "compact_sim_export_signature",
         "compact_sim_export_bytes",
+        "monte_carlo_ensemble_result",
     ]:
         st.session_state.pop(key, None)
 

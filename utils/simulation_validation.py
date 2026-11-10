@@ -49,6 +49,7 @@ def register_new_run(state: MutableMapping[str, Any]) -> None:
     state[INSTANCE_KEY] = int(state.get(INSTANCE_KEY, 0)) + 1
     state.pop(APPROVAL_KEY, None)
     state.pop(DRAFT_KEY, None)
+    state.pop("monte_carlo_ensemble_result", None)
 
 
 def invalidate_approval(state: MutableMapping[str, Any]) -> None:
