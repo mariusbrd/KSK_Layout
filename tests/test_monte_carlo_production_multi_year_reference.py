@@ -5,6 +5,7 @@ Capture once with --capture. No employee rows are stored.
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -29,6 +30,11 @@ from utils.status_quo_baseline import build_status_quo_snapshot
 from components.jobfamily_simulation_yearly import build_jobfamily_yearly_view
 
 REFERENCE = ROOT / "tests" / "fixtures" / "monte_carlo_production_multi_year_reference_v4.json"
+CURRENT_REFERENCE = ROOT / "tests" / "fixtures" / "monte_carlo_production_multi_year_reference_v5.json"
+REFERENCE_BY_MAPPING = {
+    "39a4e67184c832289d28030c85e9d08d6b6cdafaecf43f3994d3224703fe2c2c": REFERENCE,
+    "52d18a2dbb46f8f29f2567f1caa3574096d203d0cb9b4481a78d3cc718656625": CURRENT_REFERENCE,
+}
 TARGET = pd.Timestamp("2028-12-31")
 
 
@@ -146,7 +152,9 @@ def _payload(*, profile: bool = False, probe=None) -> dict:
 
 
 def test_frozen_productive_multi_year_outputs() -> None:
-    reference = json.loads(REFERENCE.read_text(encoding="utf-8"))
+    mapping_hash = hashlib.sha256((ROOT / "config" / "cluster_mapping.xlsx").read_bytes()).hexdigest()
+    assert mapping_hash in REFERENCE_BY_MAPPING, "No certified reference for this cluster mapping"
+    reference = json.loads(REFERENCE_BY_MAPPING[mapping_hash].read_text(encoding="utf-8"))
     assert _payload() == reference["payload"]
 
 

@@ -5,6 +5,7 @@ Capture once: py tests/test_monte_carlo_seed_reference.py --capture
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 import sys
 
@@ -20,6 +21,11 @@ from utils.org_simulation_events import build_simulation_event_summary
 
 
 REFERENCE = ROOT / "tests" / "fixtures" / "monte_carlo_seed_reference.json"
+CURRENT_REFERENCE = ROOT / "tests" / "fixtures" / "monte_carlo_seed_reference_v2.json"
+REFERENCE_BY_MAPPING = {
+    "39a4e67184c832289d28030c85e9d08d6b6cdafaecf43f3994d3224703fe2c2c": REFERENCE,
+    "52d18a2dbb46f8f29f2567f1caa3574096d203d0cb9b4481a78d3cc718656625": CURRENT_REFERENCE,
+}
 CASES = (("departures", 7), ("departures", 123), ("combined", 7), ("combined", 123))
 
 
@@ -47,7 +53,9 @@ def _payload(scenario: str, seed: int) -> dict:
 
 @pytest.mark.parametrize("scenario,seed", CASES)
 def test_frozen_seed_outputs(scenario: str, seed: int) -> None:
-    reference = json.loads(REFERENCE.read_text(encoding="utf-8"))
+    mapping_hash = hashlib.sha256((ROOT / "config" / "cluster_mapping.xlsx").read_bytes()).hexdigest()
+    assert mapping_hash in REFERENCE_BY_MAPPING, "No certified reference for this cluster mapping"
+    reference = json.loads(REFERENCE_BY_MAPPING[mapping_hash].read_text(encoding="utf-8"))
     assert _payload(scenario, seed) == reference["cases"][f"{scenario}:{seed}"]
 
 
