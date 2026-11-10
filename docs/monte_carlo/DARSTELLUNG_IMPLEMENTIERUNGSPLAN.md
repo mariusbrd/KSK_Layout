@@ -89,7 +89,7 @@ Datei: `pages/11_💼_Jobfamily_Simulation.py`; Komponente `components/jobfamily
 
 | Phase | Status | Technische Prüfung | Sichtprüfung/Entscheidung |
 | --- | --- | --- | --- |
-| 0 Gemeinsamer Vertrag | offen | – | – |
+| 0 Gemeinsamer Vertrag | in Arbeit: reiner Laufvertrag implementiert | 24 Tests für Laufvertrag, Ensemble und bisherige Parameter bestanden (10.11.2026) | App-Orchestrierung, Session und vollständige Parität noch offen |
 | 1 Simulationsparameter | offen | – | – |
 | 2 CompactPlus | offen | – | – |
 | 3 Simulation abnehmen | offen | – | – |
@@ -98,3 +98,10 @@ Datei: `pages/11_💼_Jobfamily_Simulation.py`; Komponente `components/jobfamily
 | 6 Gesamtabnahme | offen | – | – |
 
 Dieses Dokument wird nach jeder Phase mit Befunden, Änderungen, Testergebnissen und offenen Punkten fortgeschrieben. Eine Seite gilt erst mit ausgefüllter Tabellenzeile und expliziter fachlicher Abnahme als fertig.
+
+### Phase 0, Schritt 1 – Laufvertrag (10.11.2026)
+
+- `utils/monte_carlo_run_contract.py` definiert einen versionierten `RunPlan` mit Eingabefingerprint, Ziel-/Basisdatum, vollständigen wirksamen Parametern, beiden Seedfolgen, N, Bandniveau, Clusterquellensignatur und daraus abgeleiteter Signatur. `params_for_index(0)` gibt Kopien der bisherigen beiden Parameterobjekte ohne Seed-Änderung zurück; weitere Indizes erhalten je Forecast `Ausgangsseed + Index`.
+- `finalize_run_packets` akzeptiert nur vollständig vorhandene, eindeutige Indizes mit passender Signatur, passendem Datenfingerprint und richtigem Seed-Paar. Erst danach ruft der Vertrag die vorhandene Ensembleaggregation auf. Bei fehlenden, doppelten, fehlgeschlagenen oder unpassenden Rückgaben bleibt `statistics=None` und der Status `incomplete`. Die Funktion erzeugt keinen Personenbestand.
+- `tests/test_monte_carlo_run_contract.py` prüft N=1-Parameterparität ohne Mutation, stabile unterschiedliche Seedfolgen, Signaturänderungen und vollständige/ungültige Rückgaben. Zusammen mit den bestehenden Ensemble- und Parameterprüfungen: **24 bestanden**. Keine Änderung an Streamlit-Seiten oder Produkt-Engine.
+- Noch offen für Phase 0: einen belastbaren Datenfingerprint aus den tatsächlichen Eingaben bilden; produktfähige Prozess-Orchestrierung samt Windows-Schlafschutz und Fehler-/Abbruchstatus; Session-/Freigabe-Anbindung; voller N=1- und N=2/10-Paritätsdurchlauf über den appnahen Pfad. Schritt 1 ist technisch abgeschlossen, Phase 0 insgesamt ausdrücklich noch nicht abgenommen.
