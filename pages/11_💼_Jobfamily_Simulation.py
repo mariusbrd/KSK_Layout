@@ -20,6 +20,7 @@ else:
 
 from components.ui_shell import render_context_box, render_page_header
 from components.jobfamily_simulation_yearly import render_jobfamily_simulation_yearly
+from utils.monte_carlo_org_view import approved_org_ensemble
 from utils.simulation_validation import current_view
 
 
@@ -86,7 +87,28 @@ def main() -> None:
         )
         return
 
-    if prepared_df.empty:
+    ensemble = approved_org_ensemble(st.session_state, view)
+    saved_ensemble = st.session_state.get("monte_carlo_ensemble_result")
+    matching_multirun = (
+        view.version == f"{view.signature}::{view.instance}::original"
+        and isinstance(saved_ensemble, dict)
+        and saved_ensemble.get("count", 0) > 1
+        and saved_ensemble.get("reference_signature") == view.signature
+        and saved_ensemble.get("reference_instance") == view.instance
+    )
+    if matching_multirun and ensemble is None:
+        render_page_header(
+            "Jobgruppen-Analyse Simulation",
+            f"Future-Sicht auf den simulierten Ziel-Stichtag {target_label}.",
+        )
+        st.error(
+            "Die gespeicherten Monte-Carlo-Laufdaten sind für diese freigegebene "
+            "JF-Ansicht unvollständig oder veraltet. Bitte Simulation neu berechnen "
+            "und freigeben. Es werden keine Referenzwerte als Mehrlaufergebnis angezeigt."
+        )
+        return
+
+    if prepared_df.empty and ensemble is None:
         render_page_header(
             "Jobgruppen-Analyse Simulation",
             f"Future-Sicht auf den simulierten Ziel-Stichtag {target_label}.",
@@ -102,7 +124,15 @@ def main() -> None:
         subtitle=f"Future-Sicht auf den simulierten Ziel-Stichtag {target_label}.",
         value_label="Simulation",
         key_prefix="jobfamily_simulation",
-        methodology_text=(
+        monte_carlo_ensemble=ensemble,
+        methodology_text=((
+            "Bei mehreren Läufen zeigt die Seite für aggregierte Jobgruppen- und "
+            "Jahreskennzahlen Mittelwerte und empirische P10–P90-Ergebnisbänder. "
+            "Die aktiven Personenfilter werden vor der Aggregation auf jeden Lauf "
+            "angewendet. Der zertifizierte Jahrespositionsbestand ist fachlich von "
+            "der technischen Bestandsüberleitung des Einzellaufs zu unterscheiden. "
+            "Es wird kein gemittelter Personenbestand erzeugt."
+        ) if ensemble is not None else (
             "Die Seite zeigt ausschließlich den zuletzt berechneten Future-Snapshot aus "
             "'Kompakt plus Simulation'. Es werden keine IST-Daten geladen und keine eigene "
             "Simulation berechnet.\n\n"
@@ -110,11 +140,12 @@ def main() -> None:
             "wie die bestehende IST-Seite, aber mit dem simulierten Zielbild als Datenbasis.\n\n"
             "Filter und Exklusionen aus der Sidebar definieren den Betrachtungsraum innerhalb "
             "dieses Simulationsergebnisses."
-        ),
+        )),
         yearly_renderer=lambda: render_jobfamily_simulation_yearly(
             view.event_context,
             view.event_summary,
             run_signature=view.event_summary.get("run_signature"),
+            monte_carlo_ensemble=ensemble,
         ),
     )
 

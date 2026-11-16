@@ -119,12 +119,18 @@ def aggregate_packets(*, base_seed: int, count: int, runs: Sequence[Mapping],
               "band_level": float(band_level), "band_kind": "empirical_quantile",
               "target": None, "annual_values": None, "annual_stock_values": None,
               "annual_event_samples": None, "annual_stock_samples": None,
+              "departure_stock_samples": None,
+              "departure_rate_inputs_by_seed": None,
               "stock_status_by_seed": {
                   run["seed"]: dict(run["packet"]["stock_status"])
                   for run in runs if run.get("status") == "ok"
                   and any(seed == run["seed"] for seed, *_ in checked)}}
     if failures:
         return result
+    rate_inputs = [run["packet"].get("departure_rate_inputs") for run in runs]
+    if all(isinstance(source, Mapping) and
+           {"Organisationseinheit", "OE-Cluster"}.issubset(source) for source in rate_inputs):
+        result["departure_rate_inputs_by_seed"] = rate_inputs
     stock_present = [stock is not None for _, _, _, stock in checked]
     if any(stock_present) and not all(stock_present):
         result["status"] = "incomplete"
@@ -170,6 +176,20 @@ def aggregate_packets(*, base_seed: int, count: int, runs: Sequence[Mapping],
             for key in stock_keys]
         result["annual_stock_samples"] = [
             (*key, [stock.get(key, 0.0) for _, _, _, stock in checked]) for key in stock_keys]
+    departure_rows = [run["packet"].get("departure_stock_values") for run in runs]
+    if all(rows is not None for rows in departure_rows):
+        per_seed = []
+        for rows in departure_rows:
+            values = {}
+            for date, level, group, metric, value in rows:
+                key = (date, level, group, metric)
+                if key in values or not math.isfinite(float(value)):
+                    raise ValueError("Duplicate or invalid departure stock value")
+                values[key] = float(value)
+            per_seed.append(values)
+        keys = sorted(set().union(*(set(values) for values in per_seed)))
+        result["departure_stock_samples"] = [
+            (*key, [values.get(key, 0.0) for values in per_seed]) for key in keys]
     return result
 
 

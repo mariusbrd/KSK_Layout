@@ -475,6 +475,7 @@ def project_special_annual_position_stocks(
     special_transitions: Sequence[PositionTransition],
     *,
     grouping_method: str = "indexed",
+    position_observer=None,
 ) -> dict[str, pd.DataFrame]:
     """Project all supplied year ends with one chronological transition pass.
 
@@ -537,6 +538,8 @@ def project_special_annual_position_stocks(
                 frame.at[index, "OE-Cluster"] = transition.oe_cluster
         if azubi_report_positions:
             frame.loc[azubi_report_positions, "PersNr"] = pd.NA
+        if position_observer is not None:
+            position_observer(date, frame, baseline, mapped)
         for dimension in dimensions:
             output[dimension].extend(
                 {"Stichtag": date, dimension: group,

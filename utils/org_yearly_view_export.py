@@ -73,8 +73,16 @@ SLIDE_SHEETS = ("Bestand_Folienvorlage_MAK", "Bestand_Folienvorlage_Koepfe")
 
 
 def append_stock_slide_tables(tables, summary, stock_view):
-    tables[SLIDE_SHEETS[0]] = build_stock_slide_table(summary, stock_view, metric="MAK")
-    tables[SLIDE_SHEETS[1]] = build_stock_slide_table(summary, stock_view, metric="Köpfe")
+    if "monte_carlo_bands" in stock_view:
+        # The departure categories in this template come from Seed 0 only.
+        # Keep them as a named audit until per-seed reporting effects exist.
+        tables["Ref_Bestand_Folienvorlage_MAK"] = build_stock_slide_table(
+            summary, stock_view, metric="MAK")
+        tables["Ref_Bestand_Folienvorlage_Koepfe"] = build_stock_slide_table(
+            summary, stock_view, metric="Köpfe")
+    else:
+        tables[SLIDE_SHEETS[0]] = build_stock_slide_table(summary, stock_view, metric="MAK")
+        tables[SLIDE_SHEETS[1]] = build_stock_slide_table(summary, stock_view, metric="Köpfe")
 
 
 def prepare_yearly_view_export(summary, view, *, stock=False, stock_view=None):
@@ -96,9 +104,15 @@ def prepare_yearly_view_export(summary, view, *, stock=False, stock_view=None):
             "Kennzahlen": ["MAK", "Köpfe"], "Ebene": view["level"],
             "Bedeutung": "Positive Abgangswerte sind Verluste aus der abgestimmten Berichtswirkung. Renteneintritte inkl. ATZ enthalten bei MAK auch die ATZ-Freistellung; bei Köpfen erst das Vertragsende. Die separate ATZ-Freistellungszeile ist eine Aufschlüsselung und darf nicht nochmals addiert werden. Rückkehr aus Ruhend ist negativ. Der Bestandsrückgang kann zusätzlich technische Prognosebasis- und undatierte Aufbereitungseffekte enthalten.",
         }
-        append_yearly_export(tables, context, summary, None)
+        if "monte_carlo_bands" in view:
+            context["Folienvorlage"]["Mehrlaufstatus"] = (
+                "Die Folienvorlage mit Abgangskategorien gehört zu Seed 0 und steht nur als Ref_*-Auditblatt bereit. "
+                "Der primäre Jahresbestand steht als Mittelwert/P10/P90 in der MC-Auswahl und Bestandsauswahl.")
+        append_yearly_export(tables, context, summary, None,
+                             monte_carlo="monte_carlo_bands" in view)
     else:
-        append_yearly_export(tables, context, summary, view)
+        append_yearly_export(tables, context, summary, view,
+                             monte_carlo="monte_carlo_bands" in view)
         if stock_view and stock_view.get("run_signature") == summary.get("run_signature"):
             append_stock_slide_tables(tables, summary, stock_view)
             if "monte_carlo_bands" in stock_view:
@@ -121,13 +135,22 @@ def prepare_yearly_view_export(summary, view, *, stock=False, stock_view=None):
     # Keep signed effects, rather than silently turning returns into departures.
     matrices = []
     for event_type in types:
-        if event_type not in set(departures["Ereignisart"]):
+        if (event_type not in set(departures["Ereignisart"])
+                and (stock or "reference_details" not in view
+                     or event_type not in set(view["details"]["Ereignisart"]))):
             continue
         selected = build_yearly_view(summary, dimension=dimension, years=years,
                                      organizations=organizations, event_types=[event_type], metric=metric)
         label = LABELS.get(event_type, event_type)
         name = f"Abgang_{label}"
-        tables[name] = selected["table"].reset_index()
+        if not stock and "reference_details" in view:
+            observed = view["details"].loc[view["details"]["Ereignisart"].eq(event_type)]
+            matrix = observed.pivot(index=dimension, columns="Jahr", values=metric).reindex(
+                index=organizations, columns=years, fill_value=0.0)
+            tables[name] = matrix.reset_index()
+            tables[f"Referenzlauf_{name}"] = selected["table"].reset_index()
+        else:
+            tables[name] = selected["table"].reset_index()
         matrices.append({"Ereignisart": event_type, "Bezeichnung": label, "Bereich": name, "Kennzahl": metric})
     if matrices:
         tables["Abgangsmatrizen_Verzeichnis"] = pd.DataFrame(matrices)

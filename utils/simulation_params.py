@@ -234,7 +234,8 @@ def get_compact_plus_params() -> tuple[dict[str, Any], dict[str, Any]]:
     )
 
 
-RUN_COUNTS = (1, 2, *range(10, 1001, 10))
+RUN_COUNTS = (1, *range(10, 1001, 10))
+LEGACY_RUN_COUNTS = (2,)
 
 
 def get_compact_plus_run_options(base_date) -> tuple[Any, int]:
@@ -247,7 +248,7 @@ def get_compact_plus_run_options(base_date) -> tuple[Any, int]:
         from datetime import timedelta
         target = base_date + timedelta(days=365)
     count = compact_plus.get("run_count", 1)
-    if isinstance(count, bool) or not isinstance(count, int) or count not in RUN_COUNTS:
+    if isinstance(count, bool) or not isinstance(count, int) or count not in (*RUN_COUNTS, *LEGACY_RUN_COUNTS):
         raise ValueError("Ungültige Anzahl Simulationsläufe")
     return target, count
 
@@ -255,7 +256,7 @@ def get_compact_plus_run_options(base_date) -> tuple[Any, int]:
 def save_simulation_params(params: Mapping[str, Any]) -> dict[str, Any]:
     current = _deep_merge(default_simulation_params(), params)
     count = current["compact_plus"].get("run_count", 1)
-    if isinstance(count, bool) or not isinstance(count, int) or count not in RUN_COUNTS:
+    if isinstance(count, bool) or not isinstance(count, int) or count not in (*RUN_COUNTS, *LEGACY_RUN_COUNTS):
         raise ValueError("Ungültige Anzahl Simulationsläufe")
     scenario = current.setdefault("scenario", {})
     scenario["source_page"] = SOURCE_PAGE

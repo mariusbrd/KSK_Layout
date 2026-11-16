@@ -164,4 +164,29 @@ def finalize_run_packets(plan: RunPlan, runs: Sequence[Mapping[str, Any]]) -> di
         return result
     result["status"] = "complete"
     result["statistics"] = aggregated
+    snapshots = [run["packet"].get("org_filter_snapshot") for run in ordered]
+    versions = [run["packet"].get("org_filter_snapshot_version") for run in ordered]
+    if all(version == 1 and isinstance(snapshot, bytes)
+           for version, snapshot in zip(versions, snapshots)):
+        result["org_filter_snapshot_version"] = 1
+        result["org_filter_snapshots"] = snapshots
+    event_blobs = [run["packet"].get("org_departure_events") for run in ordered]
+    event_versions = [run["packet"].get("org_departure_events_version") for run in ordered]
+    if all(version == 1 and isinstance(blob, bytes)
+           for version, blob in zip(event_versions, event_blobs)):
+        result["org_departure_events_version"] = 1
+        result["org_departure_events"] = event_blobs
+    annual_blobs = [run["packet"].get("annual_event_rows") for run in ordered]
+    annual_versions = [run["packet"].get("annual_event_rows_version") for run in ordered]
+    from utils.monte_carlo_annual_event_rows import VERSION as ANNUAL_EVENT_ROWS_VERSION
+    if all(version == ANNUAL_EVENT_ROWS_VERSION and isinstance(blob, bytes)
+           for version, blob in zip(annual_versions, annual_blobs)):
+        result["annual_event_rows_version"] = ANNUAL_EVENT_ROWS_VERSION
+        result["annual_event_rows"] = annual_blobs
+    position_blobs = [run["packet"].get("annual_positions") for run in ordered]
+    position_versions = [run["packet"].get("annual_positions_version") for run in ordered]
+    if all(version == 1 and isinstance(blob, bytes)
+           for version, blob in zip(position_versions, position_blobs)):
+        result["annual_positions_version"] = 1
+        result["annual_positions"] = position_blobs
     return result

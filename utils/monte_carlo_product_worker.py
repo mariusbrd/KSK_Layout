@@ -6,6 +6,8 @@ the many-seed benchmark. The single-run Streamlit path is not modified.
 from __future__ import annotations
 
 import importlib.util
+import pickle
+import zlib
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -102,7 +104,8 @@ def _metric_totals(frame: pd.DataFrame) -> dict[str, float]:
     }
 
 
-def _annual_stocks(snapshot, atz, start, end, product, observed, source, bundle, prepare):
+def _annual_stocks(snapshot, atz, start, end, product, observed, source, bundle, prepare,
+                   *, position_observer=None):
     people = engine._prepare_employee_forecast_base(snapshot, atz, start)
     departures = product.abgaenge_result["events_person_level"]
     accessions = product.zugaenge_result["events"]
@@ -144,7 +147,8 @@ def _annual_stocks(snapshot, atz, start, end, product, observed, source, bundle,
             baseline, source, mapping_bundle=bundle)
         baseline["OE-Cluster"] = mapped["OE-Cluster"].to_numpy()
         annual_baselines.append((date, baseline, mapped))
-    return project_special_annual_position_stocks(annual_baselines, transitions)
+    return project_special_annual_position_stocks(
+        annual_baselines, transitions, position_observer=position_observer)
 
 
 def run_product_seed(index: int, attrition: dict, accession: dict,
@@ -177,8 +181,19 @@ def run_product_seed(index: int, attrition: dict, accession: dict,
             month_end_observer=lambda date, state, events: observed.setdefault(date, state)
             if date == end_date else None,
         )
+        annual_positions = []
+        if include_ist_charts:
+            from utils.monte_carlo_annual_positions import annual_position_rows
+
+            def observe_positions(date, frame, baseline, mapped):
+                annual_positions.append(annual_position_rows(
+                    date, frame, baseline, observed[date],
+                    session_values.get("cohort_definitions")))
+        else:
+            observe_positions = None
         stocks = _annual_stocks(snapshot, atz, start, end, product, observed,
-                                source, bundle, _compact_prepare())
+                                source, bundle, _compact_prepare(),
+                                position_observer=observe_positions)
         context = {
             "run_signature": f"seed-pair:{attrition['random_seed']}:{accession['random_seed']}",
             "metadata": product.metadata,
@@ -189,15 +204,86 @@ def run_product_seed(index: int, attrition: dict, accession: dict,
             "departure_events": product.abgaenge_result["events_person_level"],
             "accession_events": product.zugaenge_result["events"],
         }
+        rate_inputs = None
+        if include_ist_charts and all(
+                accession.get(name, {}).get("active") is False
+                for name in ("azubi", "trainee", "new_hires")):
+            from utils.monte_carlo_departure_rate import oe_rate_inputs_from_context
+            compact = _compact_module()
+            rate_context = {
+                **context,
+                "baseline_snapshot": compact.prepare_compact_data(context["baseline_snapshot"]),
+                "run_settings": {"exclusions": settings["exclusions"]},
+                "abgaenge_params": attrition,
+            }
+            rate_inputs = oe_rate_inputs_from_context(rate_context)
         packet = build_complete_metric_packet(
             context, target_totals=_metric_totals(product.future_snapshot_df),
-            annual_stock_tables=stocks)
+            annual_stock_tables=stocks, departure_rate_inputs=rate_inputs)
         if include_ist_charts:
+            from utils.monte_carlo_annual_positions import (
+                VERSION as ANNUAL_POSITIONS_VERSION, encode_annual_positions)
+            from utils.monte_carlo_annual_event_rows import (
+                VERSION as ANNUAL_EVENT_ROWS_VERSION, encode_annual_event_rows)
+            from components.sidebar import _enrich_event_filter_dimensions
             from utils.monte_carlo_chart_values import CHART_VERSION, extract_ist_chart_values
+            from utils.monte_carlo_filtered_org import SNAPSHOT_COLUMNS
             compact = _compact_module()
             prepared = compact.prepare_compact_data(product.future_snapshot_df)
+            packet["annual_positions_version"] = ANNUAL_POSITIONS_VERSION
+            packet["annual_positions"] = encode_annual_positions(annual_positions, stocks)
+            packet["annual_event_rows_version"] = ANNUAL_EVENT_ROWS_VERSION
+            packet["annual_event_rows"] = encode_annual_event_rows(
+                context, packet, positions=annual_positions, source=snapshot,
+                cohorts=session_values.get("cohort_definitions"))
+            if all(accession.get(name, {}).get("active") is False
+                   for name in ("azubi", "trainee", "new_hires")):
+                from utils.org_simulation_events import normalize_simulation_events
+                from utils.org_simulation_reconciliation import (
+                    build_departure_stock_bridge, grouped_stock_metrics)
+
+                bridge_context = {
+                    **context,
+                    "baseline_snapshot": compact.prepare_compact_data(context["baseline_snapshot"]),
+                    "final_snapshot": prepared,
+                    "run_settings": {"exclusions": settings["exclusions"]},
+                    "abgaenge_params": attrition,
+                    "source_snapshot": snapshot,
+                }
+                bridge_events = normalize_simulation_events(
+                    bridge_context, expected_run_signature=context["run_signature"])
+                bridge = build_departure_stock_bridge(
+                    bridge_context, bridge_events,
+                    expected_run_signature=context["run_signature"],
+                    stock_metric_provider=grouped_stock_metrics)
+                if bridge["status"] == "Abgestimmt":
+                    annual = bridge["annual"]
+                    annual = annual.loc[annual.Art.isin(
+                        ["Ausgangsstichtag", "Jahresstichtag"])]
+                    packet["departure_stock_values"] = [
+                        (pd.Timestamp(row.Stichtag).date().isoformat(), row.Ebene,
+                         row.Organisation, "heads", float(row["Bestand-Köpfe"]))
+                        for _, row in annual.iterrows()
+                    ] + [
+                        (pd.Timestamp(row.Stichtag).date().isoformat(), row.Ebene,
+                         row.Organisation, "mak", float(row["Bestand-MAK"]))
+                        for _, row in annual.iterrows()
+                    ]
             packet["compact_ist_version"] = CHART_VERSION
             packet["compact_ist_values"] = extract_ist_chart_values(prepared, compact)
+            # Retain exactly the columns needed to recompute target OE views
+            # after arbitrary sidebar selections. Person and position rows stay
+            # intact so distinct headcounts retain the existing semantics.
+            packet["org_filter_snapshot_version"] = 1
+            packet["org_filter_snapshot"] = zlib.compress(
+                pickle.dumps(prepared.loc[:, [column for column in SNAPSHOT_COLUMNS
+                                              if column in prepared]].copy(),
+                             protocol=pickle.HIGHEST_PROTOCOL), level=1)
+            departures = _enrich_event_filter_dimensions(
+                product.abgaenge_result["events_person_level"], snapshot)
+            packet["org_departure_events_version"] = 1
+            packet["org_departure_events"] = zlib.compress(
+                pickle.dumps(departures, protocol=pickle.HIGHEST_PROTOCOL), level=1)
         return packet
     finally:
         engine.get_setting = original_get_setting

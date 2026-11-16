@@ -192,3 +192,13 @@ def test_dataframe_export_fingerprint_changes_with_values():
     second = pd.DataFrame({"Organisationseinheit": ["A"], "MAK": [2.0]})
 
     assert ui_compat.dataframe_export_fingerprint(first, "org") != ui_compat.dataframe_export_fingerprint(second, "org")
+
+
+def test_dataframe_export_fingerprint_detects_middle_row_in_large_table():
+    first = pd.DataFrame({"Jobfamily": [f"JF-{index}" for index in range(600)],
+                          "Mittelwert": [1.0] * 600})
+    second = first.copy()
+    second.loc[300, "Mittelwert"] = 2.0
+
+    assert ui_compat.dataframe_export_fingerprint(first, "jf-mc") != (
+        ui_compat.dataframe_export_fingerprint(second, "jf-mc"))

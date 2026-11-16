@@ -7,9 +7,12 @@ import pytest
 from utils.monte_carlo_ensemble import aggregate_packets
 from utils.monte_carlo_metric_packet import LEVELS
 from utils.monte_carlo_org_view import (
-    approved_org_ensemble, event_band_table, stock_band_table, target_rank_band_stats,
+    annual_headline_statistics, approved_org_ensemble, event_band_table,
+    event_detail_band_table, event_summary_band_table,
+    mean_stacked_event_chart, stock_band_table, target_rank_band_stats,
 )
 from components.org_simulation_yearly import render_stacked_event_chart
+from components.org_monte_carlo_yearly import build_annual_band_figure, build_annual_box_figure
 
 
 def _ensemble():
@@ -24,6 +27,10 @@ def _ensemble():
             "annual_stock_values": [
                 ("2027-12-31", level, "A", metric, stock)
                 for level in LEVELS for metric in ("heads", "mak")],
+            "departure_stock_values": [
+                ("2027-12-31", level, "A", metric, stock)
+                for level in ("Organisationseinheit", "OE-Cluster")
+                for metric in ("heads", "mak")],
         }
     statistics = aggregate_packets(base_seed=42, count=2, runs=[
         {"seed": 42, "status": "ok", "packet": packet(0, 10, 4)},
@@ -46,6 +53,79 @@ def test_oe_annual_filters_sum_each_seed_before_quantiles():
     view["chart"]["Abgänge"] = 0
     quit_only = event_band_table(view, ensemble=ensemble).iloc[0]
     assert (quit_only["mean"], quit_only["lower"], quit_only["upper"]) == pytest.approx((5, 1, 9))
+    assert (quit_only["p25"], quit_only["median"], quit_only["p75"]) == pytest.approx((2.5, 5, 7.5))
+
+
+def test_annual_event_details_and_summary_use_seed_values():
+    ensemble = _ensemble()
+    ensemble["statistics"]["annual_event_samples"] = [
+        (2027, "Organisationseinheit", "A", "QUIT", metric, values)
+        for metric, values in (
+            ("Köpfe-Veränderung", [-1, -3]), ("MAK-Veränderung", [-.5, -1.5]),
+            ("Abgänge", [1, 3]), ("Zugänge", [0, 0]))]
+    detail = pd.DataFrame({"Jahr": [2027], "Organisationseinheit": ["A"],
+                           "Ereignisart": ["QUIT"], "Köpfe-Veränderung": [-1],
+                           "MAK-Veränderung": [-.5], "Abgänge": [1], "Zugänge": [0]})
+    view = {"dimension": "Organisationseinheit", "metric": "Abgänge",
+            "event_types": ["QUIT"], "periods": pd.DataFrame({"Jahr": [2027]}),
+            "table": pd.DataFrame(index=pd.Index(["A"], name="Organisationseinheit")),
+            "details": detail, "summary_table": pd.DataFrame({
+                2027: [1], "Summe ausgewählte Kennzahl": [1],
+                "Abgehende Köpfe": [1], "Abgehende MAK": [.5]}, index=["A"])}
+    details = event_detail_band_table(view, ensemble=ensemble)
+    assert details.loc[0, "Abgänge"] == 2
+    assert details.loc[0, "Abgänge P10"] == pytest.approx(1.2)
+    summary = event_summary_band_table(view, details, ensemble=ensemble)
+    assert summary.loc["A", "Abgehende Köpfe"] == 2
+    assert summary.loc["A", "Abgehende MAK"] == 1
+    assert summary.loc["A", "Summe ausgewählte Kennzahl P90"] == pytest.approx(2.8)
+    view["details"].loc[0, "Abgänge"] = 2
+    with pytest.raises(ValueError, match="weichen vom Referenzlauf ab"):
+        event_detail_band_table(view, ensemble=ensemble)
+
+
+def test_stacked_segments_show_seed_means_and_not_reference_values():
+    ensemble = _ensemble()
+    view = {"dimension": "Organisationseinheit", "metric": "Abgänge",
+            "event_types": ["QUIT", "RETIREMENT"],
+            "periods": pd.DataFrame({"Jahr": [2027]}),
+            "table": pd.DataFrame(index=pd.Index(["A"], name="Organisationseinheit"))}
+    stacked = mean_stacked_event_chart(view, ensemble=ensemble)
+    values = stacked.set_index("Ereignisart")["Abgänge"].to_dict()
+    assert values == {"QUIT": 5.0, "RETIREMENT": 5.0}
+
+
+def test_annual_headlines_use_per_seed_denominators_and_reporting_losses():
+    ensemble = _ensemble()
+    ensemble["statistics"]["departure_rate_inputs_by_seed"] = [
+        {"Organisationseinheit": {"opening": {"A": {"heads": 10, "mak": 8}},
+                                   "losses": [(2027, "A", "QUIT", 1, 0.5)]}},
+        {"Organisationseinheit": {"opening": {"A": {"heads": 10, "mak": 8}},
+                                   "losses": [(2027, "A", "QUIT", 3, 1.5)]}},
+    ]
+    summary = {"metadata": {"target_date": "2027-12-31"},
+               "stock_reconciliation": {
+                   "status": "Abgestimmt",
+                   "annual": pd.DataFrame([
+                       {"Ebene": "Organisationseinheit", "Organisation": "A",
+                        "Art": "Ausgangsstichtag", "Jahr": 2026,
+                        "Bestand-Köpfe": 10, "Bestand-MAK": 8},
+                       {"Ebene": "Organisationseinheit", "Organisation": "A",
+                        "Art": "Jahresstichtag", "Jahr": 2027,
+                        "Bestand-Köpfe": 5, "Bestand-MAK": 4},
+                   ]),
+                   "reporting_events": pd.DataFrame([
+                       {"Organisationseinheit": "A", "Jahr": 2027,
+                        "Ereignisart": "QUIT", "Köpfe-Veränderung": -1,
+                        "MAK-Veränderung": -.5},
+                   ]),
+               }}
+    stats = annual_headline_statistics(
+        summary, ensemble=ensemble, dimension="Organisationseinheit",
+        organizations=["A"], end_year=2027, metric="MAK")
+    assert stats["final"]["mean"] == 6.0
+    assert stats["quit"]["mean"] == 1.0
+    assert stats["departure_share"]["mean"] == pytest.approx(0.125)
 
 
 def test_oe_stock_band_matches_year_slice_and_approval():
@@ -54,6 +134,8 @@ def test_oe_stock_band_matches_year_slice_and_approval():
                           "Organisation": ["A"], "Bestand-MAK": [4.0]})
     band = stock_band_table(chart, ensemble=ensemble, level="Organisationseinheit", metric="MAK").iloc[0]
     assert (band["Referenzlauf"], band["mean"], band["lower"], band["upper"]) == pytest.approx((4, 6, 4.4, 7.6))
+    assert (band["p25"], band["median"], band["p75"]) == pytest.approx((5, 6, 7))
+    assert stock_band_table(chart, ensemble=ensemble, level="Organisationseinheit", metric="MAK").attrs["run_samples"][("2027-12-31", "A")] == [4, 8]
     opening = pd.DataFrame({"Stichtag": [pd.Timestamp("2026-09-01")],
                             "Organisation": ["A"], "Bestand-MAK": [3.25]})
     opening_band = stock_band_table(
@@ -65,6 +147,72 @@ def test_oe_stock_band_matches_year_slice_and_approval():
     assert approved_org_ensemble({"monte_carlo_ensemble_result": ensemble},
                                  SimpleNamespace(signature="sig", instance=3,
                                                  version="sig::3::adjusted::x", approved=True)) is None
+
+
+def test_annual_distribution_uses_saved_run_values_and_keeps_outer_band():
+    ensemble = _ensemble()
+    chart = pd.DataFrame({"Stichtag": [pd.Timestamp("2027-12-31")],
+                          "Organisation": ["A"], "Bestand-MAK": [4.0]})
+    bands = stock_band_table(chart, ensemble=ensemble, level="Organisationseinheit", metric="MAK")
+    line = build_annual_band_figure(bands, group_col="Organisation", group="A",
+                                    x_col="Stichtag", unit="MAK")
+    assert {trace.name for trace in line.data} >= {"P10–P90", "P25–P75", "Median (P50)", "Mittelwert"}
+    box = build_annual_box_figure(bands, group_col="Organisation", group="A",
+                                  x_col="Stichtag", x_value="2027-12-31", unit="MAK")
+    assert list(box.data[0].y) == [4, 8]
+    assert box.data[0].boxpoints == "all"
+
+
+def test_stock_band_uses_departure_bridge_when_full_stock_differs():
+    ensemble = _ensemble()
+    annual = ensemble["statistics"]["annual_stock_samples"]
+    for index, row in enumerate(annual):
+        if row[:4] == ("2027-12-31", "Organisationseinheit", "A", "mak"):
+            annual[index] = (*row[:4], [4.5, 8.5])
+    chart = pd.DataFrame({"Stichtag": [pd.Timestamp("2027-12-31")],
+                          "Organisation": ["A"], "Bestand-MAK": [4.0]})
+    bands = stock_band_table(chart, ensemble=ensemble,
+                             level="Organisationseinheit", metric="MAK")
+    assert bands.iloc[0]["Referenzlauf"] == 4.0
+    assert bands.iloc[0]["mean"] == 6.0
+    assert bands.iloc[0]["median"] == 6.0
+
+
+def test_old_ensemble_without_departure_bridge_requests_recalculation():
+    ensemble = _ensemble()
+    ensemble["statistics"].pop("departure_stock_samples")
+    chart = pd.DataFrame({"Stichtag": [pd.Timestamp("2027-12-31")],
+                          "Organisation": ["A"], "Bestand-MAK": [4.0]})
+    with pytest.raises(ValueError, match="neu berechnen"):
+        stock_band_table(chart, ensemble=ensemble,
+                         level="Organisationseinheit", metric="MAK")
+
+
+def test_oe_stock_bands_match_every_visible_year_slice_and_reject_reference_drift():
+    ensemble = _ensemble()
+    ensemble["statistics"]["annual_stock_samples"].extend([
+        ("2028-12-31", "Organisationseinheit", "A", "mak", [3.0, 9.0]),
+        ("2028-12-31", "Organisationseinheit", "B", "mak", [0.0, 2.0]),
+    ])
+    ensemble["statistics"]["departure_stock_samples"].extend([
+        ("2028-12-31", "Organisationseinheit", "A", "mak", [3.0, 9.0]),
+        ("2028-12-31", "Organisationseinheit", "B", "mak", [0.0, 2.0]),
+    ])
+    chart = pd.DataFrame({
+        "Stichtag": pd.to_datetime(["2026-09-01", "2027-12-31", "2028-12-31", "2028-12-31"]),
+        "Organisation": ["A", "A", "A", "B"],
+        "Bestand-MAK": [5.0, 4.0, 3.0, 0.0],
+    })
+    bands = stock_band_table(chart, ensemble=ensemble, level="Organisationseinheit",
+                             metric="MAK", base_date="2026-09-01")
+    assert bands["mean"].tolist() == [5.0, 6.0, 6.0, 1.0]
+    assert bands["lower"].tolist() == pytest.approx([5.0, 4.4, 3.6, .2])
+    assert bands["upper"].tolist() == pytest.approx([5.0, 7.6, 8.4, 1.8])
+    assert bands["Referenzlauf"].tolist() == chart["Bestand-MAK"].tolist()
+    chart.loc[2, "Bestand-MAK"] = 3.01
+    with pytest.raises(ValueError, match="weicht vom Referenzlauf ab"):
+        stock_band_table(chart, ensemble=ensemble, level="Organisationseinheit",
+                         metric="MAK", base_date="2026-09-01")
 
 
 def test_stacked_event_chart_keeps_reference_bars_under_gray_band(monkeypatch):
@@ -95,7 +243,7 @@ def test_target_ranking_band_requires_exact_reference_parity():
 
 def test_unmapped_cluster_stock_uses_bridge_display_label():
     ensemble = _ensemble()
-    ensemble["statistics"]["annual_stock_samples"].append(
+    ensemble["statistics"]["departure_stock_samples"].append(
         ("2027-12-31", "OE-Cluster", "Unclustered", "mak", [4.0, 8.0]))
     chart = pd.DataFrame({"Stichtag": [pd.Timestamp("2027-12-31")],
                           "Organisation": ["Nicht zugeordnet"], "Bestand-MAK": [4.0]})

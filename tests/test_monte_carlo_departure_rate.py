@@ -7,6 +7,7 @@ import pytest
 from components.org_simulation_yearly import build_yearly_headline_metrics
 from utils.monte_carlo_departure_rate import (
     certified_rate_inputs, departure_rate_input, departure_share,
+    oe_rate_inputs_from_context,
 )
 from utils.monte_carlo_ensemble import aggregate_departure_share, aggregate_packets
 
@@ -69,6 +70,9 @@ def test_certified_inputs_match_real_departure_only_views() -> None:
     context = _bridge_context("atz_ruhend", seed=42)
     summary = build_simulation_event_summary(context, expected_run_signature="a")
     sources = certified_rate_inputs(context, summary)
+    fast_sources = oe_rate_inputs_from_context(context)
+    assert fast_sources == {level: sources[level]
+                            for level in ("Organisationseinheit", "OE-Cluster")}
     # This small reference run has certified OE stocks but no certified JF
     # stock view. The extractor must not fabricate JF ratios from OE data.
     assert set(sources) == {"Organisationseinheit", "OE-Cluster"}

@@ -130,14 +130,19 @@ def main() -> None:
         st.info("Das vorliegende Simulationsergebnis enthält keine auswertbaren Daten.")
         return
 
-    org_analysis = _load_orgunit_analysis_module()
     ensemble = approved_org_ensemble(st.session_state, view)
     saved_ensemble = st.session_state.get("monte_carlo_ensemble_result")
     if (ensemble is None and view.version == f"{view.signature}::{view.instance}::original"
             and isinstance(saved_ensemble, dict) and saved_ensemble.get("count", 0) > 1
             and saved_ensemble.get("reference_signature") == view.signature
             and saved_ensemble.get("reference_instance") == view.instance):
-        st.info("Für die OE-Monte-Carlo-Bänder bitte die Simulation mit der aktuellen Version neu berechnen und den Originallauf erneut freigeben.")
+        st.error(
+            "Die gespeicherten Monte-Carlo-Laufdaten sind für diese freigegebene "
+            "OE-Ansicht unvollständig oder veraltet. Bitte Simulation neu berechnen "
+            "und freigeben. Es werden keine Referenzwerte als Mehrlaufergebnis angezeigt."
+        )
+        return
+    org_analysis = _load_orgunit_analysis_module()
     org_analysis.render_orgunit_analysis_page(
         prepared_df.copy(),
         history_df=None,

@@ -9,6 +9,7 @@ def test_annual_detail_uses_only_chosen_oe_and_all_its_years():
         "Jahr": [2027, 2028, 2027], "Organisationseinheit": ["A", "A", "B"],
         "Referenzlauf": [7, 6, 100], "mean": [8, 7, 101],
         "lower": [6, 5, 99], "upper": [10, 9, 103],
+        "p25": [7, 6, 100], "median": [8, 7, 101], "p75": [9, 8, 102],
     })
     fig = build_annual_band_figure(
         bands, group_col="Organisationseinheit", group="A", x_col="Jahr", unit="MAK")
@@ -16,15 +17,19 @@ def test_annual_detail_uses_only_chosen_oe_and_all_its_years():
     assert list(fig.data[0].y) == [10, 9]
     assert list(fig.data[1].y) == [6, 5]
     assert fig.data[1].fill == "tonexty"
-    assert list(fig.data[2].y) == [8, 7]
+    assert list(fig.data[2].y) == [9, 8]
     assert list(fig.data[3].y) == [7, 6]
-    assert fig.data[3].name == "Referenzlauf"
+    assert list(fig.data[4].y) == [8, 7]
+    assert list(fig.data[5].y) == [8, 7]
+    assert list(fig.data[6].y) == [7, 6]
+    assert fig.data[6].name == "Referenzlauf"
 
 
 def test_single_year_still_has_visible_range():
     bands = pd.DataFrame({
         "Stichtag": ["2027-12-31"], "Organisation": ["A"],
         "Referenzlauf": [7], "mean": [8], "lower": [6], "upper": [10],
+        "p25": [7], "median": [8], "p75": [9],
     })
     fig = build_annual_band_figure(
         bands, group_col="Organisation", group="A", x_col="Stichtag", unit="Bestand-MAK")
@@ -43,6 +48,7 @@ bands = pd.DataFrame({
     "Organisationseinheit": ["A", "A", "B", "B"],
     "Referenzlauf": [7, 6, 4, 3], "mean": [8, 7, 5, 4],
     "lower": [6, 5, 3, 2], "upper": [10, 9, 7, 6],
+    "p25": [7, 6, 4, 3], "median": [8, 7, 5, 4], "p75": [9, 8, 6, 5],
 })
 render_annual_band_detail(bands, group_col="Organisationseinheit",
                           x_col="Jahr", unit="MAK", key="test_oe_year_detail")

@@ -21,6 +21,7 @@ else:
 
 from components.sidebar import (
     apply_filters,
+    get_active_view_filters,
     get_filter_summary,
     get_global_metric_view,
     normalize_global_metric_view,
@@ -350,6 +351,191 @@ def _build_jobfamily_ranking_frame(
     return ranking_df
 
 
+def _monte_carlo_jobfamily_rank_statistics(
+    ensemble: dict, active_filters: dict, reference: pd.DataFrame,
+    metric_view: str, compact,
+) -> dict:
+    """Use the existing JF breakdown for every filtered target run."""
+    from components.sidebar import _apply_filters_uncached
+    from utils.monte_carlo_ensemble import _statistics
+    from utils.monte_carlo_filtered_org import decode_snapshot
+
+    blobs = ensemble.get("org_filter_snapshots")
+    if (ensemble.get("org_filter_snapshot_version") != 1
+            or not isinstance(blobs, list) or len(blobs) != ensemble.get("count")):
+        raise ValueError("Jobgruppen-Zielbestände je Lauf fehlen")
+    runs = []
+    for blob in blobs:
+        frame = normalize_jobfamily_column(decode_snapshot(blob))
+        frame = normalize_jobfamily_column(_apply_filters_uncached(frame, dict(active_filters)))
+        mapped = frame.loc[frame["Jobfamily"].ne(JOBFAMILY_UNMAPPED)]
+        config = _get_metric_config(mapped if not mapped.empty else frame, metric_view)
+        if config is None:
+            raise ValueError(f"Kennzahl {metric_view} fehlt in einem Jobgruppen-Lauf")
+        ranking = _build_jobfamily_ranking_frame(mapped, metric_view, config, compact)
+        eur_config = _get_metric_config(mapped if not mapped.empty else frame, "EUR")
+        if eur_config is not None and not mapped.empty:
+            eur = compact.create_breakdown_table(mapped, "Jobfamily", eur_config["value_col"])
+            if "Hinweis" not in eur and not eur.empty:
+                ranking = ranking.merge(eur[["Jobfamily", "IST"]].rename(columns={"IST": "EUR"}),
+                                        on="Jobfamily", how="left")
+        runs.append({metric: dict(zip(ranking.get("Jobfamily", []),
+                                      pd.to_numeric(ranking.get(metric, pd.Series(dtype=float)),
+                                                    errors="coerce").fillna(0.0)))
+                     for metric in ("Köpfe", "MAK", "EUR")})
+    reference_values = {}
+    for metric in ("Köpfe", "MAK", "EUR"):
+        config = _get_metric_config(reference, metric)
+        if config is None:
+            continue
+        table = compact.create_breakdown_table(reference, "Jobfamily", config["value_col"])
+        reference_values[metric] = (dict(zip(table["Jobfamily"], table["IST"]))
+                                    if "Hinweis" not in table and not table.empty else {})
+    for metric, expected in reference_values.items():
+        actual = runs[0][metric]
+        for group in set(expected) | set(actual):
+            if abs(float(expected.get(group, 0.0)) - float(actual.get(group, 0.0))) > 1e-6:
+                raise ValueError(
+                    f"Jobgruppe {group} ({metric}) weicht in Seed 0 vom Referenzlauf ab: "
+                    f"sichtbar={expected.get(group, 0.0)}, Seed 0={actual.get(group, 0.0)}")
+    groups = sorted(set().union(*(set(run["Köpfe"]) | set(run["MAK"]) | set(run["EUR"])
+                                for run in runs)) - {JOBFAMILY_UNMAPPED})
+    values = {metric: {group: _statistics([float(run[metric].get(group, 0.0)) for run in runs],
+                                          ensemble["band_level"])
+                       for group in groups}
+              for metric in ("Köpfe", "MAK", "EUR")}
+    return {"count": len(runs), "band_level": ensemble["band_level"], "values": values,
+            "groups": groups}
+
+
+def _monte_carlo_jobfamily_ranking_frame(statistics: dict) -> pd.DataFrame:
+    rows = []
+    for group in statistics["groups"]:
+        rows.append({"Jobfamily": group,
+                     "Köpfe": statistics["values"]["Köpfe"][group]["mean"],
+                     "MAK": statistics["values"]["MAK"][group]["mean"],
+                     "EUR": statistics["values"]["EUR"][group]["mean"],
+                     "Mindestgröße Köpfe": statistics["values"]["Köpfe"][group]["mean"],
+                     "Mindestgröße MAK": statistics["values"]["MAK"][group]["mean"]})
+    return pd.DataFrame(rows, columns=["Jobfamily", "Köpfe", "MAK", "EUR",
+                                       "Mindestgröße Köpfe", "Mindestgröße MAK"])
+
+
+def _jobfamily_kpi_operands(frame: pd.DataFrame, metric_view: str, compact) -> dict[str, float]:
+    mapped = frame.loc[frame["Jobfamily"].ne(JOBFAMILY_UNMAPPED)]
+    unmapped = frame.loc[frame["Jobfamily"].eq(JOBFAMILY_UNMAPPED)]
+    emp = mapped.loc[~mapped["Is_Vacant"]] if "Is_Vacant" in mapped else mapped
+    heads = float(compact.get_ist_koepfe(emp))
+    mak = float(compact.get_ist_mak(emp))
+    eur = float(compact.get_ist_eur(emp))
+    unique = get_unique_employees(emp)
+    female = float((unique["Geschlecht"] == "w").sum()) if "Geschlecht" in unique else 0.0
+    atz = compute_atz_kpis(emp)
+    part_time = compute_teilzeit_kpis(emp)
+    total_metric = _get_metric_total(frame, metric_view, compact)
+    unmapped_metric = _get_metric_total(unmapped, metric_view, compact)
+    return {
+        "heads": heads, "mak": mak, "eur": eur,
+        "raw_mak": float(compute_fte_roh(emp)), "female": female,
+        "female_share": female / heads if heads > 0 else 0.0,
+        "atz": float(atz["gesamt"]), "atz_share_pct": float(atz["quote_headcount_pct"]),
+        "part_time": float(part_time["count"]),
+        "part_time_share_pct": float(part_time["quote_pct"]),
+        "average_mak": mak / heads if heads > 0 else 0.0,
+        "eur_per_head": eur / heads if heads > 0 else 0.0,
+        "eur_per_mak": eur / mak if mak > 0 else 0.0,
+        "mapped_eur_share": ((total_metric - unmapped_metric) / total_metric
+                             if total_metric > 0 else 0.0),
+        "unmapped_metric": float(unmapped_metric),
+        "visible_jobfamilies": float(_count_visible_jobfamilies(mapped)),
+    }
+
+
+def _monte_carlo_jobfamily_kpi_statistics(
+    ensemble: dict, active_filters: dict, reference: pd.DataFrame,
+    metric_view: str, compact,
+) -> dict:
+    from components.sidebar import _apply_filters_uncached
+    from utils.monte_carlo_ensemble import _statistics
+    from utils.monte_carlo_filtered_org import decode_snapshot
+
+    blobs = ensemble.get("org_filter_snapshots")
+    if (ensemble.get("org_filter_snapshot_version") != 1
+            or not isinstance(blobs, list) or len(blobs) != ensemble.get("count") or not blobs):
+        raise ValueError("Jobgruppen-Zielbestände je Lauf fehlen")
+    expected = _jobfamily_kpi_operands(normalize_jobfamily_column(reference), metric_view, compact)
+    runs = []
+    for blob in blobs:
+        frame = normalize_jobfamily_column(decode_snapshot(blob))
+        frame = normalize_jobfamily_column(_apply_filters_uncached(frame, dict(active_filters)))
+        runs.append(_jobfamily_kpi_operands(frame, metric_view, compact))
+    for key, value in expected.items():
+        if abs(value - runs[0][key]) > 1e-6:
+            raise ValueError(f"Jobgruppen-KPI {key} weicht in Seed 0 vom Referenzlauf ab")
+    return {key: _statistics([run[key] for run in runs], ensemble["band_level"])
+            for key in expected}
+
+
+def _build_monte_carlo_jobfamily_kpis(
+    statistics: dict, rank_statistics: dict, metric_view: str, compact,
+) -> list[dict]:
+    def band(key: str, formatter) -> str:
+        values = statistics[key]
+        return f"P10–P90: {formatter(values['lower'])} bis {formatter(values['upper'])}"
+
+    def number(value: float) -> str:
+        return compact.format_number(value, 1)
+
+    def pct_points(value: float) -> str:
+        return f"{value:.1f}%".replace(".", ",")
+
+    groups = rank_statistics["values"][metric_view]
+    largest = max(groups, key=lambda group: (groups[group]["mean"], group)) if groups else None
+    formatter = lambda value: _format_metric_value(value, metric_view, compact)
+    largest_card = {
+        "title": "Größte Jobgruppe", "value": largest or "Keine zugeordnete Jobgruppe",
+        "subtitle": (f"Mittelwert: {formatter(groups[largest]['mean'])} · "
+                     f"P10–P90: {formatter(groups[largest]['lower'])} bis "
+                     f"{formatter(groups[largest]['upper'])} · "
+                     f"Ø {number(statistics['visible_jobfamilies']['mean'])} sichtbar")
+                    if largest else "Keine zugeordnete Jobgruppe",
+        "icon": "💼", "status": ("warning" if statistics["unmapped_metric"]["mean"] > 0
+                                   else "default"),
+    }
+    if metric_view == "Köpfe":
+        return [
+            {"title": "Zugeordnete Köpfe", "value": number(statistics["heads"]["mean"]),
+             "subtitle": band("heads", number), "icon": "👥", "status": "good"},
+            {"title": "Frauenanteil", "value": compact.format_percent(statistics["female_share"]["mean"]),
+             "subtitle": f"{band('female_share', compact.format_percent)} · Ø {number(statistics['female']['mean'])} Frauen",
+             "icon": "👤", "status": "default"},
+            {"title": "ATZ-Quote", "value": pct_points(statistics["atz_share_pct"]["mean"]),
+             "subtitle": f"{band('atz_share_pct', pct_points)} · Ø {number(statistics['atz']['mean'])} Mitarbeitende",
+             "icon": "⏰", "status": "default"}, largest_card,
+        ]
+    if metric_view == "MAK":
+        return [
+            {"title": "Zugeordnete MAK", "value": number(statistics["mak"]["mean"]),
+             "subtitle": f"{band('mak', number)} · Roh-MAK Ø {number(statistics['raw_mak']['mean'])} bei Ø {number(statistics['heads']['mean'])} Köpfen",
+             "icon": "📈", "status": "good"},
+            {"title": "Ø MAK", "value": compact.format_number(statistics["average_mak"]["mean"], 2),
+             "subtitle": band("average_mak", lambda value: compact.format_number(value, 2)),
+             "icon": "📊", "status": "default"},
+            {"title": "Teilzeitquote", "value": pct_points(statistics["part_time_share_pct"]["mean"]),
+             "subtitle": f"{band('part_time_share_pct', pct_points)} · Ø {number(statistics['part_time']['mean'])} Teilzeit-Mitarbeitende",
+             "icon": "⏰", "status": "default"}, largest_card,
+        ]
+    return [
+        {"title": "Zugeordnete Kosten", "value": compact.format_currency(statistics["eur"]["mean"]),
+         "subtitle": band("eur", compact.format_currency), "icon": "💰", "status": "good"},
+        {"title": "Kosten pro Kopf", "value": compact.format_currency(statistics["eur_per_head"]["mean"]),
+         "subtitle": band("eur_per_head", compact.format_currency), "icon": "👤", "status": "default"},
+        {"title": "Kosten pro MAK", "value": compact.format_currency(statistics["eur_per_mak"]["mean"]),
+         "subtitle": f"{band('eur_per_mak', compact.format_currency)} · Zugeordnet Ø {compact.format_percent(statistics['mapped_eur_share']['mean'])}",
+         "icon": "📊", "status": "default"}, largest_card,
+    ]
+
+
 def _apply_jobfamily_top_filters(
     ranking_df: pd.DataFrame,
     top_n: str,
@@ -475,6 +661,52 @@ def _format_split_display(pivot_df: pd.DataFrame, metric_view: str, compact) -> 
     return display_df
 
 
+def _monte_carlo_jobfamily_split_statistics(
+    ensemble: dict, active_filters: dict, reference: pd.DataFrame,
+    display_jobfamilies: list[str], split_col: str, metric_view: str, compact,
+) -> pd.DataFrame:
+    from components.sidebar import _apply_filters_uncached
+    from utils.monte_carlo_ensemble import _statistics
+    from utils.monte_carlo_filtered_org import decode_snapshot
+
+    blobs = ensemble.get("org_filter_snapshots")
+    if (ensemble.get("org_filter_snapshot_version") != 1 or not isinstance(blobs, list)
+            or not blobs or len(blobs) != ensemble.get("count")):
+        raise ValueError("Jobgruppen-Zielbestände je Lauf fehlen")
+
+    def aggregate(frame: pd.DataFrame) -> dict[tuple[str, str], float]:
+        frame = normalize_jobfamily_column(frame)
+        if split_col not in frame:
+            raise ValueError(f"Merkmal {split_col} fehlt im Jobgruppen-Lauf")
+        mapped = frame.loc[frame["Jobfamily"].ne(JOBFAMILY_UNMAPPED)]
+        config = _get_metric_config(mapped if not mapped.empty else frame, metric_view)
+        if config is None:
+            raise ValueError(f"Kennzahl {metric_view} fehlt im Jobgruppen-Lauf")
+        result = _aggregate_jobfamily_split(
+            mapped, split_col, metric_view, config, compact,
+            display_jobfamilies=display_jobfamilies)
+        return {(str(row["Jobfamily"]), str(row[split_col])): float(row["Wert"])
+                for _, row in result.iterrows()} if not result.empty else {}
+
+    expected = aggregate(reference)
+    runs = [aggregate(_apply_filters_uncached(decode_snapshot(blob), dict(active_filters)))
+            for blob in blobs]
+    for key in set(expected) | set(runs[0]):
+        if abs(expected.get(key, 0.0) - runs[0].get(key, 0.0)) > 1e-6:
+            raise ValueError(f"{split_col} für {key} weicht in Seed 0 vom Referenzlauf ab")
+    keys = sorted(set().union(*(set(run) for run in runs)),
+                  key=lambda key: (display_jobfamilies.index(key[0]), key[1]))
+    rows = []
+    for group, segment in keys:
+        samples = [run.get((group, segment), 0.0) for run in runs]
+        stats = _statistics(samples, ensemble["band_level"])
+        rows.append({"Jobfamily": group, split_col: segment, "Wert": stats["mean"],
+                     "P10": stats["lower"], "P90": stats["upper"],
+                     "Seed 0": samples[0], "samples": samples})
+    return pd.DataFrame(rows, columns=["Jobfamily", split_col, "Wert", "P10", "P90",
+                                       "Seed 0", "samples"])
+
+
 def _render_jobfamily_split_block(
     mapped_df: pd.DataFrame,
     title: str,
@@ -486,6 +718,8 @@ def _render_jobfamily_split_block(
     top_n: int | str = TOP_JOBFAMILY_COUNT,
     display_jobfamilies: list[str] | None = None,
     is_simulation: bool = False,
+    monte_carlo_statistics: pd.DataFrame | None = None,
+    monte_carlo_band_level: float = 0.8,
 ) -> None:
     agg_df = _aggregate_jobfamily_split(
         mapped_df,
@@ -496,6 +730,8 @@ def _render_jobfamily_split_block(
         top_n=top_n,
         display_jobfamilies=display_jobfamilies,
     )
+    if monte_carlo_statistics is not None:
+        agg_df = monte_carlo_statistics.copy()
     if agg_df.empty:
         st.info(f"Keine auswertbaren Daten im aktuellen Filterkontext.")
         return
@@ -506,6 +742,10 @@ def _render_jobfamily_split_block(
     chart_df = agg_df.copy()
     chart_df["Jobfamily"] = chart_df["Jobfamily"].astype(str)
     chart_df["Wert_Anzeige"] = chart_df["Wert"].apply(lambda value: _format_metric_value(float(value), metric_view, compact))
+    if monte_carlo_statistics is not None:
+        chart_df["Band_Anzeige"] = chart_df.apply(
+            lambda row: f"P10–P90: {_format_metric_value(row['P10'], metric_view, compact)} bis "
+                        f"{_format_metric_value(row['P90'], metric_view, compact)}", axis=1)
 
     _cdm = None
     _cat_ord: dict = {"Jobfamily": jobfamily_order}
@@ -531,11 +771,44 @@ def _render_jobfamily_split_block(
         color=split_col,
         orientation="h",
         barmode="stack",
-        custom_data=["Wert_Anzeige"],
+        custom_data=(["Wert_Anzeige", "Band_Anzeige"] if monte_carlo_statistics is not None
+                     else ["Wert_Anzeige"]),
         color_discrete_map=_cdm,
         category_orders=_cat_ord,
     )
-    fig.update_traces(hovertemplate="<b>%{y}</b><br>%{fullData.name}: %{customdata[0]}<extra></extra>")
+    hover = "<b>%{y}</b><br>%{fullData.name}: %{customdata[0]}"
+    if monte_carlo_statistics is not None:
+        hover += "<br>%{customdata[1]}"
+    fig.update_traces(hovertemplate=hover + "<extra></extra>")
+    monte_carlo_table = None
+    if monte_carlo_statistics is not None:
+        import plotly.graph_objects as go
+        totals = []
+        for group in jobfamily_order:
+            segments = agg_df.loc[agg_df["Jobfamily"].astype(str).eq(group)]
+            if segments.empty:
+                continue
+            samples = [sum(values[index] for values in segments["samples"])
+                       for index in range(len(segments.iloc[0]["samples"]))]
+            from utils.monte_carlo_ensemble import _statistics
+            stats = _statistics(samples, monte_carlo_band_level)
+            totals.append((group, stats))
+        if totals:
+            monte_carlo_table = pd.concat([
+                agg_df.drop(columns=["samples", "Seed 0"], errors="ignore"),
+                pd.DataFrame([
+                    {"Jobfamily": group, split_col: "Gesamt", "Wert": stats["mean"],
+                     "P10": stats["lower"], "P90": stats["upper"]}
+                    for group, stats in totals
+                ]),
+            ], ignore_index=True)
+            fig.add_trace(go.Scatter(
+                x=[item[1]["mean"] for item in totals], y=[item[0] for item in totals],
+                mode="markers", marker=dict(color="#6b7280", size=5),
+                error_x=dict(type="data", symmetric=False, color="#6b7280", thickness=2,
+                             array=[item[1]["upper"] - item[1]["mean"] for item in totals],
+                             arrayminus=[item[1]["mean"] - item[1]["lower"] for item in totals]),
+                name="P10–P90 Gesamt", hovertemplate="<b>%{y}</b><br>Gesamt: %{x}<extra></extra>"))
     fig.update_layout(
         height=max(360, 42 * chart_df["Jobfamily"].nunique()),
         margin=dict(l=10, r=10, t=10, b=10),
@@ -551,6 +824,11 @@ def _render_jobfamily_split_block(
     with col_chart:
         st.plotly_chart(fig, use_container_width=True)
     with col_table:
+        if monte_carlo_statistics is not None:
+            display_df = monte_carlo_table.copy() if monte_carlo_table is not None else agg_df.drop(columns=["samples", "Seed 0"]).copy()
+            for col in ("Wert", "P10", "P90"):
+                display_df[col] = display_df[col].map(
+                    lambda value: _format_metric_value(value, metric_view, compact))
         dataframe_compat(display_df, width="stretch", hide_index=True)
         lineage_ids = _jobfamily_lineage_ids(
             is_simulation,
@@ -560,7 +838,7 @@ def _render_jobfamily_split_block(
         lazy_excel_download_button_compat(
             label="Excel Download",
             data_builder=lambda: compact.export_to_excel(
-                pivot_df,
+                (monte_carlo_table if monte_carlo_table is not None else pivot_df),
                 key_prefix=key_prefix,
                 dimension_name=f"Jobgruppe x {title}",
                 value_type=metric_config["value_type"],
@@ -571,7 +849,7 @@ def _render_jobfamily_split_block(
             mime=compact._EXCEL_MIME,
             key=f"download_{key_prefix}_{split_col}",
             fingerprint=dataframe_export_fingerprint(
-                pivot_df,
+                (monte_carlo_table if monte_carlo_table is not None else pivot_df),
                 key_prefix,
                 metric_config["value_type"],
                 tuple(lineage_ids),
@@ -627,6 +905,59 @@ def _build_role_summary_table(
     return pd.DataFrame(rows)
 
 
+def _monte_carlo_jobfamily_role_summary_statistics(
+    ensemble: dict, active_filters: dict, reference: pd.DataFrame,
+    jobfamilies: list[str], compact,
+) -> pd.DataFrame:
+    from components.sidebar import _apply_filters_uncached
+    from utils.monte_carlo_ensemble import _statistics
+    from utils.monte_carlo_filtered_org import decode_snapshot
+
+    blobs = ensemble.get("org_filter_snapshots")
+    if (ensemble.get("org_filter_snapshot_version") != 1 or not isinstance(blobs, list)
+            or not blobs or len(blobs) != ensemble.get("count")):
+        raise ValueError("Jobgruppen-Zielbestände je Lauf fehlen")
+
+    def values(frame: pd.DataFrame) -> dict[str, dict[str, float]]:
+        frame = normalize_jobfamily_column(frame)
+        mapped = frame.loc[frame["Jobfamily"].ne(JOBFAMILY_UNMAPPED)]
+        work = mapped.loc[mapped["Jobfamily"].isin(jobfamilies)].copy()
+        if "Is_Vacant" in work:
+            work = work.loc[~work["Is_Vacant"]]
+        mak_col = next((col for col in ("MAK_Reporting", "MAK_Calculated", "MAK")
+                        if col in work), None)
+        id_col = next((col for col in ("PersNr", "Personalnummer") if col in work), None)
+        if mak_col is None:
+            raise ValueError("MAK für die Jobgruppen-Kapazität fehlen")
+        unique = get_unique_employees(work) if id_col and not work.empty else work
+        result = {}
+        for group in jobfamilies:
+            part = unique.loc[unique["Jobfamily"].eq(group)]
+            heads = float(part[id_col].nunique() if id_col else len(part))
+            mak = float(part[mak_col].sum())
+            result[group] = {"Köpfe": heads, "MAK": mak,
+                             "Ø MAK": mak / heads if heads > 0 else 0.0}
+        return result
+
+    expected = values(reference)
+    runs = [values(_apply_filters_uncached(decode_snapshot(blob), dict(active_filters)))
+            for blob in blobs]
+    for group in jobfamilies:
+        for metric in ("Köpfe", "MAK", "Ø MAK"):
+            if abs(expected[group][metric] - runs[0][group][metric]) > 1e-6:
+                raise ValueError(f"{group}: {metric} weicht in Seed 0 vom Referenzlauf ab")
+    rows = []
+    for group in jobfamilies:
+        row = {"Jobfamily": group}
+        for metric in ("Köpfe", "MAK", "Ø MAK"):
+            stats = _statistics([run[group][metric] for run in runs], ensemble["band_level"])
+            row[metric] = stats["mean"]
+            row[f"{metric} P10"] = stats["lower"]
+            row[f"{metric} P90"] = stats["upper"]
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
 def _render_role_breakdown_block(
     mapped_df: pd.DataFrame,
     metric_view: str,
@@ -634,6 +965,8 @@ def _render_role_breakdown_block(
     top_n: int | str = TOP_JOBFAMILY_COUNT,
     display_jobfamilies: list[str] | None = None,
     is_simulation: bool = False,
+    monte_carlo_ensemble: dict | None = None,
+    active_filters: dict | None = None,
 ) -> None:
     if "TrfGr" not in mapped_df.columns:
         st.info("Keine Tarifgruppen-Spalte verfügbar.")
@@ -651,6 +984,19 @@ def _render_role_breakdown_block(
     else:
         st.caption(f"Aktuelle Darstellungsart: {role_metric_view}.")
 
+    jobfamilies = display_jobfamilies or _get_top_jobfamilies(mapped_df, role_metric_config, compact, top_n=top_n)
+    mc_tariff_stats = None
+    mc_summary_df = None
+    if monte_carlo_ensemble is not None:
+        try:
+            mc_tariff_stats = _monte_carlo_jobfamily_split_statistics(
+                monte_carlo_ensemble, active_filters or {}, mapped_df,
+                jobfamilies, "TrfGr", role_metric_view, compact)
+            mc_summary_df = _monte_carlo_jobfamily_role_summary_statistics(
+                monte_carlo_ensemble, active_filters or {}, mapped_df, jobfamilies, compact)
+        except ValueError as exc:
+            st.error(f"Monte-Carlo-Tarifstruktur nicht verfügbar: {exc}. Bitte Simulation neu berechnen.")
+            return
     _render_jobfamily_split_block(
         mapped_df, "Tarifgruppe", "TrfGr",
         role_metric_view, role_metric_config, compact,
@@ -658,15 +1004,84 @@ def _render_role_breakdown_block(
         top_n=top_n,
         display_jobfamilies=display_jobfamilies,
         is_simulation=is_simulation,
+        monte_carlo_statistics=mc_tariff_stats,
+        monte_carlo_band_level=(monte_carlo_ensemble["band_level"]
+                                if monte_carlo_ensemble is not None else 0.8),
     )
 
     # Summary table: Köpfe, MAK, Ø MAK per Jobgruppe — keine Euro-Werte
-    jobfamilies = display_jobfamilies or _get_top_jobfamilies(mapped_df, role_metric_config, compact, top_n=top_n)
     st.divider()
     st.subheader("Kopfzahl und Kapazität pro Jobgruppe")
-    summary_df = _build_role_summary_table(mapped_df, jobfamilies, compact)
+    summary_df = (_build_role_summary_table(mapped_df, jobfamilies, compact)
+                  if mc_summary_df is None else mc_summary_df)
+    if mc_summary_df is not None:
+        summary_df = summary_df.copy()
+        for column in summary_df.columns:
+            if column == "Jobfamily":
+                continue
+            decimals = 2 if column.startswith("Ø MAK") else 1
+            summary_df[column] = summary_df[column].map(
+                lambda value: compact.format_number(value, decimals))
     if not summary_df.empty:
         dataframe_compat(summary_df, width="stretch", hide_index=True)
+
+
+def _monte_carlo_jobfamily_quality_statistics(
+    ensemble: dict, active_filters: dict, reference: pd.DataFrame,
+    metric_view: str, compact,
+) -> dict:
+    from components.sidebar import _apply_filters_uncached
+    from utils.monte_carlo_ensemble import _statistics
+    from utils.monte_carlo_filtered_org import decode_snapshot
+
+    blobs = ensemble.get("org_filter_snapshots")
+    if (ensemble.get("org_filter_snapshot_version") != 1 or not isinstance(blobs, list)
+            or not blobs or len(blobs) != ensemble.get("count")):
+        raise ValueError("Jobgruppen-Zielbestände je Lauf fehlen")
+
+    def values(frame: pd.DataFrame) -> tuple[dict[str, float], dict[str, float]]:
+        frame = normalize_jobfamily_column(frame)
+        unmapped = frame.loc[frame["Jobfamily"].eq(JOBFAMILY_UNMAPPED)]
+        mapped = frame.loc[frame["Jobfamily"].ne(JOBFAMILY_UNMAPPED)]
+        total = _get_metric_total(frame, metric_view, compact)
+        missing = _get_metric_total(unmapped, metric_view, compact)
+        included = _get_metric_total(mapped, metric_view, compact)
+        employees = float(len(get_unique_employees(unmapped))) if not unmapped.empty else 0.0
+        rows = float(len(frame))
+        result = {
+            "total_rows": rows, "unmapped_rows": float(len(unmapped)),
+            "unmapped_row_share": len(unmapped) / rows if rows > 0 else 0.0,
+            "unmapped_employees": employees, "unmapped_metric": float(missing),
+            "unmapped_share": missing / total if total > 0 else 0.0,
+            "mapped_share": included / total if total > 0 else 0.0,
+        }
+        planstellen = {}
+        if "Planstelle" in unmapped and not unmapped.empty:
+            config = _get_metric_config(unmapped, metric_view)
+            if config is None:
+                raise ValueError(f"Kennzahl {metric_view} fehlt für UNMAPPED-Planstellen")
+            table = compact.create_breakdown_table(unmapped, "Planstelle", config["value_col"])
+            if "Hinweis" not in table and not table.empty:
+                planstellen = {str(row["Planstelle"]): float(row["IST"])
+                               for _, row in table.iterrows()}
+        return result, planstellen
+
+    expected, expected_positions = values(reference)
+    runs = [values(_apply_filters_uncached(decode_snapshot(blob), dict(active_filters)))
+            for blob in blobs]
+    for key, value in expected.items():
+        if abs(value - runs[0][0][key]) > 1e-6:
+            raise ValueError(f"Datenqualität {key} weicht in Seed 0 vom Referenzlauf ab")
+    for key in set(expected_positions) | set(runs[0][1]):
+        if abs(expected_positions.get(key, 0.0) - runs[0][1].get(key, 0.0)) > 1e-6:
+            raise ValueError(f"UNMAPPED-Planstelle {key} weicht in Seed 0 vom Referenzlauf ab")
+    positions = sorted(set().union(*(set(position_values) for _, position_values in runs)))
+    return {
+        "values": {key: _statistics([run[0][key] for run in runs], ensemble["band_level"])
+                   for key in expected},
+        "planstellen": {key: _statistics([run[1].get(key, 0.0) for run in runs],
+                                        ensemble["band_level"]) for key in positions},
+    }
 
 
 def _render_data_quality_block(
@@ -677,7 +1092,61 @@ def _render_data_quality_block(
     metric_config: dict[str, str],
     compact,
     is_simulation: bool = False,
+    monte_carlo_statistics: dict | None = None,
 ) -> None:
+    if monte_carlo_statistics is not None:
+        stats = monte_carlo_statistics["values"]
+        def band(key: str, formatter) -> str:
+            item = stats[key]
+            return f"P10–P90: {formatter(item['lower'])} bis {formatter(item['upper'])}"
+        def number(value: float) -> str:
+            return compact.format_number(value, 1)
+        if stats["unmapped_rows"]["mean"] <= 0:
+            st.success("In keinem Lauf sind sichtbare Datensätze ohne Jobgruppe vorhanden.")
+            return
+        compact.render_kpi_cards_styled([
+            {"title": "UNMAPPED Datensätze", "value": number(stats["unmapped_rows"]["mean"]),
+             "subtitle": f"{band('unmapped_rows', number)} · Ø {compact.format_percent(stats['unmapped_row_share']['mean'])} der sichtbaren Datensätze",
+             "icon": "🧩", "status": "warning"},
+            {"title": "UNMAPPED Mitarbeitende", "value": number(stats["unmapped_employees"]["mean"]),
+             "subtitle": band("unmapped_employees", number), "icon": "👥", "status": "warning"},
+            {"title": "UNMAPPED Einfluss", "value": _format_metric_value(stats["unmapped_metric"]["mean"], metric_view, compact),
+             "subtitle": f"{band('unmapped_metric', lambda value: _format_metric_value(value, metric_view, compact))} · Ø {compact.format_percent(stats['unmapped_share']['mean'])} der sichtbaren Kennzahl",
+             "icon": "⚠️", "status": "warning"},
+            {"title": "Zugeordneter Anteil", "value": compact.format_percent(stats["mapped_share"]["mean"]),
+             "subtitle": band("mapped_share", compact.format_percent), "icon": "✅", "status": "default"},
+        ])
+        render_context_box(
+            "Wirkung auf die Hauptanalyse",
+            "Die Rangliste und Detailblöcke schließen UNMAPPED aus. Die Werte hier zeigen Mittelwert und P10–P90 aller Läufe.",
+            tone="warning")
+        positions = monte_carlo_statistics["planstellen"]
+        if positions:
+            rows = [{"Planstelle": name, "IST": value["mean"],
+                     "P10": value["lower"], "P90": value["upper"]}
+                    for name, value in positions.items()]
+            planstellen_df = pd.DataFrame(rows).sort_values(["IST", "Planstelle"],
+                                                          ascending=[False, True]).head(10)
+            st.markdown("**Top-Planstellen innerhalb UNMAPPED**")
+            display = planstellen_df.copy()
+            for column in ("IST", "P10", "P90"):
+                display[column] = display[column].map(
+                    lambda value: _format_metric_value(value, metric_view, compact))
+            dataframe_compat(display, width="stretch", hide_index=True)
+            lineage_ids = _jobfamily_lineage_ids(is_simulation, "8-17", "11-05")
+            lazy_excel_download_button_compat(
+                label="Excel Download",
+                data_builder=lambda: compact.export_to_excel(
+                    planstellen_df, key_prefix="jobfamily_quality",
+                    dimension_name="UNMAPPED Planstellen",
+                    value_type=metric_config["value_type"],
+                    table_title="UNMAPPED - Top Planstellen", lineage_ids=lineage_ids),
+                file_name="jobfamily_unmapped_planstellen.xlsx", mime=compact._EXCEL_MIME,
+                key="download_jobfamily_quality_planstellen",
+                fingerprint=dataframe_export_fingerprint(
+                    planstellen_df, "jobfamily_quality", metric_config["value_type"],
+                    tuple(lineage_ids)), width="stretch")
+        return
     total_rows = len(filtered_df)
     unmapped_rows = len(unmapped_df)
     total_metric = _get_metric_total(filtered_df, metric_view, compact)
@@ -781,9 +1250,18 @@ def _render_jobfamily_rangliste(
     top_n: int | str,
     display_jobfamilies: list[str] | None = None,
     is_simulation: bool = False,
+    rank_statistics: dict | None = None,
 ) -> None:
-    ranking_df = compact.create_breakdown_table(mapped_df, "Jobfamily", metric_config["value_col"])
-    ranking_df = ranking_df[ranking_df["Jobfamily"] != JOBFAMILY_UNMAPPED].copy()
+    if rank_statistics is None:
+        ranking_df = compact.create_breakdown_table(mapped_df, "Jobfamily", metric_config["value_col"])
+        ranking_df = ranking_df[ranking_df["Jobfamily"] != JOBFAMILY_UNMAPPED].copy()
+    else:
+        selected = display_jobfamilies or rank_statistics["groups"]
+        ranking_df = pd.DataFrame([
+            {"Jobfamily": group, "IST": rank_statistics["values"][metric_view][group]["mean"],
+             "P10": rank_statistics["values"][metric_view][group]["lower"],
+             "P90": rank_statistics["values"][metric_view][group]["upper"]}
+            for group in selected])
     if ranking_df.empty or "Hinweis" in ranking_df.columns:
         st.warning("Keine Daten für 'Jobgruppen' verfügbar.")
         return
@@ -806,6 +1284,11 @@ def _render_jobfamily_rangliste(
     chart_df["Wert_Anzeige"] = chart_df[value_col].apply(
         lambda value: _format_metric_value(float(value), metric_view, compact)
     )
+    if rank_statistics is not None:
+        chart_df["Wert_Anzeige"] = chart_df.apply(
+            lambda row: f"{row['Wert_Anzeige']} · P10–P90: "
+            f"{_format_metric_value(row['P10'], metric_view, compact)} bis "
+            f"{_format_metric_value(row['P90'], metric_view, compact)}", axis=1)
     fig = px.bar(
         chart_df,
         x=value_col,
@@ -817,6 +1300,12 @@ def _render_jobfamily_rangliste(
     fig.update_traces(
         hovertemplate=f"<b>%{{y}}</b><br>{value_label}: %{{customdata[0]}}<extra></extra>"
     )
+    if rank_statistics is not None:
+        fig.update_traces(error_x=dict(
+            type="data", symmetric=False,
+            array=(chart_df["P90"] - chart_df[value_col]).tolist(),
+            arrayminus=(chart_df[value_col] - chart_df["P10"]).tolist(),
+            color="#6b7280", thickness=2, width=5))
     fig.update_layout(
         height=max(360, 42 * chart_df["Jobfamily"].nunique()),
         margin=dict(l=10, r=10, t=10, b=10),
@@ -827,12 +1316,18 @@ def _render_jobfamily_rangliste(
         paper_bgcolor="rgba(0,0,0,0)",
     )
 
-    display_source = ranking_df.copy()
-    if value_col != "IST":
-        display_source = display_source.rename(columns={value_col: "IST"})
-    display_df = compact.format_dataframe_for_display(display_source, metric_config["value_type"])
-    if value_col != "IST":
-        display_df = display_df.rename(columns={"IST": value_label})
+    if rank_statistics is None:
+        display_source = ranking_df.copy()
+        if value_col != "IST":
+            display_source = display_source.rename(columns={value_col: "IST"})
+        display_df = compact.format_dataframe_for_display(display_source, metric_config["value_type"])
+        if value_col != "IST":
+            display_df = display_df.rename(columns={"IST": value_label})
+    else:
+        display_df = ranking_df.copy()
+        for column in (value_col, "P10", "P90"):
+            display_df[column] = display_df[column].map(
+                lambda value: _format_metric_value(float(value), metric_view, compact))
 
     col_chart, col_table = st.columns([3, 2])
     with col_chart:
@@ -873,6 +1368,7 @@ def render_jobfamily_analysis_page(
     methodology_text: str | None = None,
     key_prefix: str = "jobfamily_ist",
     yearly_renderer: Callable[[], None] | None = None,
+    monte_carlo_ensemble: dict | None = None,
 ) -> None:
     compact = load_compact_page_module()
     is_simulation = value_label == "Simulation" or key_prefix == "jobfamily_simulation"
@@ -881,6 +1377,12 @@ def render_jobfamily_analysis_page(
         title,
         subtitle,
     )
+    if monte_carlo_ensemble is not None:
+        st.warning(
+            f"{monte_carlo_ensemble['count']} Läufe vorhanden. KPI-Karten, Rangliste, Top-N-Auswahl, "
+            "Zusammensetzung, Tarifstruktur, Datenqualität und Jahresansicht zeigen "
+            "Mittelwerte und P10–P90. Der Jahresbestand ist als Positionsbestand ausgewiesen."
+        )
 
     set_metric_page_hint(
         f"{title} nutzt den globalen Metrik-Switch direkt für KPIs, Rangliste und Detailblöcke."
@@ -889,7 +1391,12 @@ def render_jobfamily_analysis_page(
     prepared_df = normalize_jobfamily_column(prepared_df)
     history_for_filters = history_df if history_df is not None else pd.DataFrame()
 
-    render_global_filters(prepared_df, history_for_filters)
+    if monte_carlo_ensemble is None:
+        render_global_filters(prepared_df, history_for_filters)
+    else:
+        from utils.monte_carlo_filter_options import filter_options_from_ensemble
+        render_global_filters(prepared_df, history_for_filters,
+                              option_values=filter_options_from_ensemble(monte_carlo_ensemble))
     filtered_df = apply_filters(prepared_df)
     filter_summary = get_filter_summary()
     render_active_filter_banner(filter_summary)
@@ -919,16 +1426,35 @@ def render_jobfamily_analysis_page(
     filtered_df = normalize_jobfamily_column(filtered_df)
     mapped_df = filtered_df[filtered_df["Jobfamily"] != JOBFAMILY_UNMAPPED].copy()
     unmapped_df = filtered_df[filtered_df["Jobfamily"] == JOBFAMILY_UNMAPPED].copy()
+    mc_rank_stats = None
+    mc_kpi_stats = None
+    mc_quality_stats = None
+    if monte_carlo_ensemble is not None:
+        try:
+            mc_rank_stats = _monte_carlo_jobfamily_rank_statistics(
+                monte_carlo_ensemble, get_active_view_filters(), mapped_df,
+                metric_view, compact)
+            mc_kpi_stats = _monte_carlo_jobfamily_kpi_statistics(
+                monte_carlo_ensemble, get_active_view_filters(), filtered_df,
+                metric_view, compact)
+            mc_quality_stats = _monte_carlo_jobfamily_quality_statistics(
+                monte_carlo_ensemble, get_active_view_filters(), filtered_df,
+                metric_view, compact)
+        except ValueError as exc:
+            st.error(f"Monte-Carlo-Jobgruppenwerte nicht verfügbar: {exc}. Bitte Simulation neu berechnen.")
+            return
 
     render_section_intro(
         "KPI-Überblick",
         f"Kennzahl: {metric_view} · aktueller Filterkontext",
     )
-    kpis = _build_kpis(mapped_df, filtered_df, unmapped_df, metric_view, compact)
+    kpis = (_build_kpis(mapped_df, filtered_df, unmapped_df, metric_view, compact)
+            if mc_kpi_stats is None else _build_monte_carlo_jobfamily_kpis(
+                mc_kpi_stats, mc_rank_stats, metric_view, compact))
     if kpis:
         compact.render_kpi_cards_styled(kpis)
 
-    if mapped_df.empty:
+    if mapped_df.empty and (mc_rank_stats is None or not mc_rank_stats["groups"]):
         render_context_box(
             "Keine zugeordneten Jobgruppen im aktuellen Ausschnitt",
             "Im aktuellen Filterkontext sind nur UNMAPPED-Zeilen oder gar keine Daten sichtbar. Die fachliche Hauptanalyse bleibt deshalb leer; der Datenqualitätsblock unten zeigt den verbleibenden Rest transparent an.",
@@ -942,6 +1468,7 @@ def render_jobfamily_analysis_page(
             metric_config,
             compact,
             is_simulation=is_simulation,
+            monte_carlo_statistics=mc_quality_stats,
         )
         if yearly_renderer is not None:
             yearly_renderer()
@@ -982,7 +1509,8 @@ def render_jobfamily_analysis_page(
 
     st.caption("Die Auswahl steuert Rangliste, Zusammensetzung und Tarifstruktur dieser Seite.")
 
-    ranking_df = _build_jobfamily_ranking_frame(mapped_df, metric_view, metric_config, compact)
+    ranking_df = (_build_jobfamily_ranking_frame(mapped_df, metric_view, metric_config, compact)
+                  if mc_rank_stats is None else _monte_carlo_jobfamily_ranking_frame(mc_rank_stats))
     display_jobfamilies = _apply_jobfamily_top_filters(
         ranking_df,
         selected_top_n,
@@ -995,6 +1523,13 @@ def render_jobfamily_analysis_page(
         st.info("Im aktuellen Filterkontext sind keine Jobgruppen für die Analyse verfügbar.")
         if yearly_renderer is not None:
             yearly_renderer()
+        if monte_carlo_ensemble is not None:
+            with st.expander("Datenqualität", expanded=False):
+                _render_data_quality_block(
+                    filtered_df, mapped_df, unmapped_df, metric_view,
+                    metric_config, compact, is_simulation=is_simulation,
+                    monte_carlo_statistics=mc_quality_stats,
+                )
         return
 
     sort_label = _resolve_sort_metric(selected_sort, metric_view)
@@ -1012,6 +1547,7 @@ def render_jobfamily_analysis_page(
         top_n=selected_top_n,
         display_jobfamilies=display_jobfamilies,
         is_simulation=is_simulation,
+        rank_statistics=mc_rank_stats,
     )
 
     top_label = "Alle" if selected_top_n == "Alle" else f"Top-{selected_top_n}"
@@ -1023,6 +1559,15 @@ def render_jobfamily_analysis_page(
         if i > 0:
             st.divider()
         st.subheader(title)
+        mc_split_stats = None
+        if monte_carlo_ensemble is not None:
+            try:
+                mc_split_stats = _monte_carlo_jobfamily_split_statistics(
+                    monte_carlo_ensemble, get_active_view_filters(), mapped_df,
+                    display_jobfamilies, split_col, metric_view, compact)
+            except ValueError as exc:
+                st.error(f"Monte-Carlo-Zusammensetzung nicht verfügbar: {exc}. Bitte Simulation neu berechnen.")
+                return
         _render_jobfamily_split_block(
             mapped_df,
             title,
@@ -1034,6 +1579,9 @@ def render_jobfamily_analysis_page(
             top_n=selected_top_n,
             display_jobfamilies=display_jobfamilies,
             is_simulation=is_simulation,
+            monte_carlo_statistics=mc_split_stats,
+            monte_carlo_band_level=(monte_carlo_ensemble["band_level"]
+                                    if monte_carlo_ensemble is not None else 0.8),
         )
 
     # --- Personalstruktur nach Tarifgruppe (folgt dem globalen Metrik-Switch, keine EUR-Werte) ---
@@ -1049,6 +1597,8 @@ def render_jobfamily_analysis_page(
         top_n=selected_top_n,
         display_jobfamilies=display_jobfamilies,
         is_simulation=is_simulation,
+        monte_carlo_ensemble=monte_carlo_ensemble,
+        active_filters=get_active_view_filters() if monte_carlo_ensemble is not None else None,
     )
 
     if yearly_renderer is not None:
@@ -1064,6 +1614,7 @@ def render_jobfamily_analysis_page(
             metric_config,
             compact,
             is_simulation=is_simulation,
+            monte_carlo_statistics=mc_quality_stats,
         )
 
     with st.expander("Hinweise zur Methodik", expanded=False):

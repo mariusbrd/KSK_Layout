@@ -465,6 +465,45 @@ def _apply_orgunit_top_filters(
     return filtered[ORG_COL].astype(str).tolist()
 
 
+def _apply_monte_carlo_ranking_values(
+    ranking_df: pd.DataFrame, rank_stats: dict,
+    comparison_mapped_df: pd.DataFrame | None, metric_view: str,
+    metric_config: dict[str, str], comparison_label: str,
+    comparison_active: bool,
+) -> pd.DataFrame:
+    """Drive all existing top-list controls from per-run means."""
+    ranking_df = ranking_df.copy()
+    mc_orgs = sorted(set().union(*(set(rank_stats[metric])
+                                  for metric in ("heads", "mak", "eur", "departures"))))
+    missing_orgs = [org for org in mc_orgs if org not in set(ranking_df[ORG_COL])]
+    if missing_orgs:
+        ranking_df = pd.concat([ranking_df, pd.DataFrame({ORG_COL: missing_orgs})],
+                               ignore_index=True)
+    for label, code in (("Köpfe", "heads"), ("MAK", "mak")):
+        ranking_df[label] = ranking_df[ORG_COL].map(
+            lambda org: rank_stats[code].get(str(org), {}).get("mean", 0.0))
+        if comparison_active:
+            if f"{comparison_label} {label}" not in ranking_df:
+                ranking_df[f"{comparison_label} {label}"] = 0.0
+            baseline = pd.to_numeric(ranking_df[f"{comparison_label} {label}"],
+                                     errors="coerce").fillna(0.0)
+            ranking_df[f"Mindestgröße {label}"] = ranking_df[label].combine(baseline, max)
+        else:
+            ranking_df[f"Mindestgröße {label}"] = ranking_df[label]
+    ranking_df["Abgänge"] = ranking_df[ORG_COL].map(
+        lambda org: rank_stats["departures"].get(str(org), {}).get("mean", 0.0))
+    ranking_df["MAK-Verlust"] = ranking_df[ORG_COL].map(
+        lambda org: rank_stats["mak_loss"].get(str(org), {}).get("mean", 0.0))
+    if comparison_active:
+        baseline = _aggregate_metric(comparison_mapped_df, [ORG_COL], metric_view,
+                                     metric_config).set_index(ORG_COL)["Wert"]
+        code = {"Köpfe": "heads", "MAK": "mak", "EUR": "eur"}[metric_view]
+        ranking_df["Delta"] = ranking_df[ORG_COL].map(
+            lambda org: rank_stats[code].get(str(org), {}).get("mean", 0.0)
+            - float(baseline.get(str(org), 0.0)))
+    return ranking_df
+
+
 def _filter_departure_events(events: pd.DataFrame) -> pd.DataFrame:
     if events is None or events.empty:
         return pd.DataFrame()
@@ -685,6 +724,75 @@ def _build_kpis(
     ]
 
 
+def _build_monte_carlo_kpis(statistics: dict, metric_view: str, compact) -> list[dict]:
+    """Keep the four familiar cards, with every numeric value from all runs."""
+    def band(key: str, formatter) -> str:
+        values = statistics[key]
+        return f"P10–P90: {formatter(values['lower'])} bis {formatter(values['upper'])}"
+
+    def heads(value: float) -> str:
+        return compact.format_number(value, 1)
+
+    def mak(value: float) -> str:
+        return compact.format_number(value, 1)
+
+    def percent(value: float) -> str:
+        return compact.format_percent(value)
+
+    def pct_points(value: float) -> str:
+        return f"{value:.1f}%".replace(".", ",")
+
+    rank_metric = {"Köpfe": "heads", "MAK": "mak", "EUR": "eur"}[metric_view]
+    orgs = statistics["organizations"][rank_metric]
+    largest = max(orgs, key=lambda org: (orgs[org]["mean"], org)) if orgs else None
+    largest_card = {
+        "title": "Größte Organisationseinheit", "value": largest or "Keine zugeordnete OE",
+        "subtitle": (f"Mittelwert: {_format_metric_value(orgs[largest]['mean'], metric_view, compact)} · "
+                     f"P10–P90: {_format_metric_value(orgs[largest]['lower'], metric_view, compact)} bis "
+                     f"{_format_metric_value(orgs[largest]['upper'], metric_view, compact)} · "
+                     f"{len(orgs)} sichtbar") if largest else "Keine zugeordnete Organisationseinheit",
+        "icon": "🏢", "status": "default",
+    }
+    if metric_view == "Köpfe":
+        return [
+            {"title": "Zugeordnete Köpfe", "value": heads(statistics["heads"]["mean"]),
+             "subtitle": band("heads", heads), "icon": "👥", "status": "good"},
+            {"title": "Frauenanteil", "value": percent(statistics["female_share"]["mean"]),
+             "subtitle": f"{band('female_share', percent)} · Ø {heads(statistics['female']['mean'])} Frauen",
+             "icon": "👤", "status": "default"},
+            {"title": "ATZ-Quote", "value": pct_points(statistics["atz_share_pct"]["mean"]),
+             "subtitle": f"{band('atz_share_pct', pct_points)} · Ø {heads(statistics['atz']['mean'])} Mitarbeitende",
+             "icon": "⏰", "status": "default"},
+            largest_card,
+        ]
+    if metric_view == "MAK":
+        return [
+            {"title": "Zugeordnete MAK", "value": mak(statistics["mak"]["mean"]),
+             "subtitle": f"{band('mak', mak)} · Roh-MAK Ø {mak(statistics['raw_mak']['mean'])} "
+                         f"bei Ø {heads(statistics['heads']['mean'])} Köpfen",
+             "icon": "📈", "status": "good"},
+            {"title": "Ø MAK", "value": compact.format_number(statistics["average_mak"]["mean"], 2),
+             "subtitle": band("average_mak", lambda value: compact.format_number(value, 2)),
+             "icon": "📊", "status": "default"},
+            {"title": "Teilzeitquote", "value": pct_points(statistics["part_time_share_pct"]["mean"]),
+             "subtitle": f"{band('part_time_share_pct', pct_points)} · "
+                         f"Ø {heads(statistics['part_time']['mean'])} Teilzeit-Mitarbeitende",
+             "icon": "⏰", "status": "default"},
+            largest_card,
+        ]
+    return [
+        {"title": "Zugeordnete Kosten", "value": compact.format_currency(statistics["eur"]["mean"]),
+         "subtitle": band("eur", compact.format_currency), "icon": "💰", "status": "good"},
+        {"title": "Kosten pro Kopf", "value": compact.format_currency(statistics["eur_per_head"]["mean"]),
+         "subtitle": band("eur_per_head", compact.format_currency), "icon": "👤", "status": "default"},
+        {"title": "Kosten pro MAK", "value": compact.format_currency(statistics["eur_per_mak"]["mean"]),
+         "subtitle": f"{band('eur_per_mak', compact.format_currency)} · "
+                     f"Zugeordnet Ø {percent(statistics['mapped_eur_share']['mean'])}",
+         "icon": "📊", "status": "default"},
+        largest_card,
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Rangliste (uses display_orgs order from the top filters; values follow global metric)
 # ---------------------------------------------------------------------------
@@ -699,16 +807,21 @@ def _render_org_rangliste(
     export_tables: dict | None = None,
     monte_carlo_ensemble: dict | None = None,
     target_date=None,
+    rank_statistics: dict | None = None,
 ) -> None:
     work_df = mapped_df[mapped_df[ORG_COL].isin(display_orgs)].copy()
     if "Is_Vacant" in work_df.columns:
         work_df = work_df[~work_df["Is_Vacant"]]
 
-    if work_df.empty:
+    if work_df.empty and rank_statistics is None:
         st.info("Keine auswertbaren Daten im aktuellen Filterkontext.")
         return
 
-    if metric_view == "Köpfe":
+    if rank_statistics is not None:
+        code = {"Köpfe": "heads", "MAK": "mak", "EUR": "eur"}[metric_view]
+        agg = pd.Series({org: rank_statistics[code].get(org, {}).get("mean", 0.0)
+                         for org in display_orgs}, dtype=float)
+    elif metric_view == "Köpfe":
         id_col = next((c for c in ("PersNr", "Personalnummer") if c in work_df.columns), None)
         if id_col:
             agg = work_df.groupby(ORG_COL, observed=True)[id_col].nunique()
@@ -733,9 +846,35 @@ def _render_org_rangliste(
     chart_df["Anteil"] = chart_df["Wert"].apply(
         lambda v: compact.format_percent(float(v) / total) if total > 0 else "0,0%"
     )
+    if rank_statistics is not None:
+        from utils.monte_carlo_ensemble import _statistics
+        code = {"Köpfe": "heads", "MAK": "mak", "EUR": "eur"}[metric_view]
+        zero = [0.0] * rank_statistics["count"]
+        samples = {org: rank_statistics[code].get(org, {}).get("samples", zero)
+                   for org in display_orgs}
+        totals = [sum(samples[org][index] for org in display_orgs)
+                  for index in range(rank_statistics["count"])]
+        shares = {org: _statistics(
+            [samples[org][index] / totals[index] if totals[index] else 0.0
+             for index in range(rank_statistics["count"])],
+            rank_statistics["band_level"]) for org in display_orgs}
+        chart_df["P10"] = chart_df[ORG_COL].map(
+            lambda org: rank_statistics[code].get(org, {}).get("lower", 0.0))
+        chart_df["P90"] = chart_df[ORG_COL].map(
+            lambda org: rank_statistics[code].get(org, {}).get("upper", 0.0))
+        chart_df["Wert_Anzeige"] = chart_df.apply(
+            lambda row: f"{row['Wert_Anzeige']} · P10–P90: "
+                        f"{_format_metric_value(row['P10'], metric_view, compact)} bis "
+                        f"{_format_metric_value(row['P90'], metric_view, compact)}", axis=1)
+        chart_df["Anteil"] = chart_df[ORG_COL].map(
+            lambda org: compact.format_percent(shares[org]["mean"]))
+        chart_df["_upper_error"] = chart_df["P90"] - chart_df["Wert"]
+        chart_df["_lower_error"] = chart_df["Wert"] - chart_df["P10"]
 
     if export_tables is not None:
-        export_tables["Rangliste"] = chart_df.copy()
+        export_tables["Rangliste"] = (
+            chart_df[[ORG_COL, "Wert", "P10", "P90", "Anteil"]].copy()
+            if rank_statistics is not None else chart_df.copy())
 
     # Plotly Express maps y-axis category_orders to the visible top-to-bottom order
     # for horizontal bars. display_orgs is already sorted descending.
@@ -749,6 +888,8 @@ def _render_org_rangliste(
         orientation="h",
         custom_data=["Wert_Anzeige", "Anteil"],
         category_orders={ORG_COL: chart_order},
+        **({"error_x": "_upper_error", "error_x_minus": "_lower_error"}
+           if rank_statistics is not None else {}),
     )
     fig.update_traces(
         hovertemplate="<b>%{y}</b><br>%{customdata[0]} · %{customdata[1]}<extra></extra>"
@@ -762,7 +903,10 @@ def _render_org_rangliste(
         paper_bgcolor="rgba(0,0,0,0)",
         showlegend=False,
     )
-    if monte_carlo_ensemble is not None:
+    if rank_statistics is not None:
+        fig.for_each_trace(lambda trace: trace.error_x.update(
+            color="#6b7280", thickness=3, width=6))
+    elif monte_carlo_ensemble is not None:
         from utils.monte_carlo_org_view import target_rank_band_stats
         from utils.monte_carlo_chart_values import overlay_ist_band
         band_stats = target_rank_band_stats(
@@ -781,6 +925,17 @@ def _render_org_rangliste(
             for o in display_orgs
         ],
     })
+    if rank_statistics is not None:
+        display_table[value_label] = [
+            _format_metric_value(float(agg[org]), metric_view, compact) for org in display_orgs]
+        display_table["P10"] = [
+            _format_metric_value(rank_statistics[code].get(org, {}).get("lower", 0.0),
+                                 metric_view, compact) for org in display_orgs]
+        display_table["P90"] = [
+            _format_metric_value(rank_statistics[code].get(org, {}).get("upper", 0.0),
+                                 metric_view, compact) for org in display_orgs]
+        display_table["Anteil"] = [compact.format_percent(shares[org]["mean"])
+                                   for org in display_orgs]
 
     col_chart, col_table = st.columns([3, 2])
     with col_chart:
@@ -791,6 +946,12 @@ def _render_org_rangliste(
             ORG_COL: display_orgs,
             value_label: [float(agg[o]) for o in display_orgs],
         })
+        if rank_statistics is not None:
+            excel_df["P10"] = [rank_statistics[code].get(org, {}).get("lower", 0.0)
+                                  for org in display_orgs]
+            excel_df["P90"] = [rank_statistics[code].get(org, {}).get("upper", 0.0)
+                                  for org in display_orgs]
+            excel_df["Anteil Mittelwert"] = [shares[org]["mean"] for org in display_orgs]
         lineage_ids = _org_lineage_ids(value_label, "9-14", "10-02")
         lazy_excel_download_button_compat(
             label="Excel Download",
@@ -827,6 +988,7 @@ def _render_org_rangliste_comparison(
     comparison_label: str,
     departure_events: pd.DataFrame | None = None,
     export_tables: dict | None = None,
+    rank_statistics: dict | None = None,
 ) -> None:
     comparison_df = _build_org_metric_comparison(
         mapped_df,
@@ -842,6 +1004,36 @@ def _render_org_rangliste_comparison(
         st.info("Keine auswertbaren Vergleichsdaten im aktuellen Filterkontext.")
         return
 
+    if rank_statistics is not None:
+        from utils.monte_carlo_ensemble import _statistics
+        code = {"Köpfe": "heads", "MAK": "mak", "EUR": "eur"}[metric_view]
+        band_level = rank_statistics["band_level"]
+        count = rank_statistics["count"]
+        zero = [0.0] * count
+        for index, row in comparison_df.iterrows():
+            org = str(row[ORG_COL])
+            values = rank_statistics[code].get(org, {"mean": 0.0, "lower": 0.0,
+                                                      "upper": 0.0, "samples": zero})
+            baseline = float(row[comparison_label])
+            comparison_df.loc[index, value_label] = values["mean"]
+            comparison_df.loc[index, "Delta"] = values["mean"] - baseline
+            comparison_df.loc[index, "Delta %"] = (
+                (values["mean"] - baseline) / baseline if baseline else 0.0)
+            comparison_df.loc[index, "P10"] = values["lower"]
+            comparison_df.loc[index, "P90"] = values["upper"]
+            comparison_df.loc[index, "Delta P10"] = values["lower"] - baseline
+            comparison_df.loc[index, "Delta P90"] = values["upper"] - baseline
+            ratio = _statistics([(value - baseline) / baseline if baseline else 0.0
+                                 for value in values["samples"]], band_level)
+            comparison_df.loc[index, "Delta % P10"] = ratio["lower"]
+            comparison_df.loc[index, "Delta % P90"] = ratio["upper"]
+            for source, label in (("departures", "Abgänge"), ("mak_loss", "MAK-Verlust")):
+                driver = rank_statistics[source].get(org, {"mean": 0.0, "lower": 0.0,
+                                                          "upper": 0.0})
+                comparison_df.loc[index, label] = driver["mean"]
+                comparison_df.loc[index, f"{label} P10"] = driver["lower"]
+                comparison_df.loc[index, f"{label} P90"] = driver["upper"]
+
     if export_tables is not None:
         export_tables["Rangliste_Vergleich"] = comparison_df.copy()
 
@@ -853,6 +1045,20 @@ def _render_org_rangliste_comparison(
     chart_df["Wert_Anzeige"] = chart_df["Wert"].apply(
         lambda value: _format_metric_value(float(value), metric_view, compact)
     )
+    if rank_statistics is not None:
+        limits = comparison_df.set_index(ORG_COL)[["P10", "P90"]]
+        chart_df["Wert_Anzeige"] = chart_df.apply(
+            lambda row: (row["Wert_Anzeige"] if row["Stand"] != value_label else
+                         f"{row['Wert_Anzeige']} · P10–P90: "
+                         f"{_format_metric_value(float(limits.loc[row[ORG_COL], 'P10']), metric_view, compact)} bis "
+                         f"{_format_metric_value(float(limits.loc[row[ORG_COL], 'P90']), metric_view, compact)}"),
+            axis=1)
+        chart_df["_upper_error"] = chart_df.apply(
+            lambda row: max(0.0, float(limits.loc[row[ORG_COL], "P90"]) - row["Wert"])
+            if row["Stand"] == value_label else 0.0, axis=1)
+        chart_df["_lower_error"] = chart_df.apply(
+            lambda row: max(0.0, row["Wert"] - float(limits.loc[row[ORG_COL], "P10"]))
+            if row["Stand"] == value_label else 0.0, axis=1)
     chart_order = list(display_orgs)
     chart_height = max(420, min(1200, 34 * len(display_orgs) + 180))
 
@@ -865,6 +1071,8 @@ def _render_org_rangliste_comparison(
         barmode="group",
         custom_data=["Wert_Anzeige"],
         category_orders={ORG_COL: chart_order, "Stand": [comparison_label, value_label]},
+        **({"error_x": "_upper_error", "error_x_minus": "_lower_error"}
+           if rank_statistics is not None else {}),
     )
     fig.update_traces(
         hovertemplate="<b>%{y}</b><br>%{fullData.name}: %{customdata[0]}<extra></extra>"
@@ -879,16 +1087,31 @@ def _render_org_rangliste_comparison(
         paper_bgcolor="rgba(0,0,0,0)",
     )
     apply_legend_bottom(fig)
+    if rank_statistics is not None:
+        fig.for_each_trace(lambda trace: trace.error_x.update(
+            color="#6b7280", thickness=3, width=6))
 
     display_cols = [ORG_COL, comparison_label, value_label, "Delta", "Delta %"]
     if "Abgänge" in comparison_df.columns:
         display_cols.extend(["Abgänge", "MAK-Verlust"])
+    if rank_statistics is not None:
+        display_cols.extend(["P10", "P90", "Delta P10", "Delta P90",
+                             "Delta % P10", "Delta % P90", "Abgänge P10", "Abgänge P90",
+                             "MAK-Verlust P10", "MAK-Verlust P90"])
     display_table = _format_comparison_table(
         comparison_df[display_cols],
         metric_view,
         compact,
         value_columns=[comparison_label, value_label],
     )
+    if rank_statistics is not None:
+        for column in ("P10", "P90", "Delta P10", "Delta P90", "MAK-Verlust P10", "MAK-Verlust P90"):
+            display_table[column] = display_table[column].map(
+                lambda value: _format_metric_value(float(value),
+                    "MAK" if column.startswith("MAK-Verlust") else metric_view, compact))
+        for column in ("Delta % P10", "Delta % P90"):
+            display_table[column] = display_table[column].map(
+                lambda value: compact.format_percent(float(value)))
 
     col_chart, col_table = st.columns([3, 2])
     with col_chart:
@@ -1060,13 +1283,46 @@ def _render_org_split_block(
     value_label: str = "Simulation",
     comparison_label: str = "IST",
     export_tables: dict | None = None,
+    composition_view: dict | None = None,
+    monte_carlo_band_level: float = 0.8,
 ) -> None:
-    agg_df = _aggregate_org_split(mapped_df, split_col, metric_view, metric_config, display_orgs)
+    reference_agg = _aggregate_org_split(
+        mapped_df, split_col, metric_view, metric_config, display_orgs)
+    if composition_view is None:
+        agg_df = reference_agg
+    else:
+        segments = composition_view["segments"]
+        ref_values = {(str(org), str(group)): float(value)
+                      for org, group, value in reference_agg[[ORG_COL, split_col, "Wert"]]
+                      .itertuples(index=False, name=None)} if not reference_agg.empty else {}
+        seed_values = {(str(org), str(group)): float(value)
+                       for org, group, value in segments[[ORG_COL, split_col, "Seed 0"]]
+                       .itertuples(index=False, name=None)} if not segments.empty else {}
+        if (any(abs(value - seed_values.get(key, 0.0)) > 1e-6
+                for key, value in ref_values.items())
+                or any(abs(value) > 1e-6 for key, value in seed_values.items()
+                       if key not in ref_values)):
+            st.error(f"{title}: Die OE-Zusammensetzung weicht in Seed 0 vom Referenzlauf ab.")
+            return
+        agg_df = segments[[ORG_COL, split_col, "Wert", "P10", "P90", "samples"]].copy()
+        agg_df[ORG_COL] = pd.Categorical(
+            agg_df[ORG_COL], categories=display_orgs, ordered=True)
+        agg_df = agg_df.sort_values([ORG_COL, split_col])
     if agg_df.empty:
         st.info("Keine auswertbaren Daten im aktuellen Filterkontext.")
         return
 
     pivot_df = _build_split_pivot(agg_df, split_col)
+    if composition_view is not None:
+        for bound in ("P10", "P90"):
+            bounds = agg_df.pivot_table(
+                index=ORG_COL, columns=split_col, values=bound,
+                aggfunc="sum", fill_value=0, observed=False)
+            for group in bounds.columns:
+                pivot_df[f"{group} {bound}"] = pivot_df[ORG_COL].map(
+                    bounds[group].astype(float).to_dict()).fillna(0.0)
+            total_lookup = composition_view["totals"].set_index(ORG_COL)[bound]
+            pivot_df[f"Gesamt {bound}"] = pivot_df[ORG_COL].map(total_lookup).fillna(0.0)
 
     if comparison_active and comparison_mapped_df is not None:
         comparison_agg = _aggregate_org_split(
@@ -1084,22 +1340,58 @@ def _render_org_split_block(
         chart_df[ORG_COL] = chart_df[ORG_COL].astype(str)
         chart_df["_Anzeige_OE"] = chart_df[ORG_COL] + " · " + chart_df["Stand"]
 
-        comparison_df = _build_split_comparison(
-            mapped_df,
-            comparison_mapped_df,
-            split_col,
-            metric_view,
-            metric_config,
-            display_orgs,
-            value_label=value_label,
-            comparison_label=comparison_label,
-        )
+        if composition_view is None:
+            comparison_df = _build_split_comparison(
+                mapped_df, comparison_mapped_df, split_col, metric_view,
+                metric_config, display_orgs, value_label=value_label,
+                comparison_label=comparison_label)
+        else:
+            from utils.monte_carlo_ensemble import _statistics
+            previous = (comparison_agg[[ORG_COL, split_col, "Wert"]].rename(
+                columns={"Wert": comparison_label}) if not comparison_agg.empty
+                else pd.DataFrame(columns=[ORG_COL, split_col, comparison_label]))
+            current = agg_df[[ORG_COL, split_col, "Wert", "P10", "P90", "samples"]].rename(
+                columns={"Wert": value_label})
+            comparison_df = previous.merge(current, on=[ORG_COL, split_col], how="outer")
+            comparison_df[ORG_COL] = comparison_df[ORG_COL].astype(str)
+            comparison_df[split_col] = comparison_df[split_col].fillna("(unbekannt)").astype(str)
+            for column in (comparison_label, value_label, "P10", "P90"):
+                comparison_df[column] = pd.to_numeric(
+                    comparison_df[column], errors="coerce").fillna(0.0)
+            comparison_df["Delta"] = comparison_df[value_label] - comparison_df[comparison_label]
+            comparison_df["Delta %"] = comparison_df.apply(
+                lambda row: row["Delta"] / row[comparison_label]
+                if row[comparison_label] else 0.0, axis=1)
+            comparison_df["Delta P10"] = comparison_df["P10"] - comparison_df[comparison_label]
+            comparison_df["Delta P90"] = comparison_df["P90"] - comparison_df[comparison_label]
+            comparison_df["samples"] = comparison_df["samples"].map(
+                lambda value: value if isinstance(value, list)
+                else [0.0] * len(next(iter(current["samples"]), [])))
+            ratio_bounds = comparison_df.apply(
+                lambda row: _statistics(
+                    [(value - row[comparison_label]) / row[comparison_label]
+                     if row[comparison_label] else 0.0 for value in row["samples"]],
+                    monte_carlo_band_level), axis=1)
+            comparison_df["Delta % P10"] = ratio_bounds.map(lambda value: value["lower"])
+            comparison_df["Delta % P90"] = ratio_bounds.map(lambda value: value["upper"])
+            comparison_df = comparison_df.drop(columns="samples")
+            comparison_df[ORG_COL] = pd.Categorical(
+                comparison_df[ORG_COL], categories=display_orgs, ordered=True)
+            comparison_df = comparison_df.sort_values([ORG_COL, split_col])
+            comparison_df[ORG_COL] = comparison_df[ORG_COL].astype(str)
         display_df = _format_comparison_table(
             comparison_df,
             metric_view,
             compact,
             value_columns=[comparison_label, value_label],
         )
+        if composition_view is not None:
+            for column in ("P10", "P90", "Delta P10", "Delta P90"):
+                display_df[column] = display_df[column].map(
+                    lambda value: _format_metric_value(float(value), metric_view, compact))
+            for column in ("Delta % P10", "Delta % P90"):
+                display_df[column] = display_df[column].map(
+                    lambda value: compact.format_percent(float(value)))
     else:
         chart_df = agg_df.copy()
         chart_df[ORG_COL] = chart_df[ORG_COL].astype(str)
@@ -1107,12 +1399,21 @@ def _render_org_split_block(
         display_df = _format_split_display(pivot_df, metric_view, compact)
 
     if export_tables is not None:
-        export_tables[f"{title}_Grafik"] = chart_df.copy()
+        export_tables[f"{title}_Grafik"] = chart_df.drop(
+            columns=["samples"], errors="ignore").copy()
         export_tables[f"{title}_Tabelle"] = comparison_df.copy() if comparison_active and comparison_mapped_df is not None else pivot_df.reset_index()
 
     chart_df["Wert_Anzeige"] = chart_df["Wert"].apply(
         lambda value: _format_metric_value(float(value), metric_view, compact)
     )
+    if composition_view is not None:
+        chart_df["Wert_Anzeige"] = chart_df.apply(
+            lambda row: row["Wert_Anzeige"]
+            if comparison_active and row["Stand"] == comparison_label else
+            f"{row['Wert_Anzeige']} · P10–P90: "
+            f"{_format_metric_value(float(row['P10']), metric_view, compact)} bis "
+            f"{_format_metric_value(float(row['P90']), metric_view, compact)}",
+            axis=1)
     # Plotly Express maps y-axis category_orders to the visible top-to-bottom order
     # for horizontal bars. display_orgs is already sorted descending.
     if comparison_active and comparison_mapped_df is not None:
@@ -1166,12 +1467,37 @@ def _render_org_split_block(
         paper_bgcolor="rgba(0,0,0,0)",
     )
     apply_legend_bottom(fig)
+    if composition_view is not None:
+        import plotly.graph_objects as go
+        totals = composition_view["totals"].set_index(ORG_COL)
+        band_positions = [
+            f"{org} · {value_label}" if comparison_active else org
+            for org in display_orgs]
+        low = [float(totals.loc[org, "P10"]) for org in display_orgs]
+        high = [float(totals.loc[org, "P90"]) for org in display_orgs]
+        fig.add_trace(go.Scatter(
+            x=[value for a, b in zip(low, high) for value in (a, b, None)],
+            y=[value for org in band_positions for value in (org, org, None)],
+            mode="lines", line=dict(color="rgba(107, 114, 128, 0.75)", width=7),
+            name="P10–P90 Gesamt", hoverinfo="skip", legendgroup="mc_total"))
+        for name, values, symbol in (("P10", low, "line-ns-open"),
+                                     ("P90", high, "line-ns-open")):
+            fig.add_trace(go.Scatter(
+                x=values, y=band_positions, mode="markers", name=name,
+                marker=dict(color="#6b7280", size=13, symbol=symbol),
+                hovertemplate=f"<b>%{{y}}</b><br>{name}: %{{x:,.2f}}<extra></extra>",
+                legendgroup="mc_total"))
 
     col_chart, col_table = st.columns([3, 2])
     with col_chart:
         st.plotly_chart(fig, use_container_width=True)
     with col_table:
         dataframe_compat(display_df, width="stretch", hide_index=True)
+        right_export_df = (
+            comparison_df
+            if composition_view is not None and comparison_active and comparison_mapped_df is not None
+            else pivot_df
+        )
         lineage_ids = _org_lineage_ids(
             value_label,
             "9-16" if split_col == "TrfGr" else "9-15",
@@ -1180,7 +1506,7 @@ def _render_org_split_block(
         lazy_excel_download_button_compat(
             label="Excel Download",
             data_builder=lambda: compact.export_to_excel(
-                pivot_df,
+                right_export_df,
                 key_prefix=key_prefix,
                 dimension_name=f"Organisationseinheit x {title}",
                 value_type=metric_config["value_type"],
@@ -1191,7 +1517,7 @@ def _render_org_split_block(
             mime=compact._EXCEL_MIME,
             key=f"download_{key_prefix}_{split_col}",
             fingerprint=dataframe_export_fingerprint(
-                pivot_df,
+                right_export_df,
                 key_prefix,
                 metric_config["value_type"],
                 tuple(lineage_ids),
@@ -1251,6 +1577,44 @@ def _build_role_summary_table(
     return pd.DataFrame(rows)
 
 
+def _build_monte_carlo_role_summary_table(
+    display_orgs: list[str], rank_statistics: dict, compact,
+    export_rows: list | None = None,
+) -> pd.DataFrame:
+    from utils.monte_carlo_filtered_org import _statistics
+
+    rows = []
+    for oe in display_orgs:
+        head = rank_statistics["heads"].get(oe)
+        mak = rank_statistics["mak"].get(oe)
+        count = rank_statistics["count"]
+        heads = head["samples"] if head else [0.0] * count
+        maks = mak["samples"] if mak else [0.0] * count
+        ratios = [capacity / persons if persons > 0 else None
+                  for persons, capacity in zip(heads, maks)]
+        ratio_stats = (_statistics(ratios, rank_statistics["band_level"])
+                       if all(value is not None for value in ratios) else None)
+        head_stats = _statistics(heads, rank_statistics["band_level"])
+        mak_stats = _statistics(maks, rank_statistics["band_level"])
+        raw = {
+            ORG_COL: oe,
+            "Köpfe": head_stats["mean"], "Köpfe P10": head_stats["lower"],
+            "Köpfe P90": head_stats["upper"],
+            "MAK": mak_stats["mean"], "MAK P10": mak_stats["lower"],
+            "MAK P90": mak_stats["upper"],
+            "Ø MAK": ratio_stats["mean"] if ratio_stats else None,
+            "Ø MAK P10": ratio_stats["lower"] if ratio_stats else None,
+            "Ø MAK P90": ratio_stats["upper"] if ratio_stats else None,
+        }
+        if export_rows is not None:
+            export_rows.append(raw)
+        rows.append({ORG_COL: oe, **{
+            key: compact.format_number(value, 2 if key.startswith("Ø") else 1)
+            if value is not None else "–"
+            for key, value in raw.items() if key != ORG_COL}})
+    return pd.DataFrame(rows)
+
+
 def _render_role_breakdown_block(
     mapped_df: pd.DataFrame,
     metric_view: str,
@@ -1262,6 +1626,9 @@ def _render_role_breakdown_block(
     value_label: str = "Simulation",
     comparison_label: str = "IST",
     export_tables: dict | None = None,
+    composition_view: dict | None = None,
+    rank_statistics: dict | None = None,
+    monte_carlo_band_level: float = 0.8,
 ) -> None:
     has_tarifgruppe = "TrfGr" in mapped_df.columns
 
@@ -1289,6 +1656,8 @@ def _render_role_breakdown_block(
         comparison_active=comparison_active,
         value_label=value_label,
         comparison_label=comparison_label,
+        composition_view=composition_view,
+        monte_carlo_band_level=monte_carlo_band_level,
             **({"export_tables": export_tables} if export_tables is not None else {}),
     )
 
@@ -1296,7 +1665,14 @@ def _render_role_breakdown_block(
     st.divider()
     st.subheader("Kopfzahl und Kapazität pro Organisationseinheit")
     raw_rows = [] if export_tables is not None else None
-    summary_df = _build_role_summary_table(mapped_df, display_orgs, compact, **({"export_rows": raw_rows} if raw_rows is not None else {}))
+    if rank_statistics is None:
+        summary_df = _build_role_summary_table(mapped_df, display_orgs, compact, **({"export_rows": raw_rows} if raw_rows is not None else {}))
+    else:
+        summary_df = _build_monte_carlo_role_summary_table(
+            display_orgs, rank_statistics, compact, export_rows=raw_rows)
+        if any(any(value <= 0 for value in rank_statistics["heads"].get(oe, {}).get(
+                "samples", [0.0] * rank_statistics["count"])) for oe in display_orgs):
+            st.caption("Ø MAK ist nur definiert, wenn in jedem Lauf mindestens eine Person in der OE vorhanden ist.")
     if export_tables is not None:
         export_tables["Köpfe_Kapazität"] = pd.DataFrame(raw_rows)
     if not summary_df.empty:
@@ -1307,6 +1683,42 @@ def _render_role_breakdown_block(
 # Data quality block (based on full filtered_df — not limited by top_n)
 # ---------------------------------------------------------------------------
 
+def _monte_carlo_data_quality(ensemble, active_filters, metric_view, compact,
+                              reference):
+    """Calculate data-quality counts and ratios inside every saved run."""
+    from components.sidebar import _apply_filters_uncached
+    from utils.monte_carlo_ensemble import _statistics
+    from utils.monte_carlo_filtered_org import decode_snapshot
+
+    blobs = ensemble.get("org_filter_snapshots")
+    if not isinstance(blobs, list) or len(blobs) != ensemble.get("count"):
+        raise ValueError("OE-Laufdaten für die Datenqualität fehlen")
+    runs = []
+    for blob in blobs:
+        frame = _normalize_org_column(
+            _apply_filters_uncached(decode_snapshot(blob), dict(active_filters or {})))
+        unmapped = frame.loc[frame[ORG_COL].eq(ORG_NOT_ASSIGNED)]
+        mapped = frame.loc[frame[ORG_COL].ne(ORG_NOT_ASSIGNED)]
+        total_metric = _get_metric_total(frame, metric_view, compact)
+        unmapped_metric = _get_metric_total(unmapped, metric_view, compact)
+        mapped_metric = _get_metric_total(mapped, metric_view, compact)
+        runs.append({
+            "Sichtbare Zeilen": len(frame),
+            "Nicht zugeordnete Zeilen": len(unmapped),
+            "Nicht zugeordnete MA": len(get_unique_employees(unmapped)) if not unmapped.empty else 0,
+            "Gesamtkennzahl": total_metric,
+            "Nicht zugeordnete Kennzahl": unmapped_metric,
+            "Nicht zugeordneter Anteil": unmapped_metric / total_metric if total_metric > 0 else 0.0,
+            "Zugeordneter Anteil": mapped_metric / total_metric if total_metric > 0 else 0.0,
+            "Nicht zugeordnete Zeilenquote": len(unmapped) / len(frame) if len(frame) else 0.0,
+        })
+    for key, expected in reference.items():
+        if abs(float(runs[0][key]) - float(expected)) > 1e-6:
+            raise ValueError(f"Datenqualität ({key}) weicht vom Referenzlauf ab")
+    return {key: _statistics([float(run[key]) for run in runs], ensemble["band_level"])
+            for key in runs[0]}
+
+
 def _render_data_quality_block(
     filtered_df: pd.DataFrame,
     mapped_df: pd.DataFrame,
@@ -1315,6 +1727,8 @@ def _render_data_quality_block(
     metric_config: dict[str, str],
     compact,
     export_tables: dict | None = None,
+    monte_carlo_ensemble: dict | None = None,
+    active_filters: dict | None = None,
 ) -> None:
     total_rows = len(filtered_df)
     unmapped_rows = len(unmapped_df)
@@ -1324,45 +1738,89 @@ def _render_data_quality_block(
     unmapped_employees = len(get_unique_employees(unmapped_df)) if not unmapped_df.empty else 0
     mapped_share = _get_metric_total(mapped_df, metric_view, compact) / total_metric if total_metric > 0 else 0
 
+    mc = None
+    if monte_carlo_ensemble is not None:
+        try:
+            mc = _monte_carlo_data_quality(
+                monte_carlo_ensemble, active_filters, metric_view, compact, {
+                    "Sichtbare Zeilen": total_rows,
+                    "Nicht zugeordnete Zeilen": unmapped_rows,
+                    "Nicht zugeordnete MA": unmapped_employees,
+                    "Gesamtkennzahl": total_metric,
+                    "Nicht zugeordnete Kennzahl": unmapped_metric,
+                    "Nicht zugeordneter Anteil": unmapped_share,
+                    "Zugeordneter Anteil": mapped_share,
+                    "Nicht zugeordnete Zeilenquote": unmapped_rows / total_rows if total_rows else 0.0,
+                })
+        except ValueError as exc:
+            st.error(f"Monte-Carlo-Datenqualität nicht verfügbar: {exc}")
+            return
+        total_rows = mc["Sichtbare Zeilen"]["mean"]
+        unmapped_rows = mc["Nicht zugeordnete Zeilen"]["mean"]
+        unmapped_employees = mc["Nicht zugeordnete MA"]["mean"]
+        total_metric = mc["Gesamtkennzahl"]["mean"]
+        unmapped_metric = mc["Nicht zugeordnete Kennzahl"]["mean"]
+        unmapped_share = mc["Nicht zugeordneter Anteil"]["mean"]
+        mapped_share = mc["Zugeordneter Anteil"]["mean"]
+
     if export_tables is not None:
-        export_tables["Datenqualität"] = pd.DataFrame([{
+        row = {
             "Sichtbare Zeilen": total_rows, "Nicht zugeordnete Zeilen": unmapped_rows,
             "Nicht zugeordnete MA": unmapped_employees, "Gesamtkennzahl": total_metric,
             "Nicht zugeordnete Kennzahl": unmapped_metric, "Nicht zugeordneter Anteil": unmapped_share,
-            "Zugeordneter Anteil": mapped_share}])
+            "Zugeordneter Anteil": mapped_share}
+        if mc is not None:
+            for key, values in mc.items():
+                row[f"{key} P10"] = values["lower"]
+                row[f"{key} P90"] = values["upper"]
+        export_tables["Datenqualität"] = pd.DataFrame([row])
 
     if unmapped_rows == 0:
         st.success("Alle sichtbaren Datensätze sind einer Organisationseinheit zugeordnet.")
         st.caption("Nicht zugeordnete Datensätze haben im aktuellen Filterkontext keine Wirkung.")
         return
 
+    if mc is not None:
+        st.caption("Mittelwerte aller Läufe; P10–P90 je Kennzahl und Anteil im Excel-Export.")
+
     compact.render_kpi_cards_styled(
         [
             {
                 "title": "Nicht zugeordnete Zeilen",
-                "value": compact.format_number(unmapped_rows, 0),
-                "subtitle": f"{compact.format_percent(unmapped_rows / total_rows) if total_rows > 0 else '0,0%'} der sichtbaren Datensätze",
+                "value": compact.format_number(unmapped_rows, 1 if mc is not None else 0),
+                "subtitle": (f"{compact.format_percent(mc['Nicht zugeordnete Zeilenquote']['mean'])} der sichtbaren Datensätze"
+                             f" · P10–P90: {compact.format_number(mc['Nicht zugeordnete Zeilen']['lower'], 1)} bis "
+                             f"{compact.format_number(mc['Nicht zugeordnete Zeilen']['upper'], 1)} Zeilen"
+                             if mc is not None else
+                             f"{compact.format_percent(unmapped_rows / total_rows) if total_rows > 0 else '0,0%'} der sichtbaren Datensätze"),
                 "icon": "🧩",
                 "status": "warning",
             },
             {
                 "title": "Nicht zugeordnete MA",
-                "value": compact.format_number(unmapped_employees, 0),
-                "subtitle": "Unique Mitarbeitende ohne Organisationseinheit",
+                "value": compact.format_number(unmapped_employees, 1 if mc is not None else 0),
+                "subtitle": (f"P10–P90: {compact.format_number(mc['Nicht zugeordnete MA']['lower'], 1)} bis "
+                             f"{compact.format_number(mc['Nicht zugeordnete MA']['upper'], 1)} Mitarbeitende"
+                             if mc is not None else "Unique Mitarbeitende ohne Organisationseinheit"),
                 "icon": "👥",
                 "status": "warning" if unmapped_employees > 0 else "good",
             },
             {
                 "title": "Einfluss auf Kennzahl",
                 "value": _format_metric_value(unmapped_metric, metric_view, compact),
-                "subtitle": f"{compact.format_percent(unmapped_share)} der sichtbaren Kennzahl",
+                "subtitle": (f"{compact.format_percent(unmapped_share)} der sichtbaren Kennzahl · "
+                             f"P10–P90: {_format_metric_value(mc['Nicht zugeordnete Kennzahl']['lower'], metric_view, compact)} "
+                             f"bis {_format_metric_value(mc['Nicht zugeordnete Kennzahl']['upper'], metric_view, compact)}"
+                             if mc is not None else f"{compact.format_percent(unmapped_share)} der sichtbaren Kennzahl"),
                 "icon": "⚠️",
                 "status": "warning" if unmapped_metric > 0 else "good",
             },
             {
                 "title": "Zugeordneter Anteil",
                 "value": compact.format_percent(mapped_share),
-                "subtitle": "Anteil der Hauptanalyse am sichtbaren Gesamtvolumen",
+                "subtitle": (f"P10–P90: {compact.format_percent(mc['Zugeordneter Anteil']['lower'])} bis "
+                             f"{compact.format_percent(mc['Zugeordneter Anteil']['upper'])}"
+                             if mc is not None else "Anteil der Hauptanalyse am sichtbaren Gesamtvolumen"),
                 "icon": "✅",
                 "status": "good" if mapped_share >= 0.95 else "default",
             },
@@ -1405,11 +1863,11 @@ def render_orgunit_analysis_page(
     )
     if monte_carlo_ensemble is not None:
         st.info(
-            f"{monte_carlo_ensemble['count']} Läufe: Die Jahresdiagramme zeigen den konkreten "
-            "Referenzlauf als Balken und P10–P90 als graue Markierung. Mittelwerte und Grenzen "
-            "stehen in den Jahrestabellen. Die ungefilterte Rangliste erhält bei Köpfen/MAK "
-            "ebenfalls Bänder, sofern jeder Balken mit der zertifizierten Endjahresscheibe "
-            "übereinstimmt. Zusammensetzung und Tarifstruktur zeigen den konkreten Referenzlauf."
+            f"{monte_carlo_ensemble['count']} Läufe: Zielbestand, Rangliste, "
+            "Zusammensetzung und Jahresereignisse zeigen Mittelwerte und P10–P90. "
+            "Die globalen Personenfilter wirken auf diese Mehrlaufwerte. "
+            "Der Jahresbestand aus der Bestandsüberleitung bleibt ungefiltert; "
+            "Referenzlauf-Auswertungen sind gesondert gekennzeichnet."
         )
 
     set_metric_page_hint(
@@ -1432,7 +1890,13 @@ def render_orgunit_analysis_page(
         comparison_prepared_df = _normalize_org_column(comparison_df)
     history_for_filters = history_df if history_df is not None else pd.DataFrame()
 
-    render_global_filters(prepared_df, history_for_filters)
+    if monte_carlo_ensemble is None:
+        render_global_filters(prepared_df, history_for_filters)
+    else:
+        from utils.monte_carlo_filter_options import filter_options_from_ensemble
+        render_global_filters(
+            prepared_df, history_for_filters,
+            option_values=filter_options_from_ensemble(monte_carlo_ensemble))
     filtered_df = apply_filters(prepared_df)
     comparison_filtered_df = (
         apply_filters(comparison_prepared_df)
@@ -1460,7 +1924,7 @@ def render_orgunit_analysis_page(
         render_org_simulation_export(
             export_tables, export_context, current=filtered_df, baseline=comparison_filtered_df,
             event_summary=event_summary, yearly_view=yearly_view,
-            stock_view=stock_view,
+            stock_view=stock_view, monte_carlo_ensemble=monte_carlo_ensemble,
             display_orgs=display_orgs, compact=compact, view={
                 "Kennzahl": metric_view, "Filter": get_active_view_filters(), "Filterübersicht": filter_summary,
                 "Top-N": st.session_state.get(_TOP_N_SESSION_KEY, _TOP_N_DEFAULT),
@@ -1476,7 +1940,17 @@ def render_orgunit_analysis_page(
         "KPI-Überblick",
         f"Kennzahl: {metric_view} · aktueller Filterkontext",
     )
-    kpis = _build_kpis(mapped_df, filtered_df, unmapped_df, metric_view, compact)
+    if monte_carlo_ensemble is None:
+        kpis = _build_kpis(mapped_df, filtered_df, unmapped_df, metric_view, compact)
+    else:
+        from utils.monte_carlo_filtered_org import filtered_org_kpi_statistics
+        try:
+            mc_kpis = filtered_org_kpi_statistics(
+                monte_carlo_ensemble, get_active_view_filters(), compact)
+        except ValueError as exc:
+            st.error(f"Monte-Carlo-Kennzahlen fehlen: {exc}. Bitte Simulation neu berechnen.")
+            return
+        kpis = _build_monte_carlo_kpis(mc_kpis, metric_view, compact)
     if export_tables is not None:
         export_tables["KPI_Anzeige"] = pd.DataFrame(kpis).reindex(columns=["title", "value", "subtitle", "status"])
     if kpis:
@@ -1488,13 +1962,39 @@ def render_orgunit_analysis_page(
         comparison_mapped_df = comparison_filtered_df[comparison_filtered_df[ORG_COL] != ORG_NOT_ASSIGNED].copy()
     comparison_available = enable_comparison_toggle and comparison_mapped_df is not None
 
-    if mapped_df.empty:
+    mc_rank_stats = None
+    if monte_carlo_ensemble is not None:
+        from utils.monte_carlo_filtered_org import filtered_org_rank_statistics
+        try:
+            mc_rank_stats = filtered_org_rank_statistics(
+                monte_carlo_ensemble, get_active_view_filters())
+        except ValueError as exc:
+            st.error(f"Monte-Carlo-Rangliste fehlt: {exc}. Bitte Simulation neu berechnen.")
+            return
+        # Fail visibly if the app-specific Seed-0 data have drifted from the
+        # concrete reference that the user approved.
+        for view_name, code in (("Köpfe", "heads"), ("MAK", "mak"), ("EUR", "eur")):
+            config = _get_metric_config(mapped_df, view_name)
+            if config is None:
+                continue
+            reference = _aggregate_metric(mapped_df, [ORG_COL], view_name, config)
+            for org, value in reference[[ORG_COL, "Wert"]].itertuples(index=False, name=None):
+                seed_zero = mc_rank_stats[code].get(str(org), {}).get("seed_zero", 0.0)
+                if abs(float(value) - seed_zero) > 1e-6:
+                    st.error(f"OE-Rangliste für {org} ({view_name}) weicht vom Referenzlauf ab.")
+                    return
+
+    if mapped_df.empty and (mc_rank_stats is None or not any(
+            value["mean"] > 0 for org, value in mc_rank_stats["heads"].items()
+            if org != ORG_NOT_ASSIGNED)):
         render_context_box(
             "Keine zugeordneten Organisationseinheiten im aktuellen Ausschnitt",
             "Im aktuellen Filterkontext sind keine zugeordneten Organisationseinheiten sichtbar. Die fachliche Hauptanalyse bleibt deshalb leer; der Datenqualitätsblock unten zeigt den verbleibenden Rest transparent an.",
             tone="warning",
         )
-        _render_data_quality_block(filtered_df, mapped_df, unmapped_df, metric_view, metric_config, compact, **({"export_tables": export_tables} if export_tables is not None else {}))
+        _render_data_quality_block(filtered_df, mapped_df, unmapped_df, metric_view, metric_config, compact,
+                                   export_tables=export_tables, monte_carlo_ensemble=monte_carlo_ensemble,
+                                   active_filters=get_active_view_filters())
         yearly_view = render_yearly_view()
         finish_export([])
         return
@@ -1565,7 +2065,7 @@ def render_orgunit_analysis_page(
     else:
         selected_sim_focus = _SIM_FOCUS_DEFAULT
 
-    caption_parts = ["Die Auswahl steuert alle Grafiken und Tabellen dieser Seite."]
+    caption_parts = ["Die Auswahl steuert Rangliste und Zusammensetzung. Die Jahresauswertung hat eigene Organisations- und Jahresfilter."]
     if comparison_active:
         caption_parts.append("Mindestgröße bezieht sich auf den größeren Wert aus IST und Simulation.")
         caption_parts.append("Delta = absolute Veränderung der aktuell gewählten Kennzahl.")
@@ -1582,6 +2082,10 @@ def render_orgunit_analysis_page(
         value_label=value_label,
         comparison_label=comparison_label,
     )
+    if mc_rank_stats is not None:
+        ranking_df = _apply_monte_carlo_ranking_values(
+            ranking_df, mc_rank_stats, comparison_mapped_df, metric_view,
+            metric_config, comparison_label, comparison_active)
     display_orgs = _apply_orgunit_top_filters(
         ranking_df,
         selected_top_n,
@@ -1595,7 +2099,8 @@ def render_orgunit_analysis_page(
     if not display_orgs:
         st.info("Im aktuellen Filterkontext sind keine Organisationseinheiten für die Analyse verfügbar.")
         _render_data_quality_block(filtered_df, mapped_df, unmapped_df, metric_view, metric_config, compact,
-                                       **({"export_tables": export_tables} if export_tables is not None else {})) if export_tables is not None else None
+                                   export_tables=export_tables, monte_carlo_ensemble=monte_carlo_ensemble,
+                                   active_filters=get_active_view_filters())
         yearly_view = render_yearly_view()
         finish_export([])
         return
@@ -1617,6 +2122,7 @@ def render_orgunit_analysis_page(
             value_label=value_label,
             comparison_label=comparison_label,
             departure_events=filtered_departure_events,
+            rank_statistics=mc_rank_stats,
             **({"export_tables": export_tables} if export_tables is not None else {}),
         )
     else:
@@ -1625,6 +2131,7 @@ def render_orgunit_analysis_page(
             value_label=value_label,
             monte_carlo_ensemble=monte_carlo_ensemble if filtered_df.equals(prepared_df) else None,
             target_date=event_summary.get("metadata", {}).get("target_date") if event_summary else None,
+            rank_statistics=mc_rank_stats,
             **({"export_tables": export_tables} if export_tables is not None else {}))
 
     # --- Zusammensetzung (all three blocks use same display_orgs) ---
@@ -1637,6 +2144,25 @@ def render_orgunit_analysis_page(
         "Zusammensetzung der Top-Organisationseinheiten",
         composition_caption,
     )
+    mc_composition = None
+    mc_tariff_composition = None
+    if monte_carlo_ensemble is not None:
+        from utils.monte_carlo_filtered_org import filtered_org_composition_statistics
+        try:
+            dimensions = tuple(split_col for _, split_col in DETAIL_BLOCKS)
+            if "TrfGr" in mapped_df.columns and metric_view != "EUR":
+                dimensions += ("TrfGr",)
+            mc_composition = filtered_org_composition_statistics(
+                monte_carlo_ensemble, get_active_view_filters(), display_orgs,
+                metric_view, dimensions)
+            if "TrfGr" in mapped_df.columns:
+                mc_tariff_composition = (mc_composition["TrfGr"] if metric_view != "EUR"
+                    else filtered_org_composition_statistics(
+                        monte_carlo_ensemble, get_active_view_filters(), display_orgs,
+                        "MAK", ("TrfGr",))["TrfGr"])
+        except ValueError as exc:
+            st.error(f"Monte-Carlo-Zusammensetzung fehlt: {exc}. Bitte Simulation neu berechnen.")
+            return
     for i, (title, split_col) in enumerate(DETAIL_BLOCKS):
         if i > 0:
             st.divider()
@@ -1654,6 +2180,8 @@ def render_orgunit_analysis_page(
             comparison_active=comparison_active,
             value_label=value_label,
             comparison_label=comparison_label,
+            composition_view=mc_composition[split_col] if mc_composition is not None else None,
+            monte_carlo_band_level=monte_carlo_ensemble["band_level"] if monte_carlo_ensemble else 0.8,
             **({"export_tables": export_tables} if export_tables is not None else {}),
         )
 
@@ -1672,6 +2200,9 @@ def render_orgunit_analysis_page(
         comparison_active=comparison_active,
         value_label=value_label,
         comparison_label=comparison_label,
+        composition_view=mc_tariff_composition,
+        rank_statistics=mc_rank_stats,
+        monte_carlo_band_level=monte_carlo_ensemble["band_level"] if monte_carlo_ensemble else 0.8,
     **({"export_tables": export_tables} if export_tables is not None else {}),
     )
 
@@ -1679,8 +2210,15 @@ def render_orgunit_analysis_page(
         st.divider()
         yearly_view = render_yearly_view()
 
-    if comparison_active and not filtered_departure_events.empty:
-        reason_df = _build_departure_reason_summary(filtered_departure_events)
+    if comparison_active:
+        if monte_carlo_ensemble is None:
+            reason_df = _build_departure_reason_summary(filtered_departure_events)
+        else:
+            from utils.monte_carlo_filtered_org import filtered_org_departure_reasons
+            reason_df = filtered_org_departure_reasons(
+                monte_carlo_ensemble, get_active_view_filters())
+            if not reason_df.empty:
+                reason_df = reason_df.loc[reason_df[ORG_COL].isin(display_orgs)].copy()
         if not reason_df.empty:
             if export_tables is not None:
                 export_tables["Abgänge_nach_Grund"] = reason_df.copy()
@@ -1689,7 +2227,9 @@ def render_orgunit_analysis_page(
 
     # --- Datenqualität (always full filtered_df, never limited by top_n) ---
     with st.expander("Datenqualität", expanded=False):
-        _render_data_quality_block(filtered_df, mapped_df, unmapped_df, metric_view, metric_config, compact, **({"export_tables": export_tables} if export_tables is not None else {}))
+        _render_data_quality_block(filtered_df, mapped_df, unmapped_df, metric_view, metric_config, compact,
+                                   export_tables=export_tables, monte_carlo_ensemble=monte_carlo_ensemble,
+                                   active_filters=get_active_view_filters())
 
     finish_export(display_orgs)
 

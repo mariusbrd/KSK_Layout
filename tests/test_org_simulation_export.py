@@ -2,9 +2,11 @@ from copy import deepcopy
 from io import BytesIO
 import importlib.util
 import json
+import pickle
 from pathlib import Path
 import subprocess
 import types
+import zlib
 
 import pandas as pd
 import pytest
@@ -13,7 +15,10 @@ from streamlit.testing.v1 import AppTest
 
 from test_analysis_pages_contracts import _FakeCompact, _analysis_snapshot, _capture_render_helpers
 from utils.compact_page_loader import load_compact_page_module
-from utils.org_simulation_export import build_org_simulation_export_bytes, build_plan_comparison, export_fingerprint
+from utils.org_simulation_export import (
+    build_org_simulation_export_bytes, build_plan_comparison,
+    build_monte_carlo_plan_comparison, export_fingerprint)
+from utils.monte_carlo_filtered_org import filtered_org_composition_statistics
 from utils.simulation_validation import approve_original
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -90,6 +95,48 @@ def test_plan_comparison_uses_saved_baseline():
     assert missing["SOLL-MAK Ausgangsstellenplan"].isna().all()
 
 
+def test_plan_comparison_uses_each_seed_and_keeps_fixed_soll_ist():
+    compact = load_compact_page_module()
+    baseline = _analysis_snapshot().assign(Soll_FTE=[1., .5, 1., 1.])
+    first = baseline.loc[baseline.Organisationseinheit.eq("OE A")].copy()
+    second = first.copy()
+    second.loc[second.PersNr.eq("2"), "MAK_Reporting"] = 1.0
+    blob = lambda frame: zlib.compress(pickle.dumps(frame, protocol=pickle.HIGHEST_PROTOCOL))
+    ensemble = {"count": 2, "band_level": .8,
+                "org_filter_snapshots": [blob(first), blob(second)]}
+    result = build_monte_carlo_plan_comparison(
+        first, baseline, ["OE A"], compact, ensemble, {}).iloc[0]
+    assert result["Simulation-MAK"] == pytest.approx(1.75)
+    assert result["Simulation-MAK P10"] == pytest.approx(1.55)
+    assert result["Simulation-MAK P90"] == pytest.approx(1.95)
+    assert result["SOLL-MAK Ausgangsstellenplan"] == 1.5
+    assert result["Simulation minus SOLL (MAK)"] == pytest.approx(.25)
+
+
+def test_data_quality_calculates_ratios_per_seed_and_checks_reference():
+    compact = load_compact_page_module()
+    page = load_page()
+    first = _analysis_snapshot().copy()
+    first.loc[first.PersNr.eq("3"), "Organisationseinheit"] = "Nicht zugeordnet"
+    second = first.copy()
+    second.loc[second.PersNr.eq("2"), "Organisationseinheit"] = "Nicht zugeordnet"
+    blob = lambda frame: zlib.compress(pickle.dumps(frame, protocol=pickle.HIGHEST_PROTOCOL))
+    ensemble = {"count": 2, "band_level": .8,
+                "org_filter_snapshots": [blob(first), blob(second)]}
+    reference = {"Sichtbare Zeilen": 4, "Nicht zugeordnete Zeilen": 1,
+                 "Nicht zugeordnete MA": 1, "Gesamtkennzahl": 2.25,
+                 "Nicht zugeordnete Kennzahl": .75,
+                 "Nicht zugeordneter Anteil": .75 / 2.25,
+                 "Zugeordneter Anteil": 1.5 / 2.25,
+                 "Nicht zugeordnete Zeilenquote": .25}
+    values = page._monte_carlo_data_quality(ensemble, {}, "MAK", compact, reference)
+    assert values["Nicht zugeordnete MA"]["mean"] == 1.5
+    assert values["Nicht zugeordneter Anteil"]["mean"] == pytest.approx((.75 / 2.25 + 1.25 / 2.25) / 2)
+    with pytest.raises(ValueError, match="Referenzlauf"):
+        page._monte_carlo_data_quality(ensemble, {}, "MAK", compact,
+                                       {**reference, "Nicht zugeordnete MA": 2})
+
+
 @pytest.mark.parametrize("metric", ["MAK", "Köpfe"])
 @pytest.mark.parametrize("comparison", [False, True])
 def test_role_summary_and_tariff_plot_remain_equivalent(monkeypatch, metric, comparison):
@@ -109,6 +156,56 @@ def test_role_summary_and_tariff_plot_remain_equivalent(monkeypatch, metric, com
         pd.testing.assert_frame_equal(old["data"], new["data"], check_exact=True)
     assert collected["Köpfe_Kapazität"]["MAK"].tolist() == [.75, 1.5]
     assert {"Tarifgruppe_Grafik", "Tarifgruppe_Tabelle"}.issubset(collected)
+
+
+def test_monte_carlo_role_summary_uses_per_run_ratios():
+    page = load_page()
+    compact = _FakeCompact()
+    stats = {"count": 2, "band_level": .8,
+             "heads": {"OE A": {"samples": [1., 2.]}},
+             "mak": {"OE A": {"samples": [.5, 1.5]}}}
+    exported = []
+    page._build_monte_carlo_role_summary_table(["OE A"], stats, compact, exported)
+    row = exported[0]
+    assert row["Köpfe"] == 1.5
+    assert row["MAK"] == 1.0
+    assert row["Ø MAK"] == .625
+    assert row["Ø MAK"] != row["MAK"] / row["Köpfe"]
+    assert row["Ø MAK P10"] == pytest.approx(.525)
+    assert row["Ø MAK P90"] == pytest.approx(.725)
+
+
+@pytest.mark.parametrize("metric", ["Köpfe", "MAK", "EUR"])
+def test_monte_carlo_tariff_block_uses_seed_means_and_bands(monkeypatch, metric):
+    page = load_page()
+    first = _analysis_snapshot()
+    second = first.copy()
+    second.loc[second["Organisationseinheit"] == "OE A", "MAK_Reporting"] = .25
+    def blob(frame):
+        return zlib.compress(pickle.dumps(frame, protocol=pickle.HIGHEST_PROTOCOL))
+    ensemble = {"count": 2, "band_level": .8, "org_filter_snapshot_version": 1,
+                "org_filter_snapshots": [blob(first), blob(second)]}
+    effective = "MAK" if metric == "EUR" else metric
+    composition = filtered_org_composition_statistics(
+        ensemble, {}, ["OE B", "OE A"], effective, ("TrfGr",))["TrfGr"]
+    # The role summary consumes the same per-seed heads and MAK as the ranking.
+    rank = {"count": 2, "band_level": .8, "heads": {}, "mak": {}}
+    for org in ("OE B", "OE A"):
+        head_samples = [frame.loc[(frame["Organisationseinheit"] == org) & ~frame["Is_Vacant"], "PersNr"].nunique()
+                        for frame in (first, second)]
+        mak_samples = [frame.loc[(frame["Organisationseinheit"] == org) & ~frame["Is_Vacant"], "MAK_Reporting"].sum()
+                       for frame in (first, second)]
+        rank["heads"][org] = {"samples": head_samples}
+        rank["mak"][org] = {"samples": mak_samples}
+    compact = _FakeCompact()
+    capture, displayed, _ = _capture_render_helpers(monkeypatch, page)
+    exported = {}
+    page._render_role_breakdown_block(first, metric, compact, ["OE B", "OE A"],
+        composition_view=composition, rank_statistics=rank, export_tables=exported)
+    assert not any("weicht" in message for message in capture.infos)
+    assert {"Gesamt P10", "Gesamt P90"}.issubset(exported["Tarifgruppe_Tabelle"].columns)
+    assert {"Köpfe P10", "MAK P90", "Ø MAK P10"}.issubset(exported["Köpfe_Kapazität"].columns)
+    assert len(capture.figures) >= 1
 
 
 def test_multiple_positions_are_not_counted_as_multiple_people():

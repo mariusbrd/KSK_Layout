@@ -314,7 +314,14 @@ def build_departure_stock_bridge(context: dict, events: pd.DataFrame, *, expecte
     except (KeyError, TypeError, ValueError):
         result["reason"] = "Ungültiger oder fehlender Laufzeitraum."
         return result
-    if not events.empty and ((events.event_date.dt.normalize() < start) | (events.event_date.dt.normalize() > end)).any():
+    # The unchanged forecast executes complete calendar months, including the
+    # months containing a partial-month base or target date. Its events are
+    # stamped at period end. Validate against those executed periods rather
+    # than rejecting events merely because the requested date is mid-month.
+    executed_start = start.to_period("M").start_time
+    executed_end = end.to_period("M").end_time.normalize()
+    if not events.empty and ((events.event_date.dt.normalize() < executed_start)
+                             | (events.event_date.dt.normalize() > executed_end)).any():
         result["reason"] = "Ereignisse liegen außerhalb des gespeicherten Laufzeitraums."
         return result
     mapping = context.get("cluster_mapping", {}).get("oe_map", {})

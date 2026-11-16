@@ -95,6 +95,33 @@ def test_multiple_departure_reasons_stack_to_same_yearly_total():
     pd.testing.assert_frame_equal(tables["Jahresauswahl_Grafik"], stacked)
 
 
+def test_monte_carlo_yearly_export_uses_visible_means_and_labels_reference_audit():
+    saved = _summary()
+    view = ui.build_yearly_view(saved, dimension="Organisationseinheit", years=[2026],
+                                organizations=["OE2"], event_types=["QUIT"], metric="Abgänge")
+    view["summary_table"] = ui.build_yearly_summary_table(view)
+    view["reference_details"] = view["details"].copy()
+    view["reference_summary_table"] = view["summary_table"].copy()
+    view["details"] = view["details"].copy()
+    view["details"]["Abgänge"] = 2.0
+    view["summary_table"] = view["summary_table"].copy()
+    view["summary_table"]["Abgehende Köpfe"] = 2.0
+    view["chart"] = view["chart"].copy()
+    view["chart"]["Abgänge"] = 2.0
+    view["table"] = view["chart"].pivot(index="Organisationseinheit", columns="Jahr", values="Abgänge")
+    view["monte_carlo_bands"] = pd.DataFrame({
+        "Jahr": [2026], "Organisationseinheit": ["OE2"],
+        "Referenzlauf": [1.0], "mean": [2.0], "lower": [1.2], "upper": [2.8]})
+    view["monte_carlo_metadata"] = {"Anzahl Läufe": 2}
+    from utils.org_simulation_export import append_yearly_export
+    tables, context = {}, {"Laufkennung": "a"}
+    append_yearly_export(tables, context, saved, view)
+    assert tables["Jahresauswahl_Matrix"].loc[0, 2026] == 2.0
+    assert tables["Jahresauswahl_Summen"].loc[0, "Abgehende Köpfe"] == 2.0
+    assert tables["Jahresauswahl_Details"].iloc[0]["Abgänge"] == 2.0
+    assert tables["Ref_Jahresdetails"].iloc[0]["Abgänge"] == 1.0
+
+
 @pytest.mark.parametrize("summary,signature", [(None, "a"), (_summary(), "wrong"),
                                                ({"run_signature": "a", "metadata": {}}, "a")])
 def test_missing_or_mismatched_summary_shows_message_without_controls(monkeypatch, summary, signature):

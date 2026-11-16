@@ -31,7 +31,12 @@ def test_yearly_workbook_matches_display_and_full_run():
     inventory = pd.read_excel(workbook, "Exportinventar")
     for row in inventory.to_dict("records"):
         actual = pd.read_excel(workbook, row["Tabellenblatt"])
-        pd.testing.assert_frame_equal(actual, tables[row["Bereich"]].reset_index(drop=True),
+        expected = tables[row["Bereich"]].reset_index(drop=True).copy()
+        for column in expected.select_dtypes(include="object").columns:
+            if column in actual:
+                expected[column] = expected[column].fillna("")
+                actual[column] = actual[column].fillna("")
+        pd.testing.assert_frame_equal(actual, expected,
                                       check_dtype=False, check_index_type=False, check_names=False)
     assert "10-09" in pd.read_excel(workbook, "Lineage_Report").astype(str).to_numpy()
     assert "Jahresauswertung" in pd.read_excel(workbook, "00_Dokumentation")["Feld"].tolist()
@@ -44,6 +49,31 @@ def test_full_run_tables_do_not_depend_on_display_selection():
     for name in ("Jahre_OE_vollständig", "Jahre_Cluster_vollständig", "Gesamt_OE_Ereignisse", "Gesamt_Cluster_Ereignisse"):
         pd.testing.assert_frame_equal(tables[name], other[name], check_exact=True)
     assert "Jahresauswahl_Matrix" not in other
+
+
+def test_monte_carlo_full_run_tables_are_labeled_as_reference():
+    summary, view, _, _ = _export_inputs()
+    tables, context = {}, {"Laufkennung": "a"}
+    append_yearly_export(tables, context, summary, view, monte_carlo=True)
+    for name in ("Jahre_OE_vollständig", "Jahre_Cluster_vollständig",
+                 "Gesamt_OE_Ereignisse", "Gesamt_Cluster_Ereignisse",
+                 "Jahres_Ereignisbasis", "OE_Cluster_Laufzuordnung"):
+        assert name not in tables
+        assert f"Ref_{name}" in tables
+    assert "Referenzlauf" in context["Jahresauswertung"]["Vollständige Tabellen"]
+
+
+def test_direct_monte_carlo_yearly_download_labels_reference_tables():
+    from utils.org_yearly_view_export import prepare_yearly_view_export
+
+    summary, view, _, _ = _export_inputs()
+    view["monte_carlo_bands"] = pd.DataFrame({
+        "Jahr": [2026], "OE-Cluster": ["A"], "mean": [1.0],
+        "lower": [0.0], "upper": [2.0]})
+    view["monte_carlo_metadata"] = {"Anzahl Läufe": 2}
+    tables, _ = prepare_yearly_view_export(summary, view)
+    assert "Ref_Jahre_OE_vollständig" in tables
+    assert "Jahre_OE_vollständig" not in tables
 
 
 def test_export_copies_sources_and_fingerprint_covers_year_selection_and_mapping():

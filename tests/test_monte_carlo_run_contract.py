@@ -7,6 +7,7 @@ import pytest
 
 from utils.monte_carlo_metric_packet import LEVELS
 from utils.monte_carlo_run_contract import build_run_plan, finalize_run_packets
+from utils.monte_carlo_annual_event_rows import VERSION as ANNUAL_EVENT_ROWS_VERSION
 
 
 def plan(*, count=2, attrition_seed=17, accession_seed=29, fingerprint="input-A",
@@ -31,6 +32,17 @@ def outcome(request, index, value):
             "input_fingerprint": request.input_fingerprint,
             "seed_pair": request.seed_pairs[index], "status": "ok",
             "packet": packet(value)}
+
+
+def test_current_annual_event_contract_is_preserved_in_ensemble():
+    request = plan(count=2)
+    runs = [outcome(request, index, index + 1) for index in range(2)]
+    for index, run in enumerate(runs):
+        run["packet"]["annual_event_rows_version"] = ANNUAL_EVENT_ROWS_VERSION
+        run["packet"]["annual_event_rows"] = bytes([index + 1])
+    result = finalize_run_packets(request, runs)
+    assert result["annual_event_rows_version"] == ANNUAL_EVENT_ROWS_VERSION
+    assert result["annual_event_rows"] == [b"\x01", b"\x02"]
 
 
 def test_one_run_passes_both_original_seed_values_without_mutation():

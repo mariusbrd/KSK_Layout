@@ -28,7 +28,10 @@ def render_departure_stock(summary, *, run_signature, level=None, years=None, or
                 st.caption("Zusätzliche Effekte ohne belegten Zeitpunkt werden nicht auf Jahre verteilt.")
                 st.dataframe(diagnostics, hide_index=True, use_container_width=True)
         return None
-    st.success("Mit dem finalen Simulationsbestand abgestimmt: Köpfe exakt, MAK intern ungerundet geprüft.")
+    st.success(("Referenzlauf mit dem finalen Simulationsbestand abgestimmt: "
+                if monte_carlo_ensemble is not None else
+                "Mit dem finalen Simulationsbestand abgestimmt: ")
+               + "Köpfe exakt, MAK intern ungerundet geprüft.")
     documented = bridge.get("documented_effects")
     if documented is not None and not documented.empty:
         st.info("Zusätzliche belegte Aufbereitungseffekte sind im Endwert enthalten. Ihr Jahr ist nicht belegt; die Jahreswerte der Ereignisse bleiben unverändert.")
@@ -95,8 +98,8 @@ def render_departure_stock(summary, *, run_signature, level=None, years=None, or
                 chart, ensemble=monte_carlo_ensemble, level=level, metric=metric,
                 base_date=summary["metadata"]["base_date"])
         except ValueError as exc:
-            st.warning(f"Monte-Carlo-Band für den Jahresbestand nicht verfügbar: {exc}")
-            monte_carlo_ensemble = None
+            st.error(f"Monte-Carlo-Band für den Jahresbestand nicht verfügbar: {exc}")
+            return None
         else:
             view["monte_carlo_bands"] = bands
             view["monte_carlo_metadata"] = {
@@ -125,10 +128,14 @@ def render_departure_stock(summary, *, run_signature, level=None, years=None, or
     else:
         import altair as alt
         bands = view["monte_carlo_bands"]
-        bars = alt.Chart(plotted).mark_bar().encode(
+        bars = alt.Chart(bands).mark_bar().encode(
             x=alt.X("Stichtag:O", title="Stichtag"),
             xOffset=alt.XOffset("Organisation:N"),
-            y=alt.Y(f"{value}:Q", title=value), color="Organisation:N")
+            y=alt.Y("mean:Q", title=f"Mittelwert {value}"), color="Organisation:N",
+            tooltip=["Stichtag:O", "Organisation:N",
+                     alt.Tooltip("mean:Q", title="Mittelwert"),
+                     alt.Tooltip("lower:Q", title="P10"),
+                     alt.Tooltip("upper:Q", title="P90")])
         marks = alt.Chart(bands).mark_rule(color="#6b7280", strokeWidth=5).encode(
             x="Stichtag:O", xOffset="Organisation:N", y="lower:Q", y2="upper:Q",
             tooltip=["Stichtag:O", "Organisation:N", "Referenzlauf:Q",
@@ -136,7 +143,7 @@ def render_departure_stock(summary, *, run_signature, level=None, years=None, or
                      alt.Tooltip("lower:Q", title="P10"),
                      alt.Tooltip("upper:Q", title="P90")])
         st.altair_chart(alt.layer(bars, marks).resolve_scale(y="shared"), use_container_width=True)
-        st.caption("Balken: konkreter Referenzlauf. Graue Markierungen: P10–P90 der Monte-Carlo-Läufe je Jahresscheibe und Organisation.")
+        st.caption("Balken: Mittelwert aller Läufe. Graue Markierungen: P10–P90 je Jahresscheibe und Organisation. Der konkrete Referenzlauf bleibt in der Detailansicht nachvollziehbar.")
         with st.expander("Monte-Carlo-Jahresbestände"):
             st.dataframe(bands.rename(columns={"mean": "Mittelwert", "lower": "P10", "upper": "P90"}),
                          hide_index=True, use_container_width=True)
@@ -145,8 +152,14 @@ def render_departure_stock(summary, *, run_signature, level=None, years=None, or
             bands, group_col="Organisation", x_col="Stichtag", unit=value,
             key=f"org_stock_mc_detail_{level}_{metric}")
     st.caption("Bestand am letzten ausgewählten Stichtag; abgehende Köpfe und MAK summieren die Abgangsereignisse der ausgewählten Jahre.")
-    st.dataframe(display_table, use_container_width=True)
-    with st.expander("Bestandsüberleitung und Endwertabgleich"):
+    if monte_carlo_ensemble is None:
+        st.dataframe(display_table, use_container_width=True)
+    else:
+        st.caption("Die folgende Überleitungstabelle gehört zum konkreten Referenzlauf; Mittelwerte und Bänder stehen in der Monte-Carlo-Jahrestabelle oben.")
+        with st.expander("Bestandsüberleitung des Referenzlaufs"):
+            st.dataframe(display_table, use_container_width=True)
+    with st.expander("Bestandsüberleitung und Endwertabgleich"
+                     + (" (Referenzlauf)" if monte_carlo_ensemble is not None else "")):
         st.caption(f"MAK-Toleranz im ungerundeten Vergleich: {bridge['mak_tolerance']} MAK. Rundung nur für die Anzeige; belegte undatierte Aufbereitungseffekte sind gesondert ausgewiesen.")
         st.dataframe(rows, hide_index=True, use_container_width=True)
         st.dataframe(bridge["checks"], hide_index=True, use_container_width=True)

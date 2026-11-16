@@ -101,3 +101,37 @@ def certified_rate_inputs(context: dict, summary: dict) -> dict[str, dict]:
         result[level] = departure_rate_input(
             level=level, opening=both, reporting_events=view["reporting_events"])
     return result
+
+
+def oe_rate_inputs_from_context(context: dict) -> dict[str, dict]:
+    """Use the bridge's exact opening and reporting rules without rebuilding it."""
+    from utils.org_simulation_events import normalize_simulation_events
+    from utils.org_simulation_reconciliation import (
+        grouped_stock_metrics, reporting_departure_events, reporting_projection_base)
+
+    initial = context["baseline_snapshot"].copy(deep=True)
+    mapping = context.get("cluster_mapping", {}).get("oe_map", {})
+    initial["Organisationseinheit"] = initial["Organisationseinheit"].fillna(
+        "Nicht zugeordnet").astype(str).str.strip().replace("", "Nicht zugeordnet")
+    initial["OE-Cluster"] = initial["Organisationseinheit"].map(mapping).fillna(
+        "Nicht zugeordnet")
+    start = pd.Timestamp(context["metadata"]["base_date"])
+    end = pd.Timestamp(context["metadata"]["target_date"])
+    projection = reporting_projection_base(context, initial) if end > start else initial
+    projection = projection.copy()
+    projection["Organisationseinheit"] = projection["Organisationseinheit"].fillna(
+        "Nicht zugeordnet").astype(str).str.strip().replace("", "Nicht zugeordnet")
+    projection["OE-Cluster"] = projection["Organisationseinheit"].map(mapping).fillna(
+        "Nicht zugeordnet")
+    events = normalize_simulation_events(
+        context, expected_run_signature=context["run_signature"])
+    reported = reporting_departure_events(projection, events, context)
+    result = {}
+    for level in ("Organisationseinheit", "OE-Cluster"):
+        opening = pd.DataFrame([
+            {level: group, "Köpfe": heads, "MAK": mak}
+            for group, (heads, mak) in grouped_stock_metrics(initial, level).items()
+        ], columns=[level, "Köpfe", "MAK"])
+        result[level] = departure_rate_input(
+            level=level, opening=opening, reporting_events=reported)
+    return result

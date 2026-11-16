@@ -216,6 +216,55 @@ def test_events_outside_run_and_unknown_types_are_not_certified():
     assert build_simulation_event_summary(context, expected_run_signature="a")["stock_reconciliation"]["status"] == "Nicht verfügbar"
 
 
+def test_partial_target_month_accepts_events_from_executed_final_month():
+    context = _bridge_context("departures")
+    context["metadata"]["target_date"] = pd.Timestamp("2027-10-01")
+    summary = build_simulation_event_summary(context, expected_run_signature="a")
+    assert summary["events"]["event_date"].max() > context["metadata"]["target_date"]
+    assert summary["stock_reconciliation"]["status"] == "Abgestimmt"
+    context["departure_events"].loc[0, "event_date"] = pd.Timestamp("2027-11-01")
+    rejected = build_simulation_event_summary(context, expected_run_signature="a")
+    assert rejected["stock_reconciliation"]["status"] == "Nicht verfügbar"
+
+
+def test_actual_partial_month_forecast_reconciles_without_changing_events():
+    from abgaenge.params import default_params as attrition_defaults
+    from zugaenge.params import default_params as accession_defaults
+    from dataloader.compact_simulation_engine import simulate_compact_snapshot
+    from dataloader.cluster_resolver import ActiveClusterSource
+    from utils.status_quo_baseline import build_status_quo_snapshot
+
+    start, target = pd.Timestamp("2026-01-01"), pd.Timestamp("2026-01-02")
+    snapshot = _base_snapshot(66)
+    attrition = attrition_defaults()
+    attrition["components"] = {"atz": False, "retirement": True,
+                               "quit": False, "ruhend": False}
+    attrition["retirement"].update(rent_rate_65=1.0, rent_rate_60_65=0.0)
+    source = ActiveClusterSource(mode="synthetic", subtype="synthetic.default_fallback",
+                                 source_signature="partial-month-test")
+    bundle = ClusterMappingBundle(oe_map={"OE1": "A"},
+                                  source_signature="partial-month-test")
+    result = simulate_compact_snapshot(
+        snapshot, pd.DataFrame(), target, base_date=start,
+        abgaenge_params=attrition, zugaenge_params=accession_defaults(),
+        active_cluster_source=source, cluster_mapping_bundle=bundle,
+        cluster_source_signature=source.source_signature, include_audits=False)
+    context = {
+        "run_signature": "partial-month", "metadata": result.metadata,
+        "baseline_snapshot": build_status_quo_snapshot(snapshot, start),
+        "final_snapshot": result.future_snapshot_df,
+        "zugaenge_params": accession_defaults(),
+        "cluster_mapping": bundle.to_dict(),
+        "departure_events": result.abgaenge_result["events_person_level"],
+        "accession_events": result.zugaenge_result["events"],
+    }
+    summary = build_simulation_event_summary(
+        context, expected_run_signature="partial-month")
+    assert not summary["events"].empty
+    assert summary["events"].event_date.max().normalize() == pd.Timestamp("2026-01-31")
+    assert summary["stock_reconciliation"]["status"] == "Abgestimmt"
+
+
 def test_mak_rounding_tolerance_does_not_hide_centimal_differences():
     context = _bridge_context("no_events")
     context["departure_events"] = pd.DataFrame([{"event_date": pd.Timestamp("2026-01-31"),

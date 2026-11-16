@@ -53,11 +53,10 @@ def dataframe_export_fingerprint(data: pd.DataFrame, *parts: Any) -> tuple[Any, 
     """Cheaply identify the currently visible export payload for lazy downloads."""
     columns = tuple(str(col) for col in data.columns)
     dtypes = tuple(str(dtype) for dtype in data.dtypes)
-    hash_source = data if len(data) <= 500 else pd.concat([data.head(50), data.tail(50)])
     try:
-        values_hash = int(pd.util.hash_pandas_object(hash_source, index=True).sum())
+        values_hash = int(pd.util.hash_pandas_object(data, index=True).sum())
     except Exception:
-        values_hash = hash(tuple(hash_source.astype(str).to_numpy().ravel()))
+        values_hash = hash(tuple(data.astype(str).to_numpy().ravel()))
     return (tuple(parts), data.shape, columns, dtypes, values_hash)
 
 

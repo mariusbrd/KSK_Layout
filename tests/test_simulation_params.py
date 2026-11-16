@@ -156,7 +156,8 @@ def test_run_options_save_and_preserve_distinct_single_run_seeds():
 
 
 def test_run_count_choices_and_invalid_save():
-    assert RUN_COUNTS[:4] == (1, 2, 10, 20)
+    assert RUN_COUNTS[:4] == (1, 10, 20, 30)
+    assert 2 not in RUN_COUNTS
     assert RUN_COUNTS[-1] == 1000
     _clear_relevant_state()
     params = get_simulation_params()

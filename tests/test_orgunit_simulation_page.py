@@ -481,6 +481,84 @@ def test_jobfamily_simulation_page_uses_computed_future_snapshot(monkeypatch):
     )
 
 
+def test_jobfamily_simulation_blocks_invalid_matching_multirun(monkeypatch):
+    _run_reusable_orgunit_simulation()
+    sim_page = _load_page_module("Jobfamily_Simulation", "jobfamily_invalid_multirun")
+    from utils.simulation_validation import current_view
+    view = current_view(st.session_state, require_approval=True)
+    st.session_state["monte_carlo_ensemble_result"] = {
+        "status": "complete", "count": 2,
+        "reference_signature": view.signature,
+        "reference_instance": view.instance,
+        "statistics": {"status": "complete", "requested_count": 2},
+    }
+    errors = []
+    monkeypatch.setattr(sim_page.st, "error", lambda message: errors.append(message))
+    monkeypatch.setattr(sim_page, "_load_jobfamily_analysis_module",
+                        lambda: pytest.fail("invalid multirun must not render Seed 0"))
+
+    sim_page.main()
+
+    assert len(errors) == 1
+    assert "Monte-Carlo-Laufdaten" in errors[0]
+
+
+def test_orgunit_simulation_blocks_invalid_matching_multirun(monkeypatch):
+    _run_reusable_orgunit_simulation()
+    sim_page = _load_page_module("Organisationseinheiten_Simulation", "orgunit_invalid_multirun")
+    from utils.simulation_validation import current_view
+    view = current_view(st.session_state, require_approval=True)
+    st.session_state["monte_carlo_ensemble_result"] = {
+        "status": "complete", "count": 2,
+        "reference_signature": view.signature,
+        "reference_instance": view.instance,
+        "statistics": {"status": "complete", "requested_count": 2},
+    }
+    errors = []
+    monkeypatch.setattr(sim_page.st, "error", lambda message: errors.append(message))
+    monkeypatch.setattr(sim_page, "_load_orgunit_analysis_module",
+                        lambda: pytest.fail("invalid multirun must not render Seed 0"))
+
+    sim_page.main()
+
+    assert len(errors) == 1
+    assert "Monte-Carlo-Laufdaten" in errors[0]
+
+
+def test_jobfamily_simulation_renders_valid_multirun_with_empty_reference(monkeypatch):
+    _run_reusable_orgunit_simulation()
+    sim_page = _load_page_module("Jobfamily_Simulation", "jobfamily_empty_reference_mc")
+    from utils.simulation_validation import current_view
+    view = current_view(st.session_state, require_approval=True)
+    saved = {
+        "status": "complete", "count": 2, "band_level": 0.8,
+        "reference_signature": view.signature,
+        "reference_instance": view.instance,
+        "statistics": {"status": "complete", "requested_count": 2,
+                       "annual_event_samples": [], "annual_stock_samples": []},
+    }
+    st.session_state["monte_carlo_ensemble_result"] = saved
+    monkeypatch.setattr(sim_page, "current_view",
+                        lambda *_args, **_kwargs: type("EmptyView", (), {
+                            "prepared_df": view.prepared_df.iloc[:0].copy(),
+                            "metadata": view.metadata,
+                            "signature": view.signature,
+                            "instance": view.instance,
+                            "version": view.version,
+                            "approved": view.approved,
+                            "event_context": view.event_context,
+                            "event_summary": view.event_summary,
+                        })())
+    captured = {}
+    fake = type("FakeJobfamilyModule", (), {"render_jobfamily_analysis_page": staticmethod(
+        lambda *_args, **kwargs: captured.update(kwargs))})
+    monkeypatch.setattr(sim_page, "_load_jobfamily_analysis_module", lambda: fake)
+
+    sim_page.main()
+
+    assert captured["monte_carlo_ensemble"] is saved
+
+
 def test_orgunit_top_n_selects_largest_values_not_smallest():
     org_page = _load_page_module("Organisationseinheiten_Analyse", "orgunit_analysis_top_n_order")
     df = _ranking_snapshot()
@@ -662,6 +740,126 @@ def test_orgunit_ranking_chart_axis_places_largest_value_at_top(monkeypatch):
     assert list(fig.layout.yaxis.categoryarray) == ["Klein", "Mittel", "Gross"]
 
 
+def test_monte_carlo_ranking_and_ist_comparison_use_mean_and_gray_band(monkeypatch):
+    org_page = _load_page_module("Organisationseinheiten_Analyse", "orgunit_mc_ranking")
+    compact = load_compact_page_module()
+    current = _ranking_snapshot()
+    baseline = current.copy()
+    config = org_page._get_metric_config(current, "MAK")
+    stats = {"count": 2, "band_level": 0.8}
+    for code in ("heads", "mak", "eur", "departures", "mak_loss"):
+        stats[code] = {}
+    stats["mak"]["Gross"] = {"mean": 10.0, "lower": 8.0, "upper": 12.0,
+                               "samples": [8.0, 12.0], "seed_zero": 8.0}
+    for org in ("Mittel", "Klein"):
+        stats["mak"][org] = {"mean": 4.0, "lower": 3.0, "upper": 5.0,
+                              "samples": [3.0, 5.0], "seed_zero": 3.0}
+    capture_st = _ChartCaptureStreamlit()
+    tables = []
+    monkeypatch.setattr(org_page, "st", capture_st)
+    monkeypatch.setattr(org_page, "dataframe_compat",
+                        lambda frame, **_kwargs: tables.append(frame.copy()))
+    monkeypatch.setattr(org_page, "lazy_excel_download_button_compat",
+                        lambda *_args, **_kwargs: None)
+    export = {}
+    org_page._render_org_rangliste(
+        current, "MAK", config, compact, ["Gross", "Mittel", "Klein"],
+        value_label="Simulation", export_tables=export,
+        monte_carlo_ensemble={"count": 2, "band_level": 0.8}, rank_statistics=stats)
+    assert float(capture_st.figures[0].data[0].x[0]) == 10.0
+    assert capture_st.figures[0].data[0].error_x.color == "#6b7280"
+    assert "P10" in tables[0] and "P90" in export["Rangliste"]
+    # The page omits the optional ensemble argument when a sidebar filter is
+    # active. Rank statistics still contain the complete run metadata.
+    org_page._render_org_rangliste(
+        current, "MAK", config, compact, ["Gross", "Mittel", "Klein"],
+        value_label="Simulation", rank_statistics=stats)
+    assert float(capture_st.figures[1].data[0].x[0]) == 10.0
+
+    org_page._render_org_rangliste_comparison(
+        current, baseline, "MAK", config, compact, ["Gross", "Mittel", "Klein"],
+        value_label="Simulation", comparison_label="IST", rank_statistics=stats,
+        export_tables=export)
+    comparison = export["Rangliste_Vergleich"].set_index("Organisationseinheit")
+    assert comparison.loc["Gross", "Simulation"] == 10.0
+    assert comparison.loc["Gross", "Delta"] == -2.0
+    assert comparison.loc["Gross", "P10"] == 8.0
+    assert any(trace.error_x.color == "#6b7280" for trace in capture_st.figures[2].data)
+
+
+def test_monte_carlo_top_n_uses_means_instead_of_reference_order():
+    org_page = _load_page_module("Organisationseinheiten_Analyse", "orgunit_mc_sort")
+    reference_rank = pd.DataFrame({
+        "Organisationseinheit": ["Gross", "Mittel"], "Köpfe": [12, 8],
+        "MAK": [12.0, 8.0], "Mindestgröße Köpfe": [12, 8],
+        "Mindestgröße MAK": [12.0, 8.0], "Delta": [0.0, 0.0],
+        "Abgänge": [0, 0], "MAK-Verlust": [0.0, 0.0]})
+    stats = {metric: {} for metric in ("heads", "mak", "eur", "departures", "mak_loss")}
+    for metric in ("heads", "mak"):
+        stats[metric] = {"Gross": {"mean": 5.0}, "Mittel": {"mean": 15.0}}
+    updated = org_page._apply_monte_carlo_ranking_values(
+        reference_rank, stats, None, "MAK", {}, "IST", False)
+    selected = org_page._apply_orgunit_top_filters(
+        updated, "8", "Aktuelle Kennzahl", "MAK", "Alle", "Alle",
+        comparison_active=False)
+    assert selected == ["Mittel", "Gross"]
+    assert org_page._apply_orgunit_top_filters(
+        updated, "Alle", "Aktuelle Kennzahl", "MAK", "mind. 10 Köpfe", "Alle",
+        comparison_active=False) == ["Mittel"]
+
+
+def test_monte_carlo_composition_chart_table_and_comparison_match(monkeypatch):
+    import pickle
+    import zlib
+    from utils.monte_carlo_filtered_org import filtered_org_composition_statistics
+
+    org_page = _load_page_module("Organisationseinheiten_Analyse", "orgunit_mc_composition")
+    compact = load_compact_page_module()
+    reference = _ranking_snapshot().loc[lambda frame: frame["Organisationseinheit"].eq("Gross")].copy()
+    alternative = reference.copy()
+    alternative.loc[alternative.index[:4], "Geschlecht"] = "m"
+    def blob(frame):
+        return zlib.compress(pickle.dumps(frame, protocol=pickle.HIGHEST_PROTOCOL))
+    ensemble = {"count": 2, "band_level": 0.8,
+                "org_filter_snapshot_version": 1,
+                "org_filter_snapshots": [blob(reference), blob(alternative)]}
+    composition = filtered_org_composition_statistics(
+        ensemble, {}, ["Gross"], "Köpfe", ("Geschlecht",))["Geschlecht"]
+    capture_st = _ChartCaptureStreamlit()
+    tables = []
+    downloads = []
+    monkeypatch.setattr(org_page, "st", capture_st)
+    monkeypatch.setattr(org_page, "dataframe_compat",
+                        lambda frame, **_kwargs: tables.append(frame.copy()))
+    monkeypatch.setattr(org_page, "lazy_excel_download_button_compat",
+                        lambda *_args, **kwargs: downloads.append(kwargs))
+    config = org_page._get_metric_config(reference, "Köpfe")
+    export = {}
+    org_page._render_org_split_block(
+        reference, "Geschlecht", "Geschlecht", "Köpfe", config, compact,
+        "mc_gender", ["Gross"], export_tables=export,
+        composition_view=composition, monte_carlo_band_level=0.8)
+    assert not capture_st.figures[0].data[0].type == "scatter"
+    assert any(trace.name == "P10–P90 Gesamt" for trace in capture_st.figures[0].data)
+    assert tables[0].loc[0, "w"] == compact.format_number(10.0, 0)
+    assert "w P10" in export["Geschlecht_Tabelle"]
+
+    org_page._render_org_split_block(
+        reference, "Geschlecht", "Geschlecht", "Köpfe", config, compact,
+        "mc_gender_compare", ["Gross"], comparison_mapped_df=reference,
+        comparison_active=True, value_label="Simulation", comparison_label="IST",
+        export_tables=export, composition_view=composition,
+        monte_carlo_band_level=0.8)
+    compared = export["Geschlecht_Tabelle"].set_index("Geschlecht")
+    assert compared.loc["w", "Simulation"] == 10.0
+    assert compared.loc["w", "Delta"] == -2.0
+    assert compared.loc["w", "P10"] == pytest.approx(8.4)
+    monkeypatch.setattr(compact, "export_to_excel", lambda frame, **_kwargs: frame.copy())
+    direct_export = downloads[-1]["data_builder"]()
+    pd.testing.assert_frame_equal(direct_export.reset_index(drop=True),
+                                  export["Geschlecht_Tabelle"].reset_index(drop=True))
+
+
 def test_jobfamily_ranking_chart_axis_places_largest_value_at_top(monkeypatch):
     jobfamily_page = _load_page_module("Jobfamily_Analyse", "jobfamily_analysis_chart_order")
     compact = load_compact_page_module()
@@ -686,3 +884,236 @@ def test_jobfamily_ranking_chart_axis_places_largest_value_at_top(monkeypatch):
     fig = capture_st.figures[0]
     assert list(fig.data[0].y) == ["Gross", "Mittel"]
     assert list(fig.layout.yaxis.categoryarray) == ["Mittel", "Gross"]
+
+
+def test_jobfamily_monte_carlo_ranking_top_and_right_table_use_run_means(monkeypatch):
+    import pickle
+    import zlib
+
+    page = _load_page_module("Jobfamily_Analyse", "jobfamily_mc_ranking")
+    compact = load_compact_page_module()
+    reference = _ranking_snapshot()
+    alternative = reference.copy()
+    alternative.loc[alternative.index[:4], "Jobfamily"] = "Neu"
+    blob = lambda frame: zlib.compress(pickle.dumps(frame, protocol=pickle.HIGHEST_PROTOCOL))
+    ensemble = {"count": 2, "band_level": 0.8, "org_filter_snapshot_version": 1,
+                "org_filter_snapshots": [blob(reference), blob(alternative)]}
+    stats = page._monte_carlo_jobfamily_rank_statistics(
+        ensemble, {}, reference, "MAK", compact)
+    assert stats["values"]["MAK"]["Gross"]["mean"] == 10.0
+    assert stats["values"]["MAK"]["Neu"]["mean"] == 2.0
+    ranking = page._monte_carlo_jobfamily_ranking_frame(stats)
+    assert page._apply_jobfamily_top_filters(
+        ranking, "2", "Aktuelle Kennzahl", "MAK", "Alle") == ["Gross", "Mittel"]
+
+    capture = _ChartCaptureStreamlit()
+    tables, downloads = [], []
+    monkeypatch.setattr(page, "st", capture)
+    monkeypatch.setattr(page, "dataframe_compat", lambda frame, **_kwargs: tables.append(frame.copy()))
+    monkeypatch.setattr(page, "lazy_excel_download_button_compat",
+                        lambda *_args, **kwargs: downloads.append(kwargs))
+    page._render_jobfamily_rangliste(
+        reference, "MAK", page._get_metric_config(reference, "MAK"), compact,
+        value_label="Simulation", key_prefix="jf_mc", top_n="Alle",
+        display_jobfamilies=["Gross", "Mittel", "Neu"], is_simulation=True,
+        rank_statistics=stats)
+    assert list(capture.figures[0].data[0].x) == [10.0, 8.0, 2.0]
+    assert capture.figures[0].data[0].error_x.color == "#6b7280"
+    assert tables[0].loc[0, "P10"] == compact.format_number(8.4, 1)
+    monkeypatch.setattr(compact, "export_to_excel", lambda frame, **_kwargs: frame.copy())
+    exported = downloads[0]["data_builder"]()
+    assert exported.loc[0, "Simulation"] == 10.0
+    assert exported.loc[0, "P10"] == pytest.approx(8.4)
+
+
+def test_jobfamily_monte_carlo_ranking_rejects_seed_zero_drift():
+    import pickle
+    import zlib
+
+    page = _load_page_module("Jobfamily_Analyse", "jobfamily_mc_seed_drift")
+    compact = load_compact_page_module()
+    reference = _ranking_snapshot()
+    changed = reference.copy()
+    changed.loc[changed.index[0], "MAK_Reporting"] = 0.5
+    blob = lambda frame: zlib.compress(pickle.dumps(frame, protocol=pickle.HIGHEST_PROTOCOL))
+    ensemble = {"count": 2, "band_level": 0.8, "org_filter_snapshot_version": 1,
+                "org_filter_snapshots": [blob(changed), blob(reference)]}
+    with pytest.raises(ValueError, match="Seed 0"):
+        page._monte_carlo_jobfamily_rank_statistics(ensemble, {}, reference, "MAK", compact)
+
+
+def test_jobfamily_monte_carlo_kpis_average_each_runs_ratio_and_check_seed_zero():
+    import pickle
+    import zlib
+
+    page = _load_page_module("Jobfamily_Analyse", "jobfamily_mc_kpis")
+    compact = load_compact_page_module()
+    reference = _ranking_snapshot()
+    reference["BsGrd"] = 100.0
+    later = reference.iloc[:2].copy()
+    blob = lambda frame: zlib.compress(pickle.dumps(frame, protocol=pickle.HIGHEST_PROTOCOL))
+    ensemble = {"count": 2, "band_level": 0.8, "org_filter_snapshot_version": 1,
+                "org_filter_snapshots": [blob(reference), blob(later)]}
+    stats = page._monte_carlo_jobfamily_kpi_statistics(
+        ensemble, {}, reference, "MAK", compact)
+    first = page._jobfamily_kpi_operands(reference, "MAK", compact)
+    second = page._jobfamily_kpi_operands(later, "MAK", compact)
+    assert stats["heads"]["mean"] == pytest.approx((first["heads"] + second["heads"]) / 2)
+    assert stats["average_mak"]["mean"] == pytest.approx(
+        (first["average_mak"] + second["average_mak"]) / 2)
+    rank = page._monte_carlo_jobfamily_rank_statistics(ensemble, {}, reference, "MAK", compact)
+    cards = page._build_monte_carlo_jobfamily_kpis(stats, rank, "MAK", compact)
+    assert cards[0]["value"] == compact.format_number(stats["mak"]["mean"], 1)
+    assert "P10–P90" in cards[0]["subtitle"]
+
+    changed = reference.copy()
+    changed.loc[changed.index[0], "MAK_Reporting"] = 0.5
+    ensemble["org_filter_snapshots"][0] = blob(changed)
+    with pytest.raises(ValueError, match="Seed 0"):
+        page._monte_carlo_jobfamily_kpi_statistics(ensemble, {}, reference, "MAK", compact)
+
+
+def test_jobfamily_monte_carlo_composition_uses_run_segments_and_bands(monkeypatch):
+    import pickle
+    import zlib
+
+    page = _load_page_module("Jobfamily_Analyse", "jobfamily_mc_composition")
+    compact = load_compact_page_module()
+    reference = _ranking_snapshot()
+    reference["Geschlecht"] = "w"
+    later = reference.copy()
+    later.loc[later.index[:4], "Geschlecht"] = "m"
+    blob = lambda frame: zlib.compress(pickle.dumps(frame, protocol=pickle.HIGHEST_PROTOCOL))
+    ensemble = {"count": 2, "band_level": 0.8, "org_filter_snapshot_version": 1,
+                "org_filter_snapshots": [blob(reference), blob(later)]}
+    stats = page._monte_carlo_jobfamily_split_statistics(
+        ensemble, {}, reference, ["Gross"], "Geschlecht", "Köpfe", compact)
+    women = stats.loc[stats["Geschlecht"].eq("w")].iloc[0]
+    assert women["Wert"] == pytest.approx(10.0)
+    assert women["P10"] == pytest.approx(8.4)
+    assert women["P90"] == pytest.approx(11.6)
+
+    capture = _ChartCaptureStreamlit()
+    tables, downloads = [], []
+    monkeypatch.setattr(page, "st", capture)
+    monkeypatch.setattr(page, "dataframe_compat", lambda frame, **_kwargs: tables.append(frame.copy()))
+    monkeypatch.setattr(page, "lazy_excel_download_button_compat",
+                        lambda *_args, **kwargs: downloads.append(kwargs))
+    page._render_jobfamily_split_block(
+        reference, "Geschlecht", "Geschlecht", "Köpfe",
+        page._get_metric_config(reference, "Köpfe"), compact, "jf_mc_split",
+        display_jobfamilies=["Gross"], monte_carlo_statistics=stats)
+    assert "P10" in tables[0].columns
+    assert capture.figures[0].data[-1].error_x.color == "#6b7280"
+    monkeypatch.setattr(compact, "export_to_excel", lambda frame, **_kwargs: frame.copy())
+    exported = downloads[0]["data_builder"]()
+    assert exported.loc[exported["Geschlecht"].eq("w"), "P10"].iloc[0] == pytest.approx(8.4)
+    overall = exported.loc[exported["Geschlecht"].eq("Gesamt")].iloc[0]
+    assert overall["Wert"] == pytest.approx(12.0)
+    assert overall["P10"] == pytest.approx(12.0)
+    assert overall["P90"] == pytest.approx(12.0)
+    assert "Seed 0" not in exported.columns
+    assert tables[0].loc[tables[0]["Geschlecht"].eq("Gesamt")].shape[0] == 1
+
+    changed = reference.copy()
+    changed.loc[changed.index[0], "Geschlecht"] = "m"
+    ensemble["org_filter_snapshots"][0] = blob(changed)
+    with pytest.raises(ValueError, match="Seed 0"):
+        page._monte_carlo_jobfamily_split_statistics(
+            ensemble, {}, reference, ["Gross"], "Geschlecht", "Köpfe", compact)
+
+
+def test_jobfamily_monte_carlo_tariff_and_capacity_include_empty_later_group():
+    import pickle
+    import zlib
+
+    page = _load_page_module("Jobfamily_Analyse", "jobfamily_mc_tariff_capacity")
+    compact = load_compact_page_module()
+    reference = _ranking_snapshot()
+    reference["TrfGr"] = "E9"
+    later = reference.loc[reference["Jobfamily"].ne("Gross")].copy()
+    blob = lambda frame: zlib.compress(pickle.dumps(frame, protocol=pickle.HIGHEST_PROTOCOL))
+    ensemble = {"count": 2, "band_level": 0.8, "org_filter_snapshot_version": 1,
+                "org_filter_snapshots": [blob(reference), blob(later)]}
+    tariff = page._monte_carlo_jobfamily_split_statistics(
+        ensemble, {}, reference, ["Gross"], "TrfGr", "MAK", compact)
+    assert tariff.iloc[0]["Wert"] == pytest.approx(6.0)
+    assert tariff.iloc[0]["P10"] == pytest.approx(1.2)
+
+    capacity = page._monte_carlo_jobfamily_role_summary_statistics(
+        ensemble, {}, reference, ["Gross"], compact)
+    assert capacity.loc[0, "Köpfe"] == pytest.approx(6.0)
+    assert capacity.loc[0, "MAK"] == pytest.approx(6.0)
+    assert capacity.loc[0, "Ø MAK"] == pytest.approx(0.5)
+    assert capacity.loc[0, "Ø MAK P90"] == pytest.approx(0.9)
+
+    changed = reference.copy()
+    changed.loc[changed.index[0], "MAK_Reporting"] = 0.5
+    ensemble["org_filter_snapshots"][0] = blob(changed)
+    with pytest.raises(ValueError, match="Seed 0"):
+        page._monte_carlo_jobfamily_role_summary_statistics(
+            ensemble, {}, reference, ["Gross"], compact)
+
+
+def test_jobfamily_monte_carlo_quality_includes_unmapped_only_in_later_run(monkeypatch):
+    import pickle
+    import zlib
+
+    page = _load_page_module("Jobfamily_Analyse", "jobfamily_mc_quality")
+    compact = load_compact_page_module()
+    reference = _ranking_snapshot()
+    reference["Planstelle"] = "Stelle A"
+    later = reference.copy()
+    later.loc[later.index[:4], "Jobfamily"] = "UNMAPPED"
+    blob = lambda frame: zlib.compress(pickle.dumps(frame, protocol=pickle.HIGHEST_PROTOCOL))
+    ensemble = {"count": 2, "band_level": 0.8, "org_filter_snapshot_version": 1,
+                "org_filter_snapshots": [blob(reference), blob(later)]}
+    stats = page._monte_carlo_jobfamily_quality_statistics(
+        ensemble, {}, reference, "MAK", compact)
+    assert stats["values"]["unmapped_rows"]["mean"] == pytest.approx(2.0)
+    assert stats["values"]["unmapped_rows"]["upper"] == pytest.approx(3.6)
+    assert stats["planstellen"]["Stelle A"]["mean"] == pytest.approx(2.0)
+
+    import types
+    cards, tables, downloads = [], [], []
+    monkeypatch.setattr(compact, "render_kpi_cards_styled", lambda value: cards.extend(value))
+    monkeypatch.setattr(page, "render_context_box", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(page, "st", types.SimpleNamespace(markdown=lambda *_args, **_kwargs: None))
+    monkeypatch.setattr(page, "dataframe_compat", lambda frame, **_kwargs: tables.append(frame.copy()))
+    monkeypatch.setattr(page, "lazy_excel_download_button_compat",
+                        lambda *_args, **kwargs: downloads.append(kwargs))
+    page._render_data_quality_block(
+        reference, reference, reference.iloc[:0], "MAK",
+        page._get_metric_config(reference, "MAK"), compact,
+        monte_carlo_statistics=stats)
+    assert cards[0]["value"] == compact.format_number(2.0, 1)
+    assert "P10–P90" in cards[0]["subtitle"]
+    assert "P10" in tables[0]
+    monkeypatch.setattr(compact, "export_to_excel", lambda frame, **_kwargs: frame.copy())
+    exported = downloads[0]["data_builder"]()
+    assert exported.loc[0, "P90"] == pytest.approx(3.6)
+
+    changed = reference.copy()
+    changed.loc[changed.index[0], "Jobfamily"] = "UNMAPPED"
+    ensemble["org_filter_snapshots"][0] = blob(changed)
+    with pytest.raises(ValueError, match="Seed 0"):
+        page._monte_carlo_jobfamily_quality_statistics(
+            ensemble, {}, reference, "MAK", compact)
+
+
+def test_jobfamily_monte_carlo_ranking_keeps_group_only_in_later_run_when_filtered():
+    import pickle
+    import zlib
+
+    page = _load_page_module("Jobfamily_Analyse", "jobfamily_mc_later_group")
+    compact = load_compact_page_module()
+    reference = _ranking_snapshot()
+    later = reference.copy()
+    later.loc[later.index[:4], "Jobfamily"] = "Neu"
+    blob = lambda frame: zlib.compress(pickle.dumps(frame, protocol=pickle.HIGHEST_PROTOCOL))
+    ensemble = {"count": 2, "band_level": 0.8, "org_filter_snapshot_version": 1,
+                "org_filter_snapshots": [blob(reference), blob(later)]}
+    stats = page._monte_carlo_jobfamily_rank_statistics(
+        ensemble, {"selected_jobfamilies": ["Neu"]}, reference.iloc[:0], "MAK", compact)
+    assert stats["groups"] == ["Neu"]
+    assert stats["values"]["MAK"]["Neu"]["mean"] == 2.0

@@ -438,13 +438,15 @@ def render_metric_selector_only(caption_text: str | None = None):
 # -----------------------------
 # Public API
 # -----------------------------
-def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
+def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame,
+                          option_values: dict[str, list[str]] | None = None):
     """
     Rendert die komplette Filter-Sidebar und aktualisiert Session State.
 
     Args:
         snapshot_df: Snapshot DataFrame (für Filter-Optionen)
         history_df: History DataFrame (für Datumsbereich)
+        option_values: Weitere auswählbare Gruppen aus Mehrlaufergebnissen.
     """
     inject_ui_theme()
     initialize_language_state()
@@ -507,10 +509,9 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
         # FIX: Use Organisationseinheit (full name) as key, since Kürzel OrgEinheit
         # is NOT unique (e.g. 591 = "Beratungs-Center Herrenberg" AND "Akquisepool Herrenberg").
         st.markdown(f"**{t('sidebar.label.org_units')}**")
-        if "Organisationseinheit" in snapshot_df.columns:
-            org_units = sorted(snapshot_df["Organisationseinheit"].dropna().unique())
-        else:
-            org_units = []
+        org_units = (set(snapshot_df["Organisationseinheit"].dropna().astype(str))
+                     if "Organisationseinheit" in snapshot_df.columns else set())
+        org_units = sorted(set(org_units) | set((option_values or {}).get("Organisationseinheit", [])))
 
         org_unit_display = {}
         if {"Kürzel OrgEinheit", "Organisationseinheit"}.issubset(snapshot_df.columns):
@@ -547,12 +548,10 @@ def render_global_filters(snapshot_df: pd.DataFrame, history_df: pd.DataFrame):
 
         # Job Families (collapsible)
         with st.expander(t("sidebar.label.job_families"), expanded=False):
-            if "Jobfamily" in snapshot_df.columns:
-                jobfamilies = sorted(
-                    snapshot_df[snapshot_df["Jobfamily"] != "UNMAPPED"]["Jobfamily"].dropna().unique()
-                )
-            else:
-                jobfamilies = []
+            jobfamilies = set(
+                snapshot_df.loc[snapshot_df["Jobfamily"].ne("UNMAPPED"), "Jobfamily"].dropna().astype(str)
+            ) if "Jobfamily" in snapshot_df.columns else set()
+            jobfamilies = sorted((jobfamilies | set((option_values or {}).get("Jobfamily", []))) - {"UNMAPPED"})
 
             c1, c2 = st.columns(2)
             with c1:

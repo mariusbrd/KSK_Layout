@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 UNASSIGNED = "Nicht zugeordnet"
-RECONCILIATION_VERSION = 6
+RECONCILIATION_VERSION = 7
 DEPARTURES = {"QUIT", "RETIREMENT", "ATZ_END", "Azubi_Exit"}
 ENTRIES = {"New_Hire", "Trainee_Hire", "Azubi_Hire"}
 INTERNAL = {"Azubi_Conversion_In", "Azubi_Conversion_Out"}

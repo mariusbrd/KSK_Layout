@@ -132,19 +132,37 @@ def build_yearly_headline_metrics(summary: dict, *, dimension: str, organization
             "metric": metric, "end_year": end_year}
 
 
-def render_yearly_headline_metrics(metrics: dict) -> None:
+def render_yearly_headline_metrics(metrics: dict, monte_carlo_stats: dict | None = None) -> None:
     unit = metrics["metric"]
     def display(value: float) -> str:
         formatted = f"{value:,.0f}" if unit == "Köpfe" else f"{value:,.1f}"
         return formatted.replace(",", "X").replace(".", ",").replace("X", ".")
-    first = st.columns(3)
-    first[0].metric("Ausgangsbestand", display(metrics["initial"]))
-    first[1].metric(f"Bestand Ende {metrics['end_year']}", display(metrics["final"]))
-    share = metrics["departure_share"]
-    first[2].metric("Abgänge / Ausgangsbestand", "–" if share is None else f"{share:.1%}".replace(".", ","))
-    second = st.columns(2)
-    second[0].metric(f"Rente inkl. ATZ bis {metrics['end_year']}", display(metrics["retirement_atz"]))
-    second[1].metric(f"Kündigungen bis {metrics['end_year']}", display(metrics["quit"]))
+    if monte_carlo_stats is None:
+        first = st.columns(3)
+        first[0].metric("Ausgangsbestand", display(metrics["initial"]))
+        first[1].metric(f"Bestand Ende {metrics['end_year']}", display(metrics["final"]))
+        share = metrics["departure_share"]
+        first[2].metric("Abgänge / Ausgangsbestand", "–" if share is None else f"{share:.1%}".replace(".", ","))
+        second = st.columns(2)
+        second[0].metric(f"Rente inkl. ATZ bis {metrics['end_year']}", display(metrics["retirement_atz"]))
+        second[1].metric(f"Kündigungen bis {metrics['end_year']}", display(metrics["quit"]))
+    else:
+        def render_card(column, label, name, *, percent=False):
+            values = monte_carlo_stats[name]
+            if values is None:
+                column.metric(label, "–")
+                column.caption("Für mindestens einen Lauf nicht definiert.")
+                return
+            fmt = (lambda value: f"{value:.1%}".replace(".", ",")) if percent else display
+            column.metric(label, fmt(values["mean"]))
+            column.caption(f"P10–P90: {fmt(values['lower'])} bis {fmt(values['upper'])}")
+        first = st.columns(3)
+        render_card(first[0], "Ausgangsbestand", "initial")
+        render_card(first[1], f"Bestand Ende {metrics['end_year']}", "final")
+        render_card(first[2], "Abgänge / Ausgangsbestand", "departure_share", percent=True)
+        second = st.columns(2)
+        render_card(second[0], f"Rente inkl. ATZ bis {metrics['end_year']}", "retirement_atz")
+        render_card(second[1], f"Kündigungen bis {metrics['end_year']}", "quit")
     st.caption(f"Alle Werte in {unit} für die gewählten Organisationen. Abgänge kumuliert vom Ausgangsstichtag bis Ende {metrics['end_year']}; die Auswahl einzelner Zwischenjahre und Ereignisarten ändert diese Kacheln nicht. Bei MAK zählt die ATZ-Freistellung als Kapazitätsabgang, bei Köpfen erst der ATZ-Austritt. Die Quote umfasst auch weitere Personalabgänge; technische Bestandseffekte sind ausgeschlossen. Bei Auswahl mehrerer OEs können Personen mit mehreren OE-Zuordnungen in der Summe mehrfach gezählt werden; der Gesamtbestand zählt jede Person einmal.")
 
 
@@ -167,7 +185,19 @@ def render_org_simulation_yearly(summary: dict | None, *, run_signature: str | N
         st.warning("Die gespeicherte OE-Cluster-Zuordnung passt zu keiner Organisationseinheit der Ereignisse. "
                    "Bitte die passende OE-Cluster-Datei im Dashboard aktivieren und danach die Simulation neu berechnen. "
                    "Die Jahresauswertung übernimmt ausschließlich die Zuordnung des gespeicherten Laufs.")
-    st.caption("Die Ereignisauswahl filtert nur Veränderungen. Der verbleibende Bestand umfasst stets den vollständigen Simulationslauf und belegte Aufbereitungseffekte. Beide Ansichten sind unabhängig von den Filtern der Bestandsansicht.")
+    event_summary, event_ensemble = summary, monte_carlo_ensemble
+    if monte_carlo_ensemble is not None:
+        from components.sidebar import get_active_view_filters
+        from utils.monte_carlo_filtered_annual_events import filtered_annual_event_view
+        try:
+            event_summary, event_ensemble = filtered_annual_event_view(
+                summary, monte_carlo_ensemble, get_active_view_filters())
+        except ValueError as exc:
+            st.error(f"Gefilterte Monte-Carlo-Jahresereignisse nicht verfügbar: {exc}.")
+            return None
+        st.caption("Jahresereignisse: globale Personenfilter je Lauf. Der verbleibende Bestand und seine Überleitung bleiben vorerst ungefiltert.")
+    else:
+        st.caption("Die Jahresauswertung bleibt wie bisher unabhängig von den globalen Personenfiltern.")
     level = st.radio("Organisationsebene", ["Organisationseinheiten", "OE-Cluster"],
                      horizontal=True, key="org_yearly_level")
     dimension = "OE-Cluster" if level == "OE-Cluster" else "Organisationseinheit"
@@ -203,7 +233,21 @@ def render_org_simulation_yearly(summary: dict | None, *, run_signature: str | N
         headline = build_yearly_headline_metrics(summary, dimension=dimension,
                                                  organizations=organizations, end_year=max(years), metric=stock_metric)
         if headline is not None:
-            render_yearly_headline_metrics(headline)
+            if monte_carlo_ensemble is None:
+                render_yearly_headline_metrics(headline)
+            else:
+                from utils.monte_carlo_org_view import annual_headline_statistics
+                try:
+                    stats = annual_headline_statistics(
+                        summary, ensemble=monte_carlo_ensemble, dimension=dimension,
+                        organizations=organizations, end_year=max(years), metric=stock_metric)
+                except ValueError as exc:
+                    st.error(f"Monte-Carlo-Jahreskennzahlen weichen vom Referenzlauf ab: {exc}. Bitte Simulation neu berechnen.")
+                else:
+                    if stats is None:
+                        st.warning("Monte-Carlo-Jahreskennzahlen fehlen im gespeicherten Lauf. Bitte die Simulation auf 'Kompakt plus Simulation' neu berechnen.")
+                    else:
+                        render_yearly_headline_metrics(headline, monte_carlo_stats=stats)
     else:
         stock_metric = None
     st.markdown("#### Verbleibender Bestand")
@@ -217,7 +261,7 @@ def render_org_simulation_yearly(summary: dict | None, *, run_signature: str | N
         st.info("Bitte mindestens ein Jahr und eine Organisation auswählen.")
         stock_view = None
     st.markdown("#### Veränderungen")
-    if summary["events"].empty:
+    if summary["events"].empty and monte_carlo_ensemble is None:
         st.info("Im gespeicherten Simulationslauf gibt es keine Ereignisse; die Rentenparameter können dennoch eingeordnet werden.")
     st.caption("Originale Prognoseereignisse; keine Jahresendbestände. Der Bestandsverlauf berücksichtigt zusätzlich technische Aufbereitung und effektive Reporting-Kapazität; diese Effekte sind im Endwertabgleich ausgewiesen.")
     metric_column, export_column = st.columns([3, 1])
@@ -227,6 +271,10 @@ def render_org_simulation_yearly(summary: dict | None, *, run_signature: str | N
     types = sorted(set(source["Ereignisart"].unique().tolist()) |
                    ({"RETIREMENT"} if retirement_active else set()) |
                    ({"ATZ_AR_TO_FR"} if atz_active else set()))
+    if event_ensemble is not None:
+        types = sorted(set(types) | {str(kind) for _, record_level, _, kind, _, _
+                                     in event_ensemble["statistics"]["annual_event_samples"]
+                                     if record_level == dimension})
     event_types = st.multiselect("Ereignisarten", types, default=types,
                                  format_func=lambda value: LABELS.get(value, value),
                                  key=f"org_yearly_types_{suffix}")
@@ -236,26 +284,30 @@ def render_org_simulation_yearly(summary: dict | None, *, run_signature: str | N
             from components.org_atz_evaluation import render_atz_baseline_effects
             render_atz_baseline_effects(summary, dimension=dimension, organizations=organizations)
         return {"stock_view": stock_view} if stock_view is not None else None
-    view = build_yearly_view(summary, dimension=dimension, years=years,
+    view = build_yearly_view(event_summary, dimension=dimension, years=years,
                              organizations=organizations, event_types=event_types, metric=metric)
-    if monte_carlo_ensemble is not None:
+    if event_ensemble is not None:
         from utils.monte_carlo_org_view import event_band_table
         try:
-            bands = event_band_table(view, ensemble=monte_carlo_ensemble)
+            bands = event_band_table(view, ensemble=event_ensemble)
         except ValueError as exc:
-            st.warning(f"Monte-Carlo-Band für die Jahresereignisse nicht verfügbar: {exc}")
-            monte_carlo_ensemble = None
+            st.error(f"Monte-Carlo-Jahresereignisse nicht verfügbar: {exc}. Bitte Simulation neu berechnen.")
+            return {"stock_view": stock_view} if stock_view is not None else None
         else:
             view["monte_carlo_bands"] = bands
             view["monte_carlo_metadata"] = {
                 "Anzahl Läufe": monte_carlo_ensemble["count"],
                 "Band": f"P{(1-monte_carlo_ensemble['band_level'])*50:.0f}–P{(1+monte_carlo_ensemble['band_level'])*50:.0f}",
                 "Seed-Paare": str(monte_carlo_ensemble.get("seed_pairs", ())),
-                "Bezugsstand": "Freigegebener Originallauf; ausgewählte Jahresscheiben und Ereignisarten",
+                "Bezugsstand": "Mittelwerte aller Läufe; ausgewählte Jahresscheiben und Ereignisarten",
             }
     view["summary_table"] = build_yearly_summary_table(view)
     if len(set(event_types) & DEPARTURES) > 1:
         view["stacked_chart"] = build_stacked_event_chart(view)
+        if event_ensemble is not None:
+            from utils.monte_carlo_org_view import mean_stacked_event_chart
+            view["monte_carlo_stacked_chart"] = mean_stacked_event_chart(
+                view, ensemble=event_ensemble)
     if "QUIT" in event_types:
         from components.org_quit_evaluation import build_quit_evaluation, build_quit_chart_data
         view["quit_evaluation"] = build_quit_evaluation(
@@ -275,6 +327,23 @@ def render_org_simulation_yearly(summary: dict | None, *, run_signature: str | N
             summary, dimension=dimension, years=years, organizations=organizations)
         if view["atz_evaluation"] is not None:
             view["atz_chart"] = build_atz_chart_data(view["atz_evaluation"], dimension=dimension)
+    if event_ensemble is not None:
+        from utils.monte_carlo_org_view import event_detail_band_table, event_summary_band_table
+        try:
+            mean_details = event_detail_band_table(view, ensemble=event_ensemble)
+            mean_summary = event_summary_band_table(view, mean_details, ensemble=event_ensemble)
+        except ValueError as exc:
+            st.error(f"Monte-Carlo-Jahreswerte sind nicht deckungsgleich: {exc}. Bitte Simulation neu berechnen.")
+            return {"stock_view": stock_view} if stock_view is not None else None
+        view["reference_details"] = view["details"]
+        view["reference_summary_table"] = view["summary_table"]
+        view["reference_chart"] = view["chart"]
+        view["reference_table"] = view["table"]
+        view["details"] = mean_details
+        view["summary_table"] = mean_summary
+        view["chart"] = view["monte_carlo_bands"][["Jahr", dimension, "mean"]].rename(
+            columns={"mean": metric})
+        view["table"] = view["chart"].pivot(index=dimension, columns="Jahr", values=metric)
     with export_column:
         from utils.org_yearly_view_export import render_yearly_view_export
         render_yearly_view_export(summary, view, stock_view=stock_view)
@@ -282,15 +351,20 @@ def render_org_simulation_yearly(summary: dict | None, *, run_signature: str | N
         if row.Teiljahr:
             st.caption(f"{row.Jahr}: Teiljahr {row.Von:%d.%m.%Y} bis {row.Bis:%d.%m.%Y}.")
     if "stacked_chart" in view:
-        render_stacked_event_chart(view["stacked_chart"], dimension=dimension, metric=metric,
+        render_stacked_event_chart(view.get("monte_carlo_stacked_chart", view["stacked_chart"]),
+                                   dimension=dimension, metric=metric,
                                    bands=view.get("monte_carlo_bands"))
     else:
         if monte_carlo_ensemble is None:
             st.bar_chart(view["chart"], x="Jahr", y=metric, color=dimension, stack=False)
         else:
-            bars = alt.Chart(view["chart"]).mark_bar().encode(
+            bars = alt.Chart(view["monte_carlo_bands"]).mark_bar().encode(
                 x=alt.X("Jahr:O", title="Jahr"), xOffset=alt.XOffset(f"{dimension}:N"),
-                y=alt.Y(f"{metric}:Q", title=metric), color=f"{dimension}:N")
+                y=alt.Y("mean:Q", title=f"Mittelwert {metric}"), color=f"{dimension}:N",
+                tooltip=["Jahr:O", f"{dimension}:N",
+                         alt.Tooltip("mean:Q", title="Mittelwert"),
+                         alt.Tooltip("lower:Q", title="P10"),
+                         alt.Tooltip("upper:Q", title="P90")])
             marks = alt.Chart(view["monte_carlo_bands"]).mark_rule(
                 color="#6b7280", strokeWidth=5).encode(
                 x="Jahr:O", xOffset=f"{dimension}:N", y="lower:Q", y2="upper:Q",
@@ -300,7 +374,7 @@ def render_org_simulation_yearly(summary: dict | None, *, run_signature: str | N
                          alt.Tooltip("upper:Q", title="P90")])
             st.altair_chart(alt.layer(bars, marks), use_container_width=True)
     if monte_carlo_ensemble is not None:
-        st.caption("Balken: konkreter Referenzlauf. Graue Markierungen: P10–P90 je ausgewählter Jahresscheibe, Organisation und Ereignisart. Die Grenzen werden aus Summen je Lauf berechnet.")
+        st.caption("Balken: Mittelwert aller Läufe. Graue Markierungen: P10–P90 je ausgewählter Jahresscheibe und Organisation. Die Grenzen werden aus Summen je Lauf berechnet.")
         with st.expander("Monte-Carlo-Jahresereignisse"):
             st.dataframe(view["monte_carlo_bands"].rename(columns={"mean": "Mittelwert", "lower": "P10", "upper": "P90"}),
                          hide_index=True, use_container_width=True)
@@ -310,20 +384,27 @@ def render_org_simulation_yearly(summary: dict | None, *, run_signature: str | N
             key=f"org_events_mc_detail_{dimension}_{metric}")
     st.caption("Die Summen beziehen sich auf die ausgewählten Jahre und Ereignisarten. Abgehende MAK zeigen den positiven Kapazitätsverlust aus ausgewählten Personalabgängen.")
     st.dataframe(view["summary_table"], use_container_width=True)
-    from components.org_quit_evaluation import render_quit_evaluation
-    render_quit_evaluation(summary, dimension=dimension, years=years,
-                           organizations=organizations, event_types=event_types)
-    if "RETIREMENT" in event_types:
-        from components.org_retirement_evaluation import render_retirement_evaluation
-        render_retirement_evaluation(summary, dimension=dimension, years=years,
-                                     organizations=organizations, event_types=event_types)
-    if set(event_types) & {"ATZ_AR_TO_FR", "ATZ_END"}:
-        from components.org_atz_evaluation import render_atz_evaluation
-        render_atz_evaluation(summary, dimension=dimension, years=years,
-                              organizations=organizations, event_types=event_types)
+    def render_reference_evaluations():
+        from components.org_quit_evaluation import render_quit_evaluation
+        render_quit_evaluation(summary, dimension=dimension, years=years,
+                               organizations=organizations, event_types=event_types)
+        if "RETIREMENT" in event_types:
+            from components.org_retirement_evaluation import render_retirement_evaluation
+            render_retirement_evaluation(summary, dimension=dimension, years=years,
+                                         organizations=organizations, event_types=event_types)
+        if set(event_types) & {"ATZ_AR_TO_FR", "ATZ_END"}:
+            from components.org_atz_evaluation import render_atz_evaluation
+            render_atz_evaluation(summary, dimension=dimension, years=years,
+                                  organizations=organizations, event_types=event_types)
+        else:
+            from components.org_atz_evaluation import render_atz_baseline_effects
+            render_atz_baseline_effects(summary, dimension=dimension, organizations=organizations)
+    if monte_carlo_ensemble is None:
+        render_reference_evaluations()
     else:
-        from components.org_atz_evaluation import render_atz_baseline_effects
-        render_atz_baseline_effects(summary, dimension=dimension, organizations=organizations)
+        with st.expander("Referenzlauf: Kündigung, Rente und ATZ", expanded=False):
+            st.caption("Diese fachlichen Sonderauswertungen beziehen sich auf Seed 0. Ihre Mehrlaufumstellung folgt separat.")
+            render_reference_evaluations()
     with st.expander("Aufschlüsselung nach Ereignisart"):
         details = view["details"].copy()
         details["Ereignisart"] = details["Ereignisart"].map(lambda value: LABELS.get(value, value))
