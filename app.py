@@ -111,6 +111,7 @@ def build_pages():
             st.Page("pages/12_✅_Simulation_abnehmen.py", title="Simulation abnehmen", icon="✅"),
             st.Page("pages/10_🏢_Organisationseinheiten_Simulation.py", title="Organisationseinheiten-Analyse Simulation"),
             st.Page("pages/11_💼_Jobfamily_Simulation.py", title="Jobgruppen-Analyse Simulation"),
+            st.Page("pages/13_📈_Szenario_Profiler.py", title="Szenario-Profiler"),
         ],
         "Administration": [
             st.Page("pages/2_⚙️_Einstellungen.py", title=t("navigation.settings")),

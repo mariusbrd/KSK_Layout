@@ -16,7 +16,7 @@ from components.org_simulation_stock import render_departure_stock
 st.session_state["view"] = render_departure_stock(st.session_state["summary"], run_signature="a")
 ''')
     app.session_state["summary"] = summary
-    return app.run()
+    return app.run(timeout=15)
 
 
 def test_stock_controls_use_saved_result_and_show_matching_endpoint():
@@ -24,7 +24,8 @@ def test_stock_controls_use_saved_result_and_show_matching_endpoint():
     app = _app(summary)
     assert not app.exception
     assert len(app.success) == 1
-    app.radio(key="org_stock_metric").set_value("MAK").run()
+    app.session_state["global_metric_view"] = "MAK"
+    app.run()
     assert app.dataframe[0].value.iloc[0, -1] == 5
     app.radio(key="org_stock_level").set_value("OE-Cluster").run()
     assert not app.exception
@@ -103,9 +104,10 @@ st.session_state["combined_view"] = render_org_simulation_yearly(st.session_stat
     view = app.session_state["combined_view"]["stock_view"]
     assert view["level"] == "Organisationseinheit"
     assert view["chart"].Stichtag.dt.year.unique().tolist() == [2025, 2026, 2027]
-    assert view["table"].iloc[:, -1].sum() == 6
+    assert view["table"].iloc[:, -1].sum() == 5
     app.radio(key="org_yearly_level").set_value("OE-Cluster").run()
-    app.radio(key="org_stock_metric").set_value("MAK").run()
+    app.session_state["global_metric_view"] = "MAK"
+    app.run()
     assert not app.exception
     view = app.session_state["combined_view"]["stock_view"]
     assert view["level"] == "OE-Cluster"

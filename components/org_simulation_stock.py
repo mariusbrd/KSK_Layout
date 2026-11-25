@@ -3,6 +3,7 @@ import hashlib
 
 import pandas as pd
 import streamlit as st
+from utils.metric_view import selected_unit_columns
 
 
 def render_departure_stock(summary, *, run_signature, level=None, years=None, organizations=None, embedded=False,
@@ -44,10 +45,11 @@ def render_departure_stock(summary, *, run_signature, level=None, years=None, or
     if level is None:
         level = st.radio("Ebene des Bestandsverlaufs", ["Gesamt", "Organisationseinheit", "OE-Cluster"],
                          horizontal=True, key="org_stock_level")
-    metric_column, export_column = st.columns([3, 1])
-    with metric_column:
-        if metric is None:
-            metric = st.radio("Kennzahl des Bestandsverlaufs", ["Köpfe", "MAK"], horizontal=True, key="org_stock_metric")
+    if metric is None:
+        from components.sidebar import get_global_metric_view
+        metric = get_global_metric_view()
+    if metric not in ("Köpfe", "MAK"):
+        raise ValueError("Die globale Kennzahl muss Köpfe oder MAK sein.")
     rows = bridge["annual"].loc[bridge["annual"].Ebene == level].copy()
     options = sorted(rows.Organisation.unique())
     orgs = organizations if organizations is not None else st.multiselect("Organisationen im Bestandsverlauf", options, default=options,
@@ -117,9 +119,9 @@ def render_departure_stock(summary, *, run_signature, level=None, years=None, or
                 "Abgangsarten für zusätzliche Matrixblätter", departure_types, default=departure_types,
                 format_func=lambda value: LABELS.get(value, value), key=f"org_stock_export_types_{suffix}")
             st.caption("Jährliche Originalereignisse mit Vorzeichen; technische Bestandsaufbereitung ist separat im Export dokumentiert.")
-    with export_column:
-        from utils.org_yearly_view_export import render_yearly_view_export
-        render_yearly_view_export(summary, view, stock=True)
+    from utils.org_yearly_view_export import render_yearly_view_export
+    render_yearly_view_export(
+        summary, view, stock=True, monte_carlo_ensemble=monte_carlo_ensemble)
     # Categorical dates expose every yearly slice; time axes can hide middle ticks.
     plotted = chart.copy()
     plotted["Stichtag"] = plotted["Stichtag"].dt.strftime("%Y-%m-%d")
@@ -150,14 +152,15 @@ def render_departure_stock(summary, *, run_signature, level=None, years=None, or
         from components.org_monte_carlo_yearly import render_annual_band_detail
         render_annual_band_detail(
             bands, group_col="Organisation", x_col="Stichtag", unit=value,
-            key=f"org_stock_mc_detail_{level}_{metric}")
+            key=f"org_stock_mc_detail_{level}_{metric}",
+            ensemble=monte_carlo_ensemble, level=level)
     st.caption("Bestand am letzten ausgewählten Stichtag; abgehende Köpfe und MAK summieren die Abgangsereignisse der ausgewählten Jahre.")
     if monte_carlo_ensemble is None:
-        st.dataframe(display_table, use_container_width=True)
+        st.dataframe(selected_unit_columns(display_table, metric), use_container_width=True)
     else:
         st.caption("Die folgende Überleitungstabelle gehört zum konkreten Referenzlauf; Mittelwerte und Bänder stehen in der Monte-Carlo-Jahrestabelle oben.")
         with st.expander("Bestandsüberleitung des Referenzlaufs"):
-            st.dataframe(display_table, use_container_width=True)
+            st.dataframe(selected_unit_columns(display_table, metric), use_container_width=True)
     with st.expander("Bestandsüberleitung und Endwertabgleich"
                      + (" (Referenzlauf)" if monte_carlo_ensemble is not None else "")):
         st.caption(f"MAK-Toleranz im ungerundeten Vergleich: {bridge['mak_tolerance']} MAK. Rundung nur für die Anzeige; belegte undatierte Aufbereitungseffekte sind gesondert ausgewiesen.")

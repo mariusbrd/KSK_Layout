@@ -50,10 +50,17 @@ def register_new_run(state: MutableMapping[str, Any]) -> None:
     state.pop(APPROVAL_KEY, None)
     state.pop(DRAFT_KEY, None)
     state.pop("monte_carlo_ensemble_result", None)
+    state.pop("monte_carlo_ensemble_request", None)
+    state.pop("org_sim_representative_details", None)
+    for future in state.pop("org_sim_representative_prefetch", {}).values():
+        future.cancel()
 
 
 def invalidate_approval(state: MutableMapping[str, Any]) -> None:
     state.pop(APPROVAL_KEY, None)
+    state.pop("org_sim_representative_details", None)
+    for future in state.pop("org_sim_representative_prefetch", {}).values():
+        future.cancel()
 
 
 def current_view(state: MutableMapping[str, Any], *, require_approval: bool = False,

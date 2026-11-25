@@ -24,7 +24,7 @@ DIMENSIONS = ("Organisationseinheit", "Geschlecht", "Alterskohorte",
               "Beschäftigungsstatus", "TrfGr")
 METRICS = ("heads", "mak", "eur")
 SNAPSHOT_COLUMNS = (
-    "PersNr", "Personalnummer", "Is_Vacant", "Organisationseinheit", "OE-Cluster",
+    "PersNr", "Personalnummer", "GebDatum", "Is_Vacant", "Organisationseinheit", "OE-Cluster",
     "Jobfamily", "JF-Cluster", "Alterskohorte", "Geschlecht", "Arbeitszeit",
     "Ausbildung", "ATZ_Status", "Beschäftigungsstatus", "TrfGr",
     "MAK_Reporting", "MAK_Calculated", "mak", "MAK", "FTE_assigned",

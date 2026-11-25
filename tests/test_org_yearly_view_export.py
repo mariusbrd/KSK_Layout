@@ -1,14 +1,15 @@
 from io import BytesIO
+from zipfile import ZipFile
 
 import pandas as pd
 import pytest
 
 from test_org_simulation_stock import _app
 from test_org_simulation_reconciliation import _bridge_context
-from components.org_simulation_yearly import build_yearly_view
+from components.org_simulation_yearly import build_yearly_summary_table, build_yearly_view
 from utils.org_simulation_events import build_simulation_event_summary
 from utils.org_simulation_export import append_yearly_export, build_org_simulation_export_bytes, export_fingerprint
-from utils.org_yearly_view_export import build_stock_slide_table, prepare_yearly_view_export
+from utils.org_yearly_view_export import build_stock_slide_table, build_yearly_oe_bulk_zip, prepare_yearly_view_export
 
 
 def test_yearly_event_export_lists_all_starting_positions_without_splitting_effects():
@@ -58,8 +59,8 @@ def test_yearly_event_export_lists_all_starting_positions_without_splitting_effe
 def test_selected_stock_workbook_equals_visible_selection(level, metric):
     summary = build_simulation_event_summary(_bridge_context("atz_ruhend"), expected_run_signature="a")
     app = _app(summary)
+    app.session_state["global_metric_view"] = metric
     app.radio(key="org_stock_level").set_value(level).run()
-    app.radio(key="org_stock_metric").set_value(metric).run()
     assert not app.exception
     assert any(button.label == "Excel exportieren" for button in app.button)
     view = app.session_state["view"]
@@ -96,6 +97,10 @@ def test_stock_workbook_uses_monte_carlo_mean_and_names_reference_audit():
     assert "Ref_Bestand_Folienvorlage_MAK" in tables
     assert "Ref_Bestand_Überleitung_vollständig" in tables
     book = pd.ExcelFile(BytesIO(build_org_simulation_export_bytes(tables, context)))
+    assert list(tables)[:2] == ["Ref_Bestand_Folienvorlage_MAK",
+                                "Ref_Bestand_Folienvorlage_Koepfe"]
+    assert book.sheet_names[1:3] == ["01_Ref_Bestand_Folienvorlage_MAK"[:31],
+                                     "02_Ref_Bestand_Folienvorlage_Koepfe"[:31]]
     assert len(book.sheet_names) == len(set(book.sheet_names))
 
 
@@ -103,7 +108,8 @@ def test_stock_slide_table_uses_reporting_events_and_separates_departure_reasons
     summary = build_simulation_event_summary(_bridge_context("atz_ruhend"), expected_run_signature="a")
     app = _app(summary)
     app.radio(key="org_stock_level").set_value("Gesamt").run()
-    app.radio(key="org_stock_metric").set_value("MAK").run()
+    app.session_state["global_metric_view"] = "MAK"
+    app.run()
     assert not app.exception
     view = app.session_state["view"]
     tables, _ = prepare_yearly_view_export(summary, view, stock=True)
@@ -182,6 +188,28 @@ def test_stock_slide_table_uses_reporting_events_and_separates_departure_reasons
     event_book = pd.ExcelFile(BytesIO(build_org_simulation_export_bytes(event_tables, event_context)))
     assert event_book.sheet_names[1:3] == ["01_Bestand_Folienvorlage_MAK", "02_Bestand_Folienvorlage_Koepfe"]
 
+    mc_stock_view = dict(view, monte_carlo_bands=pd.DataFrame({
+        "Stichtag": ["2027-12-31"], "Organisation": ["A"],
+        "Referenzlauf": [4.0], "mean": [5.0], "lower": [3.0], "upper": [7.0],
+    }), monte_carlo_metadata={"Anzahl Läufe": 2, "Band": "P10–P90"})
+    mc_event_view = dict(event_view)
+    mc_event_view["summary_table"] = build_yearly_summary_table(event_view)
+    mc_event_view["reference_details"] = event_view["details"].copy()
+    mc_event_view["reference_summary_table"] = mc_event_view["summary_table"].copy()
+    mc_event_view["monte_carlo_bands"] = event_view["chart"].rename(
+        columns={event_view["metric"]: "mean"}).assign(
+            lower=lambda frame: frame["mean"], upper=lambda frame: frame["mean"],
+            Referenzlauf=lambda frame: frame["mean"])
+    mc_event_view["monte_carlo_metadata"] = {"Anzahl Läufe": 2, "Band": "P10–P90"}
+    mc_tables, mc_context = prepare_yearly_view_export(
+        summary, mc_event_view, stock_view=mc_stock_view)
+    assert "Seed 0" in mc_context["Folienvorlage"]["Mehrlaufstatus"]
+    assert list(mc_tables)[:2] == ["Ref_Bestand_Folienvorlage_MAK",
+                                   "Ref_Bestand_Folienvorlage_Koepfe"]
+    mc_book = pd.ExcelFile(BytesIO(build_org_simulation_export_bytes(mc_tables, mc_context)))
+    assert mc_book.sheet_names[1:3] == ["01_Ref_Bestand_Folienvorlage_MAK"[:31],
+                                       "02_Ref_Bestand_Folienvorlage_Koepfe"[:31]]
+
 
 def test_event_export_preserves_year_org_and_type_selection():
     summary = build_simulation_event_summary(_bridge_context("atz_ruhend"), expected_run_signature="a")
@@ -215,12 +243,111 @@ def test_yearly_export_tables_are_built_only_on_download(monkeypatch):
 
     captured = {}
     monkeypatch.setattr(module, "prepare_yearly_view_export", counted)
-    monkeypatch.setattr(ui_compat, "lazy_excel_download_button_compat", lambda **kwargs: captured.update(kwargs))
+    monkeypatch.setattr(ui_compat, "lazy_excel_download_button_compat",
+                        lambda **kwargs: captured.setdefault(kwargs["label"], kwargs))
     module.render_yearly_view_export(summary, view)
     assert calls == []
-    assert captured["fingerprint"]
-    assert captured["data_builder"]()
+    assert captured["Excel exportieren"]["fingerprint"]
+    assert "Alle OEs als ZIP" in captured
+    assert captured["Excel exportieren"]["data_builder"]()
     assert calls == ["build"]
+
+
+def test_bulk_zip_contains_distinct_oe_workbooks_with_only_selected_oe_data():
+    summary = build_simulation_event_summary(_bridge_context("atz_ruhend"), expected_run_signature="a")
+    app = _app(summary)
+    app.radio(key="org_stock_level").set_value("Organisationseinheit").run()
+    assert not app.exception
+    view = app.session_state["view"]
+    assert len(view["organizations"]) >= 2
+    payload = build_yearly_oe_bulk_zip(summary, view, stock=True)
+    with ZipFile(BytesIO(payload)) as archive:
+        names = archive.namelist()
+        assert names[0] == "00_Gesamt_ausgewaehlte_Einheiten.xlsx"
+        assert len(names) == len(view["organizations"]) + 1
+        for oe, name in zip(view["organizations"], names[1:]):
+            assert oe in name and name.endswith(".xlsx")
+            book = pd.ExcelFile(BytesIO(archive.read(name)))
+            assert book.sheet_names[1:3] == ["01_Bestand_Folienvorlage_MAK", "02_Bestand_Folienvorlage_Koepfe"]
+            inventory = pd.read_excel(book, "Exportinventar").set_index("Bereich")
+            actual = pd.read_excel(book, inventory.loc["Bestand_Auswahl_Grafik", "Tabellenblatt"])
+            expected = view["chart"].loc[view["chart"].Organisation.eq(oe)].reset_index(drop=True)
+            pd.testing.assert_frame_equal(actual, expected, check_dtype=False)
+            assert not any("vollständig" in item.lower() for item in inventory.index)
+
+
+def test_cluster_stock_zip_button_and_each_workbook_scope(monkeypatch):
+    from utils import org_yearly_view_export as module
+    from components import ui_compat
+
+    summary = build_simulation_event_summary(_bridge_context("atz_ruhend"), expected_run_signature="a")
+    app = _app(summary)
+    app.radio(key="org_stock_level").set_value("OE-Cluster").run()
+    assert not app.exception
+    view = app.session_state["view"]
+    captured = {}
+    monkeypatch.setattr(ui_compat, "lazy_excel_download_button_compat",
+                        lambda **kwargs: captured.setdefault(kwargs["label"], kwargs))
+    module.render_yearly_view_export(summary, view, stock=True)
+    assert "Alle OE-Cluster als ZIP" in captured
+    with ZipFile(BytesIO(build_yearly_oe_bulk_zip(summary, view, stock=True))) as archive:
+        assert len(archive.namelist()) == len(view["organizations"]) + 1
+        for cluster, name in zip(view["organizations"], archive.namelist()[1:]):
+            assert name.startswith("OE_Cluster_") and cluster in name
+            book = pd.ExcelFile(BytesIO(archive.read(name)))
+            inventory = pd.read_excel(book, "Exportinventar").set_index("Bereich")
+            actual = pd.read_excel(book, inventory.loc["Bestand_Auswahl_Grafik", "Tabellenblatt"])
+            expected = view["chart"].loc[view["chart"].Organisation.eq(cluster)].reset_index(drop=True)
+            pd.testing.assert_frame_equal(actual, expected, check_dtype=False)
+            overview = pd.read_excel(book, "00_Zusammenfassung")
+            assert overview.loc[overview["Kennzahl / Information"].eq("Organisation(en)"),
+                                "Einzellauf"].iloc[0] == cluster
+
+
+def test_event_bulk_zip_keeps_each_oe_year_matrix_separate():
+    summary = build_simulation_event_summary(_bridge_context("atz_ruhend"), expected_run_signature="a")
+    source = summary["annual_oe"]
+    orgs = sorted(source.Organisationseinheit.unique())
+    view = build_yearly_view(summary, dimension="Organisationseinheit",
+                             years=sorted(source.Jahr.unique()), organizations=orgs,
+                             event_types=sorted(source.Ereignisart.unique()), metric="Abgänge")
+    view["summary_table"] = build_yearly_summary_table(view)
+    with ZipFile(BytesIO(build_yearly_oe_bulk_zip(summary, view))) as archive:
+        assert len(archive.namelist()) == len(orgs) + 1
+        for oe, name in zip(orgs, archive.namelist()[1:]):
+            assert oe in name
+            book = pd.ExcelFile(BytesIO(archive.read(name)))
+            inventory = pd.read_excel(book, "Exportinventar").set_index("Bereich")
+            sheet = inventory.loc["Jahresauswahl_Matrix", "Tabellenblatt"]
+            actual = pd.read_excel(book, sheet)
+            assert actual.Organisationseinheit.tolist() == [oe]
+            assert not any("vollständig" in item.lower() for item in inventory.index)
+
+
+def test_cluster_event_zip_keeps_each_cluster_year_matrix_separate(monkeypatch):
+    from utils import org_yearly_view_export as module
+    from components import ui_compat
+
+    summary = build_simulation_event_summary(_bridge_context("atz_ruhend"), expected_run_signature="a")
+    source = summary["annual_cluster"]
+    clusters = sorted(source["OE-Cluster"].unique())
+    view = build_yearly_view(summary, dimension="OE-Cluster",
+                             years=sorted(source.Jahr.unique()), organizations=clusters,
+                             event_types=sorted(source.Ereignisart.unique()), metric="Abgänge")
+    view["summary_table"] = build_yearly_summary_table(view)
+    captured = {}
+    monkeypatch.setattr(ui_compat, "lazy_excel_download_button_compat",
+                        lambda **kwargs: captured.setdefault(kwargs["label"], kwargs))
+    module.render_yearly_view_export(summary, view)
+    assert "Alle OE-Cluster als ZIP" in captured
+    with ZipFile(BytesIO(build_yearly_oe_bulk_zip(summary, view))) as archive:
+        assert len(archive.namelist()) == len(clusters) + 1
+        for cluster, name in zip(clusters, archive.namelist()[1:]):
+            assert name.startswith("OE_Cluster_") and cluster in name
+            book = pd.ExcelFile(BytesIO(archive.read(name)))
+            inventory = pd.read_excel(book, "Exportinventar").set_index("Bereich")
+            actual = pd.read_excel(book, inventory.loc["Jahresauswahl_Matrix", "Tabellenblatt"])
+            assert actual["OE-Cluster"].tolist() == [cluster]
 
 
 @pytest.mark.parametrize("dimension,metric", [("Organisationseinheit", "Köpfe"), ("OE-Cluster", "MAK")])

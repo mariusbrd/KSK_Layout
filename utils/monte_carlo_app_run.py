@@ -22,6 +22,7 @@ from utils.simulation_validation import value_fingerprint
 
 
 ENSEMBLE_KEY = "monte_carlo_ensemble_result"
+REQUEST_KEY = "monte_carlo_ensemble_request"
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,10 @@ def prepare_ensemble_request(*, snapshot: pd.DataFrame, atz: pd.DataFrame,
 
 def invalidate_ensemble(state: MutableMapping[str, Any]) -> None:
     state.pop(ENSEMBLE_KEY, None)
+    state.pop(REQUEST_KEY, None)
+    state.pop("org_sim_representative_details", None)
+    for future in state.pop("org_sim_representative_prefetch", {}).values():
+        future.cancel()
 
 
 def _reference_matches_request(state: MutableMapping[str, Any],
@@ -143,6 +148,9 @@ def publish_ensemble(state: MutableMapping[str, Any], request: EnsembleRequest,
         "seconds": result.get("seconds"),
         "run_seconds": result.get("run_seconds"),
     }
+    # Keep the exact frozen worker input for on-demand details of a selected
+    # seed. It is session-only and never exported with the compact ensemble.
+    state[REQUEST_KEY] = request
 
 
 def current_ensemble(state: MutableMapping[str, Any],
@@ -164,6 +172,24 @@ def current_ensemble(state: MutableMapping[str, Any],
             or not _reference_matches_request(state, request)):
         return None
     return saved
+
+
+def approved_representative_request(state: MutableMapping[str, Any], view) -> EnsembleRequest | None:
+    """Return frozen inputs only for the matching approved original ensemble."""
+    if (not getattr(view, "approved", False)
+            or getattr(view, "version", None) != (
+                f"{getattr(view, 'signature', None)}::{getattr(view, 'instance', None)}::original")):
+        return None
+    request = state.get(REQUEST_KEY)
+    if not isinstance(request, EnsembleRequest):
+        return None
+    saved = current_ensemble(state, request)
+    if (saved is None or saved.get("reference_signature") != view.signature
+            or saved.get("reference_instance") != view.instance
+            or saved["statistics"].get("annual_event_samples") is None
+            or saved["statistics"].get("annual_stock_samples") is None):
+        return None
+    return request
 
 
 def calculate_ensemble(state: MutableMapping[str, Any], request: EnsembleRequest,

@@ -8,6 +8,7 @@ font = "sans serif"
 [server]
 headless = true
 port = 8501
+disconnectedSessionTTL = 86400  # 24 Stunden: Sitzung nach Sperren/Ruhezustand wieder verbinden
 
 [browser]
 gatherUsageStats = false

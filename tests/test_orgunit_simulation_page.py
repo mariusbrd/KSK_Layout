@@ -312,6 +312,191 @@ def test_orgunit_simulation_page_passes_only_matching_approved_ensemble(monkeypa
     assert captured["monte_carlo_ensemble"] is None
 
 
+def test_orgunit_scenario_choice_is_visible_below_page_header_in_real_streamlit():
+    from streamlit.testing.v1 import AppTest
+    page = next((ROOT / "pages").glob("10_*_Organisationseinheiten_Simulation.py"))
+    source = (
+        "import importlib.util\nimport pandas as pd\nimport streamlit as st\n"
+        "st.page_link = lambda *args, **kwargs: None\n"
+        f"spec = importlib.util.spec_from_file_location('oe_choice_ui', {str(page)!r})\n"
+        "module = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(module)\n"
+        "from types import SimpleNamespace\n"
+        "module._load_orgunit_analysis_module = lambda: SimpleNamespace(render_orgunit_analysis_page=lambda *a, **k: None)\n"
+        "if 'compact_sim_signature' not in st.session_state:\n"
+        "    frame = pd.DataFrame({'Organisationseinheit': ['A'], 'MAK_Reporting': [1.]})\n"
+        "    st.session_state['compact_sim_signature'] = 'ui-run'\n"
+        "    st.session_state['compact_sim_prepared_df'] = frame\n"
+        "    st.session_state['compact_sim_metadata'] = {'target_date': '2027-12-31'}\n"
+        "    st.session_state['compact_sim_event_context'] = {'run_signature': 'ui-run'}\n"
+        "    st.session_state['compact_sim_event_summary'] = {'run_signature': 'ui-run'}\n"
+        "    st.session_state['simulation_validation_instance'] = 1\n"
+        "    st.session_state['simulation_validation_approval'] = {'signature': 'ui-run', 'instance': 1, 'version': 'ui-run::1::original'}\n"
+        "    st.session_state['monte_carlo_ensemble_result'] = {'status': 'complete', 'count': 3, 'band_level': .8, 'reference_signature': 'ui-run', 'reference_instance': 1, 'statistics': {'status': 'complete', 'requested_count': 3, 'annual_event_samples': [], 'annual_stock_samples': []}}\n"
+        "module.main()\n"
+    )
+    app = AppTest.from_string(source.encode("ascii", "backslashreplace").decode()).run()
+    assert not app.exception
+    choice = app.radio(key="org_sim_scenario_mode")
+    assert choice.value == "Konsolidiert"
+    assert choice.options == [
+        "Mittelwert + P10–P90", "Minimum (wenigste Kündigungen)",
+        "Maximum (meiste Kündigungen)", "Mittlerer Einzellauf",
+    ]
+    assert any("Ergebnisansicht" in item.value for item in app.markdown)
+
+
+def test_orgunit_scenario_uses_one_complete_seed_and_caches_it(monkeypatch):
+    from types import SimpleNamespace
+
+    _run_reusable_orgunit_simulation()
+    sim_page = _load_page_module("Organisationseinheiten_Simulation", "orgunit_scenario")
+    from utils.simulation_validation import current_view
+    view = current_view(st.session_state, require_approval=True)
+    saved = {
+        "status": "complete", "count": 2, "band_level": 0.8,
+        "plan_signature": "signed-ensemble", "seed_pairs": ((42, 42), (43, 43)),
+        "reference_signature": view.signature, "reference_instance": view.instance,
+        "statistics": {
+            "status": "complete", "requested_count": 2,
+            "annual_event_samples": [(2026, "Organisationseinheit", "A", "QUIT", "Abgänge", [2, 1])],
+            "annual_stock_samples": [
+                ("2026-12-31", "Organisationseinheit", "A", "heads", [3, 4]),
+                ("2026-12-31", "Organisationseinheit", "A", "mak", [2, 3]),
+            ],
+        },
+    }
+    st.session_state["monte_carlo_ensemble_result"] = saved
+    selected_frame = view.prepared_df.copy()
+    selected_frame["Organisationseinheit"] = "Ausgewählter Lauf"
+    raw_events = pd.DataFrame({"headcount_change": [-1], "mak_change": [-0.8],
+                               "Organisationseinheit": ["Ausgewählter Lauf"]})
+    detail = SimpleNamespace(prepared=selected_frame,
+                             context={"departure_events": raw_events},
+                             summary={"run_signature": "selected-signature"})
+    materializations = []
+    monkeypatch.setattr(sim_page.st, "radio", lambda *_args, **_kwargs: "Geringste Fluktuation")
+    monkeypatch.setattr(sim_page, "approved_representative_request", lambda *_args: object())
+    monkeypatch.setattr(sim_page, "materialize_representative_seed_detail",
+                        lambda _request, _ensemble, index: materializations.append(index) or detail)
+    captured = {}
+    fake = type("FakeOrgModule", (), {"render_orgunit_analysis_page": staticmethod(
+        lambda frame, **kwargs: captured.update({"frame": frame, **kwargs}))})
+    monkeypatch.setattr(sim_page, "_load_orgunit_analysis_module", lambda: fake)
+
+    sim_page.main()
+    sim_page.main()
+
+    assert materializations == [1]
+    pd.testing.assert_frame_equal(captured["frame"], selected_frame)
+    assert captured["event_summary"] is detail.summary
+    assert captured["monte_carlo_ensemble"] is None
+    assert captured["departure_events_df"]["Organisationseinheit"].tolist() == ["Ausgewählter Lauf"]
+    assert captured["export_context"]["Laufkennung"] == "selected-signature"
+    assert captured["export_context"]["Szenario-Laufindex"] == 1
+
+
+def test_orgunit_scenario_rejects_missing_frozen_request(monkeypatch):
+    _run_reusable_orgunit_simulation()
+    sim_page = _load_page_module("Organisationseinheiten_Simulation", "orgunit_scenario_missing")
+    from utils.simulation_validation import current_view
+    view = current_view(st.session_state, require_approval=True)
+    st.session_state["monte_carlo_ensemble_result"] = {
+        "status": "complete", "count": 2, "band_level": 0.8,
+        "plan_signature": "signed-ensemble", "seed_pairs": ((42, 42), (43, 43)),
+        "reference_signature": view.signature, "reference_instance": view.instance,
+        "statistics": {
+            "status": "complete", "requested_count": 2,
+            "annual_event_samples": [(2026, "Organisationseinheit", "A", "QUIT", "Abgänge", [2, 1])],
+            "annual_stock_samples": [
+                ("2026-12-31", "Organisationseinheit", "A", "heads", [3, 4]),
+                ("2026-12-31", "Organisationseinheit", "A", "mak", [2, 3]),
+            ],
+        },
+    }
+    monkeypatch.setattr(sim_page.st, "radio", lambda *_args, **_kwargs: "Geringste Fluktuation")
+    monkeypatch.setattr(sim_page, "_load_orgunit_analysis_module",
+                        lambda: pytest.fail("missing request must block rendering"))
+    messages = []
+    monkeypatch.setattr(sim_page.st, "error", messages.append)
+    sim_page.main()
+    assert any("gespeicherten Eingaben" in message for message in messages)
+
+
+@pytest.mark.parametrize("label", ["Höchste Fluktuation", "Typischer Verlauf"])
+def test_orgunit_seed_zero_scenario_reuses_approved_reference(monkeypatch, label):
+    _run_reusable_orgunit_simulation()
+    sim_page = _load_page_module("Organisationseinheiten_Simulation", "orgunit_seed_zero")
+    from utils.simulation_validation import current_view
+    view = current_view(st.session_state, require_approval=True)
+    saved = {
+        "status": "complete", "count": 2, "band_level": 0.8,
+        "plan_signature": "signed-ensemble", "seed_pairs": ((42, 42), (43, 43)),
+        "reference_signature": view.signature, "reference_instance": view.instance,
+        "statistics": {
+            "status": "complete", "requested_count": 2,
+            "annual_event_samples": [(2026, "Organisationseinheit", "A", "QUIT", "Abgänge", [2, 1])],
+            "annual_stock_samples": [
+                ("2026-12-31", "Organisationseinheit", "A", "heads", [3, 4]),
+                ("2026-12-31", "Organisationseinheit", "A", "mak", [2, 3]),
+            ],
+        },
+    }
+    monkeypatch.setattr(sim_page.st, "radio", lambda *_args, **_kwargs: label)
+    monkeypatch.setattr(sim_page, "approved_representative_request", lambda *_args: object())
+    monkeypatch.setattr(sim_page, "materialize_representative_seed_detail",
+                        lambda *_args: pytest.fail("seed zero must reuse the approved reference"))
+    chosen_label, selection, detail = sim_page._selected_scenario(view, saved)
+    assert chosen_label == label
+    assert selection["index"] == 0
+    assert detail.prepared is view.prepared_df
+    assert detail.context is view.event_context
+
+
+def test_orgunit_prefetch_starts_distinct_runs_and_reuses_completed_detail(monkeypatch):
+    from concurrent.futures import Future
+    from types import SimpleNamespace
+    from utils.monte_carlo_representative_prefetch import PREFETCH_KEY
+
+    _run_reusable_orgunit_simulation()
+    sim_page = _load_page_module("Organisationseinheiten_Simulation", "orgunit_prefetch")
+    from utils.simulation_validation import current_view
+    view = current_view(st.session_state, require_approval=True)
+    saved = {"plan_signature": "plan", "count": 3}
+    selections = {
+        "best": {"index": 1, "seed_pair": (43, 43), "quit_departures": 1},
+        "worst": {"index": 2, "seed_pair": (44, 44), "quit_departures": 4},
+        "typical": {"index": 1, "seed_pair": (43, 43), "quit_departures": 1},
+    }
+    detail = SimpleNamespace(prepared=view.prepared_df,
+                             context={"departure_events": pd.DataFrame()},
+                             summary=view.event_summary)
+    submitted = []
+
+    def fake_submit(_request, _ensemble, index):
+        submitted.append(index)
+        future = Future()
+        future.set_result(detail)
+        return future
+
+    monkeypatch.setattr(sim_page, "approved_representative_request", lambda *_args: object())
+    monkeypatch.setattr(sim_page, "select_representative_runs", lambda _ensemble: selections)
+    monkeypatch.setattr(sim_page, "submit_detail", fake_submit)
+    monkeypatch.setattr(sim_page.st, "radio", lambda *_args, **_kwargs: "Geringste Fluktuation")
+    monkeypatch.setattr(sim_page, "materialize_representative_seed_detail",
+                        lambda *_args: pytest.fail("completed prefetched seed must be reused"))
+
+    sim_page._start_representative_prefetch(view, saved)
+    sim_page._start_representative_prefetch(view, saved)
+    assert submitted == [1, 2]
+    assert len(st.session_state[PREFETCH_KEY]) == 2
+    _, selection, selected = sim_page._selected_scenario(view, saved)
+    assert selection["index"] == 1
+    assert selected is detail
+    assert len(st.session_state[PREFETCH_KEY]) == 1
+    assert len(st.session_state[sim_page.REPRESENTATIVE_CACHE_KEY]) == 1
+
+
 @pytest.mark.parametrize("page_name,loader_name", [
     ("Organisationseinheiten_Simulation", "_load_orgunit_analysis_module"),
     ("Jobfamily_Simulation", "_load_jobfamily_analysis_module"),

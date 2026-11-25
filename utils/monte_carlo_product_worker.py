@@ -152,7 +152,8 @@ def _annual_stocks(snapshot, atz, start, end, product, observed, source, bundle,
 
 
 def run_product_seed(index: int, attrition: dict, accession: dict,
-                     payload: dict[str, Any], *, include_ist_charts: bool = False) -> dict:
+                     payload: dict[str, Any], *, include_ist_charts: bool = False,
+                     detail_sink=None) -> dict:
     """Return one complete packet; all external values must come from payload."""
     settings = payload["settings"]
     required = {"salary_automation", "exclusions"}
@@ -284,6 +285,25 @@ def run_product_seed(index: int, attrition: dict, accession: dict,
             packet["org_departure_events_version"] = 1
             packet["org_departure_events"] = zlib.compress(
                 pickle.dumps(departures, protocol=pickle.HIGHEST_PROTOCOL), level=1)
+        if detail_sink is not None:
+            from utils.org_simulation_events import build_simulation_event_summary
+
+            compact = _compact_module()
+            prepared = compact.prepare_compact_data(product.future_snapshot_df)
+            detail_context = {
+                **context,
+                "baseline_snapshot": compact.prepare_compact_data(context["baseline_snapshot"]),
+                "final_snapshot": prepared,
+                "source_snapshot": snapshot,
+                "df_atz": atz,
+                "run_settings": {"exclusions": settings["exclusions"]},
+                "abgaenge_params": attrition,
+                "atz_pivot": product.abgaenge_result.get("tables", {}).get(
+                    "atz_schedule_audit", pd.DataFrame()),
+            }
+            detail_summary = build_simulation_event_summary(
+                detail_context, expected_run_signature=context["run_signature"])
+            detail_sink(prepared, detail_context, detail_summary)
         return packet
     finally:
         engine.get_setting = original_get_setting

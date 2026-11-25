@@ -29,6 +29,7 @@ from utils.simulation_params import (
     get_simulation_params,
     save_simulation_params,
 )
+from utils.simulation_run_archive import build_run_archive, restore_run_archive
 
 
 AGE_COHORTS = ["alter_unter_30", "alter_30_45", "alter_45_55", "alter_55_plus"]
@@ -508,8 +509,35 @@ def main() -> None:
     c_save, c_note = st.columns([1, 3])
     if c_save.button("Parameter speichern", type="primary", use_container_width=True):
         save_simulation_params(draft)
+        st.session_state.pop("compact_sim_imported_archive", None)
         st.success("Parameter wurden aktualisiert.")
     c_note.caption("CompactPlus Simulation nutzt diese Abgänge- und Zugänge-Parameter bereits. Prognose Abgänge, Prognose Zugänge und Prognose Hybrid nutzen weiterhin ihre bisherigen Parameterquellen.")
+
+    st.divider()
+    with st.expander("Berechneten Lauf sichern oder laden", expanded=False):
+        st.caption("Das Laufarchiv enthält Einstellungen, Zieldatum, Referenzlauf und alle Monte-Carlo-Ergebnisse. Nur selbst erstellte, vertrauenswürdige Archivdateien laden; sie enthalten Personaldaten.")
+        uploaded_run = st.file_uploader("Laufarchiv auswählen", type=["zip"], key="sim_run_archive_upload")
+        if st.button("Laufarchiv laden", disabled=uploaded_run is None, key="sim_run_archive_restore"):
+            try:
+                restored = restore_run_archive(st.session_state, uploaded_run.getvalue())
+            except Exception as exc:
+                st.error(f"Laufarchiv konnte nicht geladen werden: {exc}")
+            else:
+                st.success(f"Lauf mit {restored['simulation_params']['compact_plus']['run_count']} Durchgängen geladen.")
+                st.rerun()
+        if st.session_state.get("compact_sim_prepared_df") is not None:
+            from components.ui_compat import lazy_excel_download_button_compat
+            lazy_excel_download_button_compat(
+                label="Berechneten Lauf als ZIP sichern",
+                data_builder=lambda: build_run_archive(st.session_state),
+                file_name="CompactPlus_Laufarchiv.zip", mime="application/zip",
+                key="sim_run_archive_download",
+                fingerprint=(st.session_state.get("compact_sim_signature"),
+                             st.session_state.get("simulation_validation_instance"),
+                             st.session_state.get("monte_carlo_ensemble_result", {}).get("plan_signature")
+                             if isinstance(st.session_state.get("monte_carlo_ensemble_result"), dict) else None),
+                spinner_label="Laufarchiv wird erstellt...",
+            )
 
 
 if __name__ == "__main__":

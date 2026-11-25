@@ -96,7 +96,10 @@ def _build_simulation_signature(
 
 def _clear_simulation_cache():
     invalidate_approval(st.session_state)
+    for future in st.session_state.pop("org_sim_representative_prefetch", {}).values():
+        future.cancel()
     for key in [
+        "compact_sim_imported_archive",
         "compact_sim_signature",
         "compact_sim_cluster_source_signature",
         "compact_sim_prepared_df",
@@ -114,6 +117,8 @@ def _clear_simulation_cache():
         "compact_sim_export_signature",
         "compact_sim_export_bytes",
         "monte_carlo_ensemble_result",
+        "monte_carlo_ensemble_request",
+        "org_sim_representative_details",
     ]:
         st.session_state.pop(key, None)
 
@@ -488,7 +493,9 @@ def main():
     _inject_page_styles()
 
     compact = load_compact_page_module()
-    base_date = pd.Timestamp(get_current_stichtag()).normalize()
+    imported_metadata = (st.session_state.get("compact_sim_metadata", {})
+                         if st.session_state.get("compact_sim_imported_archive") else {})
+    base_date = pd.Timestamp(imported_metadata.get("base_date", get_current_stichtag())).normalize()
     abgaenge_params, zugaenge_params = get_compact_plus_params()
     default_target, run_count = get_compact_plus_run_options(base_date.date())
 
@@ -553,6 +560,11 @@ def main():
     if target_changed:
         get_simulation_params()["compact_plus"]["target_date"] = target_date_input
     compute_requested = recalc_clicked or target_changed
+    imported_active = bool(st.session_state.get("compact_sim_imported_archive")) and not (
+        compute_requested or _ist_stand_clicked)
+    if not imported_active and st.session_state.get("compact_sim_imported_archive"):
+        st.session_state.pop("compact_sim_imported_archive", None)
+        base_date = pd.Timestamp(get_current_stichtag()).normalize()
     st.caption(
         "Ist-Stand = Basisdaten ohne Fortschreibung. "
         "Simulation = Fortschreibung bis zum gewählten Ziel-Datum. Eine Datumsänderung startet die Berechnung erneut."
@@ -571,19 +583,29 @@ def main():
     is_stale = False
 
     try:
-        snapshot_df, history_df, _, summary = load_and_prepare_data()
-        (
-            active_cluster_source,
-            cluster_mapping_bundle,
-            cluster_source_signature,
-        ) = _get_simulation_cluster_context(summary)
-        draft_signature = _build_simulation_signature(
-            target_date=target_date,
-            base_date=base_date,
-            abgaenge_params=abgaenge_params,
-            zugaenge_params=zugaenge_params,
-            cluster_source_signature=cluster_source_signature,
-        )
+        if imported_active:
+            from dataloader.cluster_resolver import ClusterMappingBundle
+            archived_context = st.session_state["compact_sim_event_context"]
+            snapshot_df = archived_context["source_snapshot"]
+            history_df = pd.DataFrame()
+            active_cluster_source = st.session_state["compact_sim_active_cluster_source"]
+            cluster_mapping_bundle = ClusterMappingBundle(**archived_context["cluster_mapping"])
+            cluster_source_signature = st.session_state["compact_sim_cluster_source_signature"]
+            draft_signature = st.session_state["compact_sim_signature"]
+        else:
+            snapshot_df, history_df, _, summary = load_and_prepare_data()
+            (
+                active_cluster_source,
+                cluster_mapping_bundle,
+                cluster_source_signature,
+            ) = _get_simulation_cluster_context(summary)
+            draft_signature = _build_simulation_signature(
+                target_date=target_date,
+                base_date=base_date,
+                abgaenge_params=abgaenge_params,
+                zugaenge_params=zugaenge_params,
+                cluster_source_signature=cluster_source_signature,
+            )
 
         computed_signature = st.session_state.get("compact_sim_signature")
         has_cached_result = (
@@ -600,7 +622,7 @@ def main():
             needs_recompute = True
 
         just_computed = False
-        ensemble_request = None
+        ensemble_request = st.session_state.get("monte_carlo_ensemble_request") if imported_active else None
         ensemble_result = None
         if needs_recompute:
             df_atz = _get_atz_input()

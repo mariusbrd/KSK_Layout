@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
 
 from utils.monte_carlo_app_run import (
-    ENSEMBLE_KEY, calculate_ensemble, current_ensemble, invalidate_ensemble,
+    ENSEMBLE_KEY, REQUEST_KEY, approved_representative_request,
+    calculate_ensemble, current_ensemble, invalidate_ensemble,
     prepare_ensemble_request, publish_ensemble,
 )
 from utils.simulation_validation import register_new_run, value_fingerprint
@@ -81,11 +83,31 @@ def test_publish_and_stale_detection_bind_reference_and_inputs():
     saved = current_ensemble(state, request)
     assert saved is state[ENSEMBLE_KEY]
     assert "snapshot" not in saved and "atz" not in saved
+    assert state[REQUEST_KEY] is request
     assert current_ensemble(state, _request(count=3)) is None
     assert current_ensemble(state, _request(mak=0.8)) is None
     assert current_ensemble(state, _request(salary={"enabled": True})) is None
     state["simulation_validation_instance"] += 1
     assert current_ensemble(state, request) is None
+
+
+def test_representative_request_requires_matching_approved_original_run():
+    request = _request()
+    state = _state(request)
+    result = _result(request)
+    result["statistics"].update(annual_event_samples=[], annual_stock_samples=[])
+    publish_ensemble(state, request, result)
+    signature = state["compact_sim_signature"]
+    view = SimpleNamespace(signature=signature, instance=1,
+                           version=f"{signature}::1::original", approved=True)
+    assert approved_representative_request(state, view) is request
+    assert approved_representative_request(state, SimpleNamespace(
+        signature=signature, instance=1, version=view.version, approved=False)) is None
+    assert approved_representative_request(state, SimpleNamespace(
+        signature=signature, instance=1,
+        version=f"{signature}::1::adjusted::x", approved=True)) is None
+    state["compact_sim_event_context"]["source_snapshot"].loc[0, "MAK"] = 0.2
+    assert approved_representative_request(state, view) is None
 
 
 def test_reference_mismatch_and_incomplete_result_never_publish():
@@ -104,16 +126,24 @@ def test_reference_mismatch_and_incomplete_result_never_publish():
 
 
 def test_recompute_invalidates_ensemble_without_changing_legacy_values():
+    from concurrent.futures import Future
+
     request = _request()
     state = _state(request)
     old_signature = state["compact_sim_signature"]
     publish_ensemble(state, request, _result(request))
+    pending = Future()
+    state["org_sim_representative_prefetch"] = {("plan", 1): pending}
     register_new_run(state)
     assert ENSEMBLE_KEY not in state
+    assert REQUEST_KEY not in state
+    assert pending.cancelled()
+    assert "org_sim_representative_prefetch" not in state
     assert state["compact_sim_signature"] == old_signature
     assert state["simulation_validation_instance"] == 2
     publish_ensemble(state, request, _result(request))
     invalidate_ensemble(state)
+    assert REQUEST_KEY not in state
     assert current_ensemble(state, request) is None
 
 

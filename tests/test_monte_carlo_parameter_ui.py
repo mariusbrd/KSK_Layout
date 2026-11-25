@@ -128,6 +128,17 @@ def test_real_two_run_jobfamily_year_values_match_saved_reference(
     app.run()
     assert not app.exception
     ensemble = app.session_state["monte_carlo_ensemble_result"]
+    from utils.monte_carlo_representative_data import load_representative_seed_data
+    for run_index in range(ensemble["count"]):
+        selected_run = load_representative_seed_data(ensemble, run_index)
+        assert selected_run.seed_pair == tuple(ensemble["seed_pairs"][run_index])
+    if target_date == "2026-12-31" and not any((without_quits, with_hires, with_training)):
+        from utils.monte_carlo_representative_data import materialize_representative_seed_detail
+        detail = materialize_representative_seed_detail(
+            app.session_state["monte_carlo_ensemble_request"], ensemble, 1)
+        assert detail.saved.index == 1
+        assert detail.summary["stock_reconciliation"]["status"] == "Abgestimmt"
+        assert not detail.summary["annual_oe"].empty
     if without_quits or with_hires or with_training:
         expected_seed = 17 if without_quits else 29 if with_hires else 31
         assert app.session_state["compact_sim_abgaenge_params"]["random_seed"] == expected_seed
@@ -220,10 +231,12 @@ def test_real_two_run_jobfamily_year_values_match_saved_reference(
     assert any("Summe der gewählten Jahre" in item.value for item in yearly_app.markdown)
     yearly_app.radio(key="jf_yearly_dimension").set_value("JF-Cluster").run()
     assert not yearly_app.exception
-    yearly_app.radio(key="jf_yearly_stock_metric").set_value("MAK").run()
-    yearly_app.radio(key="jf_yearly_metric").set_value("Abgänge").run()
+    yearly_app.session_state["global_metric_view"] = "MAK"
+    yearly_app.run()
+    assert not any(radio.label in {"Kennzahl des Bestandsverlaufs", "Kennzahl der Veränderung"}
+                   for radio in yearly_app.radio)
     assert not yearly_app.exception
-    assert any("Abgehende Köpfe" in list(frame.value.columns)
+    assert any("Abgehende MAK" in list(frame.value.columns)
                for frame in yearly_app.dataframe)
     yearly_app.button(key="jf_yearly_prepare_export").click().run()
     assert not yearly_app.exception
@@ -232,6 +245,208 @@ def test_real_two_run_jobfamily_year_values_match_saved_reference(
         totals = pd.read_excel(book, "Ereignisse_Summe")
         assert "Abgehende Köpfe" in totals
         assert "Abgehende MAK P90" in totals
+
+
+def test_real_oe_scenario_page_export_uses_selected_seed():
+    from utils.monte_carlo_representative_runs import select_representative_runs
+    from utils.simulation_validation import approve_original
+
+    compact_app = _compact_app(2)
+    compact_app.session_state["test_start_simulation"] = True
+    compact_app.run()
+    assert not compact_app.exception
+    ensemble = compact_app.session_state["monte_carlo_ensemble_result"]
+    selected = select_representative_runs(ensemble)
+    label, choice = next((label, item) for label, item in (
+        ("Geringste Fluktuation", selected["best"]),
+        ("Höchste Fluktuation", selected["worst"]),
+        ("Typischer Verlauf", selected["typical"]),
+    ) if item["index"] == 1)
+    saved_state = {key: compact_app.session_state[key] for key in (
+        "compact_sim_signature", "compact_sim_prepared_df", "compact_sim_status_quo_df",
+        "compact_sim_metadata", "compact_sim_audit_tables", "compact_sim_event_context",
+        "compact_sim_event_summary", "compact_sim_target_date_cached",
+        "compact_sim_export_context", "compact_sim_abgaenge_params",
+        "compact_sim_zugaenge_params", "simulation_validation_instance",
+        "monte_carlo_ensemble_result", "monte_carlo_ensemble_request",
+    )}
+    approve_original(saved_state, approved_at="2026-11-16T00:00:00+00:00")
+
+    page = next((ROOT / "pages").glob("10_*_Organisationseinheiten_Simulation.py"))
+    source = (
+        "import importlib.util\nimport streamlit as st\n"
+        "st.page_link = lambda *args, **kwargs: None\n"
+        f"spec = importlib.util.spec_from_file_location('real_oe_scenario_page', {str(page)!r})\n"
+        "module = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(module)\n"
+        "original_radio = st.radio\n"
+        "def choose_scenario(*args, **kwargs):\n"
+        "    if kwargs.get('key') == 'org_sim_scenario_mode': return st.session_state['test_oe_scenario_label']\n"
+        "    if kwargs.get('key') == 'org_yearly_level' and st.session_state.get('test_oe_cluster_mode'): return 'OE-Cluster'\n"
+        "    return original_radio(*args, **kwargs)\n"
+        "st.radio = choose_scenario\n"
+        "original_multiselect = st.multiselect\n"
+        "def choose_org(*args, **kwargs):\n"
+        "    if kwargs.get('key') == 'org_units_select' and st.session_state.get('test_oe_org_filter'):\n"
+        "        return [st.session_state['test_oe_org_filter']]\n"
+        "    if kwargs.get('key') == 'jobfamily_select' and st.session_state.get('test_oe_jobfamily_filter'):\n"
+        "        return [st.session_state['test_oe_jobfamily_filter']]\n"
+        "    if kwargs.get('key') == 'employment_select' and st.session_state.get('test_oe_employment_filter'):\n"
+        "        return [st.session_state['test_oe_employment_filter']]\n"
+        "    return original_multiselect(*args, **kwargs)\n"
+        "st.multiselect = choose_org\n"
+        "import components.sidebar as sidebar\n"
+        "import components.ui_compat as compat\n"
+        "from unittest.mock import patch\n"
+        "def app_test_metric_selector(label, options, value, key):\n"
+        "    return st.selectbox(label, options, index=options.index(value), key=key)\n"
+        "def capture(**kwargs):\n"
+        "    if kwargs.get('key') == 'org_simulation_full_export':\n"
+        "        st.session_state['test_oe_export_builder'] = kwargs['data_builder']\n"
+        "with patch.object(compat, 'lazy_excel_download_button_compat', capture), "
+        "patch.object(sidebar, '_segmented_single', app_test_metric_selector):\n"
+        "    module.main()\n"
+    )
+    baseline_app = AppTest.from_string(source.encode("ascii", "backslashreplace").decode(),
+                                       default_timeout=180)
+    for key, value in saved_state.items():
+        baseline_app.session_state[key] = value
+    baseline_app.session_state["test_oe_scenario_label"] = "Konsolidiert"
+    baseline_app.run()
+    assert not baseline_app.exception
+    key = (ensemble["plan_signature"], saved_state["compact_sim_signature"],
+           saved_state["simulation_validation_instance"], 1)
+    pending = baseline_app.session_state["org_sim_representative_prefetch"]
+    assert key in pending
+    detail = pending[key].result(timeout=120)
+    saved_state["org_sim_representative_details"] = {key: detail}
+    oe_app = AppTest.from_string(source.encode("ascii", "backslashreplace").decode(),
+                                 default_timeout=180)
+    for key, value in saved_state.items():
+        oe_app.session_state[key] = value
+    oe_app.session_state["test_oe_scenario_label"] = label
+    oe_app.run()
+    assert not oe_app.exception
+    assert "test_oe_export_builder" in oe_app.session_state
+    book = pd.ExcelFile(BytesIO(oe_app.session_state["test_oe_export_builder"]()))
+    inventory = pd.read_excel(book, "Exportinventar").set_index("Bereich")
+    exported = pd.read_excel(book, inventory.loc["Simulationsbasis_gefiltert", "Tabellenblatt"])
+    assert len(exported) == len(detail.prepared)
+    assert exported["Organisationseinheit"].fillna("").astype(str).tolist() == (
+        detail.prepared["Organisationseinheit"].fillna("").astype(str).tolist())
+    yearly = pd.read_excel(book, inventory.loc["Jahre_OE_vollständig", "Tabellenblatt"])
+    assert len(yearly) == len(detail.summary["annual_oe"])
+    for metric in ("Abgänge", "Zugänge", "MAK-Verlust"):
+        if metric in yearly:
+            assert yearly[metric].sum() == pytest.approx(detail.summary["annual_oe"][metric].sum())
+    bridge = pd.read_excel(book, inventory.loc["Bestand_Überleitung_vollständig", "Tabellenblatt"])
+    assert len(bridge) == len(detail.summary["stock_reconciliation"]["annual"])
+    assert not any(name.startswith("MC_") or name.startswith("Ref_") for name in inventory.index)
+    documentation = pd.read_excel(book, "00_Dokumentation").set_index("Feld")
+    assert documentation.loc["Szenarioansicht", "Wert"] == label
+    assert int(documentation.loc["Szenario-Laufindex", "Wert"]) == choice["index"]
+    assert oe_app.session_state["org_sim_representative_details"]
+
+    from components.sidebar import _apply_filters_uncached
+    candidates = detail.prepared.loc[
+        detail.prepared["Jobfamily"].notna()
+        & detail.prepared["Jobfamily"].ne("UNMAPPED")
+        & detail.prepared["Arbeitszeit"].isin(["Vollzeit", "Teilzeit", "Inaktiv"])
+        & detail.prepared["Organisationseinheit"].notna()]
+    assert not candidates.empty
+    selected_person = candidates.iloc[0]
+    org = str(selected_person["Organisationseinheit"])
+    jobfamily = str(selected_person["Jobfamily"])
+    employment = str(selected_person["Arbeitszeit"])
+    filtered_app = AppTest.from_string(source.encode("ascii", "backslashreplace").decode(),
+                                       default_timeout=180)
+    for key, value in saved_state.items():
+        filtered_app.session_state[key] = value
+    filtered_app.session_state["org_sim_representative_details"] = (
+        oe_app.session_state["org_sim_representative_details"])
+    filtered_app.session_state["test_oe_cluster_mode"] = True
+    filtered_app.session_state["test_oe_scenario_label"] = label
+    filtered_app.session_state["test_oe_org_filter"] = org
+    filtered_app.session_state["test_oe_jobfamily_filter"] = jobfamily
+    filtered_app.session_state["test_oe_employment_filter"] = employment
+    filtered_app.run()
+    assert not filtered_app.exception
+    filtered_book = pd.ExcelFile(BytesIO(filtered_app.session_state["test_oe_export_builder"]()))
+    filtered_inventory = pd.read_excel(filtered_book, "Exportinventar").set_index("Bereich")
+    filtered_target = pd.read_excel(
+        filtered_book, filtered_inventory.loc["Simulationsbasis_gefiltert", "Tabellenblatt"])
+    expected_target = _apply_filters_uncached(detail.prepared, {
+        "selected_org_units": [org], "selected_jobfamilies": [jobfamily],
+        "selected_genders": ["m", "w"], "selected_employment": [employment],
+        "selected_atz_status": ["Kein ATZ", "Arbeitsphase", "Freistellungsphase"],
+    })
+    assert len(filtered_target) == len(expected_target)
+    assert len(filtered_target) > 0
+    assert set(filtered_target["Organisationseinheit"]) == {org}
+    assert set(expected_target["Jobfamily"]) == {jobfamily}
+    assert set(expected_target["Arbeitszeit"]) == {employment}
+    for metric in ("MAK_Reporting", "MAK_Calculated", "Soll_FTE"):
+        assert pd.to_numeric(filtered_target[metric], errors="coerce").sum() == pytest.approx(
+            pd.to_numeric(expected_target[metric], errors="coerce").sum())
+    cluster_yearly = pd.read_excel(
+        filtered_book, filtered_inventory.loc["Jahre_Cluster_vollständig", "Tabellenblatt"])
+    pd.testing.assert_frame_equal(
+        cluster_yearly.reset_index(drop=True),
+        detail.summary["annual_cluster"].reset_index(drop=True),
+        check_dtype=False, check_exact=False, atol=1e-9)
+    assert not any(name.startswith("MC_") or name.startswith("Ref_")
+                   for name in filtered_inventory.index)
+
+    for scenario_label, scenario_choice in (
+        ("Geringste Fluktuation", selected["best"]),
+        ("Höchste Fluktuation", selected["worst"]),
+        ("Typischer Verlauf", selected["typical"]),
+    ):
+        scenario_app = AppTest.from_string(source.encode("ascii", "backslashreplace").decode(),
+                                           default_timeout=180)
+        for key, value in saved_state.items():
+            scenario_app.session_state[key] = value
+        scenario_app.session_state["org_sim_representative_details"] = (
+            oe_app.session_state["org_sim_representative_details"])
+        scenario_app.session_state["test_oe_scenario_label"] = scenario_label
+        scenario_app.run()
+        assert not scenario_app.exception
+        scenario_book = pd.ExcelFile(BytesIO(scenario_app.session_state["test_oe_export_builder"]()))
+        scenario_doc = pd.read_excel(scenario_book, "00_Dokumentation").set_index("Feld")
+        assert scenario_doc.loc["Szenarioansicht", "Wert"] == scenario_label
+        assert int(scenario_doc.loc["Szenario-Laufindex", "Wert"]) == scenario_choice["index"]
+        scenario_inventory = pd.read_excel(scenario_book, "Exportinventar").set_index("Bereich")
+        scenario_target = pd.read_excel(
+            scenario_book, scenario_inventory.loc["Simulationsbasis_gefiltert", "Tabellenblatt"])
+        expected = (saved_state["compact_sim_prepared_df"] if scenario_choice["index"] == 0
+                    else detail.prepared)
+        assert len(scenario_target) == len(expected)
+        assert pd.to_numeric(scenario_target["MAK_Reporting"], errors="coerce").sum() == pytest.approx(
+            pd.to_numeric(expected["MAK_Reporting"], errors="coerce").sum())
+
+    # Exercise the actual rerun path in one Streamlit session, where stale
+    # widget state or a previous export builder could otherwise survive.
+    oe_app.session_state["test_oe_scenario_label"] = "Konsolidiert"
+    oe_app.run()
+    assert not oe_app.exception
+    assert any("Läufe" in item.value and "Mittelwerte" in item.value
+               for item in oe_app.info)
+
+    oe_app.session_state["test_oe_scenario_label"] = label
+    oe_app.run()
+    assert not oe_app.exception
+    again_book = pd.ExcelFile(BytesIO(oe_app.session_state["test_oe_export_builder"]()))
+    again_inventory = pd.read_excel(again_book, "Exportinventar").set_index("Bereich")
+    assert not any(name.startswith("MC_") or name.startswith("Ref_")
+                   for name in again_inventory.index)
+    again_doc = pd.read_excel(again_book, "00_Dokumentation").set_index("Feld")
+    assert again_doc.loc["Szenarioansicht", "Wert"] == label
+    assert int(again_doc.loc["Szenario-Laufindex", "Wert"]) == choice["index"]
+    for section in ("KPI_Anzeige", "Rangliste", "Jahre_OE_vollständig"):
+        pd.testing.assert_frame_equal(
+            pd.read_excel(again_book, again_inventory.loc[section, "Tabellenblatt"]),
+            pd.read_excel(book, inventory.loc[section, "Tabellenblatt"]),
+            check_dtype=False)
 
 
 def test_compact_plus_two_runs_create_complete_bound_ensemble():

@@ -169,6 +169,8 @@ def render_yearly_headline_metrics(metrics: dict, monte_carlo_stats: dict | None
 @st.fragment
 def render_org_simulation_yearly(summary: dict | None, *, run_signature: str | None,
                                  monte_carlo_ensemble: dict | None = None) -> dict | None:
+    from components.sidebar import get_global_metric_view
+    selected_unit = get_global_metric_view()
     st.subheader("Veränderungen pro Jahr")
     if not summary:
         st.info("Bitte die Simulation auf 'Kompakt plus Simulation' neu berechnen, um die Jahresauswertung bereitzustellen.")
@@ -228,8 +230,7 @@ def render_org_simulation_yearly(summary: dict | None, *, run_signature: str | N
     organizations = st.multiselect(level, options, default=options,
                                    key=f"org_yearly_orgs_{dimension}_{suffix}")
     if bridge.get("status") == "Abgestimmt" and years and organizations:
-        stock_metric = st.radio("Kennzahl des Bestandsverlaufs", ["Köpfe", "MAK"],
-                                horizontal=True, key="org_stock_metric")
+        stock_metric = selected_unit
         headline = build_yearly_headline_metrics(summary, dimension=dimension,
                                                  organizations=organizations, end_year=max(years), metric=stock_metric)
         if headline is not None:
@@ -264,10 +265,7 @@ def render_org_simulation_yearly(summary: dict | None, *, run_signature: str | N
     if summary["events"].empty and monte_carlo_ensemble is None:
         st.info("Im gespeicherten Simulationslauf gibt es keine Ereignisse; die Rentenparameter können dennoch eingeordnet werden.")
     st.caption("Originale Prognoseereignisse; keine Jahresendbestände. Der Bestandsverlauf berücksichtigt zusätzlich technische Aufbereitung und effektive Reporting-Kapazität; diese Effekte sind im Endwertabgleich ausgewiesen.")
-    metric_column, export_column = st.columns([3, 1])
-    with metric_column:
-        metric = st.radio("Kennzahl der Veränderung", list(METRICS[2:]) + list(METRICS[:2]),
-                          horizontal=True, key="org_yearly_metric")
+    metric = f"{selected_unit}-Veränderung"
     types = sorted(set(source["Ereignisart"].unique().tolist()) |
                    ({"RETIREMENT"} if retirement_active else set()) |
                    ({"ATZ_AR_TO_FR"} if atz_active else set()))
@@ -344,9 +342,10 @@ def render_org_simulation_yearly(summary: dict | None, *, run_signature: str | N
         view["chart"] = view["monte_carlo_bands"][["Jahr", dimension, "mean"]].rename(
             columns={"mean": metric})
         view["table"] = view["chart"].pivot(index=dimension, columns="Jahr", values=metric)
-    with export_column:
-        from utils.org_yearly_view_export import render_yearly_view_export
-        render_yearly_view_export(summary, view, stock_view=stock_view)
+    from utils.org_yearly_view_export import render_yearly_view_export
+    render_yearly_view_export(
+        summary, view, stock_view=stock_view,
+        monte_carlo_ensemble=monte_carlo_ensemble)
     for row in view["periods"].itertuples(index=False):
         if row.Teiljahr:
             st.caption(f"{row.Jahr}: Teiljahr {row.Von:%d.%m.%Y} bis {row.Bis:%d.%m.%Y}.")
@@ -381,9 +380,12 @@ def render_org_simulation_yearly(summary: dict | None, *, run_signature: str | N
         from components.org_monte_carlo_yearly import render_annual_band_detail
         render_annual_band_detail(
             view["monte_carlo_bands"], group_col=dimension, x_col="Jahr", unit=metric,
-            key=f"org_events_mc_detail_{dimension}_{metric}")
-    st.caption("Die Summen beziehen sich auf die ausgewählten Jahre und Ereignisarten. Abgehende MAK zeigen den positiven Kapazitätsverlust aus ausgewählten Personalabgängen.")
-    st.dataframe(view["summary_table"], use_container_width=True)
+            key=f"org_events_mc_detail_{dimension}_{metric}",
+            ensemble=monte_carlo_ensemble, level=dimension,
+            event_types=tuple(view["event_types"]))
+    st.caption(f"Die Summen beziehen sich auf die ausgewählten Jahre und Ereignisarten. Die Jahreswerte folgen der Seitenleisten-Kennzahl {selected_unit}.")
+    from utils.metric_view import selected_unit_columns
+    st.dataframe(selected_unit_columns(view["summary_table"], selected_unit), use_container_width=True)
     def render_reference_evaluations():
         from components.org_quit_evaluation import render_quit_evaluation
         render_quit_evaluation(summary, dimension=dimension, years=years,
@@ -408,6 +410,6 @@ def render_org_simulation_yearly(summary: dict | None, *, run_signature: str | N
     with st.expander("Aufschlüsselung nach Ereignisart"):
         details = view["details"].copy()
         details["Ereignisart"] = details["Ereignisart"].map(lambda value: LABELS.get(value, value))
-        st.dataframe(details, hide_index=True, use_container_width=True)
+        st.dataframe(selected_unit_columns(details, selected_unit), hide_index=True, use_container_width=True)
     view["stock_view"] = stock_view
     return view

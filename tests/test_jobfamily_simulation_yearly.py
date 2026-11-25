@@ -82,6 +82,7 @@ def test_monte_carlo_position_export_fingerprint_changes_with_person_filter(monk
                     {"selected_genders": ["m"]}):
         yearly._render_monte_carlo_position_stock(
             stock, dimension="Jobfamily", groups=["A"], years=[2027],
+            metric="MAK",
             ensemble=ensemble, baseline=pd.DataFrame(), active_filters=filters)
     assert captured[0]["fingerprint"] != captured[1]["fingerprint"]
 
@@ -532,6 +533,32 @@ def test_jobfamily_view_preserves_saved_oe_outputs_and_event_totals():
     pd.testing.assert_frame_equal(summary["stock_reconciliation"]["annual"], before_bridge, check_exact=True)
     for key in ("baseline_snapshot", "final_snapshot", "departure_events", "accession_events"):
         pd.testing.assert_frame_equal(context[key], before_context[key], check_exact=True)
+
+
+def test_yearly_display_follows_sidebar_unit_without_local_metric_controls():
+    from streamlit.testing.v1 import AppTest
+
+    context = _bridge_context("departures")
+    summary = build_simulation_event_summary(context, expected_run_signature="a")
+    app = AppTest.from_string('''
+import streamlit as st
+from components.jobfamily_simulation_yearly import render_jobfamily_simulation_yearly
+render_jobfamily_simulation_yearly(st.session_state["context"], st.session_state["summary"], run_signature="a")
+''')
+    app.session_state["context"] = context
+    app.session_state["summary"] = summary
+    app.session_state["global_metric_view"] = "MAK"
+    app.run()
+    assert not app.exception
+    assert not any(item.label in {"Kennzahl des Bestandsverlaufs", "Kennzahl der Veränderung"}
+                   for item in app.radio)
+    assert any("Abgehende MAK" in frame.value.columns for frame in app.dataframe)
+    assert not any("Abgehende Köpfe" in frame.value.columns for frame in app.dataframe)
+    app.session_state["global_metric_view"] = "Köpfe"
+    app.run()
+    assert not app.exception
+    assert any("Abgehende Köpfe" in frame.value.columns for frame in app.dataframe)
+    assert not any("Abgehende MAK" in frame.value.columns for frame in app.dataframe)
 
 
 def test_jobfamily_stock_requires_reconciliation_and_disabled_accessions():

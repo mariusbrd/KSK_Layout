@@ -1853,14 +1853,13 @@ def render_orgunit_analysis_page(
     export_context: dict | None = None,
     event_summary: dict | None = None,
     monte_carlo_ensemble: dict | None = None,
+    show_header: bool = True,
 ) -> None:
     compact = load_compact_page_module()
     export_tables = {} if export_context is not None else None
 
-    render_page_header(
-        title,
-        subtitle,
-    )
+    if show_header:
+        render_page_header(title, subtitle)
     if monte_carlo_ensemble is not None:
         st.info(
             f"{monte_carlo_ensemble['count']} Läufe: Zielbestand, Rangliste, "

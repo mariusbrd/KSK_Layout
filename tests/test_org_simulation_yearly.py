@@ -152,8 +152,8 @@ def test_renderer_uses_saved_cluster_tables(monkeypatch):
     view = ui.render_org_simulation_yearly.__wrapped__(saved, run_signature="a")
     assert view["dimension"] == "OE-Cluster"
     assert len(rendered) == 3
-    assert view["table"].sum().sum() == 4
-    assert view["summary_table"]["Summe ausgewählte Kennzahl"].sum() == 4
+    assert view["table"].sum().sum() == pytest.approx(-0.75)
+    assert view["summary_table"]["Summe ausgewählte Kennzahl"].sum() == pytest.approx(-0.75)
 
 
 def test_streamlit_controls_render_and_switch_levels_without_simulation():
@@ -167,10 +167,13 @@ render_org_simulation_yearly(_summary(), run_signature="a")
     assert len(app.dataframe) == 2
     app.radio[0].set_value("OE-Cluster").run()
     assert not app.exception
-    assert app.dataframe[0].value["Summe ausgewählte Kennzahl"].sum() == 4
-    app.radio(key="org_yearly_metric").set_value("MAK-Veränderung").run()
-    assert not app.exception
     assert app.dataframe[0].value["Summe ausgewählte Kennzahl"].sum() == pytest.approx(-0.75)
+    app.session_state["global_metric_view"] = "Köpfe"
+    app.run()
+    assert not app.exception
+    assert app.dataframe[0].value["Summe ausgewählte Kennzahl"].sum() == pytest.approx(-3)
+    assert not any(radio.label in {"Kennzahl des Bestandsverlaufs", "Kennzahl der Veränderung"}
+                   for radio in app.radio)
 
 
 def test_incompatible_cluster_mapping_warns_without_guessing_a_source():

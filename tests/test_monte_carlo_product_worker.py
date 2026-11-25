@@ -48,7 +48,27 @@ def test_app_packet_carries_certified_departure_stock_separately(
                 "employer_cost_factor", "tvoed_lookup") if key in st.session_state},
         active_cluster_source=source, cluster_mapping_bundle=bundle,
         cluster_source_signature=signature)
-    packet = run_product_seed_with_ist_charts(0, dep, hire, payload)
+    detail = []
+    packet = (run_product_seed(
+        0, dep, hire, payload, include_ist_charts=True,
+        detail_sink=lambda prepared, context, summary: detail.append((prepared, context, summary)))
+        if target_date == "2026-12-31" else
+        run_product_seed_with_ist_charts(0, dep, hire, payload))
+    if detail:
+        prepared, context, summary = detail[0]
+        assert context["run_signature"] == summary["run_signature"]
+        assert summary["stock_reconciliation"]["status"] == "Abgestimmt"
+        assert len(prepared) == len(context["final_snapshot"])
+        bridge = summary["stock_reconciliation"]["annual"]
+        bridge = bridge.loc[bridge["Art"].isin(["Ausgangsstichtag", "Jahresstichtag"])]
+        expected = {}
+        for values in bridge.itertuples(index=False, name=None):
+            row = dict(zip(bridge.columns, values))
+            for metric, column in (("heads", "Bestand-Köpfe"), ("mak", "Bestand-MAK")):
+                expected[(pd.Timestamp(row["Stichtag"]).date().isoformat(),
+                          row["Ebene"], row["Organisation"], metric)] = float(row[column])
+        assert expected == {tuple(record[:4]): float(record[4])
+                            for record in packet["departure_stock_values"]}
     from utils.monte_carlo_annual_event_rows import decode_annual_event_rows
     from utils.monte_carlo_annual_event_rows import VERSION as ANNUAL_EVENT_ROWS_VERSION
     assert packet["annual_event_rows_version"] == ANNUAL_EVENT_ROWS_VERSION

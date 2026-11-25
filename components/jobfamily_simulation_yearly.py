@@ -545,6 +545,7 @@ def _monte_carlo_jobfamily_event_frame(
 
 def _render_monte_carlo_position_stock(stock: pd.DataFrame, *, dimension: str,
                                        groups: list[str], years: list[int],
+                                        metric: str,
                                        ensemble: dict, baseline: pd.DataFrame,
                                        active_filters: dict,
                                        reported_runs: list[pd.DataFrame] | None = None) -> None:
@@ -553,8 +554,6 @@ def _render_monte_carlo_position_stock(stock: pd.DataFrame, *, dimension: str,
     st.caption("Zertifizierter Positionsbestand je Lauf und Jahresstichtag. Die bisherige "
                "JF-Bestandsüberleitung enthält zusätzliche technische Brückenwerte und ist "
                "fachlich nicht mit diesem Verlauf gleichzusetzen.")
-    metric = st.radio("Kennzahl des Bestandsverlaufs", ["Köpfe", "MAK"], horizontal=True,
-                      key="jf_yearly_stock_metric")
     visible = stock.loc[stock["Ebene"].eq(dimension) & stock["Jobgruppe"].isin(groups)
                         & stock["Stichtag"].dt.year.isin(years)
                         & stock["Kennzahl"].eq(metric)].copy()
@@ -864,13 +863,15 @@ def _render_monte_carlo_events(selected: pd.DataFrame, *, dimension: str,
                           "<br>P10–P90: %{customdata[0]:.2f} bis %{customdata[1]:.2f}<extra></extra>"))
     fig.update_layout(barmode="group", xaxis_title="Jahr", yaxis_title=metric)
     st.plotly_chart(fig, use_container_width=True)
-    st.dataframe(totals, hide_index=True, use_container_width=True)
+    from utils.metric_view import selected_unit_columns
+    unit = "MAK" if metric.startswith("MAK") else "Köpfe"
+    st.dataframe(selected_unit_columns(totals, unit), hide_index=True, use_container_width=True)
     st.markdown("**Summe der gewählten Jahre je Jobgruppe**")
-    st.dataframe(year_sum, hide_index=True, use_container_width=True)
+    st.dataframe(selected_unit_columns(year_sum, unit), hide_index=True, use_container_width=True)
     with st.expander("Aufschlüsselung nach Ereignisart"):
         detail = selected.drop(columns=["samples", "Seed 0"]).copy()
         detail["Ereignisart"] = detail["Ereignisart"].map(lambda value: LABELS.get(value, value))
-        st.dataframe(detail, hide_index=True, use_container_width=True)
+        st.dataframe(selected_unit_columns(detail, unit), hide_index=True, use_container_width=True)
     return totals, year_sum
 
 
@@ -910,7 +911,7 @@ def _yearly_export_key(run_signature: str, dimension: str, years: list[int],
     """Bind a prepared workbook to one concrete run and an immutable selection."""
     selection = (run_signature, dimension, tuple(years), tuple(groups), tuple(event_types))
     if ensemble is None:
-        return (*selection, None, None)
+        return (*selection, metric, None)
     filters = tuple(sorted((name, tuple(values) if isinstance(values, (list, tuple)) else values)
                            for name, values in (active_filters or {}).items()))
     identity = (id(ensemble), ensemble.get("plan_signature"),
@@ -924,6 +925,8 @@ def _yearly_export_key(run_signature: str, dimension: str, years: list[int],
 def render_jobfamily_simulation_yearly(context: dict | None, summary: dict | None, *,
                                        run_signature: str | None,
                                        monte_carlo_ensemble: dict | None = None) -> None:
+    from components.sidebar import get_global_metric_view
+    selected_unit = get_global_metric_view()
     st.subheader("Veränderungen pro Jahr")
     if monte_carlo_ensemble is not None:
         st.caption("Jahrespositionsbestand, Jahresereignisse und Einordnungen: Mittelwert und P10–P90.")
@@ -973,6 +976,7 @@ def render_jobfamily_simulation_yearly(context: dict | None, summary: dict | Non
     if mc_stock is not None:
         _render_monte_carlo_position_stock(
             mc_stock, dimension=dimension, groups=groups, years=years,
+            metric=selected_unit,
             ensemble=monte_carlo_ensemble, baseline=context["baseline_snapshot"],
             active_filters=get_active_view_filters(),
             reported_runs=mc_events.attrs["reported_runs"])
@@ -984,9 +988,7 @@ def render_jobfamily_simulation_yearly(context: dict | None, summary: dict | Non
                     st.dataframe(view["stock_checks"].loc[lambda frame: ~frame["Abgestimmt"]],
                                  hide_index=True, use_container_width=True)
         else:
-            metric_column, export_column = st.columns([3, 1])
-            with metric_column:
-                stock_metric = st.radio("Kennzahl des Bestandsverlaufs", ["Köpfe", "MAK"], horizontal=True, key="jf_yearly_stock_metric")
+            stock_metric = selected_unit
             visible = stock.loc[stock[dimension].isin(groups) & stock.Kennzahl.eq(stock_metric) &
                                 (stock.Stichtag.dt.year.isin(years) | stock.Art.eq("Ausgangsstichtag"))].copy()
             if years and not visible.empty:
@@ -999,8 +1001,7 @@ def render_jobfamily_simulation_yearly(context: dict | None, summary: dict | Non
                         default=departure_types, format_func=lambda value: LABELS.get(value, value),
                         key=f"jf_stock_export_types_{dimension}_{suffix}")
                     st.caption("Originale Jahresereignisse mit Vorzeichen; technische Bestandsaufbereitung ist separat dokumentiert.")
-                with export_column:
-                    lazy_excel_download_button_compat(
+                lazy_excel_download_button_compat(
                         label="Excel exportieren",
                         data_builder=lambda: build_jobfamily_stock_export_bytes(
                             view, dimension=dimension, groups=groups, years=years,
@@ -1011,7 +1012,7 @@ def render_jobfamily_simulation_yearly(context: dict | None, summary: dict | Non
                         fingerprint=(run_signature, id(view), dimension, tuple(groups),
                                      tuple(years), stock_metric, tuple(export_types)),
                         help="Aktuelle Bestandsauswahl mit Folienvorlagen für MAK und Köpfe, Jahreswerten und Endwertabgleich.",
-                    )
+                )
                 opening = visible.loc[visible.Art.eq("Ausgangsstichtag")].Bestand.sum()
                 closing_rows = visible.loc[visible.Art.eq("Jahresstichtag")]
                 closing = closing_rows.loc[closing_rows.Stichtag.eq(closing_rows.Stichtag.max()), "Bestand"].sum() if not closing_rows.empty else opening
@@ -1042,7 +1043,7 @@ def render_jobfamily_simulation_yearly(context: dict | None, summary: dict | Non
     st.markdown("#### Veränderungen")
     if mc_stock is not None:
         st.caption("Jahresereignisse und Einordnungen: Mittelwert und P10–P90 je Lauf.")
-    metric = st.radio("Kennzahl der Veränderung", list(METRICS[2:]) + list(METRICS[:2]), horizontal=True, key="jf_yearly_metric")
+    metric = f"{selected_unit}-Veränderung"
     types = (sorted(set(mc_events["Ereignisart"].dropna())) if mc_events is not None
              else sorted(set(view["annual"].Ereignisart.dropna())))
     selected_types = st.multiselect("Ereignisarten", types, default=types,
@@ -1077,7 +1078,8 @@ def render_jobfamily_simulation_yearly(context: dict | None, summary: dict | Non
             table["Abgehende Köpfe"] = departures.groupby(dimension)["Abgänge"].sum().reindex(table.index, fill_value=0)
             mak_loss = -pd.to_numeric(departures["MAK-Veränderung"], errors="coerce").clip(upper=0)
             table["Abgehende MAK"] = mak_loss.groupby(departures[dimension]).sum().reindex(table.index, fill_value=0)
-            st.dataframe(table, use_container_width=True)
+            from utils.metric_view import selected_unit_columns
+            st.dataframe(selected_unit_columns(table, selected_unit), use_container_width=True)
         else:
             st.info("Für diese Auswahl liegen keine Ereignisse vor.")
     for period in periods.loc[periods.Jahr.isin(years)].itertuples(index=False):
@@ -1094,7 +1096,8 @@ def render_jobfamily_simulation_yearly(context: dict | None, summary: dict | Non
         with st.expander("Aufschlüsselung nach Ereignisart"):
             detail = selected.copy()
             detail["Ereignisart"] = detail["Ereignisart"].map(lambda value: LABELS.get(value, value))
-            st.dataframe(detail, hide_index=True, use_container_width=True)
+            from utils.metric_view import selected_unit_columns
+            st.dataframe(selected_unit_columns(detail, selected_unit), hide_index=True, use_container_width=True)
         unresolved = view["events"].loc[view["events"].get(dimension, pd.Series(dtype=str)).eq(UNASSIGNED)]
         if not unresolved.empty:
             st.warning(f"{len(unresolved)} Ereignisse haben keine eindeutige {dimension}-Zuordnung; sie stehen unter UNMAPPED.")
@@ -1116,7 +1119,7 @@ def render_jobfamily_simulation_yearly(context: dict | None, summary: dict | Non
         # until the user explicitly requests an export.
         export_key = _yearly_export_key(
             run_signature, dimension, years, groups, selected_types,
-            metric=metric if mc_events is not None else None,
+            metric=metric,
             active_filters=get_active_view_filters() if mc_events is not None else None,
             ensemble=monte_carlo_ensemble if mc_events is not None else None)
         if st.button("Excel-Export vorbereiten", key="jf_yearly_prepare_export"):

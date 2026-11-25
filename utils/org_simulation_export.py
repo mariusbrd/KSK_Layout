@@ -115,9 +115,15 @@ def build_org_simulation_export_bytes(tables, context):
                   for k, v in context.items() if k not in ("abgaenge_params", "zugaenge_params")})
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        pd.DataFrame(notes.items(), columns=["Feld", "Wert"]).to_excel(writer, sheet_name="00_Dokumentation", index=False)
+        summary_frame = tables.get("Zusammenfassung")
+        if isinstance(summary_frame, pd.DataFrame):
+            summary_frame.to_excel(writer, sheet_name="00_Zusammenfassung", index=False)
+        else:
+            pd.DataFrame(notes.items(), columns=["Feld", "Wert"]).to_excel(
+                writer, sheet_name="00_Dokumentation", index=False)
         inventory = []
-        for index, (name, frame) in enumerate(tables.items(), 1):
+        for index, (name, frame) in enumerate(
+                ((name, frame) for name, frame in tables.items() if name != "Zusammenfassung"), 1):
             sheet = f"{index:02d}_{re.sub(r'[\\/*?:\[\]]', '_', name)}"[:31]
             def export_value(value):
                 if isinstance(value, (pd.Timestamp, datetime)) and pd.notna(value) and (value.microsecond or getattr(value, "nanosecond", 0)):
@@ -126,6 +132,13 @@ def build_org_simulation_export_bytes(tables, context):
             frame.map(export_value).to_excel(writer, sheet_name=sheet, index=False)
             inventory.append({"Bereich": name, "Tabellenblatt": sheet, "Zeilen": len(frame),
                               "Spalten": ", ".join(map(str, frame.columns))})
+        if isinstance(summary_frame, pd.DataFrame):
+            inventory.insert(0, {"Bereich": "Zusammenfassung", "Tabellenblatt": "00_Zusammenfassung",
+                                 "Zeilen": len(summary_frame),
+                                 "Spalten": ", ".join(map(str, summary_frame.columns))})
+        if isinstance(summary_frame, pd.DataFrame):
+            pd.DataFrame(notes.items(), columns=["Feld", "Wert"]).to_excel(
+                writer, sheet_name="00_Dokumentation", index=False)
         pd.DataFrame(inventory).to_excel(writer, sheet_name="Exportinventar", index=False)
         build_parameter_sheet(abgaenge_params=context.get("abgaenge_params"),
                               zugaenge_params=context.get("zugaenge_params"), metadata=context.get("Lauf", {})).to_excel(
@@ -137,6 +150,17 @@ def build_org_simulation_export_bytes(tables, context):
             "Bestandsüberleitung": context.get("Bestandsüberleitung", {}),
             "Historische Eingaben": "Nur soweit im gespeicherten Lauf dokumentiert; Input_Lineage zeigt aktuell zugängliche Quellen.",
         })
+        if isinstance(summary_frame, pd.DataFrame):
+            overview_ws = writer.sheets["00_Zusammenfassung"]
+            for row_index, unit in enumerate(summary_frame["Einheit"], 2):
+                number_format = "0.0%" if unit == "%" else (
+                    "0.0" if unit in {"Jahre", "MAK"} else "0" if unit == "Köpfe" else None)
+                if number_format:
+                    for cells in overview_ws.iter_rows(min_row=row_index, max_row=row_index,
+                                                       min_col=3, max_col=overview_ws.max_column):
+                        for cell in cells:
+                            if isinstance(cell.value, (int, float)):
+                                cell.number_format = number_format
         for ws in writer.sheets.values():
             ws.freeze_panes = "A2"
             if ws.max_row > 1 and ws.max_column:
